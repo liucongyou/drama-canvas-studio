@@ -493,7 +493,14 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401 && typeof window !== 'undefined') {
+    const code = String((payload as {code?: string}).code || '');
+    // Provider auth failures are also HTTP 401, but they do not mean the
+    // canvas login session expired. Only the server's auth guards may logout.
+    if (
+      response.status === 401
+      && typeof window !== 'undefined'
+      && ['ACCOUNT_AUTH_REQUIRED', 'TENANT_AUTH_REQUIRED'].includes(code)
+    ) {
       window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
     }
     const raw = (payload as {error?: string}).error || `请求失败，HTTP ${response.status}`;

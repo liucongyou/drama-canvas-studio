@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {generateCanvasNodeNow, getCanvasMediaNodes, getModelCatalog, getQualityReport, getSessions, mediaVersionList, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, generateCanvasNodeNow, getCanvasMediaNodes, getModelCatalog, getQualityReport, getSessions, mediaVersionList, subscribeToEvents} from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -179,5 +179,36 @@ describe('api request recovery', () => {
       url: '/uploads/generated-second.png',
     }));
     unsubscribe();
+  });
+
+  it('does not treat a provider 401 as an expired canvas session', async () => {
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal('window', {dispatchEvent});
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: '供应商鉴权失败：无效令牌',
+      code: 'GENERATION_PROVIDER_ERROR',
+    }), {
+      status: 401,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    await expect(generateCanvasNodeNow('project-1', 'node-1')).rejects.toThrow('供应商鉴权失败');
+    expect(dispatchEvent).not.toHaveBeenCalled();
+  });
+
+  it('logs out when the server reports an expired account session', async () => {
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal('window', {dispatchEvent});
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: '请先登录',
+      code: 'ACCOUNT_AUTH_REQUIRED',
+    }), {
+      status: 401,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    await expect(getSessions()).rejects.toThrow();
+    expect(dispatchEvent).toHaveBeenCalledWith(expect.any(Event));
+    expect((dispatchEvent.mock.calls[0][0] as Event).type).toBe(AUTH_REQUIRED_EVENT);
   });
 });
