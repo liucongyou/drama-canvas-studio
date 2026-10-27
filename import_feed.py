@@ -83,6 +83,8 @@ def _asset_identity(title, kind=""):
     text = re.sub(r"^[^｜|]*[｜|]\s*", "", text)
     text = re.sub(r"[（(]\s*图\s*\d+\s*[)）]\s*$", "", text)
     text = re.sub(r"[（(](?:角色立绘|场景母版|九宫格|道具设定图)[)）]\s*$", "", text)
+    if kind == "场景":
+        text = re.sub(r"\s*[·・]\s*(?:母版|九宫格)\s*$", "", text)
     text = re.sub(r"\s+", "", text).casefold()
     return f"{kind}:{text}" if kind and text else ""
 
@@ -803,11 +805,10 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         nid = str(source_asset["id"]) if (source_asset and source_asset.get("projectId") == target_project_id) else _rid_node()
         image_ids.setdefault(code, []).append(nid)
         asset_kinds[nid] = kind
-        visible_ratio = _aspect(
-            canvas_asset.get("ratio") or a.get("ratio") or a.get("aspect") or raw,
-            asset_aspect,
-        )
-        visible_size = _image_size(visible_ratio)
+        # All role/scene/prop/staging cards share one canvas card ratio. The
+        # provider-side ratio stays 16:9 as well so generated previews match.
+        visible_ratio = "16:9"
+        visible_size = "1536x864"
         image_model = str(canvas_asset.get("model") or "doubao-seedream-5-0-pro")
         generated_composer = f"### {code} · {name}\n\n{raw}"
         source_reuse_meta = (
@@ -962,6 +963,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             "height": 320, "width": 320, "id": aid,
             "metadata": {
                 "content": "", "composerContent": audio_composer,
+                "assetKey": _asset_identity(role, "音色"),
                 "prompt": audio_prompt, "status": "idle", "generationMode": "audio", "nodeRole": "generator",
                 "params": {
                     "provider": "aliyun_bailian", "model": "cosyvoice-v3-5-flash",
@@ -1571,6 +1573,12 @@ def _ensure_referenced_assets(payload, episode_id=None):
         if "自动补占位卡" in str(meta.get("prompt") or ""):
             meta["autoPlaceholder"] = True
         if node.get("type") == "image":
+            image_meta = node.setdefault("metadata", {})
+            image_params = image_meta.setdefault("params", {})
+            image_params["ratio"] = "16:9"
+            image_params["size"] = "1536x864"
+            node["width"] = 720
+            node["height"] = 405
             key = str((node.get("metadata") or {}).get("assetKey") or "")
             if not key:
                 key = _asset_identity(
@@ -1587,6 +1595,10 @@ def _ensure_referenced_assets(payload, episode_id=None):
             role = _asset_title_base(node.get("title"), audio=True).split("·", 1)[0].strip()
             if role:
                 audio_by_role.setdefault(role, node)
+                (node.get("metadata") or {}).setdefault(
+                    "assetKey",
+                    _asset_identity(role, "音色"),
+                )
 
     now = _now_iso()
     created_at = str(
@@ -1621,8 +1633,7 @@ def _ensure_referenced_assets(payload, episode_id=None):
 
     def add_image(kind, name, code, video):
         title = f"{kind}｜{name}（图{code}）"
-        video_params = ((video.get("metadata") or {}).get("params") or {})
-        ratio = str(video_params.get("ratio") or "16:9")
+        ratio = "16:9"
         node_id = _rid_node()
         node = {
             "height": 405,
@@ -1682,6 +1693,7 @@ def _ensure_referenced_assets(payload, episode_id=None):
             "metadata": {
                 "content": "",
                 "composerContent": f"角色：{role}（图{code}）\n\n【音色占位 · 4.5S】\n{prompt}",
+                "assetKey": _asset_identity(role, "音色"),
                 "prompt": prompt,
                 "status": "idle",
                 "generationMode": "audio",
@@ -1932,8 +1944,18 @@ def bind_shared_assets_for_episode(payload, episode_id):
             continue
         current_meta = current.get("metadata") or {}
         node_meta = node.get("metadata") or {}
-        current_score = (current_meta.get("status") == "done", bool(current_meta.get("content")), str(current.get("updatedAt") or ""))
-        node_score = (node_meta.get("status") == "done", bool(node_meta.get("content")), str(node.get("updatedAt") or ""))
+        current_score = (
+            not bool(current_meta.get("autoPlaceholder")),
+            current_meta.get("status") == "done",
+            bool(current_meta.get("content")),
+            str(current.get("updatedAt") or ""),
+        )
+        node_score = (
+            not bool(node_meta.get("autoPlaceholder")),
+            node_meta.get("status") == "done",
+            bool(node_meta.get("content")),
+            str(node.get("updatedAt") or ""),
+        )
         if node_score > current_score:
             image_by_identity[identity] = node
             image_duplicates[current["id"]] = node["id"]
@@ -1972,6 +1994,27 @@ def bind_shared_assets_for_episode(payload, episode_id):
     }
     video_id_set = {video.get("id") for video in videos}
     duplicate_asset_ids = set(image_duplicates) | set(audio_duplicates)
+    removable_duplicate_ids = {
+        node_id
+        for node_id in duplicate_asset_ids
+        if (node_by_id.get(node_id) or {}).get("metadata", {}).get("autoPlaceholder")
+        and not str(((node_by_id.get(node_id) or {}).get("metadata") or {}).get("content") or "").strip()
+    }
+    if removable_duplicate_ids:
+        payload["nodes"] = [
+            node for node in payload.get("nodes") or []
+            if not (
+                isinstance(node, dict)
+                and node.get("id") in removable_duplicate_ids
+            )
+        ]
+        for item in payload.get("episodeImports") or []:
+            item["nodeIds"] = [
+                node_id for node_id in (item.get("nodeIds") or [])
+                if node_id not in removable_duplicate_ids
+            ]
+        cleanup_changes += len(removable_duplicate_ids)
+        duplicate_asset_ids -= removable_duplicate_ids
     connections_before_dedupe = len(connections)
     connections[:] = [
         conn for conn in connections

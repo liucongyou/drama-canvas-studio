@@ -259,6 +259,51 @@ class ImportFeedContractTests(unittest.TestCase):
             },
         )
 
+    def test_duplicate_scene_placeholder_is_removed_in_favor_of_real_node(self):
+        payload = {
+            "nodes": [
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段1",
+                    "metadata": {
+                        "prompt": "@场景｜厂办门口小广场·母版（图13）",
+                        "params": {
+                            "model": "doubao-seedance-2-0",
+                            "refs": [
+                                {"nodeId": "scene-real", "label": "场景｜厂办门口小广场·母版（图13）"},
+                                {"nodeId": "scene-placeholder", "label": "场景｜厂办门口小广场·母版（图13）"},
+                            ],
+                            "voiceRefs": [],
+                        },
+                    },
+                },
+                {
+                    "id": "scene-real",
+                    "type": "image",
+                    "title": "场景｜厂办门口小广场·母版（图13）",
+                    "metadata": {"assetKey": "场景:厂办门口小广场·母版", "status": "idle", "content": ""},
+                },
+                {
+                    "id": "scene-placeholder",
+                    "type": "image",
+                    "title": "场景｜厂办门口小广场·母版（图13）",
+                    "metadata": {"assetKey": "场景:厂办门口小广场·母版", "status": "idle", "content": "", "autoPlaceholder": True},
+                },
+            ],
+            "connections": [
+                {"id": "e-real", "fromNodeId": "scene-real", "toNodeId": "video-1"},
+                {"id": "e-placeholder", "fromNodeId": "scene-placeholder", "toNodeId": "video-1"},
+            ],
+            "episodeImports": [{"id": "EP010", "nodeIds": ["video-1", "scene-real", "scene-placeholder"], "videoNodeIds": ["video-1"]}],
+        }
+        import_feed.bind_shared_assets_for_episode(payload, "EP010")
+        self.assertEqual([node["id"] for node in payload["nodes"] if node["type"] == "image"], ["scene-real"])
+        self.assertEqual(
+            {(conn["fromNodeId"], conn["toNodeId"]) for conn in payload["connections"]},
+            {("scene-real", "video-1")},
+        )
+
     def test_reuses_completed_character_from_another_project(self):
         feed = {
             "title": "角色复用测试",
