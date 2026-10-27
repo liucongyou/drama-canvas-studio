@@ -1,7 +1,7 @@
 import {useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent} from 'react';
 import {createRoot} from 'react-dom/client';
 import {createPortal} from 'react-dom';
-import {Check, ChevronDown, CloudUpload, Copy, ExternalLink, FolderOpen, FolderPlus, LogOut, MoreHorizontal, Palette, Pencil, Plus, Settings, ShieldCheck, Trash2, Upload, X} from 'lucide-react';
+import {Check, ChevronDown, CloudUpload, Copy, ExternalLink, FolderOpen, FolderPlus, KeyRound, LogOut, MoreHorizontal, Palette, Pencil, Plus, Settings, ShieldCheck, Trash2, Upload, X} from 'lucide-react';
 import {CanvasView} from './CanvasView';
 import {ModelSettingsDialog} from './ModelSettings';
 import {TosSettingsDialog} from './TosSettings';
@@ -10,7 +10,7 @@ import {applyTheme, resolveTheme, THEMES, THEME_STORAGE_KEY, type Theme} from '.
 // ★ 全局对话框：替换原生 prompt/confirm/alert（2026-10-25）
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
 import {DialogHost, dialog} from './GDialog';
-import {AUTH_REQUIRED_EVENT, apiUrl, getAuthSession, loginAccount, logoutAccount} from './api';
+import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, getAuthSession, loginAccount, logoutAccount} from './api';
 import './styles.css';
 import './ui-refinements.css';
 import './immersive-theme.css';
@@ -82,6 +82,7 @@ function Shell({onLogout}: {onLogout?: () => void}) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
   const [tosSettingsOpen, setTosSettingsOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>(bootTheme);
   const settingsWrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -532,6 +533,18 @@ function Shell({onLogout}: {onLogout?: () => void}) {
               </div>
 
               <div className="shell-settings-section">
+                <div className="shell-tools-menu-head">账号安全</div>
+                <button
+                  type="button"
+                  className="shell-tools-menu-item"
+                  onClick={() => { setSettingsOpen(false); setPasswordOpen(true); }}
+                >
+                  <KeyRound size={13} strokeWidth={1.9} aria-hidden="true" />
+                  <span>修改密码</span>
+                </button>
+              </div>
+
+              <div className="shell-settings-section">
                 <div className="shell-tools-menu-head">导入投喂载荷</div>
                 <div className="shell-tools-field">
                   <input
@@ -597,10 +610,86 @@ function Shell({onLogout}: {onLogout?: () => void}) {
           <ErrorBoundary scope="canvas" label="画布" key={pid}>
             <CanvasView session={pid} />
           </ErrorBoundary>
-        ) : <div style={{color: '#8a8a8f', textAlign: 'center', marginTop: 80}}>← 选择或新建项目</div>}
+        ) : (
+          <div className="canvas-empty-state">
+            <span className="canvas-empty-icon"><FolderPlus size={22} strokeWidth={1.7} /></span>
+            <h2>还没有项目</h2>
+            <p>创建第一个项目，开始搭建你的画布工作流。</p>
+            <button type="button" onClick={() => void createProject()}>
+              <Plus size={15} strokeWidth={2.2} aria-hidden="true" />
+              创建项目
+            </button>
+          </div>
+        )}
       </div>
       {modelSettingsOpen && <ModelSettingsDialog onClose={() => setModelSettingsOpen(false)} />}
       {tosSettingsOpen && <TosSettingsDialog onClose={() => setTosSettingsOpen(false)} />}
+      {passwordOpen && <ChangePasswordDialog onClose={() => setPasswordOpen(false)} />}
+    </div>
+  );
+}
+
+function ChangePasswordDialog({onClose}: {onClose: () => void}) {
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    if (newPassword.length < 8) {
+      setError('新密码至少需要 8 位');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError('两次输入的新密码不一致');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await changePassword(currentPassword, newPassword);
+      onClose();
+    } catch (changeError) {
+      setError(changeError instanceof Error ? changeError.message : '修改失败，请重试');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <form className="canvas-password-dialog" onSubmit={submit}>
+        <header>
+          <span><KeyRound size={17} strokeWidth={1.9} aria-hidden="true" /></span>
+          <div>
+            <h2>修改密码</h2>
+            <p>修改后当前会话会自动续签，其他会话将失效。</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭"><X size={16} strokeWidth={2} aria-hidden="true" /></button>
+        </header>
+        <label>
+          <span>当前密码</span>
+          <input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" autoFocus required />
+        </label>
+        <label>
+          <span>新密码</span>
+          <input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" required />
+        </label>
+        <label>
+          <span>确认新密码</span>
+          <input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" required />
+        </label>
+        {error && <div className="canvas-password-error" role="alert">{error}</div>}
+        <footer>
+          <button type="button" onClick={onClose} disabled={busy}>取消</button>
+          <button type="submit" className="primary" disabled={busy || !currentPassword || !newPassword || !confirmPassword}>
+            {busy ? '修改中…' : '确认修改'}
+          </button>
+        </footer>
+      </form>
     </div>
   );
 }

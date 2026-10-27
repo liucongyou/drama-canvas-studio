@@ -1266,6 +1266,36 @@ class Handler(BaseHTTPRequestHandler):
             headers={"Set-Cookie": self._session_cookie("", max_age=0)},
         )
 
+    def _handle_auth_change_password(self, body):
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except Exception:
+            cookie = SimpleCookie()
+        morsel = cookie.get(CANVAS_SESSION_COOKIE)
+        session = tenant_registry.get_session(morsel.value) if morsel is not None and morsel.value else None
+        if not session or not session.get("account_id"):
+            return self._send(401, {"error": "请先登录", "code": "ACCOUNT_AUTH_REQUIRED"})
+        current_password = str(body.get("currentPassword") or "")
+        new_password = str(body.get("newPassword") or "")
+        if len(new_password) < 8:
+            return self._send(400, {"error": "新密码至少需要 8 位", "code": "PASSWORD_TOO_SHORT"})
+        if not tenant_registry.verify_account_password(session["account_id"], current_password):
+            return self._send(400, {"error": "当前密码不正确", "code": "CURRENT_PASSWORD_INVALID"})
+        tenant_registry.set_account_password(session["account_id"], new_password)
+        renewed = tenant_registry.create_session(
+            session["tenant_id"],
+            account_id=session["account_id"],
+            ttl_seconds=CANVAS_SESSION_TTL,
+            user_agent=self.headers.get("User-Agent", ""),
+            ip=self.client_address[0] if self.client_address else "",
+        )
+        return self._send(
+            200,
+            {"ok": True},
+            headers={"Set-Cookie": self._session_cookie(renewed["token"])},
+        )
+
     def _handle_invite(self, path):
         if not tenant_context.multi_tenant_enabled():
             return self._send(404, {"error": "资源不存在"})
@@ -1480,6 +1510,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_auth_login(body)
         if path == "/api/auth/logout":
             return self._handle_auth_logout()
+        if path == "/api/auth/change-password":
+            return self._handle_auth_change_password(body)
         if path == "/api/tenant/logout":
             cookie = SimpleCookie()
             try:

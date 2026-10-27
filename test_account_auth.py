@@ -116,6 +116,38 @@ class AccountAuthTests(unittest.TestCase):
         self.assertEqual(status, 204)
         self.assertNotIn("Access-Control-Allow-Origin", headers)
 
+    def test_change_password_invalidates_old_password_and_renews_session(self):
+        status, headers, _ = self.request(
+            "POST",
+            "/api/auth/login",
+            json.dumps({"username": "alice", "password": "correct-horse"}),
+        )
+        self.assertEqual(status, 200)
+        old_cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        status, headers, _ = self.request(
+            "POST",
+            "/api/auth/change-password",
+            json.dumps({"currentPassword": "correct-horse", "newPassword": "new-horse-123"}),
+            cookie=old_cookie,
+        )
+        self.assertEqual(status, 200)
+        new_cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        self.assertTrue(new_cookie)
+        status, _, _ = self.request("GET", "/api/projects", cookie=old_cookie)
+        self.assertEqual(status, 401)
+        status, _, _ = self.request(
+            "POST",
+            "/api/auth/login",
+            json.dumps({"username": "alice", "password": "correct-horse"}),
+        )
+        self.assertEqual(status, 401)
+        status, _, _ = self.request(
+            "POST",
+            "/api/auth/login",
+            json.dumps({"username": "alice", "password": "new-horse-123"}),
+        )
+        self.assertEqual(status, 200)
+
     def test_projects_are_isolated_between_two_accounts(self):
         def login(username: str) -> str:
             status, headers, _ = self.request(

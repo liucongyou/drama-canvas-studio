@@ -527,6 +527,13 @@ export async function logoutAccount(): Promise<{ok: boolean}> {
   return request('/api/auth/logout', {method: 'POST', body: '{}'});
 }
 
+export async function changePassword(currentPassword: string, newPassword: string): Promise<{ok: boolean}> {
+  return request('/api/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({currentPassword, newPassword}),
+  });
+}
+
 // ---------- local service compatibility ----------
 // The standalone canvas uses projects, while the embedded ViMax shell may still
 // probe the session endpoint. Keep the read path tolerant of a transient restart.

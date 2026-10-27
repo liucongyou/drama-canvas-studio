@@ -337,6 +337,18 @@ def authenticate_account(username: str, password: str) -> dict[str, Any] | None:
     return account
 
 
+def verify_account_password(account_id: str, password: str) -> bool:
+    con = _connect()
+    row = con.execute(
+        "SELECT password_hash,status FROM accounts WHERE id=?",
+        (str(account_id),),
+    ).fetchone()
+    con.close()
+    if not row or row["status"] != "active":
+        return False
+    return tenant_security.verify_password(password, str(row["password_hash"] or ""))
+
+
 def create_tenant(
     slug: str,
     *,

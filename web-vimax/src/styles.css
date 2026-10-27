@@ -13926,3 +13926,161 @@ button:disabled, [role="button"]:disabled { transition: none; }
 .shell-logout-btn {
   margin-left: 5px;
 }
+
+.canvas-empty-state {
+  flex: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 32px;
+  text-align: center;
+  color: var(--v-text-muted);
+}
+
+.canvas-empty-icon {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--v-border);
+  border-radius: 12px;
+  color: var(--v-accent);
+  background: color-mix(in srgb, var(--v-accent) 10%, transparent);
+}
+
+.canvas-empty-state h2 {
+  margin: 4px 0 0;
+  color: var(--v-text);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.canvas-empty-state p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.canvas-empty-state button {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--v-accent-ink, #fff);
+  background: var(--v-accent);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.canvas-password-dialog {
+  width: min(390px, calc(100vw - 32px));
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+  box-sizing: border-box;
+  border: 1px solid var(--v-border);
+  border-radius: 10px;
+  color: var(--v-text);
+  background: var(--v-panel);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, .24);
+}
+
+.canvas-password-dialog header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 10px;
+}
+
+.canvas-password-dialog header > span {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--v-accent);
+  background: color-mix(in srgb, var(--v-accent) 12%, transparent);
+}
+
+.canvas-password-dialog h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.canvas-password-dialog header p {
+  margin: 4px 0 0;
+  color: var(--v-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.canvas-password-dialog header button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  color: var(--v-text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.canvas-password-dialog label {
+  display: grid;
+  gap: 6px;
+}
+
+.canvas-password-dialog label span {
+  color: var(--v-text-muted);
+  font-size: 11px;
+}
+
+.canvas-password-dialog input {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--v-border);
+  border-radius: 7px;
+  outline: none;
+  color: var(--v-text);
+  background: var(--v-canvas);
+}
+
+.canvas-password-dialog input:focus {
+  border-color: var(--v-accent);
+}
+
+.canvas-password-error {
+  padding: 8px 9px;
+  border: 1px solid color-mix(in srgb, var(--v-danger, #e35d5d) 45%, var(--v-border));
+  border-radius: 7px;
+  color: var(--v-danger, #e35d5d);
+  background: color-mix(in srgb, var(--v-danger, #e35d5d) 8%, transparent);
+  font-size: 12px;
+}
+
+.canvas-password-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.canvas-password-dialog footer button {
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--v-border);
+  border-radius: 7px;
+  color: var(--v-text);
+  background: transparent;
+  cursor: pointer;
+}
+
+.canvas-password-dialog footer button.primary {
+  border-color: var(--v-accent);
+  color: var(--v-accent-ink, #fff);
+  background: var(--v-accent);
+}
