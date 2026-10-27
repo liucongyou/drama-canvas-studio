@@ -6,7 +6,7 @@ import {CanvasView} from './CanvasView';
 import {ModelSettingsDialog} from './ModelSettings';
 import {TosSettingsDialog} from './TosSettings';
 import {ErrorBoundary, ToastHost, installGlobalErrorHandlers} from './ErrorBoundary';
-import {applyTheme, resolveTheme, THEMES, THEME_STORAGE_KEY, type Theme} from './theme';
+import {applyTheme, readStoredTheme, resolveTheme, storeTheme, THEMES, type Theme} from './theme';
 // ★ 全局对话框：替换原生 prompt/confirm/alert（2026-10-25）
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
 import {DialogHost, dialog} from './GDialog';
@@ -27,12 +27,7 @@ import './error-boundary.css';
 import './theme-tokens.css';
 
 function initialCanvasTheme(): Theme {
-  let stored: string | null = null;
-  try {
-    stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-  } catch {
-    // Theme still works without local persistence.
-  }
+  const stored = readStoredTheme();
   const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true;
   return resolveTheme(stored, prefersDark);
 }
@@ -88,11 +83,7 @@ function Shell({onLogout}: {onLogout?: () => void}) {
 
   useEffect(() => {
     applyTheme(theme);
-    try {
-      localStorage.setItem(THEME_STORAGE_KEY, theme);
-    } catch {
-      // Theme still applies when persistence is unavailable.
-    }
+    storeTheme(theme);
   }, [theme]);
 
   const loadProjects = async () => {

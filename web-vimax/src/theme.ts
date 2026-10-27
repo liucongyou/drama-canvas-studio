@@ -1,6 +1,7 @@
 export type Theme = 'light' | 'dark' | 'tech' | 'immersive' | 'forest' | 'copper';
 
 export const THEME_STORAGE_KEY = 'vimax-web-theme';
+export const THEME_COOKIE_KEY = 'vimax-web-theme';
 
 export const THEMES: Array<{key: Theme; label: string; desc: string}> = [
   {key: 'immersive', label: '石墨蓝', desc: '当前默认，深灰底与沉稳蓝灰'},
@@ -20,6 +21,39 @@ export function resolveTheme(stored: string | null | undefined, prefersDark: boo
     return stored;
   }
   return prefersDark ? 'immersive' : 'light';
+}
+
+export function readStoredTheme(): string | null {
+  try {
+    const value = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (value) return value;
+  } catch {
+    // Fall through to the cookie fallback.
+  }
+  try {
+    const prefix = `${THEME_COOKIE_KEY}=`;
+    const match = document.cookie
+      .split(';')
+      .map((item) => item.trim())
+      .find((item) => item.startsWith(prefix));
+    return match ? decodeURIComponent(match.slice(prefix.length)) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function storeTheme(theme: Theme) {
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  } catch {
+    // Cookie persistence below still keeps the setting across reloads.
+  }
+  try {
+    const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+    document.cookie = `${THEME_COOKIE_KEY}=${encodeURIComponent(theme)}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
+  } catch {
+    // Storage is optional in hardened browser contexts.
+  }
 }
 
 export function applyTheme(theme: Theme) {
