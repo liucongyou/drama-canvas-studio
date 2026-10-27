@@ -10,7 +10,7 @@ import {applyTheme, readStoredTheme, resolveTheme, storeTheme, THEMES, type Them
 // ★ 全局对话框：替换原生 prompt/confirm/alert（2026-10-25）
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
 import {DialogHost, dialog} from './GDialog';
-import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, getAuthSession, loginAccount, logoutAccount} from './api';
+import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, getAuthSession, getManagedAccounts, loginAccount, logoutAccount, type ManagedAccount} from './api';
 import './styles.css';
 import './ui-refinements.css';
 import './immersive-theme.css';
@@ -52,7 +52,7 @@ function importResultMessage(result: Record<string, unknown>) {
 }
 
 // 自研画布工作流入口：项目选择 + 导入载荷 + CanvasView（ViMax 画布内核，对接本地后端）
-function Shell({onLogout}: {onLogout?: () => void}) {
+function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) {
   const [projects, setProjects] = useState<{
     id: string;
     title: string;
@@ -78,6 +78,7 @@ function Shell({onLogout}: {onLogout?: () => void}) {
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
   const [tosSettingsOpen, setTosSettingsOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const [adminAccountsOpen, setAdminAccountsOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>(bootTheme);
   const settingsWrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -535,6 +536,20 @@ function Shell({onLogout}: {onLogout?: () => void}) {
                 </button>
               </div>
 
+              {isAdmin && (
+                <div className="shell-settings-section">
+                  <div className="shell-tools-menu-head">管理员</div>
+                  <button
+                    type="button"
+                    className="shell-tools-menu-item"
+                    onClick={() => { setSettingsOpen(false); setAdminAccountsOpen(true); }}
+                  >
+                    <Plus size={13} strokeWidth={1.9} aria-hidden="true" />
+                    <span>创建账号</span>
+                  </button>
+                </div>
+              )}
+
               <div className="shell-settings-section">
                 <div className="shell-tools-menu-head">导入投喂载荷</div>
                 <div className="shell-tools-field">
@@ -616,6 +631,86 @@ function Shell({onLogout}: {onLogout?: () => void}) {
       {modelSettingsOpen && <ModelSettingsDialog onClose={() => setModelSettingsOpen(false)} />}
       {tosSettingsOpen && <TosSettingsDialog onClose={() => setTosSettingsOpen(false)} />}
       {passwordOpen && <ChangePasswordDialog onClose={() => setPasswordOpen(false)} />}
+      {isAdmin && adminAccountsOpen && <AdminAccountsDialog onClose={() => setAdminAccountsOpen(false)} />}
+    </div>
+  );
+}
+
+function AdminAccountsDialog({onClose}: {onClose: () => void}) {
+  const [accounts, setAccounts] = useState<ManagedAccount[]>([]);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      setAccounts(await getManagedAccounts());
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : '读取账号失败');
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setError('');
+    setNotice('');
+    setBusy(true);
+    try {
+      const created = await createManagedAccount(username.trim(), password);
+      setUsername('');
+      setPassword('');
+      setNotice(`账号 ${created.username} 已创建，独立空间：${created.slug}`);
+      await load();
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : '创建账号失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="canvas-admin-dialog" role="dialog" aria-modal="true" aria-labelledby="admin-accounts-title">
+        <header>
+          <div>
+            <h2 id="admin-accounts-title">创建账号</h2>
+            <p>只有管理员可以创建；新账号会自动获得独立租户和独立配置目录。</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭"><X size={16} strokeWidth={2} /></button>
+        </header>
+        <form onSubmit={submit}>
+          <label>
+            <span>登录账号</span>
+            <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="off" placeholder="例如 usera" required />
+          </label>
+          <label>
+            <span>初始密码</span>
+            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" placeholder="至少 8 位" required />
+          </label>
+          <button type="submit" className="primary" disabled={busy || !username.trim() || password.length < 8}>
+            {busy ? '创建中…' : '创建独立账号'}
+          </button>
+        </form>
+        {error && <div className="canvas-password-error" role="alert">{error}</div>}
+        {notice && <div className="canvas-admin-notice">{notice}</div>}
+        <div className="canvas-admin-accounts">
+          {accounts.map((account) => (
+            <div key={account.id} className="canvas-admin-account-row">
+              <span>{account.username}</span>
+              <small>{account.slug}</small>
+              <small>{account.status === 'active' ? '正常' : '已停用'}</small>
+            </div>
+          ))}
+          {accounts.length === 0 && <p>暂无账号</p>}
+        </div>
+      </section>
     </div>
   );
 }
@@ -687,6 +782,7 @@ function ChangePasswordDialog({onClose}: {onClose: () => void}) {
 
 function AuthGate() {
   const [state, setState] = useState<'checking' | 'anonymous' | 'authenticated'>('checking');
+  const [isAdmin, setIsAdmin] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -696,7 +792,10 @@ function AuthGate() {
     let cancelled = false;
     void getAuthSession()
       .then((session) => {
-        if (!cancelled) setState(session.authenticated ? 'authenticated' : 'anonymous');
+        if (!cancelled) {
+          setIsAdmin(Boolean(session.isAdmin || session.role === 'admin'));
+          setState(session.authenticated ? 'authenticated' : 'anonymous');
+        }
       })
       .catch(() => {
         if (!cancelled) {
@@ -718,7 +817,8 @@ function AuthGate() {
     setBusy(true);
     setError('');
     try {
-      await loginAccount(username.trim(), password);
+      const session = await loginAccount(username.trim(), password);
+      setIsAdmin(Boolean(session.isAdmin || session.role === 'admin'));
       setPassword('');
       setState('authenticated');
     } catch (loginError) {
@@ -734,6 +834,7 @@ function AuthGate() {
     } catch {
       // The local session may already be invalid; still return to login.
     }
+    setIsAdmin(false);
     setState('anonymous');
   };
 
@@ -781,7 +882,7 @@ function AuthGate() {
     );
   }
 
-  return <Shell onLogout={() => void logout()} />;
+  return <Shell onLogout={() => void logout()} isAdmin={isAdmin} />;
 }
 
 // 全局异常兜底必须在首次 render 之前装好（否则挂载期抛的错接不到）

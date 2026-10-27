@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 from pathlib import Path
 from typing import Iterator
@@ -61,6 +62,24 @@ def create_tenant(slug: str, *, name: str = "") -> dict:
     return tenant
 
 
+def register_user(username: str, password: str) -> dict:
+    normalized = tenant_registry.normalize_username(username)
+    if tenant_registry.get_account_by_username(normalized):
+        raise ValueError("账号已存在")
+    base_slug = f"u-{normalized}"[:63].rstrip("-")
+    slug = base_slug
+    if tenant_registry.get_tenant_by_slug(slug):
+        slug = f"{base_slug[:57]}-{secrets.token_hex(2)}"
+    tenant = create_tenant(slug, name=normalized)
+    account = tenant_registry.create_account(
+        tenant["id"],
+        normalized,
+        password,
+        role="member",
+    )
+    return {"tenant": tenant, "account": account}
+
+
 def ensure_owner_tenant() -> dict:
     owner_slug = os.environ.get("CANVAS_OWNER_SLUG", "owner")
     tenant = tenant_registry.get_tenant_by_id("owner") or tenant_registry.get_tenant_by_slug(
@@ -75,6 +94,9 @@ def ensure_owner_tenant() -> dict:
         )
     ensure_tenant_layout(tenant["id"], tenant["slug"])
     migrate_legacy_to_owner(tenant["id"], tenant["slug"])
+    tenant_registry.ensure_owner_admin(
+        os.environ.get("CANVAS_OWNER_ADMIN_USERNAME", "admin")
+    )
     return tenant
 
 

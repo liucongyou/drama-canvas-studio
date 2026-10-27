@@ -39,7 +39,12 @@ class AccountAuthTests(unittest.TestCase):
         ).decode("ascii")
         tenant = tenant_bootstrap.create_tenant("alpha", name="Alpha")
         beta = tenant_bootstrap.create_tenant("beta", name="Beta")
-        tenant_registry.create_account(tenant["id"], "alice", "correct-horse")
+        tenant_registry.create_account(
+            tenant["id"],
+            "alice",
+            "correct-horse",
+            role="admin",
+        )
         tenant_registry.create_account(beta["id"], "bob", "correct-horse")
         self.httpd = server.CanvasHTTPServer(("127.0.0.1", 0), server.Handler)
         self.port = self.httpd.server_address[1]
@@ -188,6 +193,38 @@ class AccountAuthTests(unittest.TestCase):
             cookie=bob_cookie,
         )
         self.assertEqual(status, 404)
+
+    def test_only_admin_can_create_managed_accounts(self):
+        alice_login = self.request(
+            "POST",
+            "/api/auth/login",
+            '{"username":"alice","password":"correct-horse"}',
+        )
+        self.assertEqual(alice_login[0], 200)
+        alice_cookie = alice_login[1].get("Set-Cookie", "").split(";", 1)[0]
+        status, _, body = self.request(
+            "POST",
+            "/api/admin/accounts",
+            '{"username":"charlie","password":"charlie-pass-123"}',
+            cookie=alice_cookie,
+        )
+        self.assertEqual(status, 200)
+        self.assertIn(b"charlie", body)
+
+        bob_login = self.request(
+            "POST",
+            "/api/auth/login",
+            '{"username":"bob","password":"correct-horse"}',
+        )
+        bob_cookie = bob_login[1].get("Set-Cookie", "").split(";", 1)[0]
+        status, _, body = self.request(
+            "POST",
+            "/api/admin/accounts",
+            '{"username":"dave","password":"dave-pass-123"}',
+            cookie=bob_cookie,
+        )
+        self.assertEqual(status, 403)
+        self.assertIn(b"ADMIN_REQUIRED", body)
 
 
 if __name__ == "__main__":

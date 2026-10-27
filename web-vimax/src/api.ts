@@ -507,6 +507,8 @@ export async function getAuthSession(): Promise<{
   username?: string;
   tenantId?: string;
   slug?: string;
+  role?: 'admin' | 'member' | string;
+  isAdmin?: boolean;
 }> {
   return request('/api/auth/session');
 }
@@ -516,8 +518,38 @@ export async function loginAccount(username: string, password: string): Promise<
   username?: string;
   tenantId?: string;
   slug?: string;
+  role?: 'admin' | 'member' | string;
+  isAdmin?: boolean;
 }> {
   return request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({username, password}),
+  });
+}
+
+export type ManagedAccount = {
+  id: string;
+  username: string;
+  role: string;
+  status: string;
+  tenantId: string;
+  slug: string;
+  createdAt: string;
+};
+
+export async function getManagedAccounts(): Promise<ManagedAccount[]> {
+  const payload = await request<{accounts: ManagedAccount[]}>('/api/admin/accounts');
+  return payload.accounts || [];
+}
+
+export async function createManagedAccount(username: string, password: string): Promise<{
+  ok: boolean;
+  accountId: string;
+  username: string;
+  tenantId: string;
+  slug: string;
+}> {
+  return request('/api/admin/accounts', {
     method: 'POST',
     body: JSON.stringify({username, password}),
   });

@@ -92,6 +92,7 @@ def _create_schema(con: sqlite3.Connection) -> None:
             tenant_id TEXT NOT NULL,
             username TEXT NOT NULL UNIQUE COLLATE NOCASE,
             password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
             status TEXT NOT NULL DEFAULT 'active',
             failed_attempts INTEGER NOT NULL DEFAULT 0,
             locked_until TEXT,
@@ -140,6 +141,11 @@ def _create_schema(con: sqlite3.Connection) -> None:
     }
     if "account_id" not in session_columns:
         con.execute("ALTER TABLE sessions ADD COLUMN account_id TEXT")
+    account_columns = {
+        row[1] for row in con.execute("PRAGMA table_info(accounts)")
+    }
+    if "role" not in account_columns:
+        con.execute("ALTER TABLE accounts ADD COLUMN role TEXT NOT NULL DEFAULT 'member'")
     con.commit()
 
 
@@ -172,6 +178,7 @@ def _account_dict(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | 
         "id": row["id"],
         "tenant_id": row["tenant_id"],
         "username": row["username"],
+        "role": row["role"] or "member",
         "status": row["status"],
         "failed_attempts": int(row["failed_attempts"] or 0),
         "locked_until": row["locked_until"] or "",
@@ -182,7 +189,13 @@ def _account_dict(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | 
     }
 
 
-def create_account(tenant_id: str, username: str, password: str) -> dict[str, Any]:
+def create_account(
+    tenant_id: str,
+    username: str,
+    password: str,
+    *,
+    role: str = "member",
+) -> dict[str, Any]:
     tenant = get_tenant_by_id(tenant_id)
     if not tenant:
         raise ValueError("租户不存在")
@@ -194,14 +207,15 @@ def create_account(tenant_id: str, username: str, password: str) -> dict[str, An
     try:
         con.execute(
             "INSERT INTO accounts("
-            "id,tenant_id,username,password_hash,status,failed_attempts,locked_until,"
+            "id,tenant_id,username,password_hash,role,status,failed_attempts,locked_until,"
             "created_at,updated_at,last_login_at,password_changed_at"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 tenant_security.new_opaque_token("acc_"),
                 tenant_id,
                 normalized,
                 tenant_security.hash_password(password),
+                "admin" if role == "admin" else "member",
                 "active",
                 0,
                 "",
@@ -220,6 +234,24 @@ def create_account(tenant_id: str, username: str, password: str) -> dict[str, An
     if not account:
         raise RuntimeError("账号创建后读取失败")
     return account
+
+
+def ensure_owner_admin(username: str = "admin") -> dict[str, Any] | None:
+    """Promote the configured owner account once, without opening public signup."""
+    owner = get_tenant_by_id("owner")
+    if not owner:
+        return None
+    account = get_account_by_username(username)
+    if not account or account["tenant_id"] != owner["id"]:
+        return None
+    con = _connect()
+    con.execute(
+        "UPDATE accounts SET role='admin',updated_at=? WHERE id=?",
+        (_iso(), account["id"]),
+    )
+    con.commit()
+    con.close()
+    return get_account_by_id(account["id"])
 
 
 def get_account_by_username(username: str) -> dict[str, Any] | None:
@@ -585,7 +617,7 @@ def get_session(raw_token: str) -> dict[str, Any] | None:
     con = _connect()
     row = con.execute(
         "SELECT s.*, t.slug AS tenant_slug, t.status AS tenant_status, "
-        "a.username AS account_username, a.status AS account_status "
+        "a.username AS account_username, a.role AS account_role, a.status AS account_status "
         "FROM sessions s JOIN tenants t ON t.id=s.tenant_id "
         "LEFT JOIN accounts a ON a.id=s.account_id "
         "WHERE s.token_hash=? AND s.revoked_at='' AND s.expires_at>? LIMIT 1",
@@ -613,6 +645,7 @@ def get_session(raw_token: str) -> dict[str, Any] | None:
         "tenant_id": row["tenant_id"],
         "account_id": row["account_id"] or "",
         "account_username": row["account_username"] or "",
+        "account_role": row["account_role"] or "member",
         "tenant_slug": row["tenant_slug"],
         "expires_at": row["expires_at"],
         "last_seen_at": row["last_seen_at"],

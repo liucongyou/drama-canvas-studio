@@ -1230,6 +1230,8 @@ class Handler(BaseHTTPRequestHandler):
                 "username": account["username"],
                 "tenantId": account["tenant_id"],
                 "slug": tenant_registry.get_tenant_by_id(account["tenant_id"])["slug"],
+                "role": account.get("role") or "member",
+                "isAdmin": account.get("role") == "admin",
             },
             headers={"Set-Cookie": self._session_cookie(session["token"])},
         )
@@ -1249,7 +1251,68 @@ class Handler(BaseHTTPRequestHandler):
             "username": session.get("account_username") or "",
             "tenantId": session["tenant_id"],
             "slug": session["tenant_slug"],
+            "role": session.get("account_role") or "member",
+            "isAdmin": session.get("account_role") == "admin",
         })
+
+    def _current_session(self):
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except Exception:
+            return None
+        morsel = cookie.get(CANVAS_SESSION_COOKIE)
+        if morsel is None or not morsel.value:
+            return None
+        return tenant_registry.get_session(morsel.value)
+
+    def _admin_session(self):
+        session = self._current_session()
+        if not session or session.get("account_role") != "admin":
+            self._send(403, {
+                "error": "只有管理员可以创建账号",
+                "code": "ADMIN_REQUIRED",
+            })
+            return None
+        return session
+
+    def _handle_admin_create_account(self, body):
+        if self._admin_session() is None:
+            return
+        username = str(body.get("username") or "").strip()
+        password = str(body.get("password") or "")
+        if len(password) < 8:
+            return self._send(400, {"error": "密码至少需要 8 位", "code": "PASSWORD_TOO_SHORT"})
+        try:
+            created = tenant_bootstrap.register_user(username, password)
+        except ValueError as exc:
+            return self._send(400, {"error": str(exc), "code": "ACCOUNT_CREATE_INVALID"})
+        account = created["account"]
+        tenant = created["tenant"]
+        return self._send(200, {
+            "ok": True,
+            "accountId": account["id"],
+            "username": account["username"],
+            "tenantId": tenant["id"],
+            "slug": tenant["slug"],
+        })
+
+    def _handle_admin_list_accounts(self):
+        if self._admin_session() is None:
+            return
+        rows = []
+        for account in tenant_registry.list_accounts():
+            tenant = tenant_registry.get_tenant_by_id(account["tenant_id"]) or {}
+            rows.append({
+                "id": account["id"],
+                "username": account["username"],
+                "role": account["role"],
+                "status": account["status"],
+                "tenantId": account["tenant_id"],
+                "slug": tenant.get("slug") or "",
+                "createdAt": account["created_at"],
+            })
+        return self._send(200, {"accounts": rows})
 
     def _handle_auth_logout(self):
         cookie = SimpleCookie()
@@ -1340,6 +1403,8 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/api/auth/session":
             return self._handle_auth_session()
+        if path == "/api/admin/accounts":
+            return self._handle_admin_list_accounts()
         if path.startswith("/invite/"):
             return self._handle_invite(path)
         if path == "/" or path == "/index.html":
@@ -1508,6 +1573,8 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json()
         if path == "/api/auth/login":
             return self._handle_auth_login(body)
+        if path == "/api/admin/accounts":
+            return self._handle_admin_create_account(body)
         if path == "/api/auth/logout":
             return self._handle_auth_logout()
         if path == "/api/auth/change-password":
