@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import sys
 
@@ -98,6 +99,67 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _password_from_args(args: argparse.Namespace) -> str:
+    supplied = str(getattr(args, "password", "") or "")
+    if supplied:
+        return supplied
+    first = getpass.getpass("密码（至少 8 位）: ")
+    second = getpass.getpass("再次输入密码: ")
+    if first != second:
+        raise SystemExit("两次输入的密码不一致")
+    return first
+
+
+def cmd_account_create(args: argparse.Namespace) -> int:
+    tenant = _tenant(args.slug)
+    account = tenant_registry.create_account(
+        tenant["id"],
+        args.username,
+        _password_from_args(args),
+    )
+    print(f"已创建账号：{account['username']} ({account['id']}) -> {tenant['slug']}")
+    return 0
+
+
+def cmd_account_list(args: argparse.Namespace) -> int:
+    tenant_id = ""
+    if args.slug:
+        tenant_id = _tenant(args.slug)["id"]
+    rows = tenant_registry.list_accounts(tenant_id=tenant_id)
+    if not rows:
+        print("暂无账号")
+        return 0
+    print("USERNAME\tSTATUS\tTENANT\tACCOUNT_ID")
+    for account in rows:
+        tenant = tenant_registry.get_tenant_by_id(account["tenant_id"]) or {}
+        print(
+            f"{account['username']}\t{account['status']}\t"
+            f"{tenant.get('slug', account['tenant_id'])}\t{account['id']}"
+        )
+    return 0
+
+
+def cmd_account_password(args: argparse.Namespace) -> int:
+    updated = tenant_registry.set_account_password(
+        args.account_id,
+        _password_from_args(args),
+    )
+    print(f"已更新密码：{updated['username']}")
+    return 0
+
+
+def cmd_account_disable(args: argparse.Namespace) -> int:
+    account = tenant_registry.set_account_status(args.account_id, "disabled")
+    print(f"已停用账号：{account['username']}")
+    return 0
+
+
+def cmd_account_enable(args: argparse.Namespace) -> int:
+    account = tenant_registry.set_account_status(args.account_id, "active")
+    print(f"已启用账号：{account['username']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="戏剧画布租户管理")
     parser.add_argument("--base-domain", default="", help="例如 example.com")
@@ -136,6 +198,29 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup = sub.add_parser("cleanup", help="清理过期邀请和会话")
     cleanup.add_argument("--older-hours", type=float, default=24 * 7)
     cleanup.set_defaults(func=cmd_cleanup)
+
+    account_create = sub.add_parser("account-create", help="为租户创建登录账号")
+    account_create.add_argument("slug")
+    account_create.add_argument("username")
+    account_create.add_argument("--password", default="", help="不建议在命令历史中使用；留空则交互输入")
+    account_create.set_defaults(func=cmd_account_create)
+
+    account_list = sub.add_parser("account-list", help="列出登录账号")
+    account_list.add_argument("slug", nargs="?", default="")
+    account_list.set_defaults(func=cmd_account_list)
+
+    account_password = sub.add_parser("account-password", help="重置账号密码")
+    account_password.add_argument("account_id")
+    account_password.add_argument("--password", default="", help="不建议在命令历史中使用；留空则交互输入")
+    account_password.set_defaults(func=cmd_account_password)
+
+    account_disable = sub.add_parser("account-disable", help="停用账号")
+    account_disable.add_argument("account_id")
+    account_disable.set_defaults(func=cmd_account_disable)
+
+    account_enable = sub.add_parser("account-enable", help="启用账号")
+    account_enable.add_argument("account_id")
+    account_enable.set_defaults(func=cmd_account_enable)
     return parser
 
 

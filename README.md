@@ -95,6 +95,24 @@ npm --prefix web-vimax run dev         # 画布前端 8891（ViMax 画布内核 
 
 默认不设置 `CANVAS_MULTI_TENANT` 时仍按单机模式运行。启用多租户后，每个用户对应一个独立子域名、独立租户数据库、独立上传目录、独立供应商配置和独立生成队列额度。主域名只返回 `404`，用户通过管理员生成的一次性邀请进入。
 
+也可以切换到更省证书的账号模式：`yj.pduoduo.vip` 只提供登录页和前端，`yjapi.pduoduo.vip` 提供 API；账号由服务端会话映射到独立租户，不依赖每个用户的子域名。部署时增加：
+
+```powershell
+$env:CANVAS_AUTH_MODE="accounts"
+$env:CANVAS_API_HOST="yjapi.pduoduo.vip"
+$env:CANVAS_FRONTEND_ORIGIN="https://yj.pduoduo.vip"
+$env:CANVAS_ALLOWED_ORIGINS="https://yj.pduoduo.vip"
+```
+
+账号管理：
+
+```powershell
+py tenant_admin.py account-create owner admin
+py tenant_admin.py account-list owner
+py tenant_admin.py account-password acc_xxx
+py tenant_admin.py account-disable acc_xxx
+```
+
 ```powershell
 $env:CANVAS_MULTI_TENANT="1"
 $env:CANVAS_BASE_DOMAIN="example.com"

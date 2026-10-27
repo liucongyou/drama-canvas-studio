@@ -95,6 +95,40 @@ def _cookie_secure() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _auth_mode() -> str:
+    return os.environ.get("CANVAS_AUTH_MODE", "host").strip().lower()
+
+
+def _api_host() -> str:
+    return os.environ.get("CANVAS_API_HOST", "").strip().lower().rstrip(".")
+
+
+def _frontend_origins() -> set[str]:
+    raw = os.environ.get("CANVAS_ALLOWED_ORIGINS", "")
+    if not raw:
+        raw = os.environ.get("CANVAS_FRONTEND_ORIGIN", "")
+    origins = {
+        item.strip().rstrip("/").lower()
+        for item in str(raw or "").split(",")
+        if item.strip()
+    }
+    return origins
+
+
+def _normalized_host(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    if "://" in raw:
+        raw = raw.split("://", 1)[1]
+    raw = raw.split("/", 1)[0]
+    if raw.startswith("["):
+        return raw.split("]", 1)[0].lstrip("[")
+    if ":" in raw:
+        raw = raw.rsplit(":", 1)[0]
+    return raw.rstrip(".")
+
+
 def _active_tenants():
     if not tenant_context.multi_tenant_enabled():
         return [None]
@@ -921,6 +955,23 @@ class Handler(BaseHTTPRequestHandler):
         sys.stdout.write("[%s] %s\n" % (self.server.server_address, fmt % args))
 
     # ---------- helpers ----------
+    def _cors_headers(self):
+        origin = str(self.headers.get("Origin", "")).strip().rstrip("/")
+        allowed = _frontend_origins()
+        if not origin or origin.lower() not in allowed:
+            return {}
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type,Authorization",
+            "Access-Control-Max-Age": "600",
+            "Vary": "Origin",
+        }
+
+    def do_OPTIONS(self):
+        return self._send(204, {}, raw=b"")
+
     def _send(self, code, obj=None, raw=None, content_type="application/json", headers=None):
         if raw is not None:
             body = raw.encode("utf-8") if isinstance(raw, str) else raw
@@ -930,7 +981,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        for key, value in (headers or {}).items():
+        response_headers = {**self._cors_headers(), **(headers or {})}
+        for key, value in response_headers.items():
             self.send_header(str(key), str(value))
         self.end_headers()
         self.wfile.write(body)
@@ -1070,6 +1122,8 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin", "").strip()
         if not origin:
             return True
+        if origin.rstrip("/").lower() in _frontend_origins():
+            return True
         origin_host = urlparse(origin).netloc.lower()
         request_host = self.headers.get("Host", "").strip().lower()
         return bool(origin_host and origin_host == request_host)
@@ -1078,10 +1132,41 @@ class Handler(BaseHTTPRequestHandler):
         if self.command not in {"GET", "HEAD"} and not self._origin_allowed():
             self._send(403, {"error": "跨站请求已拒绝", "code": "ORIGIN_REJECTED"})
             return None
+        path = urlparse(self.path).path
+        if _auth_mode() == "accounts":
+            host = _normalized_host(self.headers.get("Host", ""))
+            api_host = _api_host()
+            if not api_host:
+                self._send(500, {"error": "未配置 CANVAS_API_HOST"})
+                return None
+            is_api_path = path.startswith("/api/") or path.startswith("/uploads/")
+            if host != api_host and not is_api_path and self.command in {"GET", "HEAD"}:
+                # The frontend host can still serve its static build from this
+                # process during local diagnostics. API calls require a session.
+                return nullcontext()
+            if host != api_host and not is_api_path:
+                self._send(404, {"error": "资源不存在"})
+                return None
+            if path in {"/api/auth/login", "/api/auth/session", "/api/auth/logout"}:
+                return nullcontext()
+            cookie = SimpleCookie()
+            try:
+                cookie.load(self.headers.get("Cookie", ""))
+            except Exception:
+                cookie = SimpleCookie()
+            morsel = cookie.get(CANVAS_SESSION_COOKIE)
+            raw_session = morsel.value if morsel is not None else ""
+            session = tenant_registry.get_session(raw_session) if raw_session else None
+            if not session:
+                self._send(401, {
+                    "error": "请先登录。",
+                    "code": "ACCOUNT_AUTH_REQUIRED",
+                })
+                return None
+            return tenant_context.use_tenant(session["tenant_id"], session["tenant_slug"])
         if not tenant_context.multi_tenant_enabled():
             return nullcontext()
         kind, slug = tenant_context.classify_host(self.headers.get("Host", ""))
-        path = urlparse(self.path).path
         if kind != "tenant":
             self._send(404, {"error": "资源不存在"})
             return None
@@ -1109,6 +1194,77 @@ class Handler(BaseHTTPRequestHandler):
             })
             return None
         return tenant_context.use_tenant(session["tenant_id"], session["tenant_slug"])
+
+    def _session_cookie(self, token: str, *, max_age: int | None = None) -> str:
+        age = CANVAS_SESSION_TTL if max_age is None else max_age
+        value = (
+            f"{CANVAS_SESSION_COOKIE}={token}; Path=/; Max-Age={age}; "
+            "HttpOnly; SameSite=Lax"
+        )
+        if _cookie_secure():
+            value += "; Secure"
+        return value
+
+    def _handle_auth_login(self, body):
+        username = str(body.get("username") or "").strip()
+        password = str(body.get("password") or "")
+        if not username or not password:
+            return self._send(400, {"error": "请输入账号和密码", "code": "AUTH_FIELDS_REQUIRED"})
+        try:
+            account = tenant_registry.authenticate_account(username, password)
+        except ValueError:
+            account = None
+        if not account:
+            return self._send(401, {"error": "账号或密码错误", "code": "AUTH_INVALID"})
+        session = tenant_registry.create_session(
+            account["tenant_id"],
+            account_id=account["id"],
+            ttl_seconds=CANVAS_SESSION_TTL,
+            user_agent=self.headers.get("User-Agent", ""),
+            ip=self.client_address[0] if self.client_address else "",
+        )
+        return self._send(
+            200,
+            {
+                "authenticated": True,
+                "username": account["username"],
+                "tenantId": account["tenant_id"],
+                "slug": tenant_registry.get_tenant_by_id(account["tenant_id"])["slug"],
+            },
+            headers={"Set-Cookie": self._session_cookie(session["token"])},
+        )
+
+    def _handle_auth_session(self):
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except Exception:
+            cookie = SimpleCookie()
+        morsel = cookie.get(CANVAS_SESSION_COOKIE)
+        session = tenant_registry.get_session(morsel.value) if morsel is not None and morsel.value else None
+        if not session:
+            return self._send(200, {"authenticated": False})
+        return self._send(200, {
+            "authenticated": True,
+            "username": session.get("account_username") or "",
+            "tenantId": session["tenant_id"],
+            "slug": session["tenant_slug"],
+        })
+
+    def _handle_auth_logout(self):
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except Exception:
+            cookie = SimpleCookie()
+        morsel = cookie.get(CANVAS_SESSION_COOKIE)
+        if morsel is not None and morsel.value:
+            tenant_registry.revoke_session(morsel.value)
+        return self._send(
+            200,
+            {"ok": True},
+            headers={"Set-Cookie": self._session_cookie("", max_age=0)},
+        )
 
     def _handle_invite(self, path):
         if not tenant_context.multi_tenant_enabled():
@@ -1152,6 +1308,8 @@ class Handler(BaseHTTPRequestHandler):
     def _do_get(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        if path == "/api/auth/session":
+            return self._handle_auth_session()
         if path.startswith("/invite/"):
             return self._handle_invite(path)
         if path == "/" or path == "/index.html":
@@ -1318,6 +1476,10 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         body = self._read_json()
+        if path == "/api/auth/login":
+            return self._handle_auth_login(body)
+        if path == "/api/auth/logout":
+            return self._handle_auth_logout()
         if path == "/api/tenant/logout":
             cookie = SimpleCookie()
             try:

@@ -13818,3 +13818,111 @@ button:disabled, [role="button"]:disabled { transition: none; }
 /* 也允许直接悬停标签显形（框很大时鼠标在标签上就该能点） */
 .canvas-group-tag:hover .canvas-group-tag-x { opacity: 1; }
 .canvas-group-tag-x:hover { background: rgba(229, 72, 77, 0.18); color: #ef8a8d; }
+
+.auth-gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  box-sizing: border-box;
+  background: var(--v-canvas);
+  color: var(--v-text);
+}
+
+.auth-gate-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--v-text-muted);
+  font-size: 13px;
+}
+
+.auth-gate-card {
+  width: min(360px, 100%);
+  display: grid;
+  gap: 16px;
+  padding: 30px;
+  box-sizing: border-box;
+  border: 1px solid var(--v-border);
+  border-radius: 12px;
+  background: var(--v-panel);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .18);
+}
+
+.auth-gate-mark {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--v-accent);
+  background: color-mix(in srgb, var(--v-accent) 14%, transparent);
+}
+
+.auth-gate-card h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.auth-gate-card p {
+  margin: -8px 0 2px;
+  color: var(--v-text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.auth-gate-card label {
+  display: grid;
+  gap: 7px;
+}
+
+.auth-gate-card label span {
+  color: var(--v-text-muted);
+  font-size: 12px;
+}
+
+.auth-gate-card input {
+  width: 100%;
+  height: 38px;
+  box-sizing: border-box;
+  padding: 0 11px;
+  border: 1px solid var(--v-border);
+  border-radius: 7px;
+  outline: none;
+  color: var(--v-text);
+  background: var(--v-canvas);
+}
+
+.auth-gate-card input:focus {
+  border-color: var(--v-accent);
+}
+
+.auth-gate-card button {
+  height: 38px;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+  color: var(--v-accent-ink, #fff);
+  background: var(--v-accent);
+  font-weight: 600;
+}
+
+.auth-gate-card button:disabled {
+  cursor: default;
+  opacity: .55;
+}
+
+.auth-gate-error {
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--v-danger, #e35d5d) 45%, var(--v-border));
+  border-radius: 7px;
+  color: var(--v-danger, #e35d5d);
+  background: color-mix(in srgb, var(--v-danger, #e35d5d) 8%, transparent);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.shell-logout-btn {
+  margin-left: 5px;
+}

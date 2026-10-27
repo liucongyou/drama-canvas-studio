@@ -1,9 +1,9 @@
 # Multi-tenant deployment
 
 The public entrypoint is the Python service in `server.py`. It owns tenant
-routing, session validation, project data, provider configuration, uploads and
-generation queue state. The Node/ViMax helper service is not a public gateway;
-it stays on loopback or is omitted from the deployment.
+routing, account/session validation, project data, provider configuration,
+uploads and generation queue state. The Node/ViMax helper service is not a
+public gateway; it stays on loopback or is omitted from the deployment.
 
 ## Required infrastructure
 
@@ -14,6 +14,18 @@ it stays on loopback or is omitted from the deployment.
 - A reverse proxy that preserves the original `Host` header.
 - A persistent master key for `CANVAS_MASTER_KEY`. Losing it makes every
   encrypted provider and TOS credential unreadable.
+
+The recommended account-mode topology is one frontend host and one API host:
+
+```text
+yj.example.com       -> static frontend, login page and canvas
+yjapi.example.com    -> session/auth and all API endpoints
+```
+
+Set `CANVAS_AUTH_MODE=accounts`, `CANVAS_API_HOST=yjapi.example.com`,
+`CANVAS_FRONTEND_ORIGIN=https://yj.example.com`, and
+`CANVAS_ALLOWED_ORIGINS=https://yj.example.com`. The API returns CORS headers
+only for the configured frontend origin.
 
 ## Process setup
 
@@ -35,10 +47,20 @@ Run the local administration command on the server:
 
 ```powershell
 py tenant_admin.py create alpha --name "Alpha Studio"
+py tenant_admin.py account-create alpha alice
 py tenant_admin.py invite alpha --ttl-hours 24
 ```
 
-The invite URL is printed once and is single-use. If it expires or is lost:
+The account command prompts for a password. If the password is lost:
+
+```powershell
+py tenant_admin.py account-password acc_xxx
+py tenant_admin.py account-disable acc_xxx
+py tenant_admin.py account-enable acc_xxx
+```
+
+The invite URL is an alternative one-time onboarding path. It is printed once
+and is single-use. If it expires or is lost:
 
 ```powershell
 py tenant_admin.py rotate-invite alpha --ttl-hours 24
@@ -70,6 +92,8 @@ empty project database and their own empty provider/TOS configuration.
 ## Isolation guarantees
 
 - Tenant identity comes from the subdomain plus a server-side session cookie.
+- In account mode, tenant identity comes only from the server-side account
+  session; the browser never supplies `tenant_id`.
 - The main domain and invalid hosts return `404`.
 - Each tenant has a separate SQLite database, upload directory, config file,
   logs directory and generation queue counters.

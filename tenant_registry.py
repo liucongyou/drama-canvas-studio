@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -86,9 +87,27 @@ def _create_schema(con: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_invites_tenant
             ON invites(tenant_id, created_at DESC);
 
+        CREATE TABLE IF NOT EXISTS accounts(
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            password_hash TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            failed_attempts INTEGER NOT NULL DEFAULT 0,
+            locked_until TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_login_at TEXT,
+            password_changed_at TEXT NOT NULL,
+            FOREIGN KEY(tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_accounts_tenant
+            ON accounts(tenant_id, created_at DESC);
+
         CREATE TABLE IF NOT EXISTS sessions(
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,
+            account_id TEXT,
             token_hash TEXT NOT NULL UNIQUE,
             created_at TEXT NOT NULL,
             expires_at TEXT NOT NULL,
@@ -116,6 +135,11 @@ def _create_schema(con: sqlite3.Connection) -> None:
             ON tenant_storage_bindings(access_key_fingerprint);
         """
     )
+    session_columns = {
+        row[1] for row in con.execute("PRAGMA table_info(sessions)")
+    }
+    if "account_id" not in session_columns:
+        con.execute("ALTER TABLE sessions ADD COLUMN account_id TEXT")
     con.commit()
 
 
@@ -132,6 +156,185 @@ def _tenant_dict(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | N
         "last_seen_at": row["last_seen_at"] or "",
         "legacy_source": row["legacy_source"] or "",
     }
+
+
+def normalize_username(value: str) -> str:
+    username = str(value or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,63}", username):
+        raise ValueError("账号只能使用 3~64 位小写字母、数字、点、下划线或连字符")
+    return username
+
+
+def _account_dict(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "tenant_id": row["tenant_id"],
+        "username": row["username"],
+        "status": row["status"],
+        "failed_attempts": int(row["failed_attempts"] or 0),
+        "locked_until": row["locked_until"] or "",
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "last_login_at": row["last_login_at"] or "",
+        "password_changed_at": row["password_changed_at"],
+    }
+
+
+def create_account(tenant_id: str, username: str, password: str) -> dict[str, Any]:
+    tenant = get_tenant_by_id(tenant_id)
+    if not tenant:
+        raise ValueError("租户不存在")
+    if tenant["status"] != "active":
+        raise ValueError("租户已停用")
+    normalized = normalize_username(username)
+    now = _iso()
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO accounts("
+            "id,tenant_id,username,password_hash,status,failed_attempts,locked_until,"
+            "created_at,updated_at,last_login_at,password_changed_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                tenant_security.new_opaque_token("acc_"),
+                tenant_id,
+                normalized,
+                tenant_security.hash_password(password),
+                "active",
+                0,
+                "",
+                now,
+                now,
+                "",
+                now,
+            ),
+        )
+        con.commit()
+    except sqlite3.IntegrityError as exc:
+        raise ValueError(f"账号已存在：{normalized}") from exc
+    finally:
+        con.close()
+    account = get_account_by_username(normalized)
+    if not account:
+        raise RuntimeError("账号创建后读取失败")
+    return account
+
+
+def get_account_by_username(username: str) -> dict[str, Any] | None:
+    normalized = normalize_username(username)
+    con = _connect()
+    row = con.execute(
+        "SELECT * FROM accounts WHERE username=?",
+        (normalized,),
+    ).fetchone()
+    con.close()
+    return _account_dict(row)
+
+
+def get_account_by_id(account_id: str) -> dict[str, Any] | None:
+    con = _connect()
+    row = con.execute("SELECT * FROM accounts WHERE id=?", (str(account_id),)).fetchone()
+    con.close()
+    return _account_dict(row)
+
+
+def list_accounts(*, tenant_id: str = "") -> list[dict[str, Any]]:
+    con = _connect()
+    if tenant_id:
+        rows = con.execute(
+            "SELECT * FROM accounts WHERE tenant_id=? ORDER BY created_at ASC",
+            (tenant_id,),
+        ).fetchall()
+    else:
+        rows = con.execute("SELECT * FROM accounts ORDER BY created_at ASC").fetchall()
+    con.close()
+    return [_account_dict(row) for row in rows if row is not None]
+
+
+def set_account_password(account_id: str, password: str) -> dict[str, Any]:
+    account = get_account_by_id(account_id)
+    if not account:
+        raise ValueError("账号不存在")
+    now = _iso()
+    con = _connect()
+    con.execute(
+        "UPDATE accounts SET password_hash=?,password_changed_at=?,updated_at=?,"
+        "failed_attempts=0,locked_until='' WHERE id=?",
+        (tenant_security.hash_password(password), now, now, account_id),
+    )
+    con.execute("UPDATE sessions SET revoked_at=? WHERE account_id=? AND revoked_at=''", (now, account_id))
+    con.commit()
+    con.close()
+    updated = get_account_by_id(account_id)
+    if not updated:
+        raise RuntimeError("账号更新后读取失败")
+    return updated
+
+
+def set_account_status(account_id: str, status: str) -> dict[str, Any]:
+    normalized = str(status or "").strip().lower()
+    if normalized not in {"active", "disabled"}:
+        raise ValueError("账号状态只能是 active 或 disabled")
+    account = get_account_by_id(account_id)
+    if not account:
+        raise ValueError("账号不存在")
+    con = _connect()
+    now = _iso()
+    con.execute(
+        "UPDATE accounts SET status=?,updated_at=? WHERE id=?",
+        (normalized, now, account_id),
+    )
+    if normalized == "disabled":
+        con.execute("UPDATE sessions SET revoked_at=? WHERE account_id=? AND revoked_at=''", (now, account_id))
+    con.commit()
+    con.close()
+    updated = get_account_by_id(account_id)
+    if not updated:
+        raise RuntimeError("账号状态更新后读取失败")
+    return updated
+
+
+def authenticate_account(username: str, password: str) -> dict[str, Any] | None:
+    normalized = normalize_username(username)
+    con = _connect()
+    row = con.execute("SELECT * FROM accounts WHERE username=?", (normalized,)).fetchone()
+    if not row:
+        con.close()
+        return None
+    account = _account_dict(row)
+    if not account or account["status"] != "active":
+        con.close()
+        return None
+    now = _now()
+    locked_until = _parse_iso(account["locked_until"])
+    if locked_until and locked_until > now:
+        con.close()
+        return None
+    if not tenant_security.verify_password(password, str(row["password_hash"] or "")):
+        failed = int(account["failed_attempts"] or 0) + 1
+        lock_until = ""
+        if failed >= 5:
+            lock_until = _iso(now + timedelta(minutes=15))
+            failed = 0
+        con.execute(
+            "UPDATE accounts SET failed_attempts=?,locked_until=?,updated_at=? WHERE id=?",
+            (failed, lock_until, _iso(now), account["id"]),
+        )
+        con.commit()
+        con.close()
+        return None
+    con.execute(
+        "UPDATE accounts SET failed_attempts=0,locked_until='',last_login_at=?,updated_at=? WHERE id=?",
+        (_iso(now), _iso(now), account["id"]),
+    )
+    con.commit()
+    con.close()
+    account["failed_attempts"] = 0
+    account["locked_until"] = ""
+    account["last_login_at"] = _iso(now)
+    return account
 
 
 def create_tenant(
@@ -320,6 +523,7 @@ def consume_invite(slug: str, raw_token: str) -> dict[str, Any] | None:
 def create_session(
     tenant_id: str,
     *,
+    account_id: str = "",
     ttl_seconds: int = 30 * 24 * 3600,
     user_agent: str = "",
     ip: str = "",
@@ -336,11 +540,12 @@ def create_session(
     expires = now + timedelta(seconds=ttl)
     con = _connect()
     con.execute(
-        "INSERT INTO sessions(id,tenant_id,token_hash,created_at,expires_at,last_seen_at,"
-        "revoked_at,user_agent,ip) VALUES(?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO sessions(id,tenant_id,account_id,token_hash,created_at,expires_at,last_seen_at,"
+        "revoked_at,user_agent,ip) VALUES(?,?,?,?,?,?,?,?,?,?)",
         (
             session_id,
             tenant_id,
+            str(account_id or ""),
             tenant_security.token_hash(raw_token),
             _iso(now),
             _iso(expires),
@@ -355,6 +560,7 @@ def create_session(
     return {
         "id": session_id,
         "tenant_id": tenant_id,
+        "account_id": str(account_id or ""),
         "token": raw_token,
         "expires_at": _iso(expires),
         "max_age": ttl,
@@ -366,8 +572,10 @@ def get_session(raw_token: str) -> dict[str, Any] | None:
     now = _iso()
     con = _connect()
     row = con.execute(
-        "SELECT s.*, t.slug AS tenant_slug, t.status AS tenant_status "
+        "SELECT s.*, t.slug AS tenant_slug, t.status AS tenant_status, "
+        "a.username AS account_username, a.status AS account_status "
         "FROM sessions s JOIN tenants t ON t.id=s.tenant_id "
+        "LEFT JOIN accounts a ON a.id=s.account_id "
         "WHERE s.token_hash=? AND s.revoked_at='' AND s.expires_at>? LIMIT 1",
         (digest, now),
     ).fetchone()
@@ -386,9 +594,13 @@ def get_session(raw_token: str) -> dict[str, Any] | None:
     con.close()
     if not row or row["tenant_status"] != "active":
         return None
+    if row["account_id"] and row["account_status"] not in {None, "", "active"}:
+        return None
     return {
         "id": row["id"],
         "tenant_id": row["tenant_id"],
+        "account_id": row["account_id"] or "",
+        "account_username": row["account_username"] or "",
         "tenant_slug": row["tenant_slug"],
         "expires_at": row["expires_at"],
         "last_seen_at": row["last_seen_at"],

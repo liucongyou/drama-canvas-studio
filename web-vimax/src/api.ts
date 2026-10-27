@@ -2,6 +2,26 @@
 // 数据映射：payload(nodes/connections) ↔ Canvas / CanvasMediaNode
 // 生成：轮询器检测 generating 节点 → POST generate → done/error 事件
 
+declare global {
+  interface Window {
+    __CANVAS_API_BASE__?: string;
+  }
+}
+
+const API_BASE = String(
+  (typeof window !== 'undefined' && window.__CANVAS_API_BASE__)
+  || import.meta.env.VITE_API_BASE_URL
+  || '',
+).replace(/\/+$/, '');
+
+export function apiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path) || path.startsWith('//')) return path;
+  if (!API_BASE) return path;
+  return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+export const AUTH_REQUIRED_EVENT = 'canvas-auth-required';
+
 export type AgentEvent = {
   type: string;
   message?: string;
@@ -466,16 +486,45 @@ function friendlyRequestError(status: number, raw: string): string {
 }
 
 async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetch(apiUrl(url), {
     ...init,
+    credentials: 'include',
     headers: {'Content-Type': 'application/json', ...(init.headers || {})},
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+    }
     const raw = (payload as {error?: string}).error || `请求失败，HTTP ${response.status}`;
     throw new Error(friendlyRequestError(response.status, raw));
   }
   return payload as T;
+}
+
+export async function getAuthSession(): Promise<{
+  authenticated: boolean;
+  username?: string;
+  tenantId?: string;
+  slug?: string;
+}> {
+  return request('/api/auth/session');
+}
+
+export async function loginAccount(username: string, password: string): Promise<{
+  authenticated: boolean;
+  username?: string;
+  tenantId?: string;
+  slug?: string;
+}> {
+  return request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({username, password}),
+  });
+}
+
+export async function logoutAccount(): Promise<{ok: boolean}> {
+  return request('/api/auth/logout', {method: 'POST', body: '{}'});
 }
 
 // ---------- local service compatibility ----------
@@ -1047,7 +1096,7 @@ export async function patchMediaNodeFields(
 // 删除单个媒体/文本节点：必须有对应后端调用，否则只改本地 state，
 // 刷新后节点会从 payload 里回来（后端此前没有 DELETE /nodes/{nid} 路由）。
 export async function deleteCanvasMediaNode(sessionId: string, nodeId: string) {
-  const res = await fetch(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}`, {method: 'DELETE'});
+  const res = await fetch(apiUrl(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}`), {method: 'DELETE', credentials: 'include'});
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error((payload as {error?: string}).error || `删除失败，HTTP ${res.status}`);
@@ -1283,8 +1332,9 @@ export async function uploadWorkspaceFile(sessionId: string, file: File) {
   }
   const dataUrl = await readFileAsDataUrl(file);
   if (!dataUrl.startsWith('data:')) throw new Error('读取文件失败');
-  const res = await fetch('/api/upload', {
+  const res = await fetch(apiUrl('/api/upload'), {
     method: 'POST',
+    credentials: 'include',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({name: file.name, dataUrl}),
   });

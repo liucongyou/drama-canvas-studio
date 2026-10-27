@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
+import hmac
 import os
 import secrets
 from pathlib import Path
@@ -129,4 +131,48 @@ def new_opaque_token(prefix: str) -> str:
 
 def token_hash(value: str) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+
+def hash_password(password: str) -> str:
+    raw = str(password or "")
+    if len(raw) < 8:
+        raise ValueError("密码至少需要 8 位")
+    salt = os.urandom(16)
+    n, r, p = 2 ** 14, 8, 1
+    digest = hashlib.scrypt(
+        raw.encode("utf-8"),
+        salt=salt,
+        n=n,
+        r=r,
+        p=p,
+        dklen=32,
+    )
+    return (
+        f"scrypt${n}${r}${p}$"
+        f"{base64.urlsafe_b64encode(salt).decode('ascii')}$"
+        f"{base64.urlsafe_b64encode(digest).decode('ascii')}"
+    )
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    raw = str(password or "")
+    value = str(encoded or "")
+    try:
+        scheme, n_raw, r_raw, p_raw, salt_raw, digest_raw = value.split("$", 5)
+        if scheme != "scrypt":
+            return False
+        n, r, p = int(n_raw), int(r_raw), int(p_raw)
+        salt = base64.urlsafe_b64decode(salt_raw.encode("ascii"))
+        expected = base64.urlsafe_b64decode(digest_raw.encode("ascii"))
+        actual = hashlib.scrypt(
+            raw.encode("utf-8"),
+            salt=salt,
+            n=n,
+            r=r,
+            p=p,
+            dklen=len(expected),
+        )
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, TypeError, binascii.Error):
+        return False
 

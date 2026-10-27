@@ -1,7 +1,7 @@
-import {useEffect, useRef, useState, type MouseEvent as ReactMouseEvent} from 'react';
+import {useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent} from 'react';
 import {createRoot} from 'react-dom/client';
 import {createPortal} from 'react-dom';
-import {Check, ChevronDown, CloudUpload, Copy, ExternalLink, FolderOpen, FolderPlus, MoreHorizontal, Palette, Pencil, Plus, Settings, Trash2, Upload, X} from 'lucide-react';
+import {Check, ChevronDown, CloudUpload, Copy, ExternalLink, FolderOpen, FolderPlus, LogOut, MoreHorizontal, Palette, Pencil, Plus, Settings, ShieldCheck, Trash2, Upload, X} from 'lucide-react';
 import {CanvasView} from './CanvasView';
 import {ModelSettingsDialog} from './ModelSettings';
 import {TosSettingsDialog} from './TosSettings';
@@ -10,6 +10,7 @@ import {applyTheme, resolveTheme, THEMES, THEME_STORAGE_KEY, type Theme} from '.
 // ★ 全局对话框：替换原生 prompt/confirm/alert（2026-10-25）
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
 import {DialogHost, dialog} from './GDialog';
+import {AUTH_REQUIRED_EVENT, apiUrl, getAuthSession, loginAccount, logoutAccount} from './api';
 import './styles.css';
 import './ui-refinements.css';
 import './immersive-theme.css';
@@ -56,7 +57,7 @@ function importResultMessage(result: Record<string, unknown>) {
 }
 
 // 自研画布工作流入口：项目选择 + 导入载荷 + CanvasView（ViMax 画布内核，对接本地后端）
-function Shell() {
+function Shell({onLogout}: {onLogout?: () => void}) {
   const [projects, setProjects] = useState<{
     id: string;
     title: string;
@@ -95,7 +96,7 @@ function Shell() {
 
   const loadProjects = async () => {
     try {
-      const d = await fetch('/api/projects').then(r => r.json());
+      const d = await fetch(apiUrl('/api/projects'), {credentials: 'include'}).then(r => r.json());
       const list = d.projects || [];
       setProjects(list);
       if (!pid && list.length) {
@@ -143,8 +144,8 @@ function Shell() {
       confirmText: '创建',
     });
     if (!title) return;
-    const d = await fetch('/api/projects', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
+    const d = await fetch(apiUrl('/api/projects'), {
+      method: 'POST', credentials: 'include', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({title}),
     }).then(r => r.json());
     await loadProjects();
@@ -167,8 +168,9 @@ function Shell() {
     setProjectActionMenu(null);
     setProjectOpen(false);
     try {
-      const duplicated = await fetch(`/api/projects/${id}/duplicate`, {
+      const duplicated = await fetch(apiUrl(`/api/projects/${id}/duplicate`), {
         method: 'POST',
+        credentials: 'include',
         headers: {'Content-Type': 'application/json'},
         body: '{}',
       }).then(async (response) => {
@@ -197,7 +199,7 @@ function Shell() {
     });
     if (!confirmed) return;
     try {
-      const response = await fetch(`/api/projects/${id}`, {method: 'DELETE'});
+      const response = await fetch(apiUrl(`/api/projects/${id}`), {method: 'DELETE', credentials: 'include'});
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || `删除失败，HTTP ${response.status}`);
       const fallback = projects.find((item) => item.id !== id);
@@ -232,8 +234,8 @@ function Shell() {
       return;
     }
     try {
-      const d = await fetch(`/api/projects/${pid}`, {
-        method: 'PUT', headers: {'Content-Type': 'application/json'},
+      const d = await fetch(apiUrl(`/api/projects/${pid}`), {
+        method: 'PUT', credentials: 'include', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({title}),
       }).then(r => r.json());
       if (!d.ok) throw new Error(d.error || '重命名失败');
@@ -258,8 +260,8 @@ function Shell() {
     }
     setBusy(true);
     try {
-      const response = await fetch(`/api/projects/${pid}/import`, {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+      const response = await fetch(apiUrl(`/api/projects/${pid}/import`), {
+        method: 'POST', credentials: 'include', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({feed_path: feedPath.trim()}),
       });
       const d = await response.json().catch(() => ({}));
@@ -294,8 +296,8 @@ function Shell() {
       if (!feed || typeof feed !== 'object' || !Array.isArray(feed.asset_prompts) || !Array.isArray(feed.segments)) {
         throw new Error('不是有效投喂载荷：缺少 asset_prompts 或 segments');
       }
-      const response = await fetch(`/api/projects/${pid}/import`, {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+      const response = await fetch(apiUrl(`/api/projects/${pid}/import`), {
+        method: 'POST', credentials: 'include', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({feed_json: feed}),
       });
       const d = await response.json().catch(() => ({}));
@@ -570,6 +572,18 @@ function Shell() {
             </div>
           )}
         </div>
+        {onLogout && (
+          <button
+            type="button"
+            className="shell-topbar-btn shell-logout-btn"
+            onClick={onLogout}
+            title="退出登录"
+            aria-label="退出登录"
+          >
+            <LogOut size={13} strokeWidth={1.9} aria-hidden="true" />
+            退出
+          </button>
+        )}
       </div>
     </div>
   );
@@ -591,13 +605,112 @@ function Shell() {
   );
 }
 
+function AuthGate() {
+  const [state, setState] = useState<'checking' | 'anonymous' | 'authenticated'>('checking');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getAuthSession()
+      .then((session) => {
+        if (!cancelled) setState(session.authenticated ? 'authenticated' : 'anonymous');
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setState('anonymous');
+          setError('无法连接认证服务，请稍后重试。');
+        }
+      });
+    const onRequired = () => setState('anonymous');
+    window.addEventListener(AUTH_REQUIRED_EVENT, onRequired);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(AUTH_REQUIRED_EVENT, onRequired);
+    };
+  }, []);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      await loginAccount(username.trim(), password);
+      setPassword('');
+      setState('authenticated');
+    } catch (loginError) {
+      setError(loginError instanceof Error ? loginError.message : '登录失败，请重试');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await logoutAccount();
+    } catch {
+      // The local session may already be invalid; still return to login.
+    }
+    setState('anonymous');
+  };
+
+  if (state === 'checking') {
+    return (
+      <div className="auth-gate">
+        <div className="auth-gate-loading"><ShieldCheck size={18} />正在验证登录状态…</div>
+      </div>
+    );
+  }
+
+  if (state === 'anonymous') {
+    return (
+      <div className="auth-gate">
+        <form className="auth-gate-card" onSubmit={submit}>
+          <div className="auth-gate-mark"><ShieldCheck size={22} strokeWidth={1.7} /></div>
+          <h1>登录创作工作台</h1>
+          <p>使用分配给你的账号进入独立工作区。</p>
+          <label>
+            <span>账号</span>
+            <input
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              autoComplete="username"
+              autoFocus
+              required
+            />
+          </label>
+          <label>
+            <span>密码</span>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="current-password"
+              required
+            />
+          </label>
+          {error && <div className="auth-gate-error" role="alert">{error}</div>}
+          <button type="submit" disabled={busy || !username.trim() || !password}>
+            {busy ? '登录中…' : '进入工作台'}
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  return <Shell onLogout={() => void logout()} />;
+}
+
 // 全局异常兜底必须在首次 render 之前装好（否则挂载期抛的错接不到）
 installGlobalErrorHandlers();
 
 createRoot(document.getElementById('root')!).render(
   <>
     <ErrorBoundary scope="root">
-      <Shell />
+      <AuthGate />
     </ErrorBoundary>
     <ToastHost />
     {/* 全局对话框宿主：16 处原生 prompt/confirm/alert 的替代实现 */}
