@@ -59,6 +59,20 @@ def _decrypt_config_secrets(cfg: dict[str, Any]) -> dict[str, Any]:
 
 def _encrypt_config_secrets(cfg: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(cfg)
+    # Legacy flat keys were the migration source for provider api_key fields.
+    # Never write them back after the provider-level values have been resolved.
+    for legacy_key in (
+        "ark_api_key",
+        "ARK_API_KEY",
+        "team_router_api_key",
+        "teamorouter_api_key",
+        "dashscope_api_key",
+        "dashscope_workspace_id",
+        "workspace_id",
+        "tos_access_key",
+        "tos_secret_key",
+    ):
+        result.pop(legacy_key, None)
     for provider in result.get("providers", []):
         if isinstance(provider, dict) and provider.get("api_key"):
             provider["api_key"] = tenant_security.encrypt_secret(provider["api_key"])

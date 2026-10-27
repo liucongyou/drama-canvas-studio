@@ -97,6 +97,17 @@ class TenantIsolationTests(unittest.TestCase):
             )["api_key"]
             self.assertEqual(beta_key, "")
 
+    def test_legacy_flat_secret_fields_are_not_written_back(self):
+        with tenant_context.use_tenant("alpha", "alpha"):
+            cfg = provider_catalog.load_config(migrate=False)
+            cfg["ark_api_key"] = "legacy-flat-secret"
+            next(item for item in cfg["providers"] if item["id"] == "ark")["api_key"] = "provider-secret"
+            provider_catalog.save_config(cfg)
+            saved = tenant_context.current().config_path.read_text(encoding="utf-8")
+            self.assertNotIn("legacy-flat-secret", saved)
+            self.assertNotIn("provider-secret", saved)
+            self.assertNotIn("ark_api_key", saved)
+
     def test_same_provider_slots_are_not_shared_between_tenants(self):
         with tenant_context.use_tenant("alpha", "alpha"):
             alpha_slot = server.acquire_generation_slot(None, "ark")
