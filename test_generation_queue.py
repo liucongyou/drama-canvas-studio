@@ -157,6 +157,35 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(updated["phase"], "已完成")
         self.assertTrue(updated["finished_at"])
 
+    def test_reconcile_marks_stale_generating_node_failed_after_provider_failure(self):
+        pid = canvas_store.create_project("queue-failed")
+        node = {
+            "id": "node-1",
+            "type": "image",
+            "title": "角色",
+            "position": {"x": 0, "y": 0},
+            "metadata": {"status": "generating", "content": ""},
+        }
+        project = canvas_store.get_project(pid)
+        project["payload"]["nodes"] = [node]
+        canvas_store.update_project(pid, payload=project["payload"])
+        task = canvas_store.create_generation_task(pid, "node-1", kind="image")
+        canvas_store.update_generation_task(
+            task["id"],
+            status="failed",
+            phase="生成失败",
+            error="供应商接口 HTTP 401：无效的令牌",
+            finished_at="2026-01-01T00:00:00.000Z",
+        )
+
+        reconciled = server.reconcile_generation_task_records()
+
+        self.assertEqual(reconciled, 1)
+        project = canvas_store.get_project(pid)
+        meta = project["payload"]["nodes"][0]["metadata"]
+        self.assertEqual(meta["status"], "failed")
+        self.assertIn("HTTP 401", meta["lastError"])
+
     def test_active_generation_metadata_cannot_be_overwritten(self):
         meta = {
             "status": "generating",

@@ -588,6 +588,26 @@ def _find_generation_task(project_id, node_id, provider_task_id=""):
     return None
 
 
+def _latest_generation_task(project_id, node_id):
+    for item in store.list_generation_tasks(project_id, 120):
+        if item.get("node_id") == node_id:
+            return item
+    return None
+
+
+def _latest_terminal_generation_task(project_id, node_id):
+    interrupted = None
+    for item in store.list_generation_tasks(project_id, 120):
+        if item.get("node_id") != node_id:
+            continue
+        status = item.get("status")
+        if status == "failed":
+            return item
+        if status == "interrupted" and interrupted is None:
+            interrupted = item
+    return interrupted
+
+
 def _finalize_resumed_video(project_id, node_id, result, provider, model):
     current = store.get_project(project_id)
     if not current:
@@ -750,6 +770,24 @@ def reconcile_generation_task_records():
     reconciled = 0
     for task in store.list_generation_tasks(None, 300):
         if task.get("status") not in {"queued", "submitting", "running"}:
+            if task.get("status") in {"failed", "interrupted"}:
+                node = nodes.get((task.get("project_id"), task.get("node_id")))
+                meta = (node or {}).get("metadata") or {}
+                if not node or str(meta.get("status") or "") != "generating":
+                    continue
+                task_provider_id = str(task.get("provider_task_id") or "")
+                node_provider_id = str(meta.get("taskId") or "")
+                if task_provider_id and node_provider_id and task_provider_id != node_provider_id:
+                    continue
+                error = str(task.get("error") or "生成任务失败")
+                commit_node_metadata(task["project_id"], task["node_id"], {
+                    "status": "failed",
+                    "lastError": error,
+                    "providerTaskStatus": "failed",
+                    "providerTaskPhase": str(task.get("phase") or "生成失败"),
+                    "generationFinishedAt": task.get("finished_at") or store._now_iso(),
+                })
+                reconciled += 1
             continue
         node = nodes.get((task.get("project_id"), task.get("node_id")))
         meta = (node or {}).get("metadata") or {}
@@ -789,6 +827,37 @@ def reconcile_generation_task_records():
         store.update_generation_task(task["id"], **fields)
         reconciled += 1
     return reconciled
+
+
+def reconcile_failed_generation_task_nodes():
+    """Restore provider failure text after a restart produced a stale node state."""
+    repaired = 0
+    for project_row in store.list_projects():
+        project = store.get_project(project_row.get("id"))
+        if not project:
+            continue
+        for node in project["payload"].get("nodes", []):
+            if node.get("type") not in {"image", "audio", "video"}:
+                continue
+            meta = node.get("metadata") or {}
+            if meta.get("status") not in {"failed", "generating"}:
+                continue
+            task = _latest_terminal_generation_task(project["id"], node["id"])
+            if not task or task.get("status") != "failed":
+                continue
+            error = str(task.get("error") or "生成失败")
+            phase = str(task.get("phase") or "生成失败")
+            if meta.get("status") == "failed" and meta.get("lastError") == error:
+                continue
+            commit_node_metadata(project["id"], node["id"], {
+                "status": "failed",
+                "lastError": error,
+                "providerTaskStatus": "failed",
+                "providerTaskPhase": phase,
+                "generationFinishedAt": task.get("finished_at") or store._now_iso(),
+            })
+            repaired += 1
+    return repaired
 
 
 def start_generation_task_reconciler():
@@ -878,24 +947,37 @@ def reconcile_interrupted_generation_nodes():
             if provider_task_id and provider_status in resumable:
                 continue
             task = _find_generation_task(project["id"], node["id"], provider_task_id)
+            latest_task = _latest_terminal_generation_task(project["id"], node["id"])
             if not task:
-                task = store.create_generation_task(
-                    project["id"], node["id"], title=node.get("title", ""), kind=node.get("type", ""),
-                    provider=(meta.get("params") or {}).get("provider") or meta.get("provider") or "",
-                    model=(meta.get("params") or {}).get("model") or meta.get("model") or "",
-                )
-            if task:
+                if latest_task:
+                    task = latest_task
+                else:
+                    task = store.create_generation_task(
+                        project["id"], node["id"], title=node.get("title", ""), kind=node.get("type", ""),
+                        provider=(meta.get("params") or {}).get("provider") or meta.get("provider") or "",
+                        model=(meta.get("params") or {}).get("model") or meta.get("model") or "",
+                    )
+            task_error = "后端重启，旧任务未取得可恢复的供应商任务 ID，请确认后重新生成"
+            task_phase = "服务中断"
+            if latest_task and latest_task.get("status") in {"failed", "interrupted"}:
+                task_error = str(latest_task.get("error") or task_error)
+                task_phase = str(latest_task.get("phase") or task_phase)
+            if task and task.get("status") == "failed":
+                # Preserve the provider's concrete failure instead of creating
+                # a misleading interrupted task on the next restart.
+                pass
+            elif task:
                 store.update_generation_task(
-                    task["id"], status="interrupted", phase="服务中断",
-                    error="后端重启，旧任务未取得可恢复的供应商任务 ID",
+                    task["id"], status="interrupted", phase=task_phase,
+                    error=task_error,
                     provider_task_id=provider_task_id,
                     finished_at=store._now_iso(),
                 )
             commit_node_metadata(project["id"], node["id"], {
                 "status": "failed",
                 "providerTaskStatus": "interrupted",
-                "providerTaskPhase": "服务中断",
-                "lastError": "后端重启，旧任务未取得可恢复的供应商任务 ID，请确认后重新生成",
+                "providerTaskPhase": task_phase,
+                "lastError": task_error,
                 "generationFinishedAt": store._now_iso(),
             })
             reconciled += 1
@@ -2878,6 +2960,12 @@ def main():
             print(f"已标记 {reconciled} 个中断的生成节点")
     except Exception as exc:
         print(f"[generation-tasks] 对账中断节点失败：{exc}", file=sys.stderr)
+    try:
+        repaired_failures = _run_for_active_tenants(reconcile_failed_generation_task_nodes)
+        if repaired_failures:
+            print(f"已恢复 {repaired_failures} 个供应商失败节点状态")
+    except Exception as exc:
+        print(f"[generation-tasks] 恢复失败节点状态失败：{exc}", file=sys.stderr)
     try:
         reconciled_tasks = _run_for_active_tenants(reconcile_generation_task_records)
         if reconciled_tasks:
