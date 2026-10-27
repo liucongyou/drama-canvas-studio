@@ -941,7 +941,7 @@ def backfill_episode_shared_asset_links():
         if not project:
             continue
         payload = project["payload"]
-        if len(payload.get("episodeImports") or []) <= 1:
+        if not payload.get("episodeImports"):
             continue
         added = import_feed.bind_shared_assets_for_all_episodes(payload)
         if added:

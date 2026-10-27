@@ -45,7 +45,14 @@ COL_ROLE, COL_SCENE, COL_PROP, COL_AUDIO, COL_VIDEO = 0, 320, 640, 960, 1240
 
 # 台词行判定（有对白 → 才生成音色）
 _DIALOG_RE = re.compile(r"台词[:：]\s*([^（(：:]{1,10}?)\s*（[^）)]*?）\s*[:：]\s*[\"“『]")
-_REF_RE = re.compile(r"@//(?:chr|scn|prp)\s*/\s*-\s*([^（(]+)（(?:参考)?图\s*(\d+)")
+_REF_RE = re.compile(
+    r"@(?:(?://(?:chr|scn|prp)\s*/\s*-\s*)|(?:角色|场景|道具|音频)\s*[｜|:：]\s*)"
+    r"([^（(]+?)\s*（(?:参考)?图\s*(\d+)"
+)
+_NAMED_REF_RE = re.compile(
+    r"@?(?P<kind>角色|场景|道具|音频)\s*[｜|:：]\s*"
+    r"(?P<name>[^（(]+?)\s*（(?:参考)?图\s*(?P<code>\d+)"
+)
 _RAW_MENTION_RE = re.compile(
     r"@//(?P<kind>chr|scn|prp)\s*/\s*-\s*"
     r"(?P<name>[^（(；;，,\n@]+?)"
@@ -969,6 +976,39 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         })
         audio_y += 400
 
+    # Before wiring references, synthesize cards for @资产 mentions that the
+    # current feed omitted. Without these cards the connection phase has no
+    # target node and the canvas appears to have no automatic links.
+    _ensure_referenced_assets({
+        "nodes": nodes,
+        "episodeId": episode_id,
+        "episodeImports": [{
+            "id": episode_id,
+            "nodeIds": [node["id"] for node in nodes],
+            "videoNodeIds": [node["id"] for node in nodes if node.get("type") == "video"],
+        }],
+    }, episode_id)
+    # The synthesis helper appends cards after the initial asset loop, so
+    # rebuild the code indexes before the wiring phase.
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        title = str(node.get("title") or "")
+        code_match = re.search(r"图\s*(\d+)", title)
+        code = f"图{code_match.group(1)}" if code_match else ""
+        if node.get("type") == "image":
+            if code:
+                image_ids.setdefault(code, []).append(node["id"])
+            kind = _asset_kind_from_title(title)
+            if kind == "角色" and code:
+                character_names[code] = _asset_title_base(title).split("·", 1)[0]
+        elif node.get("type") == "audio":
+            role = _asset_title_base(title, audio=True).split("·", 1)[0].strip()
+            if code:
+                audio_ids.setdefault(code, node["id"])
+            if role:
+                audio_by_role.setdefault(role, node["id"])
+
     # ---------- 4) connections ----------
     # 4.1 每段 → 该段引用的图
     for s in segs:
@@ -1500,6 +1540,296 @@ def _remove_unmentioned_video_refs(payload):
     return removed
 
 
+def _ensure_referenced_assets(payload, episode_id=None):
+    """Create placeholder cards for assets referenced by prompts but absent from the feed."""
+    nodes = payload.setdefault("nodes", [])
+    groups = _ensure_episode_imports(payload)
+    target_group = next(
+        (
+            group for group in groups
+            if episode_id
+            and str(group.get("id") or "").upper() == str(episode_id).upper()
+        ),
+        None,
+    )
+    if target_group is None and groups:
+        target_group = groups[-1]
+    target_ids = set((target_group or {}).get("videoNodeIds") or [])
+    videos = [
+        node for node in nodes
+        if isinstance(node, dict)
+        and node.get("type") == "video"
+        and (not target_ids or node.get("id") in target_ids)
+    ]
+    image_by_code = {}
+    image_by_key = {}
+    audio_by_role = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        meta = node.get("metadata") or {}
+        if "自动补占位卡" in str(meta.get("prompt") or ""):
+            meta["autoPlaceholder"] = True
+        if node.get("type") == "image":
+            key = str((node.get("metadata") or {}).get("assetKey") or "")
+            if not key:
+                key = _asset_identity(
+                    _asset_title_base(node.get("title")),
+                    _asset_kind_from_title(node.get("title")),
+                )
+            if key:
+                image_by_key.setdefault(key, node)
+            for code in re.findall(r"图\s*(\d+)", str(node.get("title") or "")):
+                image_by_code.setdefault(code, node)
+        elif node.get("type") == "audio":
+            if not str((node.get("metadata") or {}).get("content") or "").strip():
+                (node.get("metadata") or {})["autoPlaceholder"] = True
+            role = _asset_title_base(node.get("title"), audio=True).split("·", 1)[0].strip()
+            if role:
+                audio_by_role.setdefault(role, node)
+
+    now = _now_iso()
+    created_at = str(
+        (target_group or {}).get("importedAt")
+        or payload.get("createdAt")
+        or now
+    )
+    target_imported_at = _iso_datetime(created_at)
+
+    def allowed_for_target(node):
+        if target_imported_at is None:
+            return True
+        if (node.get("metadata") or {}).get("autoPlaceholder"):
+            return True
+        node_created_at = _iso_datetime(node.get("createdAt"))
+        return (
+            node_created_at is None
+            or (node_created_at - target_imported_at).total_seconds() <= 2
+        )
+    added = []
+    used_ids = set()
+
+    def find_image(kind, name, code):
+        existing = image_by_code.get(code)
+        if existing:
+            return existing
+        key = _asset_identity(name, kind)
+        existing = image_by_key.get(key)
+        if existing:
+            image_by_code[code] = existing
+        return existing
+
+    def add_image(kind, name, code, video):
+        title = f"{kind}｜{name}（图{code}）"
+        video_params = ((video.get("metadata") or {}).get("params") or {})
+        ratio = str(video_params.get("ratio") or "16:9")
+        node_id = _rid_node()
+        node = {
+            "height": 405,
+            "width": 720,
+            "id": node_id,
+            "metadata": {
+                "composerContent": (
+                    f"### 图{code} · {name}\n\n"
+                    "该资产由视频提示词引用，但当前投喂载荷未提供资产提示词；"
+                    "已自动补占位卡，请补充提示词后再生成。"
+                ),
+                "content": "",
+                "model": "doubao-seedream-5-0-pro",
+                "prompt": (
+                    f"### 图{code} · {name}\n\n"
+                    "该资产由视频提示词引用，但当前投喂载荷未提供资产提示词；"
+                    "已自动补占位卡，请补充提示词后再生成。"
+                ),
+                "status": "idle",
+                "nodeRole": "generator",
+                "autoPlaceholder": True,
+                "assetKey": _asset_identity(name, kind),
+                "episodeId": str(episode_id or payload.get("episodeId") or ""),
+                "params": {
+                    "provider": "ark",
+                    "model": "doubao-seedream-5-0-pro",
+                    "ratio": ratio,
+                    "clarity": "1.5K",
+                    "size": _image_size(ratio),
+                    "guidance": "中等",
+                    "watermark": False,
+                },
+            },
+            "position": {"x": 0, "y": 0},
+            "title": title,
+            "type": "image",
+            "createdAt": created_at,
+            "updatedAt": now,
+        }
+        nodes.append(node)
+        image_by_code[code] = node
+        image_by_key.setdefault(_asset_identity(name, kind), node)
+        added.append(node)
+        return node
+
+    def add_audio(role, code, video):
+        title = f"音频｜{role}（图{code}）"
+        prompt = (
+            f"{role}，普通话对白参考音色，短剧配音参考，"
+            "4.5 秒清晰人声，无背景噪声。请根据角色补充音色描述后再生成。"
+        )
+        node_id = _rid_audio()
+        node = {
+            "height": 320,
+            "width": 320,
+            "id": node_id,
+            "metadata": {
+                "content": "",
+                "composerContent": f"角色：{role}（图{code}）\n\n【音色占位 · 4.5S】\n{prompt}",
+                "prompt": prompt,
+                "status": "idle",
+                "generationMode": "audio",
+                "nodeRole": "generator",
+                "autoPlaceholder": True,
+                "episodeId": str(episode_id or payload.get("episodeId") or ""),
+                "params": {
+                    "provider": "aliyun_bailian",
+                    "model": "cosyvoice-v3-5-flash",
+                    "ttsModel": "cosyvoice-v3.5-flash",
+                    "ttsMode": "design",
+                    "outputFormat": "mp3",
+                    "sampleRate": 24000,
+                    "previewDuration": 4.5,
+                    "voicePrompt": prompt,
+                },
+            },
+            "position": {"x": 0, "y": 0},
+            "title": title,
+            "type": "audio",
+            "createdAt": created_at,
+            "updatedAt": now,
+        }
+        nodes.append(node)
+        audio_by_role[role] = node
+        added.append(node)
+        return node
+
+    for video in videos:
+        meta = video.get("metadata") or {}
+        prompt = str(meta.get("prompt") or "")
+        composer = str(meta.get("composerContent") or "")
+        reference_text = f"{prompt}\n{composer}"
+        named_roles = {
+            name.strip()
+            for kind, name, _code in _NAMED_REF_RE.findall(reference_text)
+            if kind == "角色" and name.strip()
+        }
+        speaking = {
+            match.group(1).strip()
+            for match in _DIALOG_RE.finditer(reference_text)
+        }
+        speaking |= _prompt_speaking_roles(
+            reference_text,
+            set(audio_by_role.keys()) | named_roles,
+        )
+        for match in _NAMED_REF_RE.finditer(reference_text):
+            kind = match.group("kind")
+            name = match.group("name").strip()
+            code = match.group("code").strip()
+            if kind == "音频":
+                continue
+            source = find_image(kind, name, code)
+            if source is None:
+                source = add_image(kind, name, code, video)
+            if source not in added and not allowed_for_target(source):
+                continue
+            used_ids.add(source["id"])
+            meta = video.setdefault("metadata", {})
+            params = meta.setdefault("params", {})
+            refs = params.setdefault("refs", [])
+            ref_ids = {
+                item.get("nodeId")
+                for item in refs
+                if isinstance(item, dict)
+            }
+            if source["id"] not in ref_ids:
+                refs.append({
+                    "nodeId": source["id"],
+                    "label": source.get("title") or name,
+                })
+                meta["refs"] = refs
+                pair = (source["id"], video.get("id"))
+                existing_pairs = {
+                    (item.get("fromNodeId"), item.get("toNodeId"))
+                    for item in payload.setdefault("connections", [])
+                    if isinstance(item, dict)
+                }
+                if pair not in existing_pairs:
+                    payload["connections"].append({
+                        "id": _rid_edge(),
+                        "fromNodeId": source["id"],
+                        "toNodeId": video.get("id"),
+                    })
+            if kind == "角色":
+                voice = audio_by_role.get(name)
+                if voice is None and name in speaking:
+                    voice = add_audio(name, code, video)
+                if voice is None:
+                    continue
+                if voice not in added and not allowed_for_target(voice):
+                    continue
+                used_ids.add(voice["id"])
+                voices = params.setdefault("voiceRefs", [])
+                voice_ids = {
+                    item.get("nodeId")
+                    for item in voices
+                    if isinstance(item, dict)
+                }
+                if voice["id"] not in voice_ids:
+                    voices.append({
+                        "nodeId": voice["id"],
+                        "label": voice.get("title") or name,
+                    })
+                    params["voiceRefs"] = voices
+                    params["voiceRef"] = voices[0]
+                    meta["voiceRefs"] = voices
+                    pair = (voice["id"], video.get("id"))
+                    existing_pairs = {
+                        (item.get("fromNodeId"), item.get("toNodeId"))
+                        for item in payload.setdefault("connections", [])
+                        if isinstance(item, dict)
+                    }
+                    if pair not in existing_pairs:
+                        payload["connections"].append({
+                            "id": _rid_edge(),
+                            "fromNodeId": voice["id"],
+                            "toNodeId": video.get("id"),
+                        })
+
+    group_changed = False
+    if target_group is not None and used_ids:
+        next_ids = list(dict.fromkeys([
+            *(target_group.get("nodeIds") or []),
+            *used_ids,
+        ]))
+        group_changed = next_ids != list(target_group.get("nodeIds") or [])
+        target_group["nodeIds"] = next_ids
+        actual_groups = payload.get("episodeImports") or []
+        actual_group = next(
+            (
+                group for group in actual_groups
+                if str(group.get("id") or "").upper() == str(target_group.get("id") or "").upper()
+            ),
+            None,
+        )
+        if actual_group is None and actual_groups:
+            actual_group = actual_groups[-1]
+        if actual_group is not None:
+            previous_ids = list(actual_group.get("nodeIds") or [])
+            actual_group["nodeIds"] = list(dict.fromkeys([
+                *(actual_group.get("nodeIds") or []),
+                *used_ids,
+            ]))
+            group_changed = group_changed or actual_group["nodeIds"] != previous_ids
+    return len(added) + (1 if group_changed else 0)
+
+
 def bind_shared_assets_for_episode(payload, episode_id):
     """Bind only existing series assets explicitly mentioned by this episode."""
     nodes = [node for node in payload.get("nodes") or [] if isinstance(node, dict)]
@@ -1580,6 +1910,8 @@ def bind_shared_assets_for_episode(payload, episode_id):
     def available_for_episode(node):
         if not imported_at or node.get("type") not in {"image", "audio"}:
             return True
+        if (node.get("metadata") or {}).get("autoPlaceholder"):
+            return True
         created_at = _iso_datetime(node.get("createdAt"))
         return not created_at or (created_at - imported_at).total_seconds() <= 2
 
@@ -1657,6 +1989,8 @@ def bind_shared_assets_for_episode(payload, episode_id):
         meta = video.setdefault("metadata", {})
         params = meta.setdefault("params", {})
         prompt = str(meta.get("prompt") or "")
+        composer = str(meta.get("composerContent") or "")
+        match_text = f"{prompt}\n{composer}"
         model_id = str(params.get("model") or "")
         max_refs, max_audios = (30, 10) if model_id == "doubao-seedance-2-5" else (9, 3)
         refs = [
@@ -1688,7 +2022,7 @@ def bind_shared_assets_for_episode(payload, episode_id):
                 seen_voice_labels.add(label)
             deduped_voices.append(voice)
         voices = deduped_voices
-        speaking_roles = _prompt_speaking_roles(prompt, role_names)
+        speaking_roles = _prompt_speaking_roles(match_text, role_names)
         voices = [
             voice for voice in voices
             if _asset_title_base(
@@ -1714,14 +2048,14 @@ def bind_shared_assets_for_episode(payload, episode_id):
                     re.search(
                         rf"(?<![@｜]){re.escape(match_base[index:])}"
                         rf"\s*[（(]\s*图\s*{figure_id}(?!\d)",
-                        prompt,
+                        match_text,
                     )
                     for index in range(len(match_base))
                     if len(match_base[index:]) >= 2
                 )
             if len(match_base) < 2 or (
-                match_base not in prompt
-                and base not in prompt
+                match_base not in match_text
+                and base not in match_text
                 and not figure_match
             ):
                 continue
@@ -1734,7 +2068,13 @@ def bind_shared_assets_for_episode(payload, episode_id):
                 if pair not in existing_pairs:
                     connections.append({"fromNodeId": image["id"], "id": _rid_edge(), "toNodeId": video["id"]})
                     existing_pairs.add(pair)
-                prompt = _inline_asset_mention(prompt, match_base, full_title)
+                if f"@{full_title}" not in prompt:
+                    repaired_prompt = _inline_asset_mention(prompt, match_base, full_title)
+                    prompt = (
+                        repaired_prompt
+                        if repaired_prompt != prompt
+                        else (prompt.rstrip() + f"\n【自动修复引用】@{full_title}").lstrip()
+                    )
                 added += 1
         if params.get("refs") != refs:
             params["refs"] = refs
@@ -1798,7 +2138,29 @@ def bind_shared_assets_for_episode(payload, episode_id):
     ]
     if len(group_node_ids) != original_group_node_count:
         cleanup_changes += 1
-    payload["episodeImports"] = groups
+    actual_groups = payload.get("episodeImports") or []
+    actual_group = next(
+        (
+            item for item in actual_groups
+            if str(item.get("id") or "").upper() == str(group.get("id") or "").upper()
+        ),
+        None,
+    )
+    if actual_group is None:
+        payload["episodeImports"] = groups
+    else:
+        previous_ids = [
+            node_id
+            for node_id in (actual_group.get("nodeIds") or [])
+            if node_id not in node_by_id
+            or node_by_id[node_id].get("type") not in {"image", "audio"}
+            or available_for_episode(node_by_id[node_id])
+        ]
+        actual_group.update(group)
+        actual_group["nodeIds"] = list(dict.fromkeys([
+            *previous_ids,
+            *(group.get("nodeIds") or []),
+        ]))
     return added + cleanup_changes
 
 
@@ -1866,6 +2228,7 @@ def bind_shared_assets_for_all_episodes(payload):
     total += repair_payload_prompt_mentions(payload)
     for group in _ensure_episode_imports(payload):
         total += bind_shared_assets_for_episode(payload, group.get("id"))
+        total += _ensure_referenced_assets(payload, group.get("id"))
     total += _prune_orphan_duplicate_assets(payload)
     total += repair_payload_prompt_mentions(payload)
     if removed_grids:
@@ -2225,6 +2588,7 @@ def merge_payload_by_episode(existing, incoming):
     _remove_unmentioned_video_refs(merged_payload)
     repair_payload_prompt_mentions(merged_payload)
     bind_shared_assets_for_episode(merged_payload, episode_id)
+    _ensure_referenced_assets(merged_payload, episode_id)
     _prune_orphan_duplicate_assets(merged_payload)
     repair_payload_prompt_mentions(merged_payload)
     for connection in merged_payload.get("connections") or []:

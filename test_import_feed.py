@@ -100,6 +100,165 @@ class ImportFeedContractTests(unittest.TestCase):
         video = next(node for node in payload["nodes"] if node["type"] == "video")
         self.assertEqual(video["metadata"]["params"]["model"], "doubao-seedance-2-0")
 
+    def test_connects_canvas_role_scene_prop_and_voice_mentions(self):
+        payload = import_feed.build_payload({
+            "title": "连线回归 · 第1集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [
+                {"code": "图1", "name": "赵铁柱（角色立绘）", "raw": "男性角色"},
+                {"code": "图2", "name": "厂区（场景母版）", "raw": "旧厂房"},
+                {"code": "图3", "name": "账本（道具设定图）", "raw": "旧账本"},
+            ],
+            "segments": [{
+                "no": 1,
+                "name": "段1 · 连线",
+                "raw": (
+                    "@场景｜厂区·母版（图2）\n"
+                    "@角色｜赵铁柱（图1）\n"
+                    "@道具｜账本（图3）\n"
+                    '台词：赵铁柱（低沉）："走。"'
+                ),
+                "shots": [],
+            }],
+        })
+        video = next(node for node in payload["nodes"] if node["type"] == "video")
+        incoming = [
+            next(node for node in payload["nodes"] if node["id"] == conn["fromNodeId"])
+            for conn in payload["connections"]
+            if conn["toNodeId"] == video["id"]
+        ]
+        labels = {node["title"] for node in incoming}
+        self.assertIn("角色｜赵铁柱（图1）", labels)
+        self.assertIn("场景｜厂区·母版（图2）", labels)
+        self.assertIn("道具｜账本（图3）", labels)
+        self.assertIn("音频｜赵铁柱（图1）", labels)
+        ref_pairs = {
+            (ref["nodeId"], ref["label"])
+            for ref in video["metadata"]["params"]["refs"]
+        }
+        self.assertEqual(
+            ref_pairs,
+            {
+                (next(node["id"] for node in incoming if node["title"].startswith("角色｜")), "角色｜赵铁柱（图1）"),
+                (next(node["id"] for node in incoming if node["title"].startswith("场景｜")), "场景｜厂区·母版（图2）"),
+                (next(node["id"] for node in incoming if node["title"].startswith("道具｜")), "道具｜账本（图3）"),
+            },
+        )
+
+    def test_synthesizes_missing_referenced_assets_and_connects_them(self):
+        payload = import_feed.build_payload({
+            "title": "缺资产兜底 · 第1集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [
+                {"code": "图1", "name": "赵铁柱（角色立绘）", "raw": "男性角色"},
+            ],
+            "segments": [{
+                "no": 1,
+                "name": "段1 · 缺资产",
+                "raw": (
+                    "@场景｜厂区·母版（图2）\n"
+                    "@角色｜赵铁柱（图1）\n"
+                    "@道具｜账本（图3）\n"
+                    '台词：赵铁柱（低沉）："走。"'
+                ),
+                "shots": [],
+            }],
+        })
+        video = next(node for node in payload["nodes"] if node["type"] == "video")
+        incoming_labels = {
+            next(node for node in payload["nodes"] if node["id"] == conn["fromNodeId"])["title"]
+            for conn in payload["connections"]
+            if conn["toNodeId"] == video["id"]
+        }
+        self.assertIn("场景｜厂区·母版（图2）", incoming_labels)
+        self.assertIn("道具｜账本（图3）", incoming_labels)
+        self.assertIn("音频｜赵铁柱（图1）", incoming_labels)
+        ref_labels = {
+            ref["label"] for ref in video["metadata"]["params"]["refs"]
+        }
+        self.assertEqual(
+            ref_labels,
+            {"角色｜赵铁柱（图1）", "场景｜厂区·母版（图2）", "道具｜账本（图3）"},
+        )
+
+    def test_backfill_repairs_single_episode_missing_assets(self):
+        payload = {
+            "episodeId": "EP010",
+            "nodes": [{
+                "id": "video-1",
+                "type": "video",
+                "title": "段1 · 缺资产",
+                "metadata": {
+                    "prompt": (
+                        "@场景｜厂区·母版（图2）\n"
+                        "@角色｜赵铁柱（图1）\n"
+                        "@道具｜账本（图3）\n"
+                        '台词：赵铁柱（低沉）："走。"'
+                    ),
+                    "params": {"refs": [], "voiceRefs": [], "model": "doubao-seedance-2-0"},
+                },
+            }],
+            "connections": [],
+            "episodeImports": [{
+                "id": "EP010",
+                "nodeIds": ["video-1"],
+                "videoNodeIds": ["video-1"],
+            }],
+        }
+        added = import_feed.bind_shared_assets_for_all_episodes(payload)
+        self.assertGreaterEqual(added, 4)
+        group = payload["episodeImports"][0]
+        self.assertGreaterEqual(len(group["nodeIds"]), 5)
+        labels = {
+            next(node for node in payload["nodes"] if node["id"] == conn["fromNodeId"])["title"]
+            for conn in payload["connections"]
+            if conn["toNodeId"] == "video-1"
+        }
+        self.assertIn("角色｜赵铁柱（图1）", labels)
+        self.assertIn("场景｜厂区·母版（图2）", labels)
+        self.assertIn("道具｜账本（图3）", labels)
+        self.assertIn("音频｜赵铁柱（图1）", labels)
+
+    def test_backfill_repairs_group_only_when_asset_nodes_already_exist(self):
+        payload = {
+            "episodeId": "EP010",
+            "nodes": [
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段1 · 缺线",
+                    "metadata": {
+                        "prompt": "画面：赵铁柱走进厂区。",
+                        "composerContent": (
+                            "@角色｜赵铁柱（图1）\n"
+                            "@场景｜厂区·母版（图2）\n"
+                            "@道具｜账本（图3）\n"
+                            '台词：赵铁柱（低沉）："走。"'
+                        ),
+                        "params": {"refs": [], "voiceRefs": [], "model": "doubao-seedance-2-0"},
+                    },
+                },
+                {"id": "role-1", "type": "image", "title": "角色｜赵铁柱（图1）", "metadata": {"assetKey": "角色:赵铁柱"}},
+                {"id": "scene-2", "type": "image", "title": "场景｜厂区·母版（图2）", "metadata": {"assetKey": "场景:厂区·母版"}},
+                {"id": "prop-3", "type": "image", "title": "道具｜账本（图3）", "metadata": {"assetKey": "道具:账本"}},
+                {"id": "voice-1", "type": "audio", "title": "音频｜赵铁柱（图1）", "metadata": {}},
+            ],
+            "connections": [],
+            "episodeImports": [{"id": "EP010", "nodeIds": ["video-1"], "videoNodeIds": ["video-1"]}],
+        }
+        changed = import_feed.bind_shared_assets_for_all_episodes(payload)
+        self.assertGreater(changed, 0)
+        self.assertEqual(len(payload["episodeImports"][0]["nodeIds"]), 5)
+        self.assertEqual(
+            {(conn["fromNodeId"], conn["toNodeId"]) for conn in payload["connections"]},
+            {
+                ("role-1", "video-1"),
+                ("scene-2", "video-1"),
+                ("prop-3", "video-1"),
+                ("voice-1", "video-1"),
+            },
+        )
+
     def test_reuses_completed_character_from_another_project(self):
         feed = {
             "title": "角色复用测试",
