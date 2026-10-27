@@ -1,0 +1,344 @@
+/* ============================================================
+   全局对话框（Dialog）· 替换浏览器原生 prompt/confirm/alert
+   ============================================================
+
+   ★ 用户原话：
+     「导入弹窗还是网页的  所以这些细节都要完善」
+     并附了截图：一个白底、蓝椭圆「确定」钮、灰色标题栏的浏览器原生对话框，
+     浮在整片深灰画布上 —— 和旁边已经打磨过的深灰浮层完全不搭。
+
+   ★ 为什么必须整体替换、不能"美化"：
+     `window.prompt / confirm / alert` 由浏览器**进程外**绘制（Chrome 里是
+     内容区内的原生控件），CSS 完全无法触及：
+       · 不能改底色、不能改圆角、不能改按钮形状与色调；
+       · `prompt()` 的输入框永远跟着操作系统主题，在暗色页面上会白得刺眼；
+       · 还会显示 `127.0.0.1:8891 显示` 这类域名提示，把应用感彻底破坏。
+     ⇒ 唯一解法：自己实现一个 Promise 化的对话框，调用点改 `await` 即可。
+
+   ★ 用法（和原生几乎同形，便于替换）：
+       const title = await dialog.prompt({ title: '新画布标题', defaultValue: '画布工作流' });
+       if (!title) return;                       // 取消 → null
+       const ok = await dialog.confirm({ title: '确认删除？', tone: 'danger' });
+       await dialog.alert({ title: '导入失败', message: err.message, tone: 'danger' });
+
+   ★ 设计约束（与全站令牌一致）：
+     · 底色 --v-surface、描边 --v-border、圆角 --v-radius-xl、投影 --v-shadow-overlay
+     · 主按钮 = 深蓝实心（--v-accent-solid，白字 10.28:1），与工具条激活态同一支
+     · 危险按钮 = 危险色文字 + 淡底（--v-danger），不整块染红
+     · 取消 = 中性描边按钮，永远是视觉上的"次要项"
+     · 输入框 = 下沉底 --v-surface-sunken，聚焦只换描边、不提亮背景
+   ============================================================ */
+
+/* ── 遮罩层 ─────────────────────────────────────────────── */
+.gdialog-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(8, 8, 8, 0.62);
+  backdrop-filter: blur(3px);
+  animation: gdialog-fade 140ms ease-out;
+}
+@keyframes gdialog-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── 对话框本体 ─────────────────────────────────────────── */
+.gdialog {
+  width: 412px;
+  max-width: 100%;
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  /* ★ 比 --v-surface 亮 1 档：#202020 在 #121212 画布上只差 8 级亮度，
+     弹窗边缘几乎糊进背景，看起来"没浮起来"（用户说"丑"的一部分就是这个）。
+     用 --v-card-1 (#272727) 拉开层次，同时保留与其它浮层同色系的观感。 */
+  background: var(--v-card-1, #272727);
+  border: 1px solid var(--v-border-strong, #3a3a3a);
+  border-radius: var(--v-radius-xl);
+  box-shadow: var(--v-shadow-overlay), inset 0 1px 0 rgba(255, 255, 255, 0.055);
+  animation: gdialog-rise 170ms cubic-bezier(0.2, 0.8, 0.3, 1);
+  overflow: hidden;
+}
+@keyframes gdialog-rise {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── 头部 ───────────────────────────────────────────────── */
+.gdialog-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 20px 22px 0;
+}
+.gdialog-icon {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* ★ 图标不再是"暗底暗图"：原来 6% 白底 + --v-text-2 灰图，
+     在 #272727 上对比度只有 2.4:1，读起来像坏掉的占位框。
+     改成"淡蓝底 + 蓝图"—— 只用一个图标就点明"这是一次创建/输入动作"，
+     同时也给整块纯灰的弹窗一个视觉落点（用户说"丑"就是全灰没有层次）。 */
+  background: color-mix(in srgb, var(--v-accent) 14%, transparent);
+  color: var(--v-accent-mid, #5c8fc7);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--v-accent) 18%, transparent);
+  margin-top: -3px;
+}
+.gdialog.is-danger .gdialog-icon {
+  background: var(--v-danger-soft);
+  color: var(--v-danger);
+}
+.gdialog-title-wrap { flex: 1; min-width: 0; padding-top: 4px; }
+.gdialog-title {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--v-text);
+  letter-spacing: 0.01em;
+}
+/* 关闭 X：只在确认/提示类出现，紧凑型对话框不占位 */
+.gdialog-close {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: -2px -4px 0 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--v-radius-sm);
+  background: transparent;
+  color: var(--v-text-5);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.gdialog-close:hover {
+  background: var(--v-surface-hover);
+  color: var(--v-text);
+}
+
+/* ── 正文 ───────────────────────────────────────────────── */
+.gdialog-body {
+  padding: 12px 22px 0 22px;
+  font-size: 12.5px;
+  line-height: 1.62;
+  color: var(--v-text-3);
+  overflow: auto;
+}
+/* ★★ 2026-10-25 用户截图「新建画布窗口要做精致丑死了」——
+   原来这里写 `.gdialog.has-icon .gdialog-body { padding-left: 61px }`，
+   目的是让正文与标题左对齐（icon 30 + gap 11 = 41，再加基础 20 = 61）。
+   但**右内边距还是 20px** → 整个正文块左右差 41px 的"歪脖子"，
+   在 400px 宽的框里肉眼一眼就看出来：文字左边空一大块、右边快贴边，
+   输入框也跟着被压窄又偏右。这是"丑"最直接的来源之一。
+   两处一起修：
+     ① 正文**不再**为了对齐图标而缩进 —— 单输入框的弹窗里，
+        正文与图标对齐反而让输入框变窄；改成与标题左侧对齐即可（标题本身已缩进）；
+     ② 左右内边距严格相等（22px），并让图标与标题的间距参与计算，
+        保证输入框左边缘 = 标题左边缘，视觉上一条竖线。 */
+.gdialog.has-icon .gdialog-body { padding-left: 43px; }
+.gdialog-message { margin: 0; white-space: pre-wrap; word-break: break-word; }
+/* ★★ 标题必须与正文/输入框落在**同一条竖线**上（内容列左缘 = 距框 43px）。
+   踩过的坑（两次）：head 给 padding-left:22 + 图标 absolute left:22 + 标题
+   padding-left:43 → 实际起点 65，比正文的 43 多出 22px，标题看起来"缩进去了"。
+   ⇒ 现在只有一个缩进来源：**head 不设左内边距**，图标 absolute 定位在 left:22，
+     标题 padding-left:43。三者的基准都在 head 的 content-box（= 框左缘），
+     数字不再跨层相加，改的时候也不会再叠错。
+   为什么是 43：图标 32 + 间隙 11。正文/输入框也用 43，
+   于是"图标 — 标题 — 正文 — 输入框"全部对齐在同一条内容列上。 */
+.gdialog.has-icon .gdialog-head { position: relative; padding-left: 0; padding-right: 22px; }
+.gdialog.has-icon .gdialog-head .gdialog-icon {
+  position: absolute;
+  left: 22px;
+  top: 16px;
+}
+.gdialog.has-icon .gdialog-title { padding-left: 43px; }
+
+/* ── 输入框（prompt 专用）────────────────────────────────── */
+.gdialog-input-wrap { position: relative; margin-top: 12px; }
+.gdialog-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 38px;
+  padding: 0 52px 0 12px;   /* 右侧 52px 留给字符计数，避免光标压到数字上 */
+  border: 1px solid var(--v-border-strong, #3a3a3a);
+  border-radius: var(--v-radius-md);
+  background: var(--v-surface-sunken, #1a1a1a);
+  color: var(--v-text);
+  font-size: 13.5px;
+  font-family: inherit;
+  letter-spacing: 0.01em;
+  outline: none;
+  transition: border-color 130ms ease, background-color 130ms ease;
+}
+.gdialog-input::placeholder { color: var(--v-text-5); }
+/* ★★ 用户截图里输入框有**双层蓝圈**，真正的元凶有三层叠加：
+   ① 本规则给的 1px 蓝描边；
+   ② 本规则原本还带 `box-shadow: 0 0 0 2px 蓝光晕` → 第二圈；
+   ③ **`styles.css` 第 85 行的全局 `input:focus-visible { outline: 2px solid var(--blue);
+      outline-offset: 2px }`** —— 这条是本文件之后加载的，它在描边**外侧再画一圈**
+      并留 2px 间隙，于是视觉上就是"蓝框 + 缝 + 蓝框"，正是截图里那个样子。
+     只改本文件永远修不掉它（顺序在后、且是 outline 而非 border）。
+   ⇒ 修法：这里显式 `outline: none` 把全局那条盖掉（本选择器 `:focus` 与全局
+      `:focus-visible` 特异性相同，靠加载顺序本文件在后才生效 —— 见 main.tsx 的
+     import 顺序，gdialog.css 在 styles.css 之后）。同时彻底去掉 box-shadow。
+   ⇒ 聚焦只用"描边变蓝 + 背景微提亮"一条信息，不发光、不套圈。 */
+.gdialog .gdialog-input:focus,
+.gdialog .gdialog-input:focus-visible {
+  outline: none;
+  border-color: var(--v-accent-mid);
+  background: color-mix(in srgb, var(--v-accent) 4%, var(--v-surface-sunken, #1a1a1a));
+  box-shadow: none;
+}
+/* 选中文字：浏览器默认的亮蓝（Windows 用系统 accent）与全站色板完全不搭，
+   必须显式指定，否则一全选就是一块"系统蓝"。 */
+.gdialog-input::selection {
+  background: var(--v-accent-soft);
+  color: var(--v-text);
+}
+
+/* 字符计数：贴在输入框右侧内部，常态极弱、超长变警示色 */
+.gdialog-counter {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--v-text-5);
+  pointer-events: none;
+  transition: color 140ms ease;
+}
+.gdialog-counter i { font-style: normal; opacity: 0.6; }
+.gdialog-counter.is-over { color: var(--v-warn, #e0b46a); }
+
+/* 快捷名字 */
+.gdialog-suggest {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.gdialog-suggest-label {
+  font-size: 11px;
+  color: var(--v-text-5);
+  letter-spacing: 0.02em;
+}
+.gdialog-suggest-chip {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px dashed var(--v-border-strong, #3a3a3a);
+  border-radius: var(--v-radius-pill, 999px);
+  background: transparent;
+  color: var(--v-text-4);
+  font-size: 11.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.gdialog-suggest-chip:hover {
+  background: var(--v-surface-hover);
+  border-style: solid;
+  border-color: var(--v-accent-line);
+  color: var(--v-text-2);
+}
+.gdialog-input-hint {
+  margin: 7px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--v-text-5);
+  word-break: break-all;
+}
+
+/* ── 底部按钮区 ─────────────────────────────────────────── */
+/* 按钮区：右侧与正文右内边距对齐（22px），上方留 20px —— 
+   原来上下各 18px、左右 20px，和正文的 22px 差 2px，
+   在 412px 的框里会让"文字右缘"和"按钮右缘"错开一丁点，
+   这种 2px 级别的错位正是"说不上哪里丑但就是不精致"的来源。 */
+.gdialog-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 20px 22px 20px;
+}
+/* 危险对话框把「取消」推到左边，危险按钮单独在右 —— 避免误点 */
+.gdialog-foot.is-split { justify-content: space-between; }
+.gdialog-foot-right { display: flex; gap: 8px; }
+
+.gdialog-btn {
+  height: 34px;
+  padding: 0 18px;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--v-border);
+  border-radius: var(--v-radius-sm);
+  background: var(--v-surface-hover);
+  color: var(--v-text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+.gdialog-btn:hover {
+  background: var(--v-surface-active);
+  border-color: var(--v-border-strong);
+  color: var(--v-text);
+}
+.gdialog-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--v-accent-line);
+}
+
+/* 主按钮：深蓝实心 + 白字。与工具条激活按钮同一支 --v-accent-solid */
+.gdialog-btn.is-primary {
+  background: var(--v-accent-solid);
+  border-color: var(--v-accent-mid);
+  color: var(--v-text-inverse);
+  box-shadow: 0 2px 8px rgba(10, 20, 32, 0.45);
+}
+.gdialog-btn.is-primary:hover {
+  background: var(--v-accent-solid-hover);
+  border-color: var(--v-accent-hover);
+  color: var(--v-text-inverse);
+}
+
+/* 危险按钮：文字+描边戴红，底色淡红 —— 不整块染红 */
+.gdialog-btn.is-danger {
+  background: var(--v-danger-soft);
+  border-color: var(--v-danger-line);
+  color: var(--v-danger);
+}
+.gdialog-btn.is-danger:hover {
+  background: color-mix(in srgb, var(--v-danger) 20%, transparent);
+  border-color: var(--v-danger);
+  color: var(--v-text-inverse);
+}
+.gdialog-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.gdialog-btn:disabled:hover {
+  background: var(--v-surface-hover);
+  border-color: var(--v-border);
+  color: var(--v-text-2);
+}
+
+/* 窄屏：按钮区换行，主按钮占满，保证可点面积 */
+@media (max-width: 520px) {
+  .gdialog { width: 100%; }
+  .gdialog-foot { flex-direction: column-reverse; align-items: stretch; }
+  .gdialog-foot-right { flex-direction: column-reverse; }
+}

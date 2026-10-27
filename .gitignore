@@ -1,0 +1,38 @@
+# Local secrets
+config.local.json
+.env
+.env.*
+!.env.example
+
+# Runtime data and private artifacts
+data/
+logs/
+recovered/
+.screens/
+.workbuddy/
+__pycache__/
+*.py[cod]
+proj.json
+ark-video-cost-audit-*.csv
+_devcheck*.txt
+$null
+1}
+
+# Logs and temporary probe output
+*.log
+*.log.*
+_srv_*.log
+_vite_*.log
+
+# Dependencies and generated frontend output
+node_modules/
+dist/
+web-vimax/node_modules/
+web-vimax/dist/
+
+# Root-level screenshots and local audit artifacts
+/*.png
+/*.tmp
+/*.bak
+*.bak-*
+web-vimax/scripts/*.png

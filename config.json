@@ -1,0 +1,535 @@
+{
+  "ark_api_key": "",
+  "seedream_model": "doubao-seedream-5-0-pro-260628",
+  "seedream_size": "1536x1536",
+  "seedance_model": "doubao-seedance-2-0-mini-260615",
+  "seedance_ratio": "9:16",
+  "team_router_api_key": "",
+  "dashscope_api_key": "",
+  "dashscope_workspace_id": "",
+  "providers": [
+    {
+      "id": "ark",
+      "name": "火山方舟",
+      "protocol": "ark",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "api_key": "",
+      "enabled": true
+    },
+    {
+      "id": "teamorouter",
+      "name": "TeamRouter",
+      "protocol": "openai",
+      "base_url": "https://api.teamorouter.cn/v1",
+      "api_key": "",
+      "enabled": true
+    },
+    {
+      "id": "aliyun_bailian",
+      "name": "阿里云百炼 TTS",
+      "protocol": "dashscope",
+      "base_url": "https://dashscope.aliyuncs.com/api/v1",
+      "api_key": "",
+      "workspace_id": "",
+      "enabled": true
+    }
+  ],
+  "models": [
+    {
+      "id": "doubao-seedream-5-0-pro",
+      "providerId": "ark",
+      "capability": "image",
+      "label": "Seedream 5.0 Pro",
+      "remoteModel": "doubao-seedream-5-0-pro-260628",
+      "adapter": "ark_image",
+      "description": "顶级画质，多参考图与图文生成",
+      "badge": "Pro",
+      "enabled": true,
+      "defaultParams": {
+        "ratio": "1:1",
+        "clarity": "1.5K",
+        "size": "1536x1536",
+        "guidance": "中等",
+        "watermark": false
+      },
+      "params": {
+        "ratio": {
+          "type": "select",
+          "options": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "21:9"
+          ],
+          "multiple": false
+        },
+        "clarity": {
+          "type": "select",
+          "options": [
+            "1K",
+            "1.5K",
+            "2K",
+            "4K"
+          ],
+          "multiple": false
+        },
+        "guidance": {
+          "type": "select",
+          "options": [
+            "轻度",
+            "中等",
+            "高",
+            "极高",
+            "最高"
+          ],
+          "multiple": false
+        },
+        "watermark": {
+          "type": "boolean"
+        }
+      },
+      "limits": {
+        "maxRefs": 10,
+        "maxImages": 10,
+        "maxTextRefs": 10,
+        "maxPromptChars": 4000
+      }
+    },
+    {
+      "id": "doubao-seedance-2-0",
+      "providerId": "ark",
+      "capability": "video",
+      "label": "Seedance 2.0",
+      "remoteModel": "doubao-seedance-2-0-260128",
+      "adapter": "ark_video",
+      "description": "标准视频生成，最高 1080P / 15 秒",
+      "badge": "2.0",
+      "enabled": true,
+      "defaultParams": {
+        "ratio": "9:16",
+        "resolution": "480P",
+        "duration": 5,
+        "guidance": "中等",
+        "generateAudio": true,
+        "watermark": false
+      },
+      "params": {
+        "ratio": {
+          "type": "select",
+          "options": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "21:9",
+            "adaptive"
+          ],
+          "multiple": false
+        },
+        "resolution": {
+          "type": "select",
+          "options": [
+            "480P",
+            "720P",
+            "1080P"
+          ],
+          "multiple": false
+        },
+        "duration": {
+          "type": "range",
+          "min": 4,
+          "max": 15,
+          "step": 1,
+          "options": [
+            4,
+            5,
+            10,
+            15
+          ]
+        },
+        "guidance": {
+          "type": "select",
+          "options": [
+            "轻度",
+            "中等",
+            "高",
+            "极高",
+            "最高"
+          ],
+          "multiple": false
+        },
+        "generateAudio": {
+          "type": "boolean"
+        },
+        "watermark": {
+          "type": "boolean"
+        },
+        "seed": {
+          "type": "range",
+          "min": -1,
+          "max": 2147483647,
+          "step": 1
+        }
+      },
+      "limits": {
+        "maxRefs": 9,
+        "maxImages": 9,
+        "maxVideos": 3,
+        "maxAudios": 3,
+        "maxPromptChars": 8000
+      }
+    },
+    {
+      "id": "doubao-seedance-2-0-mini",
+      "providerId": "ark",
+      "capability": "video",
+      "label": "Seedance 2.0 mini",
+      "remoteModel": "doubao-seedance-2-0-mini-260615",
+      "adapter": "ark_video",
+      "description": "轻量快速，最高 720P / 15 秒",
+      "badge": "mini",
+      "enabled": true,
+      "defaultParams": {
+        "ratio": "9:16",
+        "resolution": "480P",
+        "duration": 5,
+        "guidance": "中等",
+        "generateAudio": true,
+        "watermark": false
+      },
+      "params": {
+        "ratio": {
+          "type": "select",
+          "options": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "21:9",
+            "adaptive"
+          ],
+          "multiple": false
+        },
+        "resolution": {
+          "type": "select",
+          "options": [
+            "480P",
+            "720P"
+          ],
+          "multiple": false
+        },
+        "duration": {
+          "type": "range",
+          "min": 4,
+          "max": 15,
+          "step": 1,
+          "options": [
+            4,
+            5,
+            10,
+            15
+          ]
+        },
+        "guidance": {
+          "type": "select",
+          "options": [
+            "轻度",
+            "中等",
+            "高",
+            "极高",
+            "最高"
+          ],
+          "multiple": false
+        },
+        "generateAudio": {
+          "type": "boolean"
+        },
+        "watermark": {
+          "type": "boolean"
+        },
+        "seed": {
+          "type": "range",
+          "min": -1,
+          "max": 2147483647,
+          "step": 1
+        }
+      },
+      "limits": {
+        "maxRefs": 9,
+        "maxImages": 9,
+        "maxVideos": 3,
+        "maxAudios": 3,
+        "maxPromptChars": 8000
+      }
+    },
+    {
+      "id": "doubao-seedance-2-0-fast",
+      "providerId": "ark",
+      "capability": "video",
+      "label": "Seedance 2.0 fast",
+      "remoteModel": "doubao-seedance-2-0-fast-260128",
+      "adapter": "ark_video",
+      "description": "极速出片，最高 720P / 15 秒",
+      "badge": "fast",
+      "enabled": true,
+      "defaultParams": {
+        "ratio": "9:16",
+        "resolution": "480P",
+        "duration": 5,
+        "guidance": "中等",
+        "generateAudio": true,
+        "watermark": false
+      },
+      "params": {
+        "ratio": {
+          "type": "select",
+          "options": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "21:9",
+            "adaptive"
+          ],
+          "multiple": false
+        },
+        "resolution": {
+          "type": "select",
+          "options": [
+            "480P",
+            "720P"
+          ],
+          "multiple": false
+        },
+        "duration": {
+          "type": "range",
+          "min": 4,
+          "max": 15,
+          "step": 1,
+          "options": [
+            4,
+            5,
+            10,
+            15
+          ]
+        },
+        "guidance": {
+          "type": "select",
+          "options": [
+            "轻度",
+            "中等",
+            "高",
+            "极高",
+            "最高"
+          ],
+          "multiple": false
+        },
+        "generateAudio": {
+          "type": "boolean"
+        },
+        "watermark": {
+          "type": "boolean"
+        },
+        "seed": {
+          "type": "range",
+          "min": -1,
+          "max": 2147483647,
+          "step": 1
+        }
+      },
+      "limits": {
+        "maxRefs": 9,
+        "maxImages": 9,
+        "maxVideos": 3,
+        "maxAudios": 3,
+        "maxPromptChars": 8000
+      }
+    },
+    {
+      "id": "doubao-seedance-2-5",
+      "providerId": "ark",
+      "capability": "video",
+      "label": "Seedance 2.5",
+      "remoteModel": "doubao-seedance-2-5-260628",
+      "adapter": "ark_video",
+      "description": "新一代视频模型，最高 1080P / 30 秒",
+      "badge": "2.5",
+      "enabled": true,
+      "defaultParams": {
+        "ratio": "9:16",
+        "resolution": "480P",
+        "duration": 5,
+        "guidance": "中等",
+        "generateAudio": true,
+        "watermark": false
+      },
+      "params": {
+        "ratio": {
+          "type": "select",
+          "options": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "21:9",
+            "adaptive"
+          ],
+          "multiple": false
+        },
+        "resolution": {
+          "type": "select",
+          "options": [
+            "480P",
+            "720P",
+            "1080P"
+          ],
+          "multiple": false
+        },
+        "duration": {
+          "type": "range",
+          "min": 4,
+          "max": 30,
+          "step": 1,
+          "options": [
+            4,
+            5,
+            10,
+            15,
+            20,
+            30
+          ]
+        },
+        "guidance": {
+          "type": "select",
+          "options": [
+            "轻度",
+            "中等",
+            "高",
+            "极高",
+            "最高"
+          ],
+          "multiple": false
+        },
+        "generateAudio": {
+          "type": "boolean"
+        },
+        "watermark": {
+          "type": "boolean"
+        },
+        "seed": {
+          "type": "range",
+          "min": -1,
+          "max": 2147483647,
+          "step": 1
+        }
+      },
+      "limits": {
+        "maxRefs": 30,
+        "maxImages": 30,
+        "maxVideos": 10,
+        "maxAudios": 10,
+        "maxPromptChars": 12000
+      }
+    },
+    {
+      "id": "deepseek-flash-1017",
+      "providerId": "teamorouter",
+      "capability": "text",
+      "label": "DeepSeek V4.1 Flash 1017",
+      "remoteModel": "deepseek-flash-1017",
+      "adapter": "openai_chat",
+      "description": "OpenAI 兼容对话接口，适合剧本改写与结构化输出",
+      "badge": "Text",
+      "enabled": true,
+      "defaultParams": {
+        "maxTokens": 3000,
+        "temperature": 0.7
+      },
+      "params": {
+        "maxTokens": {
+          "type": "range",
+          "min": 256,
+          "max": 32000,
+          "step": 256
+        },
+        "temperature": {
+          "type": "range",
+          "min": 0,
+          "max": 2,
+          "step": 0.1
+        }
+      },
+      "limits": {
+        "maxRefs": 20,
+        "maxTextRefs": 20,
+        "maxPromptChars": 32000
+      }
+    },
+    {
+      "id": "cosyvoice-v3-5-flash",
+      "providerId": "aliyun_bailian",
+      "capability": "audio",
+      "label": "CosyVoice v3.5 Flash",
+      "remoteModel": "cosyvoice-v3.5-flash",
+      "adapter": "dashscope_tts",
+      "description": "阿里云百炼音色设计与非实时语音合成",
+      "badge": "TTS",
+      "enabled": true,
+      "defaultParams": {
+        "ttsMode": "design",
+        "ttsVoice": "",
+        "voiceId": "",
+        "outputFormat": "wav",
+        "sampleRate": 24000,
+        "previewDuration": 4.5
+      },
+      "params": {
+        "ttsMode": {
+          "type": "select",
+          "options": [
+            "design",
+            "speech"
+          ],
+          "multiple": false
+        },
+        "outputFormat": {
+          "type": "select",
+          "options": [
+            "wav",
+            "mp3"
+          ],
+          "multiple": false
+        },
+        "sampleRate": {
+          "type": "select",
+          "options": [
+            "16000",
+            "22050",
+            "24000",
+            "44100",
+            "48000"
+          ],
+          "multiple": false
+        },
+        "previewDuration": {
+          "type": "range",
+          "min": 1,
+          "max": 30,
+          "step": 0.5
+        }
+      },
+      "limits": {
+        "maxRefs": 10,
+        "maxImages": 3,
+        "maxTextRefs": 10,
+        "maxPromptChars": 4000
+      }
+    }
+  ]
+}

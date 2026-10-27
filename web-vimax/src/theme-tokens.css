@@ -1,0 +1,1493 @@
+/* ============================================================
+   全局设计令牌（Design Tokens）· 2026-10-25 建立
+   ============================================================
+
+   ★ 用户诉求原话：
+     「看下还有哪些颜色不协调的 统一给我优化了
+      最好是做成全局统一主题，以后加东西也会自动，不要单独改」
+
+   ★ 这个文件就是那个"全局统一主题"。它是**唯一**的颜色真源：
+     新加任何组件，只要用下面的 var(--v-*)，就自动和全站一致，
+     不需要再单独挑色、也不会再出现"这个面板 #202020、那个面板 #191919"。
+
+   ★ 为什么单独建文件而不是塞进 ui-refinements.css：
+     ① 加载顺序：它在 main.tsx 里**最后**引入，能盖住前面所有历史声明；
+     ② 职责清晰：以后调色只改这一个文件，不用在 4600 行的精修表里翻找；
+     ③ 令牌名全部带 `--v-` 前缀（v = vimax），与项目原有的
+        `--surface/--ink/--line/--acc` 完全隔离，不会互相污染 ——
+        那套旧变量被 styles.css / immersive-theme.css / brand-themes.css
+        反复重定义（同一变量三处不同值），已经不可靠，只能当兜底。
+
+   ★★ 层级设计（这是"看着协调"的根本，不是随便取几个灰）：
+     画布底  #121212  ─ 最暗，退到最后
+     卡片    #262626→#1b1b1b 渐变 ─ 最亮，是内容主体
+     面板    #202020  ─ 工具条/顶栏/统计/小地图/图例，一层浮在画布上
+     浮层    #202020  ─ 下拉/菜单/弹窗，靠描边+阴影与面板区分（不靠再提亮）
+     交互    #2a2a2a  ─ 悬停底
+     描边    #2e2e2e  ─ 只用在浮层/面板边缘
+     分隔    #2b2b2b  ─ 面板内部分隔线
+
+   ★★★ 为什么"面板"和"浮层"用同一个底色：
+     之前面板是 #202020、浮层是 #1c1c1c、小地图 #191919、统计条 #1a1a1a、
+     项目设置菜单 #262626 —— 五个值挤在 16 个灰阶以内，单看每块都"还行"，
+     并排就是用户看到的"颜色不协调"。浮层的层级感交给**阴影 + 描边**表达，
+     底色跟面板对齐，才不会出现"哪个更亮取决于当初写代码时的心情"。
+
+   ★ 颜色断言（改动后自查）：同一屏内不应出现本文件未列出的中性灰底。
+     工具：`.screens/audit-surface.js` 会列出所有浮动容器的实际底色。
+   ============================================================ */
+
+:root {
+  /* ── 画布与表面（由暗到亮，严格 5 档，不再有第 6 档） ───────────── */
+  --v-canvas: #121212;        /* 画布底 / body */
+  --v-sidebar: #171717;       /* 侧栏：比画布亮 1 档，保留极微弱的分层感 */
+  --v-surface-sunken: #1a1a1a;/* 沉底：输入框、内嵌列表区 */
+  --v-surface: #202020;       /* 面板 + 浮层，统一一支 */
+  --v-surface-hover: #2a2a2a; /* 悬停底 / 选中底 */
+  --v-surface-active: #333333;/* 按下 / 强选中 */
+  /* ★ 2026-10-25 新增：**选中底**（与"按下"分开）。
+     用户原话「按钮选中颜色做成这种颜色会不会没那么刺眼更简洁清爽」，并附截图。
+     实测那张截图的像素：面板底 #262626、选中项 #373737、未选中项 #262626，
+     选中项文字纯白、右侧一个白 ✓ —— **整个选中态没有一个蓝像素**。
+     ⇒ 选中不靠"染色"，只靠**明度提升两档**；蓝色退回它该待的地方（连线/描边）。
+     为什么不用现成的 --v-surface-active(#333333)：
+       那个语义是"手指正按下去"的瞬时态，会和"选中"在同一屏里出现（选中项被按下），
+       两者必须能分开。#373737 严格取自截图，比 active 再亮一点，
+       在 #202020 面板上肉眼可辨"我选中了谁"，又不会像蓝底那样抢注意力。 */
+  --v-selected: #373737;      /* 选中底：严格采样自用户截图 */
+
+  /* 卡片专用三段色阶（顶亮 → 中 → 底沉，模拟顶光）
+     ★ 卡片比面板亮，是因为"卡片是内容主体、面板是工具"，层次靠明度差表达。
+     改卡片配色只改这三个（媒体卡/备注卡共用同一套语义，各自可覆盖）。 */
+  --v-card-1: #272727;
+  --v-card-2: #202020;
+  --v-card-3: #1b1b1b;
+
+  /* ── 描边（只在必须画线时才用；本项目整体是无边框方案） ─────────── */
+  --v-border: #2e2e2e;        /* 浮层/面板边缘 */
+  --v-border-strong: #3a3a3a; /* 悬停/聚焦时的边缘 */
+  --v-divider: #2b2b2b;       /* 面板内部分隔线 */
+  --v-border-hair: rgba(255, 255, 255, 0.07); /* 极淡内高光/描边 */
+
+  /* ── 文字（5 档，覆盖所有层级；不再引入第 6 种灰字） ────────────── */
+  --v-text: #e6e6e8;          /* 主字：标题、正文强调 */
+  --v-text-2: #c9c9cc;        /* 正文 */
+  --v-text-3: #a8a8ab;        /* 次要：参数、计数 */
+  --v-text-4: #8a8a8f;        /* 辅助：标签、占位说明 */
+  --v-text-5: #757579;        /* 最弱：单位、提示 */
+  --v-text-inverse: #ffffff;  /* 蓝底/深底上的字 */
+
+  /* ── 强调蓝（全站唯一色相 h212，只有"深/亮"两档用途） ─────────────
+     ★★ 用户原话（两次）：
+        「这个蓝色是不是可以统一深蓝色会更看得清楚些？」
+        「蓝色要我连线那种蓝色」→ 并附了连线流光的截图。
+     所以这里不是自己挑色，而是**从用户截图的连线光晕里采样**得来的：
+        · 扫描其截图，蓝色像素集中在 H=210~215、S≈0.6，主色 #264263（8660 px，最大簇）
+        · 亮部过渡 #51739a → #7da7d3 → 点芯 #8dbae7
+     取 H=212 作为全站唯一蓝色相，只分两档明度：
+        · bright  #4d9fff  —— 连线/描边/发光/深底上的蓝字（要在 #121212 上跳出来）
+        · deep    #264263  —— 实心填充（蓝底白字按钮、选中态底）
+     ★ 为什么实心填充不用连线那档亮蓝 #4d9fff：
+        白字压 #4d9fff 的对比度只有 2.72:1（WCAG AA 要 4.5:1）→ 白字发虚，
+        这正是用户说"看不清"的原因。#264263 上白字对比度 8.9:1，非常清晰。
+     ★ 为什么描边/连线不用深蓝：深蓝 L≈0.054，画布 #121212 是 L≈0.006，
+        1px 细线在深底上几乎看不见 —— 连线的悬停高亮、端口高亮、选中描边
+        都靠亮蓝那一档成型。
+     ⇒ 记住这条：**填充用 deep，线条/发光用 bright**。 */
+  --v-blue-h: 212;                       /* 全站唯一蓝色相（采样自连线光晕） */
+  --v-accent: #4d9fff;                   /* bright：线与发光 */
+  --v-accent-hover: #3d8ff0;
+  --v-accent-solid: #264263;             /* deep：实心填充，白字 8.9:1 */
+  --v-accent-solid-hover: #2f5279;       /* 悬浮提亮一档（仍远深于 #4d9fff） */
+  --v-accent-soft: rgba(38, 66, 99, 0.55);  /* 选中项的淡蓝底（取自连线光晕深部） */
+  --v-accent-line: rgba(77, 159, 255, 0.45);
+  --v-accent-glow: rgba(77, 159, 255, 0.24);
+  /* ★ mid 档（2026-10-25 补）：**用于"细线/小字"的蓝**，介于 deep 与 bright 之间。
+     为什么必须有这一档 —— 用户反馈「还有没改过来的」（指出左侧"剧集"下划线、
+     "整剧总览"选中竖条、底部"图例"文字仍是亮蓝）。这三处都是需要改的，
+     但不能直接换成 deep：
+       · deep #264263 在 #202020 上对比度只有 **1.58:1**，2px 细线和 12px 小字
+         会直接消失在底色里（实测肉眼看不见），等于把功能删了；
+       · bright #4d9fff 在 #202020 上是 5.99:1 —— 够清楚，但用户觉得"太跳"。
+     mid 取值 #5c8fc7（H211 S0.54 V0.78）：对比度 **4.82:1** 达 WCAG AA，
+     且饱和度比 bright(0.70) 低一档 —— 从"发光"降为"着色"，
+     像连线那种沉稳的蓝，而不是电子屏幕的荧光蓝。 */
+  --v-accent-mid: #5c8fc7;
+  --v-accent-mid-hover: #6ea3dd;
+  /* 中性蓝灰：连线常态基色，与本主题同色相（H≈213） */
+  --v-edge-tone: #6b7684;
+
+  /* ── 语义色（各一支，亮度对齐；不要再用 #f87171/#3ecf8e 这类旧值） ──
+     ★ 用户原话「这个删除粉色 怎么看着都不协调」——
+       根因有两层：
+       ① 危险色被用在**不该抢注意力**的地方（勾选框 accent-color 染成粉块）；
+       ② 危险色本身饱和度过高（#e07878 在 #202020 上的对比太"艳"），
+          而整站是低饱和中性灰，一块高饱和粉就成了全屏唯一"彩色的东西"。
+     规则：① 语义色只用来"标记状态"或"标记不可逆动作"，禁止染控件本体；
+          ② 危险色降到与 --v-text-3 同亮度区间，饱和再压一档 ——
+             它能被认出是"红"，但不会从灰调里跳出来。
+     最终值 #cf8b8b：HSV 饱和度 33%（原 #e07878 是 46%），
+     与 --v-warn #e0b46a（41%）、--v-success #6fd39c（47%）同处一档。 */
+  --v-success: #6fd39c;
+  --v-success-soft: rgba(111, 211, 156, 0.12);
+  --v-warn: #e0b46a;
+  --v-warn-soft: rgba(224, 180, 106, 0.12);
+  --v-danger: #cf8b8b;
+  --v-danger-soft: rgba(207, 139, 139, 0.12);
+  --v-danger-line: rgba(207, 139, 139, 0.34);
+
+  /* ── 浮层投影（各级共用，不要每个组件自己编一套） ─────────────── */
+  --v-shadow-panel: 0 12px 32px rgba(0, 0, 0, 0.62), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  --v-shadow-overlay: 0 18px 48px rgba(0, 0, 0, 0.7);
+  --v-shadow-card: 0 12px 28px -10px rgba(0, 0, 0, 0.85), 0 3px 8px -2px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.055);
+
+  /* ── 圆角（一套语义，避免 6/7/8/9/10/12/14/16 混用） ──────────── */
+  --v-radius-sm: 7px;   /* 小按钮、菜单项 */
+  --v-radius-md: 10px;  /* 输入框、分组容器 */
+  --v-radius-lg: 12px;  /* 面板、浮层 */
+  --v-radius-xl: 16px;  /* 卡片 */
+  --v-radius-pill: 999px;
+
+  /* ── 底纹（画布背景，各视图共用） ─────────────────────────────── */
+  --v-dot: rgba(255, 255, 255, 0.075);
+  --v-grid-line: rgba(255, 255, 255, 0.045);
+
+  /* ── 状态点（媒体卡"● 已生成/待生成"前面那个小圆点）───────────────
+     ★ 为什么单独一支、不复用 --v-text-5：
+        圆点是**图形**不是文字。文字可以用 0.179 明度（有字号撑住可读性），
+        但 5px 的小圆点在 #202020 上用同一明度会糊进底色、看不出还有个点。
+        原值 #5f6f63/#5f6c80 也是因为这个才比正文亮。
+     取 #6f6f74（L≈0.182 但更中性，已去掉原来的蓝调）。 */
+  --v-dot-idle: #6f6f74;
+  --v-minimap-image: #506b82;
+  --v-minimap-video: #8a7359;
+  --v-minimap-audio: #607b6b;
+  --v-minimap-text: #666d77;
+}
+
+/* ============================================================
+   主题变体：只覆盖 --v-* 真源，组件不写任何主题专用色
+   ============================================================ */
+html[data-theme='dark'][data-variant='forest'] {
+  --v-canvas: #111714;
+  --v-sidebar: #151d19;
+  --v-surface-sunken: #18231d;
+  --v-surface: #1d2923;
+  --v-surface-hover: #27372f;
+  --v-surface-active: #31443a;
+  --v-selected: #35493f;
+  --v-card-1: #24352c;
+  --v-card-2: #1e2d26;
+  --v-card-3: #19251f;
+  --v-border: #30443a;
+  --v-border-strong: #415b4d;
+  --v-divider: #2a3b32;
+  --v-border-hair: rgba(220, 244, 231, 0.075);
+  --v-text: #e8f0eb;
+  --v-text-2: #cbd8d1;
+  --v-text-3: #a7b8ae;
+  --v-text-4: #879a90;
+  --v-text-5: #71847a;
+  --v-text-inverse: #ffffff;
+  --v-blue-h: 160;
+  --v-accent: #67b99a;
+  --v-accent-hover: #55a385;
+  --v-accent-solid: #285845;
+  --v-accent-solid-hover: #336b55;
+  --v-accent-soft: rgba(40, 88, 69, 0.55);
+  --v-accent-line: rgba(103, 185, 154, 0.45);
+  --v-accent-glow: rgba(103, 185, 154, 0.24);
+  --v-accent-mid: #72a78f;
+  --v-accent-mid-hover: #86bca3;
+  --v-edge-tone: #73897e;
+  --v-success: #7bc49d;
+  --v-success-soft: rgba(123, 196, 157, 0.12);
+  --v-warn: #d4b676;
+  --v-warn-soft: rgba(212, 182, 118, 0.12);
+  --v-danger: #ca8f8b;
+  --v-danger-soft: rgba(202, 143, 139, 0.12);
+  --v-danger-line: rgba(202, 143, 139, 0.34);
+  --v-shadow-panel: 0 12px 32px rgba(0, 0, 0, 0.58), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  --v-shadow-overlay: 0 18px 48px rgba(0, 0, 0, 0.68);
+  --v-shadow-card: 0 12px 28px -10px rgba(0, 0, 0, 0.78), 0 3px 8px -2px rgba(0, 0, 0, 0.45);
+  --v-dot: rgba(206, 235, 218, 0.07);
+  --v-grid-line: rgba(206, 235, 218, 0.045);
+  --v-dot-idle: #71867b;
+  --v-minimap-image: #53776a;
+  --v-minimap-video: #786b51;
+  --v-minimap-audio: #557c66;
+  --v-minimap-text: #586961;
+  --logo-bg: #dcebe3;
+  --logo-border: #89b7a2;
+  --logo-icon: #244b3c;
+}
+
+html[data-theme='dark'][data-variant='copper'] {
+  --v-canvas: #171311;
+  --v-sidebar: #1d1815;
+  --v-surface-sunken: #241d19;
+  --v-surface: #2a221d;
+  --v-surface-hover: #362c26;
+  --v-surface-active: #43372f;
+  --v-selected: #493b32;
+  --v-card-1: #342a24;
+  --v-card-2: #2b231e;
+  --v-card-3: #241d19;
+  --v-border: #463a32;
+  --v-border-strong: #5b4a3e;
+  --v-divider: #3b3029;
+  --v-border-hair: rgba(255, 239, 224, 0.075);
+  --v-text: #f0e9e3;
+  --v-text-2: #d9cec5;
+  --v-text-3: #b9aaa0;
+  --v-text-4: #98887e;
+  --v-text-5: #806f65;
+  --v-text-inverse: #ffffff;
+  --v-blue-h: 29;
+  --v-accent: #c08b63;
+  --v-accent-hover: #ad7952;
+  --v-accent-solid: #6b452f;
+  --v-accent-solid-hover: #7d5339;
+  --v-accent-soft: rgba(107, 69, 47, 0.55);
+  --v-accent-line: rgba(192, 139, 99, 0.45);
+  --v-accent-glow: rgba(192, 139, 99, 0.2);
+  --v-accent-mid: #b38262;
+  --v-accent-mid-hover: #c59674;
+  --v-edge-tone: #8a7a6f;
+  --v-success: #8bb18f;
+  --v-success-soft: rgba(139, 177, 143, 0.12);
+  --v-warn: #d2aa68;
+  --v-warn-soft: rgba(210, 170, 104, 0.12);
+  --v-danger: #cf8e88;
+  --v-danger-soft: rgba(207, 142, 136, 0.12);
+  --v-danger-line: rgba(207, 142, 136, 0.34);
+  --v-shadow-panel: 0 12px 32px rgba(10, 5, 3, 0.58), inset 0 1px 0 rgba(255, 245, 235, 0.045);
+  --v-shadow-overlay: 0 18px 48px rgba(10, 5, 3, 0.68);
+  --v-shadow-card: 0 12px 28px -10px rgba(10, 5, 3, 0.8), 0 3px 8px -2px rgba(10, 5, 3, 0.48);
+  --v-dot: rgba(255, 235, 216, 0.075);
+  --v-grid-line: rgba(255, 235, 216, 0.045);
+  --v-dot-idle: #8b776a;
+  --v-minimap-image: #816b5c;
+  --v-minimap-video: #966b4b;
+  --v-minimap-audio: #6f7760;
+  --v-minimap-text: #73645b;
+  --logo-bg: #efe2d8;
+  --logo-border: #c5a992;
+  --logo-icon: #5b3b29;
+}
+
+html[data-theme='dark'][data-variant='aigc'] {
+  --v-canvas: #0f1219;
+  --v-sidebar: #141821;
+  --v-surface-sunken: #171c26;
+  --v-surface: #1c2230;
+  --v-surface-hover: #252d3d;
+  --v-surface-active: #303a4e;
+  --v-selected: #334056;
+  --v-card-1: #242c3a;
+  --v-card-2: #1d2431;
+  --v-card-3: #181e29;
+  --v-border: #303b4e;
+  --v-border-strong: #43526b;
+  --v-divider: #293447;
+  --v-border-hair: rgba(219, 231, 255, 0.08);
+  --v-text: #e8edf8;
+  --v-text-2: #c9d2e3;
+  --v-text-3: #9dabc1;
+  --v-text-4: #7f8da3;
+  --v-text-5: #69778d;
+  --v-text-inverse: #ffffff;
+  --v-blue-h: 214;
+  --v-accent: #5ea7ff;
+  --v-accent-hover: #4a96ee;
+  --v-accent-solid: #274f7e;
+  --v-accent-solid-hover: #32618f;
+  --v-accent-soft: rgba(39, 79, 126, 0.58);
+  --v-accent-line: rgba(94, 167, 255, 0.45);
+  --v-accent-glow: rgba(94, 167, 255, 0.24);
+  --v-accent-mid: #6d9bd1;
+  --v-accent-mid-hover: #84afe2;
+  --v-edge-tone: #6f8299;
+  --v-success: #6fd0b0;
+  --v-success-soft: rgba(111, 208, 176, 0.12);
+  --v-warn: #dfb777;
+  --v-warn-soft: rgba(223, 183, 119, 0.12);
+  --v-danger: #d08b98;
+  --v-danger-soft: rgba(208, 139, 152, 0.12);
+  --v-danger-line: rgba(208, 139, 152, 0.34);
+  --v-shadow-panel: 0 12px 32px rgba(0, 0, 0, 0.64), inset 0 1px 0 rgba(240, 246, 255, 0.05);
+  --v-shadow-overlay: 0 18px 48px rgba(0, 0, 0, 0.72);
+  --v-shadow-card: 0 12px 28px -10px rgba(0, 0, 0, 0.86), 0 3px 8px -2px rgba(0, 0, 0, 0.5);
+  --v-dot: rgba(198, 219, 255, 0.075);
+  --v-grid-line: rgba(198, 219, 255, 0.045);
+  --v-dot-idle: #718095;
+  --v-minimap-image: #4f6684;
+  --v-minimap-video: #81705c;
+  --v-minimap-audio: #55786f;
+  --v-minimap-text: #5c687a;
+  --logo-bg: #e5edfb;
+  --logo-border: #9bb7df;
+  --logo-icon: #335b91;
+}
+
+html[data-theme='light'][data-variant='light'] {
+  --v-canvas: #eef1f5;
+  --v-sidebar: #f8f9fb;
+  --v-surface-sunken: #f1f3f6;
+  --v-surface: #ffffff;
+  --v-surface-hover: #f1f4f8;
+  --v-surface-active: #e7ebf1;
+  --v-selected: #e5eaf1;
+  --v-card-1: #ffffff;
+  --v-card-2: #f8fafc;
+  --v-card-3: #f2f5f8;
+  --v-border: #d8dee7;
+  --v-border-strong: #c3ccd8;
+  --v-divider: #e3e8ef;
+  --v-border-hair: rgba(15, 23, 42, 0.08);
+  --v-text: #1e2733;
+  --v-text-2: #354151;
+  --v-text-3: #536175;
+  --v-text-4: #6f7c8e;
+  --v-text-5: #8b97a6;
+  --v-text-inverse: #ffffff;
+  --v-blue-h: 216;
+  --v-accent: #2f6feb;
+  --v-accent-hover: #255fc8;
+  --v-accent-solid: #2458b8;
+  --v-accent-solid-hover: #1f4ea4;
+  --v-accent-soft: rgba(36, 88, 184, 0.12);
+  --v-accent-line: rgba(47, 111, 235, 0.38);
+  --v-accent-glow: rgba(47, 111, 235, 0.16);
+  --v-accent-mid: #4a74b6;
+  --v-accent-mid-hover: #6289c6;
+  --v-edge-tone: #7f8ea2;
+  --v-success: #2f8a5c;
+  --v-success-soft: rgba(47, 138, 92, 0.1);
+  --v-warn: #b5781f;
+  --v-warn-soft: rgba(181, 120, 31, 0.1);
+  --v-danger: #b45151;
+  --v-danger-soft: rgba(180, 81, 81, 0.1);
+  --v-danger-line: rgba(180, 81, 81, 0.28);
+  --v-shadow-panel: 0 12px 32px rgba(32, 45, 65, 0.13), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --v-shadow-overlay: 0 18px 48px rgba(32, 45, 65, 0.18);
+  --v-shadow-card: 0 12px 28px -12px rgba(32, 45, 65, 0.24), 0 3px 8px -2px rgba(32, 45, 65, 0.1);
+  --v-dot: rgba(15, 23, 42, 0.12);
+  --v-grid-line: rgba(15, 23, 42, 0.07);
+  --v-dot-idle: #8b97a6;
+  --v-minimap-image: #6f89a8;
+  --v-minimap-video: #a47f5f;
+  --v-minimap-audio: #6d927f;
+  --v-minimap-text: #7a8492;
+  --logo-bg: #ffffff;
+  --logo-border: #c9d2df;
+  --logo-icon: #263449;
+}
+
+/* Light theme needs a few component-level token assignments because older
+   card implementations still define local --card-c* values. */
+html[data-theme='light'][data-variant='light'] .canvas-node.canvas-media-node .canvas-media-card {
+  --card-c1: var(--v-card-1);
+  --card-c2: var(--v-card-2);
+  --card-c3: var(--v-card-3);
+  box-shadow: var(--v-shadow-card);
+}
+html[data-theme='light'][data-variant='light'] .canvas-node.canvas-media-node:not(.is-active):not(.is-done):not(.is-busy):not(.is-failed) .canvas-media-card:hover {
+  --card-c1: #ffffff;
+  --card-c2: var(--v-surface-hover);
+  --card-c3: var(--v-surface-active);
+}
+html[data-theme='light'][data-variant='light'] .canvas-media-node.is-done .canvas-media-card {
+  --card-c1: var(--v-card-1);
+  --card-c2: var(--v-card-2);
+  --card-c3: var(--v-card-3);
+}
+html[data-theme='light'][data-variant='light'] .canvas-media-node.is-busy .canvas-media-card {
+  --card-c1: #fffaf1;
+  --card-c2: #faf4e9;
+  --card-c3: #f4ecdf;
+}
+html[data-theme='light'][data-variant='light'] .canvas-media-node.is-failed .canvas-media-card {
+  --card-c1: #fff7f7;
+  --card-c2: #faeeee;
+  --card-c3: #f4e6e6;
+}
+html[data-theme='light'][data-variant='light'] .canvas-media-node.is-active .canvas-media-card {
+  --card-c1: #f2f6ff;
+  --card-c2: #eaf1ff;
+  --card-c3: #e1ebfb;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--v-accent) 18%, transparent), var(--v-shadow-card);
+}
+html[data-theme='light'][data-variant='light'] .canvas-media-node.is-text-node .canvas-media-card.is-text-card {
+  --card-c1: #ffffff;
+  --card-c2: #f8fafc;
+  --card-c3: #f1f4f8;
+}
+html[data-theme='light'][data-variant='light'] .canvas-media-node.is-text-node .canvas-media-card.is-text-editing {
+  --card-c1: #ffffff;
+  --card-c2: #f4f7fb;
+  --card-c3: #edf1f7;
+}
+html[data-theme='light'][data-variant='light'] .canvas-node.canvas-media-node .canvas-media-placeholder {
+  background:
+    radial-gradient(130% 100% at 50% 0%, rgba(255, 255, 255, 0.8), transparent 64%),
+    var(--v-card-3);
+  color: var(--v-text-4);
+}
+html[data-theme='light'][data-variant='light'] .canvas-node.canvas-media-node .canvas-media-placeholder-ico {
+  color: var(--v-text-3);
+  background: linear-gradient(180deg, #ffffff, var(--v-surface-hover));
+  box-shadow: 0 2px 7px rgba(32, 45, 65, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* Audio cards must inherit the same stateful card surface as image/video cards.
+   Older rules hard-coded a near-black shell, which stayed black in the light
+   theme and visibly broke the shared canvas color system. */
+.canvas-audio-shell {
+  background:
+    radial-gradient(120% 100% at 50% 0%, var(--v-border-hair), transparent 68%),
+    linear-gradient(
+      180deg,
+      var(--card-c1, var(--v-card-1)) 0%,
+      var(--card-c2, var(--v-card-2)) 58%,
+      var(--card-c3, var(--v-card-3)) 100%
+    );
+  color: var(--v-text-2);
+}
+.canvas-audio-note {
+  color: var(--v-text-2);
+  background: var(--v-surface-hover);
+  box-shadow: inset 0 1px 0 var(--v-border-hair);
+}
+.canvas-audio-title {
+  color: var(--v-text-3);
+}
+.canvas-audio-wave i {
+  background: var(--v-border-strong);
+}
+.canvas-audio-wave i.is-played,
+.canvas-audio-shell.is-playing .canvas-audio-wave i.is-played {
+  background: var(--v-text-2);
+}
+.canvas-audio-controls {
+  color: var(--v-text-2);
+}
+.canvas-audio-controls button {
+  color: var(--v-text);
+  background: var(--v-surface-hover);
+}
+.canvas-audio-controls button:hover {
+  color: var(--v-text);
+  background: var(--v-surface-active);
+}
+.canvas-audio-controls span {
+  color: var(--v-text-4);
+}
+.canvas-audio-progress::-webkit-slider-runnable-track {
+  background: linear-gradient(
+    to right,
+    var(--v-text-2) 0,
+    var(--v-text-2) var(--audio-progress, 0%),
+    color-mix(in srgb, var(--v-text) 16%, transparent) var(--audio-progress, 0%),
+    color-mix(in srgb, var(--v-text) 16%, transparent) 100%
+  );
+}
+.canvas-audio-progress::-webkit-slider-thumb {
+  background: var(--v-text);
+}
+.canvas-audio-progress::-moz-range-track {
+  background: color-mix(in srgb, var(--v-text) 16%, transparent);
+}
+.canvas-audio-progress::-moz-range-progress {
+  background: var(--v-text-2);
+}
+.canvas-audio-progress::-moz-range-thumb {
+  background: var(--v-text);
+}
+
+/* Asset tray previews should fill their fixed slots instead of letterboxing. */
+.canvas-tray-thumb {
+  display: block;
+  object-fit: cover;
+  object-position: center;
+}
+.canvas-tray-thumb-wrap {
+  width: 44px;
+  height: 44px;
+  flex-basis: 44px;
+  border-radius: 9px;
+}
+
+/* Remaining high-frequency controls that still carried their own dark palette. */
+.shell-tools-pick {
+  color: var(--v-text-3) !important;
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+.shell-tools-pick:hover:not(:disabled) {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border-strong) !important;
+}
+
+.canvas-task-center-trigger.is-open {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+}
+.canvas-task-center-trigger i {
+  color: var(--v-text-inverse) !important;
+  background: var(--v-accent-solid) !important;
+}
+.canvas-task-center {
+  color: var(--v-text-2) !important;
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-overlay) !important;
+}
+.canvas-task-center > header {
+  border-bottom-color: var(--v-divider) !important;
+}
+.canvas-task-center-title {
+  color: var(--v-text) !important;
+}
+.canvas-task-center-title em,
+.canvas-task-center-empty,
+.canvas-task-item-meta {
+  color: var(--v-text-5) !important;
+}
+.canvas-task-center > header button {
+  color: var(--v-text-4) !important;
+}
+.canvas-task-center > header button:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+}
+.canvas-task-item {
+  color: var(--v-text-2) !important;
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+.canvas-task-item-head strong {
+  color: var(--v-text-2) !important;
+}
+.canvas-task-item-head > span {
+  color: var(--v-text-4) !important;
+}
+.canvas-task-item.is-succeeded .canvas-task-item-head > span {
+  color: var(--v-success) !important;
+}
+.canvas-task-item.is-failed .canvas-task-item-head > span,
+.canvas-task-item.is-interrupted .canvas-task-item-head > span,
+.canvas-task-item p {
+  color: var(--v-danger) !important;
+}
+.canvas-task-item-phase {
+  background: var(--v-surface-hover) !important;
+}
+.canvas-task-item-phase i {
+  background: var(--v-accent-mid) !important;
+}
+.canvas-task-item-phase span {
+  color: var(--v-text-3) !important;
+}
+.canvas-task-item-actions button {
+  color: var(--v-text-3) !important;
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border) !important;
+}
+.canvas-task-item-actions button:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-active) !important;
+  border-color: var(--v-border-strong) !important;
+}
+.canvas-task-item-actions button.is-retry {
+  color: var(--v-text-inverse) !important;
+  background: var(--v-accent-solid) !important;
+  border-color: var(--v-accent-solid) !important;
+}
+
+.canvas-text-reader {
+  color: var(--v-text-2) !important;
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-overlay) !important;
+}
+.canvas-text-reader > header {
+  border-bottom-color: var(--v-divider) !important;
+}
+.canvas-text-reader > header strong,
+.canvas-text-reader pre {
+  color: var(--v-text) !important;
+}
+.canvas-text-reader > header span {
+  color: var(--v-text-4) !important;
+}
+.canvas-text-reader > header button {
+  color: var(--v-text-3) !important;
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border) !important;
+}
+.canvas-text-reader > header button:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-active) !important;
+  border-color: var(--v-border-strong) !important;
+}
+
+.jim-model-search {
+  color: var(--v-text-4) !important;
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+.jim-model-search input {
+  color: var(--v-text) !important;
+}
+.jim-model-search input::placeholder,
+.jim-model-search button {
+  color: var(--v-text-5) !important;
+}
+.jim-tool-sep {
+  background: var(--v-divider) !important;
+}
+.jim-gen:disabled {
+  color: var(--v-text-5) !important;
+  background: var(--v-surface-hover) !important;
+}
+.jim-ref-slot {
+  color: var(--v-text) !important;
+  background: color-mix(in srgb, var(--v-surface) 84%, transparent) !important;
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--v-canvas) 28%, transparent);
+}
+.jim-ref-thumb,
+.jim-ref-row .jim-add,
+.jim-ref-tile {
+  color: var(--v-text-4) !important;
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+.jim-ref-thumb:hover,
+.jim-ref-row .jim-add:hover,
+.jim-ref-row .jim-add.is-open,
+.jim-ref-tile:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border-strong) !important;
+}
+.jim-ref-thumb i,
+.jim-ref-role,
+.jim-ref-hint,
+.jim-ref-hint kbd,
+.jim-ref-hint em {
+  color: var(--v-text-5) !important;
+}
+.jim-ref-thumb button:hover {
+  color: var(--v-text-inverse) !important;
+  background: var(--v-danger) !important;
+  border-color: var(--v-danger) !important;
+}
+
+/* ============================================================
+   ★★★ 旧变量兼容映射（2026-10-25 第 24 轮 · 本轮核心）
+   ============================================================
+
+   ★ 为什么加这一段 —— 用户原话：
+       「还有很多颜色不统一了，你要做全局颜色统一」
+
+   诊断（`.screens/audit-all-colors.js` 遍历真实 DOM 得出的实测数据）：
+
+     旧变量用量：--line ×290 / --muted ×222 / --acc ×217 / --ink ×206
+                 --blue ×188 / --surface ×153 / --surface-soft ×113 / --faint ×89
+     新令牌用量：--v-* 合计约 ×50
+
+   ⇒ 上一轮我建了 `--v-*` 令牌层，但只对**几十个具体选择器**加了 `!important`，
+     而全项目 **2000 多处**样式写的是旧变量。等于只统一了 2% 的面积，
+     剩下 98% 仍在各主题文件里互相覆盖 —— 这就是"还有很多颜色不统一"的根因。
+
+   ⇒ 正确的解法不是继续逐个选择器打补丁（永远打不完），而是**把旧变量接到新令牌上**：
+     旧变量只要在项目里被引用，取到的就是新令牌的值。
+     这样：
+       · 2000 多处老代码**一次性**全部统一，无需逐条修改；
+       · 以后新写代码，用 `var(--ink)` 还是 `var(--v-text)` 都落到同一支色阶；
+       · 主题切换（tech / immersive）依然生效 —— 因为映射用的是新令牌，
+         而新令牌本身不区分主题（本项目只做暗色沉浸一套视觉）。
+
+   ★ 为什么必须写 `!important`：
+     旧变量被 `immersive-theme.css`（`html[data-theme='dark'][data-variant='immersive']`，
+     特异性 0,2,0）和 `ui-refinements.css`（同特异性 + !important）两处定义。
+     本文件虽然是最后 import，但 `:root`（0,1,0）特异性**低于**那两个块，
+     不加 `!important` 会被它们盖掉。自定义属性支持 `!important`，这是合法写法。
+
+   ★ 为什么有的映射是"等价替换"（值本来就一样）：
+     `--muted:#a8a8ab` 和 `--v-text-3:#a8a8ab` 值相同，但**语义**不同 ——
+     映射后它变成引用关系，将来改 `--v-text-3` 会同时改掉两者，
+     不会再出现"改了令牌、老变量还是旧值"的割裂。
+   ============================================================ */
+
+/* ★★ 选择器为什么是这个怪东西 `html[data-theme][data-variant]`：
+   旧变量的定义处是 `html[data-theme='dark'][data-variant='immersive']`，
+   特异性 (0,2,0)+元素 = (0,2,1)，且同样带 `!important`。
+   我第一版写的是 `:root`（特异性 0,1,0），**实测全被盖掉** ——
+   两个声明都是 !important 时比的是特异性，`:root` 输了。
+   换成同为 (0,2,1) 的选择器，同特异性下靠"本文件最后加载"取胜。
+   ★ 不用 `html[data-theme='dark'][data-variant='immersive']` 写死：
+     万一以后切到 tech 变体也想统一，这个选择器两种变体都命中。 */
+html[data-theme][data-variant] {
+  /* 画布底 */
+  --canvas: var(--v-canvas) !important;
+  /* 侧栏：原 #171717，比画布亮一档 —— 保留这个微弱分层（用户没抱怨侧栏） */
+  --sidebar: var(--v-sidebar) !important;
+  /* 面板 / 浮层（原 5 个灰：#202020/#1c1c1c/#191919/#1a1a1a/#262626） */
+  --surface: var(--v-surface) !important;
+  /* 沉底：输入框、内嵌列表（原 #191919，与 --v-surface-sunken #1a1a1a 差 1 档） */
+  --surface-soft: var(--v-surface-sunken) !important;
+  /* 抬升面：菜单、卡片内层（原 #262626 → 与卡片顶色对齐） */
+  --surface-raised: var(--v-card-1) !important;
+  --surface-2: var(--v-surface-hover) !important;
+  --bg: var(--v-canvas) !important;
+
+/* ---------- 文字色阶：从 6 种灰收敛到 5 档 ----------
+   ★ 实测旧值：#ededed(--ink) / #f5f5f5(--text-strong) / #a8a8ab(--muted)
+                / #757578(--faint) / #e6e6e6(immersive 旧 --ink)
+     "两种主文字色 + 两种最弱灰"是用户看出"文字颜色不统一"的直接原因。 */
+  --ink: var(--v-text) !important;
+  --text-strong: var(--v-text) !important;   /* 与 ink 合并，不再有第二种主文字色 */
+  --text: var(--v-text) !important;
+  --muted: var(--v-text-3) !important;
+  --faint: var(--v-text-5) !important;       /* 消除 #757578 / #757579 的双胞胎 */
+
+/* ---------- 描边 / 分隔 ---------- */
+  --line: var(--v-divider) !important;
+  --line-strong: var(--v-border-strong) !important;
+  --line-soft: var(--v-border) !important;
+  --overlay: var(--v-surface) !important;
+
+/* ---------- 语义色：各一支 ---------- */
+  --green: var(--v-success) !important;
+  --ok: var(--v-success) !important;
+  --amber: var(--v-warn) !important;
+  --orange: var(--v-warn) !important;
+  --red: var(--v-danger) !important;
+  --danger: var(--v-danger) !important;
+
+/* ---------- 强调色：全站只有 h212 一个色相，分 3 档明度 ----------
+   ★ 关键难点：`--acc` / `--blue` 既被当 **文字色**（54 处 color）
+     又被当 **背景色**（53 处 background）用。
+     而 deep #264263 当文字只有 1.58:1 对比度（看不见），
+         bright #4d9fff 当背景配白字只有 2.72:1（发虚）。
+     ⇒ 无法用一个值同时满足两种用途。
+     ⇒ 解法：变量本身取 **mid #5c8fc7**（文字最弱场景 4.82:1 达标），
+        背景用途由下方"⑨ 实心蓝底控件"清单显式盖成 deep。
+        这样老代码里 54 处文字自动得到合规的中蓝，
+        53 处背景里凡是要配白字的，都已被 ⑨ 清单收口。
+   ★ 为什么不直接映射成 bright #4d9fff（旧值）：
+     用户明确要求"蓝色要我连线那种蓝色"，且 bright 作正文太跳。 */
+  --acc: var(--v-accent-mid) !important;
+  --blue: var(--v-accent-mid) !important;
+  --accent: var(--v-accent-mid) !important;
+  --brand: var(--v-accent-mid) !important;
+  --acc-a: var(--v-accent-mid) !important;   /* 原 #2f7bff —— 第 4 种蓝，收编 */
+  --acc-b: var(--v-accent-mid) !important;
+  --acc-soft: var(--v-accent-mid-hover) !important;  /* 原 #8fc0ff 浅蓝，收编 */
+  --blue-soft: var(--v-accent-soft) !important;
+  --violet: var(--v-accent-mid) !important;  /* 原 #7c3aed / #6d5bf0 紫 —— 收编 */
+  --acc-glow: 92, 143, 199 !important;       /* rgba() 用的三通道，跟 mid 对齐 */
+  /* 渐变：原来有 #2f6feb→#5963d9 / #2b6ce3→#7a5af0 / #6d5bf0→#2b6ce3 三套蓝紫渐变，
+     全部收成"mid → mid-hover"的同色相渐变，不再有紫。 */
+  --brand-grad: linear-gradient(135deg, var(--v-accent-mid) 0%, var(--v-accent-mid-hover) 100%) !important;
+}
+
+/* ============================================================
+   ① 画布外围：把所有"浮在画布上"的中性面板收敛到 --v-surface
+   ============================================================
+   这一组选择器原本散落在 styles.css（多处）与 ui-refinements.css（多处），
+   且互相覆盖，最终生效值落在 5 个不同的灰上。这里统一收口。
+   ★ 用 `!important` 是刻意的：这些容器在历史文件里有多条同特异性规则，
+     不盖章的话"哪条最后加载哪条赢"，正是颜色漂移的根源。
+   ★ 只改背景/描边/阴影，不改尺寸与圆角 —— 圆角由下方 ② 单独处理，
+     避免影响已经调好的布局。 */
+.canvas-toolbar,
+.canvas-bg-switch,
+.canvas-stats-inline,
+.canvas-minimap,
+.canvas-ep-list,
+.canvas-shotlist,
+.workspace-header {
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+}
+
+/* ★★ 2026-10-25 用户原话：「底部那一层背景能不能去掉 两层感觉怪怪的」
+   ============================================================
+   结构上 `.canvas-toolbar`（外）里套着 `.canvas-toolbar-group`（内），
+   两层**各自**都有底色 + 描边 + 圆角 + 阴影 → 视觉上就是"框里又套一个框"，
+   中间还空出 6px 的透明缝隙，读起来像两个不相干的组件叠在一起。
+
+   修法：**内层彻底变成透明容器**（只保留 gap/padding 排布作用），
+   把所有"面板感"（底、边、圆角、阴影）全部交给外层那一层。
+   ⇒ 全站只有一层背景，圆角也只剩一个 12px。
+
+   ★ 为什么必须用 !important：`.canvas-toolbar .canvas-toolbar-group`
+   （内层）特异性高于 `.canvas-toolbar`，且 ui-refinements.css 里还有两条
+   同选择器规则（#1a1e27 与 var(--v-surface)）在后面反复覆盖它。
+   不改这个变量层次的话，无论怎么调外层都会被内层盖回去。 */
+.canvas-toolbar .canvas-toolbar-group {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+/* 小地图内部是 SVG，React Flow 自带一层浅色底，必须一起盖掉 */
+.canvas-minimap .react-flow__minimap {
+  background: var(--v-surface) !important;
+}
+
+/* 图例原先用 94% 透明 + backdrop-blur，与其它面板不同色；
+   统一成实色，模糊只留给需要"透出画布"的浮层 */
+.canvas-legend {
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+}
+.canvas-legend-toggle {
+  color: var(--v-text-3) !important;
+}
+.canvas-legend-toggle:hover,
+.canvas-legend-toggle:focus-visible {
+  color: var(--v-text) !important;
+}
+
+/* 顶栏原为 color-mix(surface 76%, canvas) ≈ #1d1d1d，比面板暗一档；
+   它和工具条是同一层级的"骨架"，必须同色 */
+.workspace-header {
+  border-bottom-color: var(--v-border) !important;
+}
+
+/* ── 圆角也收敛到令牌 ────────────────────────────────────────────
+   ★ 用户诉求「统一主题」不只指颜色：实测同一屏上工具条 12px、
+     内层分组 14px、统计条 16px、小地图 12px、图例 12px ——
+     四个值挤在一起，视觉上"每块都自己是一个组件"，不成套。
+     统一到两层语义即可：
+       · 浮在画布上的**大面板**（工具条/统计/小地图/图例/顶栏）→ --v-radius-lg (12px)
+       · 面板**内部的嵌套容器**（工具条内组）→ --v-radius-md (10px)
+     嵌套容器比外框小 2px 是通行的"同心圆角"关系：外 12、内 10，
+     内层不会在内缩 5px 处出现"角比边还方"的错位感。
+   ★ 背景切换是 pill（999px），属于形态差异而非风格不一致，保留。 */
+.canvas-toolbar,
+.canvas-stats-inline,
+.canvas-minimap,
+.canvas-legend {
+  border-radius: var(--v-radius-lg) !important;
+}
+/* 内层已彻底透明化（见 ① 段末），圆角也必须归零：
+   否则 12px 内圆角会在一块透明盒子上留下看不见的方角，无意义。 */
+.canvas-toolbar .canvas-toolbar-group {
+  border-radius: 0 !important;
+}
+
+/* ============================================================
+   ② 浮层：下拉 / 右键菜单 / 弹窗 / 提示词栏 —— 全部一支 --v-surface
+   ============================================================
+   原先：#202020（添加下拉，走 --surface 变量）、
+        #262626（项目设置菜单，走 --surface-raised）、#171717（整理/删除弹窗）。
+   ★★ 2026-10-25 回退：**`.jim-*` 全家族已从本清单移除**。
+      `.jim-pop` / `.jim-add-pop` / `.jim-at-pop` / `.jim-pick-pop` 都是
+      提示词弹窗（.jim-bar）**内部**的下拉浮层（模型选择、@ 引用、比例…）。
+      用户红线是"弹窗的结构与样式一律不许动"，内部浮层同属弹窗。
+      回退后它们恢复 ui-refinements.css 自己的声明（#1c1c1c 一支）。 */
+.canvas-media-pill-pop,
+.canvas-context-menu,
+.canvas-media-foot-pop,
+.canvas-add-dropdown,
+.shell-tools-menu,
+.canvas-arrange,
+.canvas-seg-menu,
+.canvas-inspector {
+  background: var(--v-surface) !important;
+  border: 1px solid var(--v-border) !important;
+  border-radius: var(--v-radius-lg);
+  box-shadow: var(--v-shadow-overlay);
+}
+
+/* ★★★ 2026-10-25 回退：提示词弹窗（.jim-bar / .jim-prompt）**不纳入令牌层**。
+   用户红线：「MediaNodeModal 的结构与样式一律不许动」。
+   我上一版把 .jim-bar 底色从 #171717 改成 --v-surface(#202020)，
+   又把 .jim-prompt 按"下沉输入框"语义加了 #1a1a1a 底色 + 描边 + 聚焦蓝晕
+   —— 于是弹窗里出现「#202020 外框 / #1a1a1a 内块 / 蓝色光晕」三种颜色，
+   而弹窗原本是**一整块无内嵌框**的（.jim-prompt 原本 transparent + border:none）。
+   用户原话：「提示词输入框 不应该出现几种颜色啊，前面好好的怎么改了？
+              你看即梦的 都是融合一体的」
+   ⇒ 弹窗内部所有色值恢复由 ui-refinements.css 原始声明决定，本文件不再介入。
+     这条规则保留为空注释，是为了防止以后又把 .jim-bar 加回上方清单。 */
+
+/* ============================================================
+   ③ 交互态：所有 hover / active 底色走同一支
+   ============================================================
+   ★ 这条不能带 !important 到 background 的 color 简写上，
+     否则会把各组件自己的渐变/半透明底一起干掉。只针对明确的纯色项。
+   ★★ 2026-10-25 回退：`.jim-*` 系列（提示词弹窗内部）已从本清单移除，
+      理由同 ② —— 弹窗家族不纳入全局令牌改造。 */
+.shell-tools-menu-item:hover,
+.canvas-context-menu button:hover,
+.canvas-media-foot-pop button:hover,
+.canvas-add-dropdown button:hover {
+  background: var(--v-surface-hover);
+}
+
+/* ── 下沉容器（输入框 / 内嵌列表 / 代码块）──────────────────────
+   ★★ 2026-10-25 回退：**提示词输入框不在这个清单里**。
+      用户原话「提示词输入框 不应该出现几种颜色啊…你看即梦的 都是融合一体的」。
+      .jim-prompt 在 ui-refinements.css:1891 原本就是
+        `background: transparent; border: none;` —— 文字直接落在弹窗底上，
+      即梦也是这个做法（整块只有一种底色）。我误按"输入框应当凹进去"的
+      通用直觉给它加了 #1a1a1a 底 + 描边 + focus 蓝晕，破坏了融合感。
+   ⇒ 铁律：**弹窗（.jim-bar）内部不许有自己的底色层次**，只由 .jim-bar 一支决定。
+      项目设置里的输入框（.shell-tools-field input）仍按下沉处理，那个是独立行内控件。 */
+.shell-tools-field input,
+.canvas-inspector input,
+.canvas-inspector select,
+.canvas-inspector textarea {
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+  color: var(--v-text);
+}
+.shell-tools-field input::placeholder {
+  color: var(--v-text-4);
+}
+/* 聚焦：只把描边换成强调蓝，**不提亮背景** ——
+   原来 focus 时背景从 #191919 跳到 #1c1c1c，输入时整块会"闪一下"。 */
+.shell-tools-field input:focus {
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-accent-line) !important;
+  box-shadow: 0 0 0 3px rgba(77, 159, 255, 0.1);
+}
+
+/* ============================================================
+   ④ 危险动作：统一语义，但**不许染控件本体**
+   ============================================================
+   ★ 用户原话「这个删除粉色 怎么看着都不协调」。
+   根因：给 `<input type="checkbox">` 写 `accent-color: #e07878` ——
+   浏览器会把整个勾选框填成粉红块，在深灰弹窗里格外扎眼，
+   而"是否勾选"本身是中性的选择行为，不是危险动作本身。
+   ⇒ 勾选框一律用**强调深蓝**（--v-accent-solid，与"蓝底白字"按钮同一支）；
+     危险语义只留在"删除 N 项"这个不可逆按钮的文字与描边上，且用低饱和。
+
+   ★★ 2026-10-25 第 25 轮：用户第二次指出「你看这里选中还有这个颜色」
+      （截图 = 删除确认弹窗里一排**亮蓝**勾选框）。
+      上一版这里写的是 --v-accent（亮蓝 #4d9fff）—— 我当时的理由是"勾选框是选择行为，
+      用蓝不用红"，但漏了一步：用户早就说过「蓝色要我连线那种蓝色」，
+      而 --v-accent 是"线与发光"那一档亮蓝，**不该出现在实心填充里**。
+      按本文件的规则「填充用 deep(#264263)，线条/发光用 bright(#4d9fff)」，
+      勾选框是**填充** → 必须用 --v-accent-solid。
+      实测：#264263 填 +#fff 勾 = 10.28:1，深蓝底白勾比亮蓝更清楚。 */
+.canvas-delete-item input,
+.canvas-arrange-all input,
+.canvas-arrange-grid input[type='checkbox'],
+.canvas-arrange input[type='checkbox'] {
+  accent-color: var(--v-accent-solid) !important;
+  color-scheme: dark;
+}
+
+/* 危险按钮：统一用 --v-danger，柔和不刺眼 */
+.canvas-arrange-foot button.is-del,
+.canvas-delete-confirm,
+.canvas-media-del-btn,
+.canvas-toolbar button.is-del,
+.canvas-toolbar-wide.is-del {
+  color: var(--v-danger);
+  border-color: var(--v-danger-line);
+}
+
+.canvas-arrange-foot button.is-del:hover,
+.canvas-delete-confirm:hover,
+.canvas-toolbar button.is-del:hover,
+.canvas-toolbar-wide.is-del:hover {
+  background: var(--v-danger-soft);
+  border-color: var(--v-danger);
+  color: var(--v-text-inverse);
+}
+
+/* ============================================================
+   ⑤ 文字色：把零散的灰字收敛到 5 档
+   ============================================================
+   只列"原本用了一个不在 5 档里的灰"的元素，避免大面积误伤。 */
+.canvas-arrange,
+.canvas-delete-item,
+.canvas-arrange-grid button,
+.canvas-arrange-cols button,
+.canvas-arrange-foot button {
+  color: var(--v-text-2);
+}
+.canvas-arrange header strong {
+  color: var(--v-text);
+}
+.canvas-arrange-hint,
+.canvas-arrange-sec h5,
+.canvas-arrange-cols {
+  color: var(--v-text-4);
+}
+.canvas-delete-item.is-on .canvas-delete-name {
+  color: var(--v-text);
+}
+
+/* ============================================================
+   ⑥ 卡片悬停快捷菜单（铅笔 / 重生成 / ✕）
+   ============================================================
+   ★ 用户原话「这个颜色也不协调」（截图：三个按钮压在亮色照片上）。
+   根因有两层：
+     ① 底色 rgba(24,24,24,.9) 几乎不透明，压在亮图上像贴了三块黑胶布；
+     ② 图标色 #d2d2d5 是浅灰 —— 在**深色缩略图**上够看，在**亮色图**上
+        （本项目的角色图全是白背景）就几乎消失，只剩三块糊影。
+   ⇒ 解法要对「亮图 / 暗图」都成立，且必须读作"这个系统的一部分"：
+     · 底色取 0.78 不透明度的中性深灰（≈ 面板色 #202020 的玻璃版）：
+       压在白图上是 #4c4c4c 的深玻璃，压在深图上是接近面板的深灰，
+       两种底上都与画布面板同族，不会变成"三块黑胶布"或"三块灰膏药"；
+     · 图标用纯白 + 双层描边环（内极淡白提亮边缘、外深色在亮图上定形），
+       白图标在亮图上靠描边显形、在暗图上靠自身显形；
+     · 不用 backdrop-filter 堆 saturate —— 饱和增强会把白底人像的肤色
+       带出一点色偏，反而和中性系统更不搭。只保留 blur 做磨砂。 */
+.canvas-media-card-menu button {
+  background: rgba(26, 26, 26, 0.78);
+  border: 0;
+  color: var(--v-text-inverse);
+  border-radius: var(--v-radius-sm);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 0 0 1px rgba(0, 0, 0, 0.28),
+    0 2px 8px rgba(0, 0, 0, 0.4);
+  transition: background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+.canvas-media-card-menu button:hover {
+  background: rgba(32, 32, 32, 0.92);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.24),
+    0 0 0 1px rgba(0, 0, 0, 0.34),
+    0 3px 12px rgba(0, 0, 0, 0.5);
+  transform: translateY(-1px);
+}
+/* 删除：默认与其它两个同色（三个按钮里单独一个红点在缩略图上太跳），
+   只在 hover 时转危险色 —— 那时候用户已经明确指向它了。
+   ★ 用暗红玻璃而不是亮红：亮红在亮图上饱和度爆表，正是"粉色不协调"的来源。 */
+.canvas-media-card-menu button.is-del {
+  color: var(--v-text-inverse);
+}
+.canvas-media-card-menu button.is-del:hover {
+  background: rgba(122, 52, 52, 0.9);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.2),
+    0 0 0 1px rgba(0, 0, 0, 0.34),
+    0 3px 12px rgba(0, 0, 0, 0.5);
+  color: var(--v-text-inverse);
+}
+
+/* ============================================================
+   ⑦ 卡片底部状态条 / 参数标签：统一用语义色令牌
+   ============================================================ */
+.canvas-media-foot-ico {
+  background: var(--v-surface-hover);
+  border: 1px solid var(--v-border-hair);
+  color: var(--v-text-4);
+  border-radius: var(--v-radius-sm);
+}
+.canvas-media-foot-main {
+  color: var(--v-text-2);
+}
+.canvas-media-foot-sub {
+  color: var(--v-text-5);
+}
+.canvas-media-foot-main.is-done {
+  color: var(--v-success);
+}
+.canvas-media-foot-main.is-busy {
+  color: var(--v-warn);
+}
+.canvas-media-foot-main.is-failed {
+  color: var(--v-danger);
+}
+
+/* ============================================================
+   ⑨ 实心蓝底控件：统一改成「连线那种深蓝」，白字才看得清
+   ============================================================
+   ★ 用户原话：
+     「这个蓝色是不是可以统一深蓝色会更看得清楚些？」
+     「蓝色要我连线那种蓝色」
+   这一组全是"蓝底 + 白字"的控件。原来用 #4d9fff / 渐变(#2f7bff→#4d9fff)，
+   白字对比度只有 2.72:1（WCAG AA 要 4.5:1），所以看着发虚。
+   现在统一用 --v-accent-solid（#264263，采样自用户截图的连线光晕深部），
+   白字对比度 8.9:1，且与连线是同一个色相，整站蓝只有一种"气质"。
+
+   ★ 为什么收在这一份清单里而不是逐条改原声明：
+     这些按钮散落在 styles.css / ui-refinements.css 共 9 条规则（含渐变），
+     逐条改容易漏、以后新增控件又会写回亮蓝。
+     **以后新加"蓝底白字"控件，把选择器加到这个清单即可自动统一。**
+   ★★ 2026-10-25 回退：`.jim-send` / `.jim-run` 已移除 ——
+      这两个类名**全项目不存在**（grep 零命中），是我上一轮凭记忆写的死选择器。
+      提示词弹窗的发送按钮真名是 `.jim-gen`（ui-refinements.css:1941），
+      它是蓝色渐变圆钮，属于弹窗家族，按红线**不动**。
+
+   ★★★ 2026-10-25 第二轮：**从这份清单里拆出去两类"选中态"**。
+     用户原话「按钮选中颜色做成这种颜色会不会没那么刺眼更简洁清爽」+「我的意思不止是项目这里，我的意思是全局」。
+     采样其截图：面板底 #262626 / 选中项 #373737 / 白字 / 白 ✓ —— **零蓝像素**。
+     ⇒ 从此这条清单只留**"动作型"蓝底**（生成、提交）；
+       **"选中型"一律走中性灰 --v-selected**（见 §⑨b）。
+     已经移出本条的有：`.canvas-toolbar button.is-active`、`.canvas-bg-switch button.is-active`、
+     `.canvas-quality-pill.is-active` —— 它们回答"我现在是什么参数"，不是"点我"。
+     ★ 判断口径（以后新增控件照这个走）：
+       · 点下去会**执行一件不可逆的事**（生成/保存/删除）→ 蓝底
+       · 点下去只是**换一个视角/参数**（选中列表项、切标签、选参数）→ 灰底 */
+.canvas-media-gen-btn,
+.shell-tools-submit {
+  background: var(--v-accent-solid) !important;
+  border-color: var(--v-accent-solid) !important;
+  color: var(--v-text-inverse) !important;
+  box-shadow: 0 2px 8px rgba(10, 20, 32, 0.45);
+}
+.canvas-media-gen-btn:hover:not(:disabled),
+.shell-tools-submit:hover:not(:disabled) {
+  background: var(--v-accent-solid-hover) !important;
+  border-color: var(--v-accent-solid-hover) !important;
+}
+.canvas-media-gen-btn svg,
+.shell-tools-submit svg {
+  color: var(--v-text-inverse) !important;
+}
+
+/* ============================================================
+   ⑨b 选中态：全站统一「中性灰提亮」，零蓝色
+   ============================================================
+   ★ 用户两次明确这个方向：
+     ①「按钮选中颜色做成这种颜色会不会没那么刺眼更简洁清爽」（附截图）
+     ②「我的意思不止是项目这里，我的意思是全局 是不是搭配这个颜色会更好」
+   截图逐像素采样：面板底 #262626 → 选中项 #373737，白字 + 白 ✓，无蓝。
+
+   ★ 为什么集中在这一份清单里：
+     这些规则散在 styles.css（9358/7000/8126/9027/10050/10607/10854/11029/11888…）
+     与 ui-refinements.css（1724/2420…）共十几处，逐条改必漏；
+     而且 styles.css 里同特异性规则后写的会翻盘。
+     用**清单 + !important** 收口，和 ⑨ 的蓝底动作清单一模一样的思路。
+
+   ★ 收进来的判断标准（一条线）：
+     点下去只换"视图/参数/位置"，不产生副作用 → 属于选中 → 灰。
+     会执行动作（生成/保存/删除）→ 留在 §⑨ 蓝底清单，**不进这里**。
+   ★ 不要往这里塞 .jim-*（提示词弹窗），那是红线。 */
+.canvas-toolbar button.is-active,
+.canvas-quality-pill.is-active,
+.canvas-bg-switch button.is-active,
+.canvas-tools button.is-active,
+.canvas-legend-tabs button.is-active,
+.canvas-shotlist-item.is-active,
+.style-category-tabs button.is-active,
+.canvas-selbar button.is-active,
+.canvas-selbar button.is-open,
+.artifact-view-switcher button.is-selected,
+.canvas-media-pill-opt.is-active,
+.canvas-timeline-clip.is-active {
+  background: var(--v-selected) !important;
+  color: var(--v-text) !important;
+  border-color: var(--v-border-strong) !important;
+  box-shadow: none;
+}
+/* ★★ 剧集/资产切换已改成**分段控件**（用户：「剧集和资产切换按钮也太丑了」），
+   选中块本身就是中性灰实底，不再是"下划线 Tab"。
+   ⇒ 所以这里必须**同时**保留 background 与 box-shadow:none：
+     把 background 写回透明会变回"没有选中块的裸文字"，而旧的下划线
+     inset 阴影也要显式清掉，否则会在灰块底部多出一条错位的亮线。
+   ⇒ 它仍然不能进上面那份统一清单，因为清单里的 box-shadow:none 会连
+     悬停内高光一起清掉，选中块就变成一块死板的正方形。
+   结构锚点（侧栏竖条、搜索命中）仍是 box-shadow，策略不变。 */
+.canvas-rail-tab.is-active {
+  background: var(--v-selected) !important;
+  color: var(--v-text) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 1px 2px rgba(0,0,0,.35) !important;
+}
+/* ★★ 搜索命中项同理：它靠左侧 2px 竖条表达"键盘当前项"，
+   也是 box-shadow，不能被清掉。 */
+.canvas-search-hit.is-active {
+  background: var(--v-selected) !important;
+  color: var(--v-text) !important;
+  box-shadow: inset 2px 0 0 var(--v-text-4) !important;
+}
+/* 图标跟随文字一起提亮（原来单独写 #fff，灰底上反差过大） */
+.canvas-toolbar button.is-active .canvas-tool-ico,
+.canvas-bg-switch button.is-active svg,
+.canvas-tools button.is-active svg,
+.canvas-selbar button.is-active .canvas-selbar-ico {
+  color: var(--v-text) !important;
+}
+/* 悬停：比选中再暗一档，避免"悬停比选中还亮"的错位 */
+.canvas-toolbar button.is-active:hover:not(:disabled),
+.canvas-bg-switch button.is-active:hover,
+.canvas-tools button.is-active:hover {
+  background: var(--v-surface-active) !important;
+}
+/* 时间线片段：删除态有选中边框，这里连带把描边收成中性 */
+.canvas-timeline-clip.is-active:hover {
+  background: var(--v-surface-active) !important;
+}
+
+/* ============================================================
+   ⑩ 取消控件里残留的"浅色主题"焦点圈
+   ============================================================
+   深色画布上 2px 亮蓝 outline 会在卡片/弹窗内部画出一圈割裂感很强的框，
+   且这些元素本身已有 hover/active 反馈。 */
+.canvas-media-card-menu button:focus-visible,
+.canvas-note-text:focus-visible,
+.canvas-text-body:focus-visible {
+  outline: 2px solid var(--v-accent-line);
+  outline-offset: 1px;
+}
+
+/* ============================================================
+   ⑪ 主题完整性收口
+   旧组件仍保留少量硬编码色；这里只覆盖颜色，不改尺寸、圆角或结构。
+   ============================================================ */
+.canvas-stats-inline {
+  color: var(--v-text-3) !important;
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-media-head-name,
+.canvas-media-foot-main {
+  color: var(--v-text-3) !important;
+}
+.canvas-media-node.is-active .canvas-media-head-name,
+.canvas-media-node:hover .canvas-media-head-name {
+  color: var(--v-text) !important;
+}
+.canvas-media-foot-sub,
+.canvas-media-foot-more > button,
+.canvas-media-foot-pop button {
+  color: var(--v-text-4) !important;
+}
+.canvas-media-foot-ico {
+  color: var(--v-text-4) !important;
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border-hair) !important;
+}
+.canvas-media-foot-more > button:hover,
+.canvas-media-foot-pop button:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+}
+.canvas-media-foot-pop {
+  color: var(--v-text-2) !important;
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-overlay) !important;
+}
+
+.canvas-media-ref-chip {
+  color: var(--v-accent-mid) !important;
+  background: var(--v-accent-soft) !important;
+  border-color: var(--v-accent-line) !important;
+}
+
+.jim-bar {
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-overlay) !important;
+}
+.jim-head-title,
+.jim-prompt,
+.jim-tool.is-input input,
+.jim-model-name,
+.jim-pop-tpl button strong {
+  color: var(--v-text) !important;
+}
+.jim-head-badge,
+.jim-ratio-item,
+.jim-chip,
+.jim-tool.is-input input {
+  color: var(--v-text-2) !important;
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+.jim-tool {
+  color: var(--v-text-2) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+.jim-head-more > button,
+.jim-prompt-side button,
+.jim-tool.is-ghost,
+.jim-pop-title,
+.jim-model-desc,
+.jim-pop-tpl button span,
+.jim-cost {
+  color: var(--v-text-4) !important;
+}
+.jim-head-more > button:hover,
+.jim-prompt-side button:hover,
+.jim-model-item:hover,
+.jim-radio-item:hover,
+.jim-pop-tpl button:hover,
+.jim-at-item:hover,
+.jim-at-item.is-active,
+.jim-add-pop button:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+}
+.jim-ratio-item:hover,
+.jim-chip:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-accent-line) !important;
+}
+.jim-tool:hover,
+.jim-tool.is-open {
+  color: var(--v-text) !important;
+  background: color-mix(in srgb, var(--v-text) 7%, transparent) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+.jim-ratio-item.is-active,
+.jim-chip.is-active,
+.jim-tool.is-active {
+  color: var(--v-accent-mid) !important;
+  background: var(--v-accent-soft) !important;
+  border-color: var(--v-accent-line) !important;
+}
+.jim-pop,
+.jim-at-pop,
+.jim-add-pop,
+.jim-pick-pop,
+.jim-pop-more {
+  color: var(--v-text-2) !important;
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-overlay) !important;
+}
+.jim-at-title,
+.jim-pop-title {
+  border-color: var(--v-border) !important;
+}
+.jim-model-item,
+.jim-radio-item,
+.jim-pop-tpl button,
+.jim-at-item,
+.jim-more-item,
+.jim-add-pop button {
+  color: var(--v-text-2) !important;
+}
+.jim-model-item.is-active {
+  background: var(--v-selected) !important;
+}
+.jim-ref-thumb,
+.jim-at-item img,
+.jim-at-ico {
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+.jim-prompt::placeholder,
+.jim-tool.is-input input::placeholder,
+.jim-model-search input::placeholder,
+.canvas-media-size-hint {
+  color: var(--v-text-5) !important;
+}
+
+.canvas-sync-pill.is-synced {
+  color: var(--v-success) !important;
+  background: var(--v-success-soft) !important;
+  border-color: color-mix(in srgb, var(--v-success) 34%, transparent) !important;
+}
+.canvas-sync-pill.is-error {
+  color: var(--v-danger) !important;
+  background: var(--v-danger-soft) !important;
+  border-color: var(--v-danger-line) !important;
+}
+.canvas-media-foot-main.is-done .canvas-media-dot {
+  background: var(--v-success) !important;
+}
+.canvas-media-foot-main.is-busy .canvas-media-dot {
+  background: var(--v-warn) !important;
+}
+.canvas-media-foot-main.is-failed .canvas-media-dot {
+  background: var(--v-danger) !important;
+}
+
+html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
+  background: rgba(30, 39, 51, 0.78) !important;
+  color: #ffffff !important;
+}
+
+/* Canvas interaction colors must follow the selected theme too. */
+.canvas-flow {
+  --guide-tone: var(--v-accent-mid);
+}
+.canvas-edge-auto .react-flow__edge-path,
+.canvas-edge-chain .react-flow__edge-path,
+.canvas-edge-user .react-flow__edge-path {
+  stroke: var(--v-edge-tone) !important;
+}
+.react-flow__edge:hover .react-flow__edge-path,
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--v-accent) !important;
+}
+.react-flow__edge:hover .canvas-edge-source-dot,
+.react-flow__edge.selected .canvas-edge-source-dot {
+  fill: var(--v-accent) !important;
+}
+.react-flow__handle {
+  background: var(--v-border-strong) !important;
+  border-color: var(--v-canvas) !important;
+}
+.react-flow__handle:hover {
+  background: var(--v-accent) !important;
+}
+.react-flow__node-note .canvas-note-text {
+  color: var(--v-text) !important;
+  caret-color: var(--v-accent) !important;
+}
+.react-flow__node-note .canvas-note-text::placeholder {
+  color: var(--v-text-5) !important;
+}
+.canvas-edge-delete,
+.canvas-selbar-linkdot {
+  color: var(--v-text-3) !important;
+  background: var(--v-surface) !important;
+  border-color: var(--v-border-strong) !important;
+}
+.canvas-selbar-linkdot:hover,
+.canvas-selbar-linkwrap.is-dragging .canvas-selbar-linkdot {
+  color: var(--v-text-inverse) !important;
+  background: var(--v-accent-solid) !important;
+  border-color: var(--v-accent-solid) !important;
+}
+.canvas-selbar-linkstem {
+  background: var(--v-accent-line) !important;
+}
+
+.model-settings-kind.is-image {
+  color: var(--v-success) !important;
+  background: var(--v-success-soft) !important;
+  border-color: color-mix(in srgb, var(--v-success) 28%, transparent) !important;
+}
+.model-settings-kind.is-video {
+  color: var(--v-warn) !important;
+  background: var(--v-warn-soft) !important;
+  border-color: color-mix(in srgb, var(--v-warn) 28%, transparent) !important;
+}
+.model-settings-kind.is-text {
+  color: var(--v-accent-mid) !important;
+  background: var(--v-accent-soft) !important;
+  border-color: var(--v-accent-line) !important;
+}
+.model-settings-kind.is-audio {
+  color: var(--v-danger) !important;
+  background: var(--v-danger-soft) !important;
+  border-color: var(--v-danger-line) !important;
+}
+
+/* Header and workspace menus share the same floating surface across themes. */
+.canvas-project-menu,
+.shell-settings-menu,
+.shell-tools-menu,
+.canvas-header-menu,
+.canvas-status-menu,
+.canvas-tools-menu {
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-overlay) !important;
+}

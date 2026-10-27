@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f7f4" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=3" />
+    <title>映界工作台</title>
+    <script>
+      // 后台重启并重建前端后，旧标签页引用的 /assets/ 指纹文件会被替换，
+      // 脚本 404 会导致整页白板。这里在资源加载失败时自动强刷一次，
+      // 10 秒内只尝试一次，避免异常情况下反复刷新。
+      (function () {
+        try {
+          window.addEventListener('error', function (event) {
+            var target = event && event.target;
+            if (!target || target.tagName !== 'SCRIPT') return;
+            var src = target.getAttribute('src') || '';
+            if (src.indexOf('/assets/') === -1) return;
+            var key = 'vimax-asset-reload';
+            var last = Number(window.sessionStorage.getItem(key) || 0);
+            if (Date.now() - last < 10000) return;
+            window.sessionStorage.setItem(key, String(Date.now()));
+            window.location.reload();
+          }, true);
+        } catch (error) { /* 恢复逻辑失败不应影响正常加载 */ }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root">
+      <div style="display:flex;height:100vh;align-items:center;justify-content:center;font-family:system-ui,sans-serif;color:#888;font-size:14px;">映界工作台加载中…<br/><span style="font-size:12px;color:#aaa;">如果长时间无响应，请按 Ctrl+F5 强制刷新</span></div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

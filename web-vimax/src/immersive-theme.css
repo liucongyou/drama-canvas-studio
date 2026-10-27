@@ -1,0 +1,267 @@
+/* Immersive neutral theme: sampled from the supplied reference image. */
+html[data-theme='dark'][data-variant='immersive'] {
+  --canvas: #121212;
+  --sidebar: #171717;
+  --surface: #202020;
+  --surface-soft: #191919;
+  --surface-raised: #252525;
+  --ink: #e6e6e6;
+  --text-strong: #f2f2f2;
+  --muted: #b9b9b9;
+  --faint: #7c7c7c;
+  --line: #2b2b2b;
+  --line-strong: #3a3a3a;
+  --blue: #d6d6d6;
+  --blue-soft: rgba(255, 255, 255, 0.08);
+  --violet: #d6d6d6;
+  --cyan: #b9b9b9;
+  --magenta: #c4c4c4;
+  --green: #8fae99;
+  --amber: #c3a96b;
+  --red: #d47a7a;
+  --acc-a: #3d3d3d;
+  --acc-b: #2b2b2b;
+  --acc: #d6d6d6;
+  --acc-soft: #f0f0f0;
+  --acc-t1: #dedede;
+  --acc-t2: #c8c8c8;
+  --acc-glow: 255, 255, 255;
+  --brand-grad: linear-gradient(135deg, #303030 0%, #242424 100%);
+  --logo-a: #3fc7f0;
+  --logo-b: #4f8ef7;
+}
+
+html[data-theme='dark'][data-variant='immersive'] body {
+  background: var(--canvas);
+}
+
+html[data-theme='dark'][data-variant='immersive'] .sidebar {
+  border-right-color: transparent;
+  box-shadow: none;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .sidebar-brand-logo {
+  color: #f7fbff;
+  border-color: rgba(79, 142, 247, 0.42);
+  box-shadow: 0 4px 14px rgba(63, 160, 220, 0.16);
+}
+
+html[data-theme='dark'][data-variant='immersive'] .empty-state-logo {
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.35));
+}
+
+html[data-theme='dark'][data-variant='immersive'] .primary-nav button {
+  color: #d6d6d6;
+  border-radius: 8px;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .primary-nav button svg {
+  color: #9f9f9f;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .primary-nav button:hover,
+html[data-theme='dark'][data-variant='immersive'] .icon-button:hover {
+  color: #f2f2f2;
+  background: #202020;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .primary-nav button:hover svg {
+  color: #f2f2f2;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .primary-nav button.is-active {
+  color: #f2f2f2;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .primary-nav button.is-active svg {
+  color: #f2f2f2;
+}
+
+/* Keep the create action from looking permanently selected. */
+html[data-theme='dark'][data-variant='immersive'] .primary-nav button:first-child {
+  color: #d6d6d6;
+  font-weight: 560;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .primary-nav button:first-child svg {
+  color: #9f9f9f;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .primary-nav button:first-child:hover {
+  color: #f2f2f2;
+  background: #202020;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .section-label {
+  color: #8f8f8f;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .project-search {
+  color: #9f9f9f;
+  background: #1c1c1c;
+  border-color: #2b2b2b;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .project-search:focus-within {
+  border-color: #4a4a4a;
+  box-shadow: none;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .session-item {
+  border: 1px solid transparent;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .session-item:hover {
+  background: #202020;
+  border-color: #242424;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .session-item.is-selected {
+  background: #292929;
+  border-color: #292929;
+  box-shadow: none;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .session-item.is-selected .session-copy strong {
+  color: #ffffff;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .session-item.is-selected .session-copy small {
+  color: #b9b9b9;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .session-item.is-selected .session-tools {
+  background: #292929;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .session-tools button:hover,
+html[data-theme='dark'][data-variant='immersive'] .session-item.is-selected .session-delete:hover {
+  color: #ffffff;
+  background: #383838;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .session-status.is-idle,
+html[data-theme='dark'][data-variant='immersive'] .session-status.is-running,
+html[data-theme='dark'][data-variant='immersive'] .session-status.is-done {
+  color: #b9b9b9;
+  background: #2f2f2f;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .session-status.is-error {
+  color: #d98a8a;
+  background: #352626;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .message-body {
+  color: #e6e6e6;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .role-assistant .message-body,
+html[data-theme='dark'][data-variant='immersive'] .role-assistant .message-body:hover {
+  background: #252525;
+  border: 1px solid #333333;
+  box-shadow: none;
+  transform: none;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .role-user .message-body {
+  color: #f2f2f2;
+  background: #2b2b2b;
+  border: 1px solid #3a3a3a;
+  box-shadow: none;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .message-body code {
+  background: #303030;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .message-body pre {
+  color: #e6e6e6;
+  background: #1b1b1b;
+  border-color: #383838;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .composer {
+  background: #252525;
+  border-color: #3a3a3a;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+}
+
+html[data-theme='dark'][data-variant='immersive'] .composer-attachment > em,
+html[data-theme='dark'][data-variant='immersive'] .composer-add:hover:not(:disabled) {
+  color: #ffffff;
+  background: #303030;
+  box-shadow: none;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .send-button:not(.stop):not(:disabled),
+html[data-theme='dark'][data-variant='immersive'] .settings-save,
+html[data-theme='dark'][data-variant='immersive'] .dialog-actions button.primary {
+  color: #ffffff;
+  background: #303030;
+  border-color: #3a3a3a;
+  box-shadow: none;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .send-button:hover:not(:disabled),
+html[data-theme='dark'][data-variant='immersive'] .settings-save:hover:not(:disabled),
+html[data-theme='dark'][data-variant='immersive'] .dialog-actions button.primary:hover:not(:disabled) {
+  background: #3a3a3a;
+  box-shadow: none;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .count-badge {
+  color: #ffffff;
+  background: #3a3a3a;
+  border-color: #171717;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .scroll-bottom-button {
+  color: #e6e6e6;
+  background: #252525;
+  border-color: #3a3a3a;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
+}
+
+html[data-theme='dark'][data-variant='immersive'] .activity-row,
+html[data-theme='dark'][data-variant='immersive'] .activity-indicator {
+  color: #b9b9b9;
+  background: #202020;
+  border-color: #333333;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .activity-indicator.tool-planning,
+html[data-theme='dark'][data-variant='immersive'] .activity-indicator.tool-render,
+html[data-theme='dark'][data-variant='immersive'] .activity-indicator.tool-image,
+html[data-theme='dark'][data-variant='immersive'] .activity-indicator.tool-memory,
+html[data-theme='dark'][data-variant='immersive'] .activity-indicator.tool-todo,
+html[data-theme='dark'][data-variant='immersive'] .activity-indicator.tool-shell,
+html[data-theme='dark'][data-variant='immersive'] .activity-indicator.tool-time {
+  color: #c8c8c8;
+  background: #292929;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .empty-state h1 {
+  color: #f2f2f2;
+  background: none;
+  -webkit-text-fill-color: currentColor;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .empty-state-suggestions button > i {
+  color: #f2f2f2;
+  background: #303030;
+  box-shadow: none;
+}
+
+html[data-theme='dark'][data-variant='immersive'] .theme-menu-popover button.is-selected {
+  color: #f2f2f2;
+  background: #292929;
+}
+
+.theme-swatch.is-immersive {
+  background: linear-gradient(135deg, #121212 0 42%, #292929 42% 72%, #b9b9b9 72% 100%);
+}

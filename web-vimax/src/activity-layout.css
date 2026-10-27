@@ -1,0 +1,126 @@
+/* Error activities need their own layout instead of the compact status pill. */
+.activity-row.status-error {
+  width: 100%;
+  max-width: 100%;
+  align-items: flex-start;
+  padding: 8px 10px 8px 8px;
+  border-radius: 10px;
+}
+
+/* 带画面/视频的普通活动行必须占满内容宽度，否则媒体区会被压成一条窄列。 */
+.activity-row:not(.status-error):has(.activity-media) {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  align-items: flex-start;
+}
+
+.activity-row:not(.status-error):has(.activity-media) .activity-content {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.activity-row:not(.status-error):has(.activity-media) .activity-detail {
+  overflow: visible;
+  white-space: normal;
+  text-overflow: clip;
+}
+
+.activity-row:not(.status-error):has(.activity-media) .activity-media {
+  width: 100%;
+}
+
+.activity-row.status-error .activity-content {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "title controls"
+    "detail controls"
+    "media media";
+  align-items: start;
+  column-gap: 12px;
+  row-gap: 4px;
+  flex-wrap: initial;
+}
+
+.activity-row.status-error .activity-content > strong {
+  grid-area: title;
+  min-width: 0;
+}
+
+.activity-row.status-error .activity-content > .activity-detail {
+  grid-area: detail;
+  line-height: 1.5;
+}
+
+.activity-row.status-error .activity-content > .activity-error-controls {
+  grid-area: controls;
+}
+
+.activity-row.status-error .activity-content > .activity-media {
+  grid-area: media;
+  min-width: 0;
+}
+
+.activity-error-controls {
+  display: flex;
+  min-width: 168px;
+  max-width: 190px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.activity-error-controls .activity-error-toggle {
+  align-self: stretch;
+  text-align: right;
+}
+
+.activity-error-controls .activity-actions {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 0;
+}
+
+.activity-error-controls .activity-actions button {
+  width: 100%;
+  min-width: 0;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .activity-row.status-error .activity-content {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "title"
+      "detail"
+      "controls"
+      "media";
+  }
+
+  .activity-error-controls {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    align-items: flex-start;
+  }
+
+  .activity-error-controls .activity-error-toggle {
+    align-self: flex-start;
+    text-align: left;
+  }
+
+  .activity-error-controls .activity-actions {
+    width: auto;
+    grid-template-columns: repeat(2, minmax(88px, auto));
+  }
+}

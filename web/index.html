@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>戏剧画布工作流</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#151a22; --panel2:#1b2230; --line:#2a3342;
+    --text:#e6ebf2; --dim:#8b96a5; --accent:#4d9fff; --green:#34d399; --red:#f87171; --amber:#fbbf24;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font:13px/1.5 "Segoe UI",system-ui,"Microsoft YaHei",sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+  header{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap;z-index:10}
+  header h1{font-size:15px;font-weight:600;color:var(--accent);white-space:nowrap}
+  header label{color:var(--dim);font-size:12px}
+  select,input[type=text]{background:var(--panel2);border:1px solid var(--line);color:var(--text);padding:5px 8px;border-radius:6px;font-size:12px}
+  input[type=text]{width:280px}
+  button{background:var(--panel2);border:1px solid var(--line);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button.primary{background:#1c3a5f;border-color:var(--accent);color:#cfe4ff}
+  button.danger:hover{border-color:var(--red);color:var(--red)}
+  .status{margin-left:auto;color:var(--dim);font-size:12px}
+  .status .ok{color:var(--green)} .status .bad{color:var(--red)}
+
+  main{flex:1;display:flex;min-height:0}
+  #canvasWrap{flex:1;position:relative;overflow:hidden;background:
+    radial-gradient(circle,#1a2130 1px,transparent 1px);background-size:26px 26px;cursor:grab}
+  #canvasWrap.dragging{cursor:grabbing}
+  #stage{position:absolute;left:0;top:0;transform-origin:0 0}
+  #links{position:absolute;left:0;top:0;overflow:visible;pointer-events:none;z-index:1}
+  .node{position:absolute;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+    width:340px;box-shadow:0 4px 14px rgba(0,0,0,.35);user-select:none;z-index:2}
+  .node:hover{border-color:#3d5a80}
+  .node.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 6px 20px rgba(77,159,255,.15)}
+  .node .head{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+  .node .ico{width:20px;height:20px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;flex:none}
+  .node .tit{font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+  .node .tag{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:1px 5px;flex:none}
+  .node .preview{font-size:11.5px;color:var(--dim);white-space:pre-wrap;overflow:hidden;display:-webkit-box;
+    -webkit-line-clamp:4;-webkit-box-orient:vertical;line-height:1.45}
+  .node .meta{display:flex;gap:8px;margin-top:6px;font-size:10.5px;color:var(--dim)}
+  .node .meta .st{color:var(--green)}
+  .node .meta .st.err{color:var(--red)}
+  .node.done{border-color:var(--green)}
+  .node.error{border-color:var(--red)}
+  .ico.text{background:#5b6b84}.ico.image{background:#4d9fff}.ico.video{background:#a855f7}.ico.audio{background:#f59e0b}
+  .ico.scene{background:#0ea5a0}.ico.prop{background:#f97316}
+
+  #side{width:340px;background:var(--panel);border-left:1px solid var(--line);padding:12px;overflow-y:auto;flex:none}
+  #side h3{font-size:13px;margin-bottom:8px;color:var(--accent)}
+  #side .kv{margin-bottom:8px}
+  #side .kv b{color:var(--dim);font-weight:500;display:block;font-size:11px;margin-bottom:2px}
+  #side .prompt{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px;font-size:11.5px;
+    white-space:pre-wrap;max-height:280px;overflow-y:auto;color:#c9d3e0}
+  #side .btn-row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  #side .btn-row button{flex:1}
+  #side .result{background:var(--panel2);border:1px solid var(--line);border-radius:6px;margin-top:8px;padding:8px;font-size:11px;word-break:break-all}
+  #side .result img,#side .result video{max-width:100%;border-radius:6px;display:block;margin-bottom:6px}
+  #modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50}
+  #modal .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;max-width:520px;width:90%}
+  #modal h3{color:var(--amber);margin-bottom:10px;font-size:14px}
+  #modal p{color:var(--dim);font-size:12.5px;line-height:1.6;margin-bottom:14px}
+  #modal .row{display:flex;gap:10px;justify-content:flex-end}
+  #modal button{border-color:var(--line)}
+  #toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);
+    padding:8px 16px;border-radius:8px;font-size:12px;display:none;z-index:60}
+  .empty{color:var(--dim);text-align:center;margin-top:80px;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🎬 戏剧画布工作流</h1>
+  <label>项目</label>
+  <select id="projSel"></select>
+  <button id="newProj">新建</button>
+  <button id="refresh">刷新</button>
+  <input type="text" id="feedPath" placeholder="投喂载荷 JSON 路径，如 D:\xxx\铁西硬汉_第01集_投喂载荷.json">
+  <button id="importBtn" class="primary">导入载荷 → 画布</button>
+  <button id="gateBtn">挂接机检</button>
+  <button id="cfgBtn">方舟配置</button>
+  <span class="status" id="status">未加载项目</span>
+</header>
+<main>
+  <div id="canvasWrap">
+    <div id="stage">
+      <svg id="links"></svg>
+      <div id="nodes"></div>
+    </div>
+    <div class="empty" id="emptyHint">← 新建项目或导入投喂载荷，自动生成五区画布（角色 / 场景 / 道具 / 音频 / 视频）</div>
+  </div>
+  <aside id="side">
+    <h3 id="sideTitle">节点详情</h3>
+    <div id="sideBody"><div class="empty">点击画布中的节点查看提示词</div></div>
+  </aside>
+</main>
+<div id="modal"><div class="box">
+  <h3 id="modalTitle">确认生成</h3>
+  <p id="modalMsg"></p>
+  <div class="row"><button id="modalCancel">取消</button><button id="modalOk" class="primary">确认生成</button></div>
+</div></div>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let projects = [], cur = null, curPayload = null, zoom = 1, panX = 0, panY = 0;
+let pendingGen = null;
+
+// ---------- 工具 ----------
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+function toast(msg, ms = 2600) {
+  const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', ms);
+}
+function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ---------- 项目 ----------
+async function loadProjects() {
+  const d = await api('/api/projects');
+  projects = d.projects || [];
+  const sel = $('#projSel'); sel.innerHTML = '';
+  for (const p of projects) {
+    const o = document.createElement('option');
+    o.value = p.id; o.textContent = `${p.title}（rev ${p.revision}）`;
+    sel.appendChild(o);
+  }
+  if (projects.length && !cur) { sel.value = projects[0].id; await openProject(projects[0].id); }
+}
+async function openProject(id) {
+  const d = await api('/api/projects/' + id);
+  cur = id; curPayload = d.payload;
+  $('#projSel').value = id;
+  render();
+}
+async function refreshAll(){ await loadProjects(); if(cur) await openProject(cur); }
+
+// ---------- 画布渲染 ----------
+const ICONS = { text:'文', image:'图', video:'影', audio:'声' };
+function kindOf(n) {
+  const t = n.title || '';
+  if (t.startsWith('场景')) return 'scene';
+  if (t.startsWith('道具')) return 'prop';
+  if (t.startsWith('角色')) return 'image';
+  return n.type === 'image' ? 'image' : n.type;
+}
+function nodePreview(n) {
+  const meta = n.metadata || {};
+  if (n.type === 'image') return (meta.prompt || meta.content || '').slice(0, 180);
+  if (n.type === 'video') return (meta.prompt || '').slice(0, 120);
+  if (n.type === 'audio') return (meta.prompt || '').slice(0, 140);
+  return (meta.content || '').slice(0, 160);
+}
+function render() {
+  const wrap = $('#canvasWrap');
+  if (!curPayload) return;
+  const nodes = curPayload.nodes || [], conns = curPayload.connections || [];
+  $('#emptyHint').style.display = 'none';
+  const nbox = $('#nodes'); nbox.innerHTML = '';
+  for (const n of nodes) {
+    const k = kindOf(n);
+    const el = document.createElement('div');
+    el.className = 'node' + (n.metadata && n.metadata.status === 'done' ? ' done' : '') +
+                   (n.metadata && n.metadata.status === 'error' ? ' error' : '');
+    el.dataset.id = n.id;
+    el.style.left = (n.position.x || 0) + 'px';
+    el.style.top = (n.position.y || 0) + 'px';
+    const w = n.width || 340; el.style.width = w + 'px';
+    el.innerHTML = `<div class="head"><span class="ico ${n.type} ${k}">${ICONS[n.type]||'?'}</span>
+      <span class="tit">${esc(n.title || '')}</span><span class="tag">${esc(n.type)}</span></div>
+      <div class="preview">${esc(nodePreview(n))}</div>
+      <div class="meta"><span>${(n.metadata && n.metadata.status) || 'idle'}</span>
+      ${n.metadata && n.metadata.lastError ? `<span class="st err">${esc(n.metadata.lastError.slice(0,40))}</span>` : ''}
+      </div>`;
+    el.addEventListener('click', e => { e.stopPropagation(); selectNode(n.id); });
+    nbox.appendChild(el);
+  }
+  renderLinks(conns);
+  applyTransform();
+}
+function renderLinks(conns) {
+  const svg = $('#links');
+  const nodes = curPayload.nodes || [];
+  const rects = {};
+  for (const n of nodes) {
+    const el = document.querySelector(`.node[data-id="${n.id}"]`);
+    if (el) rects[n.id] = { x: n.position.x, y: n.position.y, w: n.width || 340, h: n.height || 300 };
+  }
+  let path = '';
+  for (const c of conns) {
+    const a = rects[c.fromNodeId], b = rects[c.toNodeId];
+    if (!a || !b) continue;
+    const ax = a.x + a.w / 2, ay = a.y + a.h;
+    const bx = b.x + b.w / 2, by = b.y;
+    const mid = Math.max(40, (by - ay) / 2);
+    path += `<path d="M ${ax} ${ay} C ${ax} ${ay+mid}, ${bx} ${by-mid}, ${bx} ${by}" fill="none" stroke="#3d5a80" stroke-width="1.6" opacity="0.75"/>`;
+  }
+  svg.setAttribute('width', 20000); svg.setAttribute('height', 20000);
+  svg.innerHTML = path;
+}
+function applyTransform() {
+  $('#stage').style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
+}
+function fitView() {
+  if (!curPayload || !curPayload.nodes.length) return;
+  const xs = curPayload.nodes.map(n => n.position.x || 0);
+  const ys = curPayload.nodes.map(n => n.position.y || 0);
+  const maxX = Math.max(...xs) + 760, maxY = Math.max(...ys) + 820;
+  const wrap = $('#canvasWrap');
+  zoom = Math.min(1, Math.min(wrap.clientWidth / maxX, wrap.clientHeight / maxY) * 0.94);
+  zoom = Math.max(0.15, zoom);
+  panX = 60; panY = 40;
+  applyTransform();
+}
+
+// ---------- 节点选择 ----------
+function selectNode(id) {
+  document.querySelectorAll('.node.selected').forEach(e => e.classList.remove('selected'));
+  const el = document.querySelector(`.node[data-id="${id}"]`);
+  if (el) el.classList.add('selected');
+  const n = (curPayload.nodes || []).find(x => x.id === id);
+  if (!n) return;
+  const meta = n.metadata || {};
+  $('#sideTitle').textContent = n.title || '';
+  let html = `<div class="kv"><b>类型</b>${n.type}</div>`;
+  if (meta.status === 'done' && meta.content) {
+    if (n.type === 'image') html += `<div class="result"><img src="${esc(meta.content)}"/></div>`;
+    if (n.type === 'video') html += `<div class="result"><video src="${esc(meta.content)}" controls style="max-width:100%"></video></div>`;
+  }
+  html += `<div class="kv"><b>提示词（${meta.prompt ? meta.prompt.length : 0} 字符）</b></div>
+    <div class="prompt">${esc(meta.prompt || meta.content || '(空)')}</div>`;
+  if (meta.status === 'error' && meta.lastError) {
+    html += `<div class="result" style="color:var(--red)">错误：${esc(meta.lastError)}</div>`;
+  }
+  html += `<div class="btn-row">
+    <button data-act="gen" ${['image','video','audio'].includes(n.type) ? '' : 'disabled'}>生成（方舟）</button>
+    <button data-act="copy">复制提示词</button>
+  </div>`;
+  $('#sideBody').innerHTML = html;
+  $('#sideBody').querySelector('[data-act=gen]').onclick = () => askGenerate(id);
+  $('#sideBody').querySelector('[data-act=copy]').onclick = () => {
+    navigator.clipboard.writeText(meta.prompt || '').then(() => toast('已复制'));
+  };
+}
+
+// ---------- 生成确认 ----------
+function askGenerate(nodeId) {
+  const n = (curPayload.nodes || []).find(x => x.id === nodeId);
+  if (!n) return;
+  const cost = n.type === 'image' ? 'Seedream 5.0 · 1.5K（约0.3元/张）' :
+               n.type === 'video' ? 'Seedance 2.0 · 480P' : '方舟 TTS · 4.5S 音色参考';
+  $('#modalTitle').textContent = `确认生成 ${n.title || ''}`;
+  $('#modalMsg').textContent = `类型：${n.type}（${cost}）。\n生成会调用火山方舟 API 并产生费用，且需已完成挂接机检（PASS）后才建议提交。确认继续？`;
+  pendingGen = nodeId;
+  $('#modal').style.display = 'flex';
+}
+$('#modalCancel').onclick = () => { $('#modal').style.display = 'none'; pendingGen = null; };
+$('#modalOk').onclick = async () => {
+  $('#modal').style.display = 'none';
+  const id = pendingGen; pendingGen = null;
+  if (!id || !cur) return;
+  try {
+    toast('生成中，视频/音频需等待…', 60000);
+    const r = await api(`/api/projects/${cur}/nodes/${id}/generate`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
+    });
+    toast('生成完成');
+    await openProject(cur);
+    selectNode(id);
+  } catch (e) {
+    toast('生成失败：' + e.message, 5000);
+    await openProject(cur);
+  }
+};
+
+// ---------- 导入 ----------
+$('#importBtn').onclick = async () => {
+  const p = $('#feedPath').value.trim();
+  if (!cur) { toast('请先新建项目'); return; }
+  if (!p) { toast('请填写投喂载荷 JSON 路径'); return; }
+  try {
+    const r = await api(`/api/projects/${cur}/import`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ feed_path: p })
+    });
+    toast(`导入成功：${r.nodes} 节点 / ${r.connections} 连线`);
+    await openProject(cur); fitView();
+  } catch (e) { toast('导入失败：' + e.message, 5000); }
+};
+$('#newProj').onclick = async () => {
+  const title = prompt('新画布标题：', '画布工作流');
+  if (!title) return;
+  const r = await api('/api/projects', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ title }) });
+  toast('已新建：' + r.title);
+  await refreshAll(); await openProject(r.id);
+};
+$('#refresh').onclick = () => refreshAll();
+$('#gateBtn').onclick = async () => {
+  if (!cur) return toast('先选择项目');
+  try {
+    const r = await api(`/api/projects/${cur}/gate-check`, { method: 'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+    let msg = r.passed ? '✅ 挂接机检全部 PASS' : '❌ 有段挂接不一致';
+    for (const res of r.results) {
+      msg += `\n${res.ok ? 'PASS' : 'FAIL'} ${res.title} 稿:${res.script.join(',')} ↔ 实:${res.linked.join(',')}`;
+    }
+    alert(msg); $('#status').innerHTML = `<span class="${r.passed ? 'ok' : 'bad'}">${r.passed ? '机检 PASS' : '机检 FAIL'}</span>`;
+  } catch (e) { toast('机检失败：' + e.message, 4000); }
+};
+$('#cfgBtn').onclick = async () => {
+  const d = await api('/api/config');
+  const key = prompt('方舟 API Key（留空不改）：', d.ark_api_key ? '已配置' : '');
+  if (key === null) return;
+  const body = {};
+  if (key && key !== '已配置') body.ark_api_key = key;
+  await api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  toast('配置已保存');
+};
+
+// ---------- 平移缩放 ----------
+const wrap = $('#canvasWrap');
+wrap.addEventListener('mousedown', e => {
+  if (e.target.closest('.node')) return;
+  wrap.classList.add('dragging');
+  const sx = e.clientX, sy = e.clientY, px = panX, py = panY;
+  const move = ev => { panX = px + ev.clientX - sx; panY = py + ev.clientY - sy; applyTransform(); };
+  const up = () => { wrap.classList.remove('dragging'); window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+  window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+});
+wrap.addEventListener('wheel', e => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.12 : 0.89;
+  zoom = Math.min(2.5, Math.max(0.12, zoom * factor));
+  applyTransform();
+});
+
+// ---------- 初始化 ----------
+(async () => {
+  try { await loadProjects(); if (cur) { await openProject(cur); fitView(); } }
+  catch (e) { $('#status').textContent = '加载失败：' + e.message; }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+/* The create-project action is a command, not a persistent selected nav item. */
+.primary-nav button:first-child,
+html[data-theme='dark'] .primary-nav button:first-child {
+  color: var(--ink);
+  font-weight: 560;
+  background: transparent;
+  box-shadow: none;
+}
+
+.primary-nav button:first-child svg,
+html[data-theme='dark'] .primary-nav button:first-child svg {
+  color: var(--muted);
+}
+
+.primary-nav button:first-child:hover,
+html[data-theme='dark'] .primary-nav button:first-child:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
