@@ -8,6 +8,8 @@ import string
 import time
 from datetime import datetime, timezone
 
+import tenant_context
+
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "canvas.db")
 
 _B62 = string.digits + string.ascii_letters
@@ -22,6 +24,15 @@ def _now_iso():
 
 
 _SCHEMA_READY = False
+_SCHEMA_READY_PATHS: set[str] = set()
+_SCHEMA_LOCK = __import__("threading").RLock()
+
+
+def _db_path() -> str:
+    context = tenant_context.current()
+    if context is not None:
+        return str(context.db_path)
+    return str(DB_PATH)
 
 
 def _connect():
@@ -33,11 +44,13 @@ def _connect():
          几十个并发时互相排队 → 直接 OperationalError。缓存成模块级一次即可。
     """
     global _SCHEMA_READY
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    con = sqlite3.connect(DB_PATH, timeout=30)
+    path = _db_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    con = sqlite3.connect(path, timeout=30)
     con.execute("PRAGMA busy_timeout=30000")
-    if not _SCHEMA_READY:
-        con.execute(
+    if not _SCHEMA_READY or path not in _SCHEMA_READY_PATHS:
+        with _SCHEMA_LOCK:
+            con.execute(
             """CREATE TABLE IF NOT EXISTS canvas_projects(
                 id TEXT PRIMARY KEY,
                 user_id TEXT,
@@ -47,8 +60,8 @@ def _connect():
                 created_at TEXT,
                 updated_at TEXT
             )"""
-        )
-        con.execute(
+            )
+            con.execute(
             """CREATE TABLE IF NOT EXISTS canvas_snapshots(
                 id TEXT PRIMARY KEY,
                 canvas_id TEXT,
@@ -59,8 +72,8 @@ def _connect():
                 revision INTEGER,
                 created_at TEXT
             )"""
-        )
-        con.execute(
+            )
+            con.execute(
             """CREATE TABLE IF NOT EXISTS generation_tasks(
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
@@ -80,29 +93,30 @@ def _connect():
                 updated_at TEXT,
                 finished_at TEXT
             )"""
-        )
-        con.execute(
+            )
+            con.execute(
             "CREATE INDEX IF NOT EXISTS idx_generation_tasks_project "
             "ON generation_tasks(project_id, created_at DESC)"
-        )
-        con.execute(
+            )
+            con.execute(
             "CREATE INDEX IF NOT EXISTS idx_generation_tasks_node "
             "ON generation_tasks(project_id, node_id, status)"
-        )
-        con.execute(
+            )
+            con.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_tasks_active_node "
             "ON generation_tasks(project_id, node_id) "
             "WHERE status IN ('queued','submitting','running')"
-        )
-        task_columns = {
-            row[1] for row in con.execute("PRAGMA table_info(generation_tasks)")
-        }
-        if "attempt" not in task_columns:
-            con.execute(
-                "ALTER TABLE generation_tasks ADD COLUMN attempt INTEGER DEFAULT 1"
             )
-        con.commit()
-        _SCHEMA_READY = True
+            task_columns = {
+                row[1] for row in con.execute("PRAGMA table_info(generation_tasks)")
+            }
+            if "attempt" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN attempt INTEGER DEFAULT 1"
+                )
+            con.commit()
+            _SCHEMA_READY_PATHS.add(path)
+            _SCHEMA_READY = True
     return con
 
 
@@ -158,7 +172,15 @@ def create_project(title, payload=None):
         payload.setdefault("revision", 1)
     con.execute(
         "INSERT INTO canvas_projects(id,user_id,title,payload_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-        (pid, "local", title, json.dumps(payload, ensure_ascii=False), 1, now, now),
+        (
+            pid,
+            tenant_context.current_tenant_id(),
+            title,
+            json.dumps(payload, ensure_ascii=False),
+            1,
+            now,
+            now,
+        ),
     )
     _snapshot(con, pid, title, payload, 1)
     con.commit()

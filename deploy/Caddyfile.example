@@ -1,0 +1,28 @@
+# Replace example.com and the DNS plugin block before using this file.
+# A wildcard certificate normally needs a DNS-01 challenge. Install the
+# matching Caddy DNS provider module for the DNS host used by your domain.
+
+{
+	email admin@example.com
+}
+
+*.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8890 {
+		header_up Host {host}
+	}
+
+	# Example with the Caddy Cloudflare DNS module:
+	# tls {
+	# 	dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	# }
+}
+
+example.com {
+	respond 404
+}
+
+www.example.com {
+	respond 404
+}
+

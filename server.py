@@ -29,7 +29,9 @@ import subprocess
 import threading
 import time
 import urllib.parse
+from contextlib import nullcontext
 from datetime import datetime, timezone
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, unquote
 
@@ -39,6 +41,9 @@ import gate_check
 import provider_catalog
 import provider_client
 import tos_storage
+import tenant_bootstrap
+import tenant_context
+import tenant_registry
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 # 后端根路径真正要端出去的前端产物。
@@ -61,6 +66,7 @@ RESUMED_VIDEO_TASKS_LOCK = threading.Lock()
 GENERATION_QUEUE_CONDITION = threading.Condition()
 GENERATION_QUEUE_ACTIVE_GLOBAL = 0
 GENERATION_QUEUE_ACTIVE_PROVIDERS: dict[str, int] = {}
+GENERATION_QUEUE_ACTIVE_TENANTS: dict[str, int] = {}
 GENERATION_QUEUE_GLOBAL_LIMIT = max(
     1, int(os.environ.get("CANVAS_GENERATION_GLOBAL_CONCURRENCY", "2"))
 )
@@ -70,6 +76,54 @@ GENERATION_QUEUE_PROVIDER_LIMIT = max(
 GENERATION_QUEUE_WAIT_TIMEOUT = max(
     60, int(os.environ.get("CANVAS_GENERATION_QUEUE_TIMEOUT", "21600"))
 )
+GENERATION_QUEUE_TENANT_LIMIT = max(
+    1, int(os.environ.get("CANVAS_GENERATION_TENANT_CONCURRENCY", "1"))
+)
+CANVAS_SESSION_COOKIE = os.environ.get("CANVAS_SESSION_COOKIE", "canvas_session")
+CANVAS_SESSION_TTL = max(
+    300, int(os.environ.get("CANVAS_SESSION_TTL_SECONDS", str(30 * 24 * 3600)))
+)
+
+
+def _upload_dir():
+    context = tenant_context.current()
+    return str(context.upload_dir) if context is not None else UPLOAD_DIR
+
+
+def _cookie_secure() -> bool:
+    raw = os.environ.get("CANVAS_COOKIE_SECURE", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _active_tenants():
+    if not tenant_context.multi_tenant_enabled():
+        return [None]
+    return tenant_registry.list_tenants(include_disabled=False)
+
+
+def _run_for_active_tenants(func):
+    total = 0
+    for tenant in _active_tenants():
+        try:
+            if tenant is None:
+                result = func()
+            else:
+                with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+                    result = func()
+            if isinstance(result, int):
+                total += result
+        except Exception as exc:
+            tenant_label = tenant["slug"] if tenant else "legacy"
+            print(f"[tenant:{tenant_label}] {func.__name__} 失败：{exc}", file=sys.stderr)
+    return total
+
+
+def _run_in_tenant(tenant_id, slug, func, *args, **kwargs):
+    if tenant_id is None:
+        with tenant_context.use_context(None):
+            return func(*args, **kwargs)
+    with tenant_context.use_tenant(tenant_id, slug):
+        return func(*args, **kwargs)
 
 
 class GenerationQueueCancelled(RuntimeError):
@@ -84,7 +138,9 @@ def acquire_generation_slot(task_id, provider_id):
     one concurrent request per provider and two globally.
     """
     global GENERATION_QUEUE_ACTIVE_GLOBAL
+    tenant_key = tenant_context.current_tenant_id()
     provider_key = str(provider_id or "__default__").strip() or "__default__"
+    composite_key = f"{tenant_key}\x1f{provider_key}"
     started = time.monotonic()
     with GENERATION_QUEUE_CONDITION:
         while True:
@@ -93,13 +149,16 @@ def acquire_generation_slot(task_id, provider_id):
                 if current_task and current_task.get("status") == "interrupted":
                     raise GenerationQueueCancelled("排队任务已取消")
             global_active = GENERATION_QUEUE_ACTIVE_GLOBAL
-            provider_active = GENERATION_QUEUE_ACTIVE_PROVIDERS.get(provider_key, 0)
+            provider_active = GENERATION_QUEUE_ACTIVE_PROVIDERS.get(composite_key, 0)
+            tenant_active = GENERATION_QUEUE_ACTIVE_TENANTS.get(tenant_key, 0)
             if (
                 global_active < GENERATION_QUEUE_GLOBAL_LIMIT
                 and provider_active < GENERATION_QUEUE_PROVIDER_LIMIT
+                and tenant_active < GENERATION_QUEUE_TENANT_LIMIT
             ):
                 GENERATION_QUEUE_ACTIVE_GLOBAL += 1
-                GENERATION_QUEUE_ACTIVE_PROVIDERS[provider_key] = provider_active + 1
+                GENERATION_QUEUE_ACTIVE_PROVIDERS[composite_key] = provider_active + 1
+                GENERATION_QUEUE_ACTIVE_TENANTS[tenant_key] = tenant_active + 1
                 if task_id:
                     store.update_generation_task(
                         task_id,
@@ -107,7 +166,11 @@ def acquire_generation_slot(task_id, provider_id):
                         phase="已获得执行槽位",
                         started_at=store._now_iso(),
                     )
-                return provider_key
+                return {
+                    "tenant": tenant_key,
+                    "provider": provider_key,
+                    "composite": composite_key,
+                }
             if time.monotonic() - started >= GENERATION_QUEUE_WAIT_TIMEOUT:
                 if task_id:
                     store.update_generation_task(
@@ -122,20 +185,40 @@ def acquire_generation_slot(task_id, provider_id):
                 store.update_generation_task(
                     task_id,
                     status="queued",
-                    phase=f"排队等待（全局 {global_active}/{GENERATION_QUEUE_GLOBAL_LIMIT}，供应商 {provider_active}/{GENERATION_QUEUE_PROVIDER_LIMIT}）",
+                    phase=(
+                        f"排队等待（全局 {global_active}/{GENERATION_QUEUE_GLOBAL_LIMIT}，"
+                        f"租户 {tenant_active}/{GENERATION_QUEUE_TENANT_LIMIT}，"
+                        f"供应商 {provider_active}/{GENERATION_QUEUE_PROVIDER_LIMIT}）"
+                    ),
                 )
             GENERATION_QUEUE_CONDITION.wait(timeout=5)
 
 
-def release_generation_slot(provider_key):
+def release_generation_slot(slot):
     global GENERATION_QUEUE_ACTIVE_GLOBAL
+    if isinstance(slot, dict):
+        tenant_key = str(slot.get("tenant") or "legacy")
+        provider_key = str(slot.get("provider") or "__default__")
+        composite_key = str(slot.get("composite") or f"{tenant_key}\x1f{provider_key}")
+    elif isinstance(slot, tuple) and len(slot) == 2:
+        tenant_key, provider_key = str(slot[0] or "legacy"), str(slot[1] or "__default__")
+        composite_key = f"{tenant_key}\x1f{provider_key}"
+    else:
+        tenant_key = tenant_context.current_tenant_id()
+        provider_key = str(slot or "__default__")
+        composite_key = f"{tenant_key}\x1f{provider_key}"
     with GENERATION_QUEUE_CONDITION:
         GENERATION_QUEUE_ACTIVE_GLOBAL = max(0, GENERATION_QUEUE_ACTIVE_GLOBAL - 1)
-        active = max(0, GENERATION_QUEUE_ACTIVE_PROVIDERS.get(provider_key, 0) - 1)
+        active = max(0, GENERATION_QUEUE_ACTIVE_PROVIDERS.get(composite_key, 0) - 1)
         if active:
-            GENERATION_QUEUE_ACTIVE_PROVIDERS[provider_key] = active
+            GENERATION_QUEUE_ACTIVE_PROVIDERS[composite_key] = active
         else:
-            GENERATION_QUEUE_ACTIVE_PROVIDERS.pop(provider_key, None)
+            GENERATION_QUEUE_ACTIVE_PROVIDERS.pop(composite_key, None)
+        tenant_active = max(0, GENERATION_QUEUE_ACTIVE_TENANTS.get(tenant_key, 0) - 1)
+        if tenant_active:
+            GENERATION_QUEUE_ACTIVE_TENANTS[tenant_key] = tenant_active
+        else:
+            GENERATION_QUEUE_ACTIVE_TENANTS.pop(tenant_key, None)
         GENERATION_QUEUE_CONDITION.notify_all()
 
 
@@ -181,7 +264,7 @@ def validate_generated_video(url, expected_duration=None):
     raw = str(url or "").strip()
     if not raw.startswith("/uploads/"):
         return {"status": "unverified", "message": "远程文件暂未校验"}
-    path = os.path.join(UPLOAD_DIR, raw[len("/uploads/"):])
+    path = os.path.join(_upload_dir(), raw[len("/uploads/"):])
     if not os.path.isfile(path):
         return {"status": "invalid", "message": "本地文件不存在"}
     try:
@@ -678,7 +761,7 @@ def start_generation_task_reconciler():
     def run():
         while True:
             try:
-                reconcile_generation_task_records()
+                _run_for_active_tenants(reconcile_generation_task_records)
             except Exception as exc:
                 print(f"[generation-tasks] 定时对账失败：{exc}", file=sys.stderr)
             time.sleep(30)
@@ -687,43 +770,62 @@ def start_generation_task_reconciler():
 
 
 def start_pending_video_resumers():
-    for project_row in store.list_projects():
-        project = store.get_project(project_row.get("id"))
-        if not project:
-            continue
-        for node in project["payload"].get("nodes", []):
-            meta = node.get("metadata") or {}
-            task_id = str(meta.get("taskId") or "").strip()
-            provider_status = str(meta.get("providerTaskStatus") or "").strip().lower()
-            if (node.get("type") != "video"
-                    or meta.get("status") != "generating"
-                    or not task_id
-                    or provider_status not in {"queued", "pending", "created", "submitted", "running", "processing", "retrying"}):
-                continue
-            try:
-                params = meta.get("params") or {}
-                provider, model, _ = provider_catalog.resolve_model(
-                    params.get("provider") or meta.get("provider"),
-                    params.get("model") or meta.get("model"),
-                    "video",
-                )
-            except Exception as exc:
-                commit_node_metadata(project["id"], node["id"], {
-                    "status": "failed",
-                    "lastError": f"无法恢复视频任务：{exc}",
-                    "providerTaskPhase": "恢复失败",
-                })
-                continue
-            key = (project["id"], node["id"])
-            with RESUMED_VIDEO_TASKS_LOCK:
-                if key in RESUMED_VIDEO_TASKS:
+    for tenant in _active_tenants():
+        def resume_tenant(tenant_record=tenant):
+            for project_row in store.list_projects():
+                project = store.get_project(project_row.get("id"))
+                if not project:
                     continue
-                RESUMED_VIDEO_TASKS.add(key)
-            threading.Thread(
-                target=_resume_video_task,
-                args=(project["id"], node["id"], task_id, provider, model),
-                daemon=True,
-            ).start()
+                for node in project["payload"].get("nodes", []):
+                    meta = node.get("metadata") or {}
+                    task_id = str(meta.get("taskId") or "").strip()
+                    provider_status = str(meta.get("providerTaskStatus") or "").strip().lower()
+                    if (node.get("type") != "video"
+                            or meta.get("status") != "generating"
+                            or not task_id
+                            or provider_status not in {"queued", "pending", "created", "submitted", "running", "processing", "retrying"}):
+                        continue
+                    try:
+                        params = meta.get("params") or {}
+                        provider, model, _ = provider_catalog.resolve_model(
+                            params.get("provider") or meta.get("provider"),
+                            params.get("model") or meta.get("model"),
+                            "video",
+                        )
+                    except Exception as exc:
+                        commit_node_metadata(project["id"], node["id"], {
+                            "status": "failed",
+                            "lastError": f"无法恢复视频任务：{exc}",
+                            "providerTaskPhase": "恢复失败",
+                        })
+                        continue
+                    tenant_id = tenant_record["id"] if tenant_record else None
+                    tenant_slug = tenant_record["slug"] if tenant_record else "local"
+                    key = (tenant_id or "legacy", project["id"], node["id"])
+                    with RESUMED_VIDEO_TASKS_LOCK:
+                        if key in RESUMED_VIDEO_TASKS:
+                            continue
+                        RESUMED_VIDEO_TASKS.add(key)
+                    threading.Thread(
+                        target=_run_in_tenant,
+                        args=(
+                            tenant_id,
+                            tenant_slug,
+                            _resume_video_task,
+                            project["id"],
+                            node["id"],
+                            task_id,
+                            provider,
+                            model,
+                        ),
+                        daemon=True,
+                    ).start()
+
+        if tenant is None:
+            resume_tenant()
+        else:
+            with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+                resume_tenant(tenant)
 
 
 def reconcile_interrupted_generation_nodes():
@@ -819,7 +921,7 @@ class Handler(BaseHTTPRequestHandler):
         sys.stdout.write("[%s] %s\n" % (self.server.server_address, fmt % args))
 
     # ---------- helpers ----------
-    def _send(self, code, obj=None, raw=None, content_type="application/json"):
+    def _send(self, code, obj=None, raw=None, content_type="application/json", headers=None):
         if raw is not None:
             body = raw.encode("utf-8") if isinstance(raw, str) else raw
         else:
@@ -828,6 +930,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for key, value in (headers or {}).items():
+            self.send_header(str(key), str(value))
         self.end_headers()
         self.wfile.write(body)
 
@@ -884,9 +988,10 @@ class Handler(BaseHTTPRequestHandler):
             ext = guess.lower() if guess.lower() in self._UPLOAD_EXT else ".bin"
         if ext == ".bin":
             return self._send(400, {"error": "不支持的文件类型"})
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        upload_dir = _upload_dir()
+        os.makedirs(upload_dir, exist_ok=True)
         fname = secrets.token_hex(6) + ext
-        fpath = os.path.join(UPLOAD_DIR, fname)
+        fpath = os.path.join(upload_dir, fname)
         with open(fpath, "wb") as f:
             f.write(blob)
         return self._send(200, {
@@ -960,10 +1065,95 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         return True
 
+    # ---------- tenant request boundary ----------
+    def _origin_allowed(self) -> bool:
+        origin = self.headers.get("Origin", "").strip()
+        if not origin:
+            return True
+        origin_host = urlparse(origin).netloc.lower()
+        request_host = self.headers.get("Host", "").strip().lower()
+        return bool(origin_host and origin_host == request_host)
+
+    def _request_tenant_scope(self):
+        if self.command not in {"GET", "HEAD"} and not self._origin_allowed():
+            self._send(403, {"error": "跨站请求已拒绝", "code": "ORIGIN_REJECTED"})
+            return None
+        if not tenant_context.multi_tenant_enabled():
+            return nullcontext()
+        kind, slug = tenant_context.classify_host(self.headers.get("Host", ""))
+        path = urlparse(self.path).path
+        if kind != "tenant":
+            self._send(404, {"error": "资源不存在"})
+            return None
+        if path.startswith("/invite/"):
+            # The invite is the only unauthenticated route. Host still selects
+            # the tenant, and the one-time token is validated inside the route.
+            tenant = tenant_registry.get_tenant_by_slug(slug)
+            if not tenant:
+                self._send(410, {"error": "邀请链接无效。", "code": "INVITE_INVALID"})
+                return None
+            return tenant_context.use_tenant(tenant["id"], tenant["slug"])
+
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except Exception:
+            cookie = SimpleCookie()
+        morsel = cookie.get(CANVAS_SESSION_COOKIE)
+        raw_session = morsel.value if morsel is not None else ""
+        session = tenant_registry.get_session(raw_session) if raw_session else None
+        if not session or session.get("tenant_slug") != slug:
+            self._send(401, {
+                "error": "当前子域名需要有效邀请会话，请使用管理员生成的邀请链接进入。",
+                "code": "TENANT_AUTH_REQUIRED",
+            })
+            return None
+        return tenant_context.use_tenant(session["tenant_id"], session["tenant_slug"])
+
+    def _handle_invite(self, path):
+        if not tenant_context.multi_tenant_enabled():
+            return self._send(404, {"error": "资源不存在"})
+        kind, slug = tenant_context.classify_host(self.headers.get("Host", ""))
+        if kind != "tenant":
+            return self._send(404, {"error": "资源不存在"})
+        raw_token = unquote(path[len("/invite/"):]).strip()
+        tenant = tenant_registry.consume_invite(slug, raw_token)
+        if not tenant:
+            return self._send(410, {
+                "error": "邀请链接无效、已过期或已经使用。",
+                "code": "INVITE_INVALID",
+            })
+        session = tenant_registry.create_session(
+            tenant["id"],
+            ttl_seconds=CANVAS_SESSION_TTL,
+            user_agent=self.headers.get("User-Agent", ""),
+            ip=self.client_address[0] if self.client_address else "",
+        )
+        cookie = (
+            f"{CANVAS_SESSION_COOKIE}={session['token']}; "
+            f"Path=/; Max-Age={CANVAS_SESSION_TTL}; HttpOnly; SameSite=Lax"
+        )
+        if _cookie_secure():
+            cookie += "; Secure"
+        return self._send(
+            302,
+            {"ok": True},
+            headers={"Location": "/", "Set-Cookie": cookie},
+        )
+
     # ---------- routes ----------
     def do_GET(self):
+        scope = self._request_tenant_scope()
+        if scope is None:
+            return
+        with scope:
+            return self._do_get()
+
+    def _do_get(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        if path.startswith("/invite/"):
+            return self._handle_invite(path)
         if path == "/" or path == "/index.html":
             if self._serve_webapp("/index.html"):
                 return
@@ -1041,7 +1231,7 @@ class Handler(BaseHTTPRequestHandler):
             name = unquote(path[len("/uploads/"):])
             if not name or "/" in name or "\\" in name or name.startswith("."):
                 return self._send(400, {"error": "非法文件名"})
-            fpath = os.path.join(UPLOAD_DIR, name)
+            fpath = os.path.join(_upload_dir(), name)
             if not os.path.isfile(fpath):
                 return self._send(404, {"error": "文件不存在"})
             ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
@@ -1057,16 +1247,25 @@ class Handler(BaseHTTPRequestHandler):
             return
         # 上传目录诊断（便于排查文件是否真落盘）
         if path == "/api/uploads":
-            if not os.path.isdir(UPLOAD_DIR):
-                return self._send(200, {"dir": UPLOAD_DIR, "exists": False, "files": []})
+            upload_dir = _upload_dir()
+            if not os.path.isdir(upload_dir):
+                return self._send(200, {"dir": upload_dir, "exists": False, "files": []})
             files = []
-            for n in sorted(os.listdir(UPLOAD_DIR))[-50:]:
-                fp = os.path.join(UPLOAD_DIR, n)
+            for n in sorted(os.listdir(upload_dir))[-50:]:
+                fp = os.path.join(upload_dir, n)
                 if os.path.isfile(fp):
                     files.append({"name": n, "size": os.path.getsize(fp), "url": "/uploads/" + n})
-            return self._send(200, {"dir": UPLOAD_DIR, "exists": True, "files": files})
+            return self._send(200, {"dir": upload_dir, "exists": True, "files": files})
         if path == "/api/config":
             return self._send(200, provider_catalog.config_status())
+        if path == "/api/tenant/session":
+            context = tenant_context.current()
+            return self._send(200, {
+                "authenticated": True,
+                "tenantId": context.tenant_id if context else "legacy",
+                "slug": context.slug if context else "local",
+                "isolated": bool(context),
+            })
         if path in ("/api/model-catalog", "/api/providers"):
             return self._send(200, provider_catalog.public_catalog())
         m = re.match(r"^/api/projects/([^/]+)/catalog$", path)
@@ -1109,9 +1308,32 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        scope = self._request_tenant_scope()
+        if scope is None:
+            return
+        with scope:
+            return self._do_post()
+
+    def _do_post(self):
         parsed = urlparse(self.path)
         path = parsed.path
         body = self._read_json()
+        if path == "/api/tenant/logout":
+            cookie = SimpleCookie()
+            try:
+                cookie.load(self.headers.get("Cookie", ""))
+            except Exception:
+                cookie = SimpleCookie()
+            morsel = cookie.get(CANVAS_SESSION_COOKIE)
+            if morsel is not None and morsel.value:
+                tenant_registry.revoke_session(morsel.value)
+            clear_cookie = (
+                f"{CANVAS_SESSION_COOKIE}=; Path=/; Max-Age=0; "
+                "HttpOnly; SameSite=Lax"
+            )
+            if _cookie_secure():
+                clear_cookie += "; Secure"
+            return self._send(200, {"ok": True}, headers={"Set-Cookie": clear_cookie})
         if path == "/api/storage":
             try:
                 storage = provider_catalog.save_storage_config(body)
@@ -1385,6 +1607,13 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
     def do_PUT(self):
+        scope = self._request_tenant_scope()
+        if scope is None:
+            return
+        with scope:
+            return self._do_put()
+
+    def _do_put(self):
         with PROJECT_WRITE_LOCK:
             return self._do_put_locked()
 
@@ -1614,6 +1843,13 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"ok": True, "nodeId": nid})
 
     def do_DELETE(self):
+        scope = self._request_tenant_scope()
+        if scope is None:
+            return
+        with scope:
+            return self._do_delete()
+
+    def _do_delete(self):
         with PROJECT_WRITE_LOCK:
             return self._do_delete_locked()
 
@@ -2338,41 +2574,51 @@ def main():
     )
     os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"), exist_ok=True)
     try:
-        recovered = store.backfill_video_version_history()
+        tenant_bootstrap.bootstrap()
+        if tenant_context.multi_tenant_enabled():
+            print(
+                f"多租户模式已启用，基础域名："
+                f"{os.environ.get('CANVAS_BASE_DOMAIN', '').strip() or '未配置'}"
+            )
+    except Exception as exc:
+        print(f"[tenant] 初始化失败：{exc}", file=sys.stderr)
+        raise
+    try:
+        recovered = _run_for_active_tenants(store.backfill_video_version_history)
         if recovered:
             print(f"已恢复 {recovered} 个项目的媒体版本历史")
     except Exception as exc:
         print(f"[media-history] 回填失败：{exc}", file=sys.stderr)
     try:
-        recovered_episodes = backfill_multi_episode_payloads()
+        recovered_episodes = _run_for_active_tenants(backfill_multi_episode_payloads)
         if recovered_episodes:
             print(f"已恢复 {recovered_episodes} 个项目的多集导入数据")
     except Exception as exc:
         print(f"[episode-import] 多集恢复失败：{exc}", file=sys.stderr)
     try:
-        linked_projects = backfill_episode_shared_asset_links()
+        linked_projects = _run_for_active_tenants(backfill_episode_shared_asset_links)
         if linked_projects:
             print(f"已补齐 {linked_projects} 个项目的跨集资产连线")
     except Exception as exc:
         print(f"[episode-import] 跨集资产连线失败：{exc}", file=sys.stderr)
     try:
-        validated = backfill_generated_video_validation()
+        validated = _run_for_active_tenants(backfill_generated_video_validation)
         if validated:
             print(f"已校验 {validated} 个历史视频")
     except Exception as exc:
         print(f"[video-validation] 回填失败：{exc}", file=sys.stderr)
     try:
-        store.interrupt_orphan_generation_tasks()
+        _run_for_active_tenants(store.interrupt_orphan_generation_tasks)
     except Exception as exc:
         print(f"[generation-tasks] 清理中断任务失败：{exc}", file=sys.stderr)
     try:
-        reconciled = reconcile_interrupted_generation_nodes()
+        reconciled = _run_for_active_tenants(reconcile_interrupted_generation_nodes)
         if reconciled:
             print(f"已标记 {reconciled} 个中断的生成节点")
     except Exception as exc:
         print(f"[generation-tasks] 对账中断节点失败：{exc}", file=sys.stderr)
     try:
-        reconciled_tasks = reconcile_generation_task_records()
+        reconciled_tasks = _run_for_active_tenants(reconcile_generation_task_records)
         if reconciled_tasks:
             print(f"已对账 {reconciled_tasks} 条生成任务")
     except Exception as exc:

@@ -91,6 +91,30 @@ npm --prefix web-vimax run dev         # 画布前端 8891（ViMax 画布内核 
 
 顶栏「主题」按钮提供五套统一主题：石墨蓝、松石绿、暖铜灰、AIGC 暗色、白色主题。主题变量集中在 `web-vimax/src/theme-tokens.css`，画布、面板、弹窗、任务状态和小地图共用同一套令牌；选择结果保存在浏览器本地。
 
+## 多租户部署（自带密钥、自行付费）
+
+默认不设置 `CANVAS_MULTI_TENANT` 时仍按单机模式运行。启用多租户后，每个用户对应一个独立子域名、独立租户数据库、独立上传目录、独立供应商配置和独立生成队列额度。主域名只返回 `404`，用户通过管理员生成的一次性邀请进入。
+
+```powershell
+$env:CANVAS_MULTI_TENANT="1"
+$env:CANVAS_BASE_DOMAIN="example.com"
+$env:CANVAS_TENANT_DATA_ROOT="C:\drama-canvas-data"
+$env:CANVAS_MASTER_KEY="base64:<32字节URL-safe Base64>"
+py server.py
+```
+
+租户管理：
+
+```powershell
+py tenant_admin.py create alpha --name "Alpha Studio"
+py tenant_admin.py invite alpha --ttl-hours 24
+py tenant_admin.py list
+py tenant_admin.py rotate-invite alpha
+py tenant_admin.py disable alpha
+```
+
+首次启用会把现有项目和素材迁移到 `owner` 租户；原始文件保留不动。供应商和 TOS 密钥会加密写入各租户自己的 `config.local.json`，接口只返回掩码。完整的反向代理、泛域名 TLS 和部署约束见 `deploy/README.md`。
+
 ## 铁律（已内置）
 
 - **只有有对白的角色才生成音色**（音频节点）——解析各段台词行自动判定，无对白角色自动跳过

@@ -20,14 +20,18 @@ class GenerationQueueTests(unittest.TestCase):
         with server.GENERATION_QUEUE_CONDITION:
             self.old_global_active = server.GENERATION_QUEUE_ACTIVE_GLOBAL
             self.old_provider_active = dict(server.GENERATION_QUEUE_ACTIVE_PROVIDERS)
+            self.old_tenant_active = dict(server.GENERATION_QUEUE_ACTIVE_TENANTS)
             server.GENERATION_QUEUE_ACTIVE_GLOBAL = 0
             server.GENERATION_QUEUE_ACTIVE_PROVIDERS.clear()
+            server.GENERATION_QUEUE_ACTIVE_TENANTS.clear()
 
     def tearDown(self):
         with server.GENERATION_QUEUE_CONDITION:
             server.GENERATION_QUEUE_ACTIVE_GLOBAL = self.old_global_active
             server.GENERATION_QUEUE_ACTIVE_PROVIDERS.clear()
             server.GENERATION_QUEUE_ACTIVE_PROVIDERS.update(self.old_provider_active)
+            server.GENERATION_QUEUE_ACTIVE_TENANTS.clear()
+            server.GENERATION_QUEUE_ACTIVE_TENANTS.update(self.old_tenant_active)
             server.GENERATION_QUEUE_CONDITION.notify_all()
         canvas_store.DB_PATH = self.old_db_path
         canvas_store._SCHEMA_READY = self.old_schema_ready

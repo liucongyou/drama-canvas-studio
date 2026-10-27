@@ -15,8 +15,6 @@ __pycache__/
 proj.json
 ark-video-cost-audit-*.csv
 _devcheck*.txt
-$null
-1}
 
 # Logs and temporary probe output
 *.log

@@ -62,9 +62,9 @@ async function readSessionsWithRunning() {
   };
 }
 
-// 默认双栈监听（:: = IPv6 通配，同时接受 IPv4 与 IPv6），
-// 保证用户无论用 localhost / 127.0.0.1 / [::1] 访问都能连上（旧窗口 localhost 白板的根因）
-const host = process.env.VIMAX_WEB_HOST || '::';
+// 多租户部署只允许 Python 网关对公网监听。这个辅助 Web/Agent 服务
+// 默认仅绑定环回地址，避免绕过租户会话直接访问旧的单实例配置接口。
+const host = process.env.VIMAX_WEB_HOST || '127.0.0.1';
 const port = Number(process.env.VIMAX_WEB_PORT || 4173);
 const configuredUploadLimit = Number(process.env.VIMAX_WEB_UPLOAD_MAX_BYTES || 100 * 1024 * 1024);
 const uploadMaxBytes = Number.isFinite(configuredUploadLimit) && configuredUploadLimit > 0

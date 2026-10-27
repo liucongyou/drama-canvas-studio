@@ -16,10 +16,58 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+import tenant_context
+import tenant_security
+
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE, "config.json")
 LOCAL_CONFIG_PATH = os.path.join(BASE, "config.local.json")
+
+
+def _local_config_path() -> str:
+    context = tenant_context.current()
+    return str(context.config_path) if context is not None else LOCAL_CONFIG_PATH
+
+
+def _tenant_mode() -> bool:
+    return tenant_context.current() is not None
+
+
+def _read_json_file(path: str) -> dict[str, Any]:
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        loaded = json.load(handle)
+    if not isinstance(loaded, dict):
+        raise ValueError(f"配置文件必须是 JSON 对象：{path}")
+    return loaded
+
+
+def _decrypt_config_secrets(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = copy.deepcopy(cfg)
+    for provider in result.get("providers", []):
+        if isinstance(provider, dict) and provider.get("api_key"):
+            provider["api_key"] = tenant_security.decrypt_secret(provider["api_key"])
+    storage = result.get("storage")
+    if isinstance(storage, dict):
+        for key in ("access_key", "secret_key"):
+            if storage.get(key):
+                storage[key] = tenant_security.decrypt_secret(storage[key])
+    return result
+
+
+def _encrypt_config_secrets(cfg: dict[str, Any]) -> dict[str, Any]:
+    result = copy.deepcopy(cfg)
+    for provider in result.get("providers", []):
+        if isinstance(provider, dict) and provider.get("api_key"):
+            provider["api_key"] = tenant_security.encrypt_secret(provider["api_key"])
+    storage = result.get("storage")
+    if isinstance(storage, dict):
+        for key in ("access_key", "secret_key"):
+            if storage.get(key):
+                storage[key] = tenant_security.encrypt_secret(storage[key])
+    return result
 
 
 def _select(options: list[str], *, multiple: bool = False) -> dict[str, Any]:
@@ -350,16 +398,24 @@ def _deep_merge(defaults: Any, override: Any) -> Any:
 
 def load_config(*, migrate: bool = True) -> dict[str, Any]:
     cfg: dict[str, Any] = {}
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, encoding="utf-8") as fh:
-            loaded = json.load(fh)
-        if isinstance(loaded, dict):
-            cfg = loaded
-    if os.path.exists(LOCAL_CONFIG_PATH):
-        with open(LOCAL_CONFIG_PATH, encoding="utf-8") as fh:
-            local = json.load(fh)
-        if isinstance(local, dict):
-            cfg = _deep_merge(cfg, local)
+    local_path = _local_config_path()
+    if _tenant_mode():
+        cfg = _read_json_file(local_path) if os.path.exists(local_path) else _read_json_file(CONFIG_PATH)
+    else:
+        cfg = _read_json_file(CONFIG_PATH)
+        if os.path.exists(local_path):
+            cfg = _deep_merge(cfg, _read_json_file(local_path))
+    cfg = _decrypt_config_secrets(cfg)
+    deleted_providers = {
+        str(item).strip()
+        for item in (cfg.get("deletedProviders") or [])
+        if str(item).strip()
+    }
+    deleted_models = {
+        str(item).strip()
+        for item in (cfg.get("deletedModels") or [])
+        if str(item).strip()
+    }
     merged = copy.deepcopy(cfg)
     existing_providers = cfg.get("providers") if isinstance(cfg.get("providers"), list) else []
     provider_map = {item["id"]: copy.deepcopy(item) for item in DEFAULT_PROVIDERS}
@@ -368,6 +424,8 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
             continue
         current = provider_map.get(item["id"], {})
         provider_map[item["id"]] = _deep_merge(current, item)
+    for provider_id in deleted_providers:
+        provider_map.pop(provider_id, None)
     merged["providers"] = list(provider_map.values())
 
     existing_models = cfg.get("models") if isinstance(cfg.get("models"), list) else []
@@ -377,11 +435,15 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
             continue
         current = model_map.get(item["id"], {})
         model_map[item["id"]] = _deep_merge(current, item)
+    for model_id in deleted_models:
+        model_map.pop(model_id, None)
     merged["models"] = list(model_map.values())
     merged["storage"] = _deep_merge(
         DEFAULT_STORAGE,
         cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {},
     )
+    merged["deletedProviders"] = sorted(deleted_providers)
+    merged["deletedModels"] = sorted(deleted_models)
 
     # One-time compatibility with the original flat config.
     providers = merged.setdefault("providers", [])
@@ -462,11 +524,13 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
 
 
 def save_config(cfg: dict[str, Any]) -> None:
-    payload = copy.deepcopy(cfg)
-    tmp = f"{LOCAL_CONFIG_PATH}.{os.getpid()}.tmp"
+    payload = _encrypt_config_secrets(cfg)
+    path = _local_config_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
-    os.replace(tmp, LOCAL_CONFIG_PATH)
+    os.replace(tmp, path)
 
 
 def _hint(key: str) -> str:
@@ -606,6 +670,20 @@ def save_storage_config(input_data: dict[str, Any]) -> dict[str, Any]:
             current.get("require_for_ark_portrait", True),
         )),
     })
+    context = tenant_context.current()
+    if context is not None:
+        import tenant_registry
+
+        if enabled:
+            tenant_registry.claim_storage_binding(
+                context.tenant_id,
+                bucket=current["bucket"],
+                region=current["region"],
+                prefix=current["prefix"],
+                access_key=current["access_key"],
+            )
+        else:
+            tenant_registry.release_storage_binding(context.tenant_id)
     save_config(cfg)
     return public_storage_config()
 
@@ -678,6 +756,9 @@ def upsert_provider(input_data: dict[str, Any]) -> dict[str, Any]:
     if not provider_id:
         raise ValueError("供应商 ID 不能为空")
     providers = cfg.setdefault("providers", [])
+    cfg["deletedProviders"] = [
+        item for item in (cfg.get("deletedProviders") or []) if item != provider_id
+    ]
     current = next((p for p in providers if p.get("id") == provider_id), None)
     if current is None:
         current = {"id": provider_id, "enabled": True, "api_key": ""}
@@ -710,6 +791,9 @@ def delete_provider(provider_id: str) -> dict[str, Any]:
         raise ValueError("供应商不存在")
     cfg["providers"] = [p for p in providers if p.get("id") != provider_id]
     cfg["models"] = [m for m in cfg.get("models", []) if m.get("providerId") != provider_id]
+    deleted = set(cfg.get("deletedProviders") or [])
+    deleted.add(provider_id)
+    cfg["deletedProviders"] = sorted(deleted)
     save_config(cfg)
     return public_catalog()
 
@@ -782,6 +866,9 @@ def upsert_model(input_data: dict[str, Any]) -> dict[str, Any]:
     if not remote_model:
         raise ValueError("远程模型 ID 不能为空")
     models = cfg.setdefault("models", [])
+    cfg["deletedModels"] = [
+        item for item in (cfg.get("deletedModels") or []) if item != model_id
+    ]
     current = next((m for m in models if m.get("id") == model_id), None)
     if current is None:
         current = {"id": model_id, "enabled": True}
@@ -826,6 +913,9 @@ def delete_model(model_id: str) -> dict[str, Any]:
     if not any(m.get("id") == model_id for m in models):
         raise ValueError("模型不存在")
     cfg["models"] = [m for m in models if m.get("id") != model_id]
+    deleted = set(cfg.get("deletedModels") or [])
+    deleted.add(model_id)
+    cfg["deletedModels"] = sorted(deleted)
     save_config(cfg)
     return public_catalog()
 

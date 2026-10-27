@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 import provider_catalog
+import tenant_context
 import tos_storage
 
 
@@ -34,6 +35,11 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE, "data", "uploads")
 MAX_INLINE_BYTES = 24 * 1024 * 1024
 TaskEventCallback = Callable[[dict[str, Any]], None]
+
+
+def _upload_dir() -> str:
+    context = tenant_context.current()
+    return str(context.upload_dir) if context is not None else UPLOAD_DIR
 
 
 def _emit_task_event(callback: TaskEventCallback | None, payload: dict[str, Any]) -> None:
@@ -138,12 +144,13 @@ def _extension_for_mime(mime: str, fallback: str) -> str:
 def save_generated_bytes(data: bytes, mime: str, fallback_ext: str) -> str:
     if not data:
         raise RuntimeError("供应商返回了空文件")
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    upload_dir = _upload_dir()
+    os.makedirs(upload_dir, exist_ok=True)
     ext = _extension_for_mime(mime, fallback_ext)
     if ext == ".jpe":
         ext = ".jpg"
     name = f"generated-{int(time.time())}-{secrets.token_hex(5)}{ext}"
-    with open(os.path.join(UPLOAD_DIR, name), "wb") as fh:
+    with open(os.path.join(upload_dir, name), "wb") as fh:
         fh.write(data)
     return f"/uploads/{name}"
 
@@ -228,7 +235,7 @@ def local_upload_path(url: str) -> str | None:
     name = urllib.parse.unquote(raw[len("/uploads/"):])
     if not name or "/" in name or "\\" in name or name.startswith("."):
         raise RuntimeError("本地素材路径非法")
-    path = os.path.join(UPLOAD_DIR, name)
+    path = os.path.join(_upload_dir(), name)
     if not os.path.isfile(path):
         raise RuntimeError(f"本地素材不存在：{name}")
     return path

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import provider_catalog
+import tenant_context
 
 
 class TosStorageError(RuntimeError):
@@ -186,12 +187,7 @@ def persist_local_url(
     name = urllib.parse.unquote(raw[len("/uploads/"):])
     if not name or "/" in name or "\\" in name or name.startswith("."):
         raise TosStorageError("本地素材路径非法")
-    path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "data",
-        "uploads",
-        name,
-    )
+    path = os.path.join(str(tenant_context.current_upload_dir()), name)
     if not os.path.isfile(path):
         raise TosStorageError("本地原始文件不存在")
     with open(path, "rb") as fh:
