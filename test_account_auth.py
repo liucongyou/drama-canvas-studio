@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import http.client
+import json
 import os
 import tempfile
 import threading
@@ -37,7 +38,9 @@ class AccountAuthTests(unittest.TestCase):
             b"account-auth-0123456789abcdef01"
         ).decode("ascii")
         tenant = tenant_bootstrap.create_tenant("alpha", name="Alpha")
+        beta = tenant_bootstrap.create_tenant("beta", name="Beta")
         tenant_registry.create_account(tenant["id"], "alice", "correct-horse")
+        tenant_registry.create_account(beta["id"], "bob", "correct-horse")
         self.httpd = server.CanvasHTTPServer(("127.0.0.1", 0), server.Handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -112,6 +115,47 @@ class AccountAuthTests(unittest.TestCase):
         )
         self.assertEqual(status, 204)
         self.assertNotIn("Access-Control-Allow-Origin", headers)
+
+    def test_projects_are_isolated_between_two_accounts(self):
+        def login(username: str) -> str:
+            status, headers, _ = self.request(
+                "POST",
+                "/api/auth/login",
+                json.dumps({"username": username, "password": "correct-horse"}),
+            )
+            self.assertEqual(status, 200)
+            return headers.get("Set-Cookie", "").split(";", 1)[0]
+
+        def create_project(cookie: str, title: str) -> str:
+            status, _, body = self.request(
+                "POST",
+                "/api/projects",
+                json.dumps({"title": title}),
+                cookie=cookie,
+            )
+            self.assertEqual(status, 200)
+            return json.loads(body)["id"]
+
+        def list_project_ids(cookie: str) -> list[str]:
+            status, _, body = self.request("GET", "/api/projects", cookie=cookie)
+            self.assertEqual(status, 200)
+            return [item["id"] for item in json.loads(body)["projects"]]
+
+        alice_cookie = login("alice")
+        bob_cookie = login("bob")
+        alice_project = create_project(alice_cookie, "alice-only")
+        bob_project = create_project(bob_cookie, "bob-only")
+
+        self.assertEqual(list_project_ids(alice_cookie), [alice_project])
+        self.assertEqual(list_project_ids(bob_cookie), [bob_project])
+        self.assertNotEqual(alice_project, bob_project)
+
+        status, _, _ = self.request(
+            "GET",
+            f"/api/projects/{alice_project}",
+            cookie=bob_cookie,
+        )
+        self.assertEqual(status, 404)
 
 
 if __name__ == "__main__":
