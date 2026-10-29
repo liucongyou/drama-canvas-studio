@@ -608,24 +608,26 @@ def mark_provider_ready(project_id, node, meta, task_id, provider_url, ready_at)
         "generationFinishedAt": ready_at,
         "providerUrl": url,
         "providerTaskStatus": "completed",
-        "providerTaskPhase": "已出结果，正在归档",
-        "finalizePending": True,
+        "providerTaskPhase": "已完成",
+        "providerTaskProgress": 100,
+        "finalizePending": False,
     }
     meta.update(updates)
     commit_node_metadata(project_id, node["id"], updates)
     publish_project_event(project_id, "media", node["id"], {
         "status": "done",
         "url": url,
-        "finalizePending": True,
+        "finalizePending": False,
         "providerTaskStatus": "completed",
-        "providerTaskPhase": "已出结果，正在归档",
+        "providerTaskPhase": "已完成",
         "providerTaskProgress": 100,
         "generationFinishedAt": ready_at,
     })
     if task_id:
         store.update_generation_task(
-            task_id, provider_finished_at=ready_at,
-            phase="已出结果，正在归档", error="", finished_at="",
+            task_id, status="succeeded", progress=100,
+            provider_finished_at=ready_at, phase="已完成",
+            error="", finished_at=ready_at,
         )
     return True
 
@@ -689,6 +691,88 @@ def mirror_generated_image_to_imgbb(generated_url, provider, model, task_id, gen
     except Exception as exc:
         print(f"[imgbb] failed to mirror {generated_url}: {exc}", file=sys.stderr)
         return {"status": "failed", "error": str(exc)}
+
+
+def finalize_generated_image(
+    generated_url,
+    provider,
+    model,
+    task_id,
+    generated_at,
+):
+    """Cache a completed image without changing the generation outcome."""
+    local_url = persist_generated_media(generated_url, ".png")
+    storage = archive_generated_image(
+        local_url,
+        provider,
+        model,
+        task_id,
+        generated_at,
+    )
+    imgbb = (
+        mirror_generated_image_to_imgbb(
+            local_url,
+            provider,
+            model,
+            task_id,
+            generated_at,
+        )
+        if imgbb_storage.is_ready()
+        else None
+    )
+    return {
+        "localUrl": local_url,
+        "storage": storage if isinstance(storage, dict) else {},
+        "imgbb": imgbb if isinstance(imgbb, dict) else {},
+    }
+
+
+def queue_generated_image_finalize(
+    project_id,
+    node_id,
+    generated_url,
+    provider,
+    model,
+    task_id,
+    generated_at,
+):
+    """Run image caching after success is visible; never downgrade it to failed."""
+    context = tenant_context.current()
+    tenant_id = context.tenant_id if context else None
+    tenant_slug = context.slug if context else "local"
+
+    def run():
+        try:
+            result = finalize_generated_image(
+                generated_url,
+                provider,
+                model,
+                task_id,
+                generated_at,
+            )
+        except Exception as exc:
+            result = {
+                "storage": {},
+                "imgbb": {"status": "failed", "error": str(exc)},
+            }
+        updates = {
+            "storage": result.get("storage") or {},
+            "storageError": str((result.get("storage") or {}).get("error") or ""),
+            "imgbb": result.get("imgbb") or {},
+            "imageHostError": str((result.get("imgbb") or {}).get("error") or ""),
+        }
+        local_url = str(result.get("localUrl") or "")
+        if local_url.startswith("/uploads/"):
+            updates["content"] = local_url
+        commit_node_metadata(project_id, node_id, updates)
+
+    threading.Thread(
+        target=_run_in_tenant,
+        args=(tenant_id, tenant_slug, run),
+        name=f"image-finalize-{node_id}",
+        daemon=True,
+    ).start()
+    return True
 
 
 def queue_generated_image_imgbb_mirror(
@@ -4620,16 +4704,34 @@ class Handler(BaseHTTPRequestHandler):
                     pid, node, meta, task_id,
                     str(result.get("url") or ""), provider_ready_at,
                 )
-                local_generated_url = persist_generated_media(result["url"], ".png")
+                provider_url = str(result.get("url") or "")
+                local_generated_url = provider_url
+                cache_error = ""
+                try:
+                    cached_url = persist_generated_media(provider_url, ".png")
+                    if cached_url:
+                        local_generated_url = cached_url
+                except Exception as exc:
+                    # Provider output is already durable enough to show. A
+                    # local cache failure is not a generation failure.
+                    cache_error = str(exc)
+                    print(
+                        f"[media-cache] failed to localize {provider_url[:120]}: {exc}",
+                        file=sys.stderr,
+                    )
                 generated_at = provider_ready_at
-                storage = archive_generated_image(
-                    local_generated_url,
-                    provider,
-                    model,
-                    str(result.get("taskId") or ""),
-                    generated_at,
-                )
                 generated_url = local_generated_url
+                storage = (
+                    archive_generated_image(
+                        local_generated_url,
+                        provider,
+                        model,
+                        str(result.get("taskId") or ""),
+                        generated_at,
+                    )
+                    if local_generated_url.startswith("/uploads/")
+                    else None
+                )
                 _record_media_version(
                     meta,
                     "image",
@@ -4641,8 +4743,13 @@ class Handler(BaseHTTPRequestHandler):
                 meta["content"] = generated_url
                 meta["status"] = "done"
                 meta["generatedAt"] = generated_at
+                meta["finalizePending"] = False
                 meta["storage"] = storage if isinstance(storage, dict) else {}
-                meta["storageError"] = str(storage.get("error") or "") if isinstance(storage, dict) else ""
+                meta["storageError"] = cache_error or (
+                    str(storage.get("error") or "")
+                    if isinstance(storage, dict)
+                    else ""
+                )
                 imgbb_pending = imgbb_storage.is_ready()
                 meta["imgbb"] = {
                     "status": "pending",
@@ -4653,6 +4760,16 @@ class Handler(BaseHTTPRequestHandler):
                 meta["promptStale"] = False
                 meta["promptStaleReason"] = ""
                 meta.pop("sourcePromptUpdatedAt", None)
+                if local_generated_url.startswith("/uploads/"):
+                    queue_generated_image_imgbb_mirror(
+                        pid,
+                        node["id"],
+                        local_generated_url,
+                        str(provider.get("id") or ""),
+                        str(model.get("remoteModel") or model.get("id") or ""),
+                        str(result.get("taskId") or ""),
+                        str(generated_at or ""),
+                    )
             elif ntype == "video":
                 voice_refs = params.get("voiceRefs") or meta.get("voiceRefs") or []
                 if not voice_refs:
@@ -4965,16 +5082,6 @@ class Handler(BaseHTTPRequestHandler):
             "mediaVersions": (meta.get("params") or {}).get("mediaVersions") or [],
             "mediaVersionIndex": (meta.get("params") or {}).get("mediaVersionIndex") or 0,
         })
-        if ntype == "image" and str((meta.get("imgbb") or {}).get("status") or "") == "pending":
-            queue_generated_image_imgbb_mirror(
-                pid,
-                node["id"],
-                str(meta.get("content") or ""),
-                str(provider.get("id") or ""),
-                str(model.get("remoteModel") or model.get("id") or ""),
-                str(result.get("taskId") or ""),
-                str(meta.get("generatedAt") or ""),
-            )
         if task_id:
             store.update_generation_task(
                 task_id, status="succeeded", phase="已完成", progress=100,
@@ -4994,7 +5101,18 @@ class Handler(BaseHTTPRequestHandler):
                 "model": model.get("id"),
             },
         )
-        response = {"nodeId": node["id"], "url": meta.get("content"), "status": "done"}
+        response = {
+            "nodeId": node["id"],
+            "url": meta.get("content"),
+            "status": "done",
+            "taskId": task_id or "",
+            "providerTaskStatus": str(meta.get("providerTaskStatus") or "completed"),
+            "providerTaskPhase": str(meta.get("providerTaskPhase") or "已完成"),
+            "providerTaskProgress": 100,
+            "generationFinishedAt": str(
+                meta.get("generationFinishedAt") or node_written_at
+            ),
+        }
         if ntype == "text":
             response["text"] = meta.get("prompt")
         if ntype == "audio":

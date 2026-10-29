@@ -732,15 +732,22 @@ def create_snapshot(project_id, title=None, kind="manual"):
 
 
 def interrupt_orphan_generation_tasks():
+    """Close persisted active rows after a restart without inventing certainty.
+
+    A row with no provider task id may be an interrupted pre-submit task, or
+    it may be a synchronous image request that already returned and is still
+    finalizing. Startup cannot distinguish those from the task row alone, so
+    list it for the runtime reconciler instead of blanket-failing paid work.
+    """
     now = _now_iso()
     con = _connect()
     con.execute(
-        "UPDATE generation_tasks SET status='interrupted',phase='服务中断',"
-        "error=CASE WHEN error IS NULL OR error='' THEN '后端重启，任务未取得供应商任务 ID' ELSE error END,"
-        "finished_at=?,updated_at=? "
+        "UPDATE generation_tasks SET phase='等待恢复',"
+        "error=CASE WHEN error IS NULL OR error='' THEN '后端重启，正在核对供应商结果' ELSE error END,"
+        "updated_at=? "
         "WHERE status IN ('queued','submitting','running') "
         "AND (provider_task_id IS NULL OR provider_task_id='')",
-        (now, now),
+        (now,),
     )
     con.commit()
     con.close()

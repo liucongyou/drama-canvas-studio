@@ -1036,7 +1036,7 @@ def _ark_image(
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
         body,
-        timeout=120,
+        timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
     )
     return _parse_image_result(response, provider)
 
@@ -1064,7 +1064,7 @@ def _openai_image(
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
         body,
-        timeout=120,
+        timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
     )
     return _parse_image_result(response, provider)
 
@@ -1124,7 +1124,7 @@ def _agnes_image(
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
         body,
-        timeout=120,
+        timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
     )
     return _parse_image_result(response, provider)
 

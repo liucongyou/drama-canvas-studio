@@ -7842,6 +7842,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       const next = prev.map((node) => {
         const task = activeByNode.get(node.id);
         if (task) {
+          // A completion event is authoritative. An older task-list snapshot
+          // may arrive after it and still say running; never demote a finished
+          // node back to generating.
+          if (node.status === 'done' && node.mediaUrl) return node;
           // finalizePending：供应商已出结果、后端还在落盘归档。此时卡片已经能看，
           // 不能再退回「生成中」，否则用户会看到画面闪一下又变回转圈。
           if (node.status === 'generating' || node.finalizePending) return node;

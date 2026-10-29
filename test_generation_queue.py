@@ -728,6 +728,82 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(queued[0][2], "/uploads/generated.png")
         self.assertEqual(committed[-1][2]["content"], "/uploads/generated.png")
 
+    def test_successful_provider_result_is_not_downgraded_by_cache_failure(self):
+        node = {
+            "id": "image-cache-failure",
+            "type": "image",
+            "title": "角色｜缓存失败（图1）",
+            "updatedAt": "2026-10-30T00:00:00.000Z",
+            "metadata": {
+                "prompt": "test image",
+                "status": "generating",
+                "params": {"provider": "agnes-ai", "model": "agnes-image"},
+            },
+        }
+        project = {
+            "id": "project-cache-failure",
+            "payload": {"nodes": [node]},
+        }
+        provider = {
+            "id": "agnes-ai",
+            "api_key": "test-key",
+            "base_url": "https://api.agnes-ai.cn/v1",
+        }
+        model = {
+            "id": "agnes-image",
+            "remoteModel": "agnes-image-2.5-flash",
+            "defaultParams": {},
+            "limits": {},
+        }
+        sent = []
+        task_updates = []
+        handler = object.__new__(server.Handler)
+        handler._send = lambda status, payload: sent.append((status, payload)) or payload
+
+        with (
+            patch.object(server.provider_catalog, "resolve_model", return_value=(provider, model, {})),
+            patch.object(
+                server.provider_catalog,
+                "test_provider",
+                return_value={"ok": True, "message": "连接成功"},
+            ),
+            patch.object(
+                server.provider_client,
+                "generate_image",
+                return_value={
+                    "url": "https://provider/result.png",
+                    "taskId": "provider-task-1",
+                },
+            ),
+            patch.object(
+                server,
+                "persist_generated_media",
+                side_effect=RuntimeError("cache read failed"),
+            ),
+            patch.object(
+                server.store,
+                "update_generation_task",
+                side_effect=lambda task_id, **fields: task_updates.append(fields),
+            ),
+            patch.object(server, "commit_node_metadata"),
+        ):
+            handler._generate_once(
+                project["id"],
+                project,
+                node,
+                task_id="local-task-1",
+            )
+
+        status, payload = sent[-1]
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "done")
+        self.assertTrue(
+            any(update.get("status") == "succeeded" for update in task_updates)
+        )
+        self.assertFalse(
+            any(update.get("status") == "failed" for update in task_updates)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
