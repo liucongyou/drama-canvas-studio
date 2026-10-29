@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "start": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck:canvas": "tsc -p tsconfig.canvas.json",
+    "check:canvas": "npm run typecheck:canvas && npm test && npm run build"
   },
   "dependencies": {
     "@xyflow/react": "^12.12.0",

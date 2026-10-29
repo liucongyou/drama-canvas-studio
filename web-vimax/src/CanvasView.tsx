@@ -22,7 +22,7 @@ import {
   type Connection,
   type Edge,
   type EdgeProps,
-  type Node,
+  type Node as FlowNode,
   type NodeChange,
   type NodeProps,
   type ReactFlowInstance,
@@ -594,7 +594,7 @@ function QualityFlagDots({flags}: {flags?: string[] | null}) {
   );
 }
 
-function ShotNode({data}: NodeProps<Node<ShotNodeData>>) {
+function ShotNode({data}: NodeProps<FlowNode<ShotNodeData>>) {
   const {shot, draft, dirty, saving, savedFlash, boundAssets, onDraftChange, onSave, onPickReference, onUnbind, onZoom, videoRatios, onVideoMeta} = data;
   const [collapsed, setCollapsed] = useState(true);
   const toggleCollapse = (event: React.MouseEvent) => {
@@ -723,7 +723,7 @@ type EpBoxNodeData = {label: string; count: number; shots: number; assets: Segme
 // 整剧总览的集分组框：AniShort 风格"一集一画布"分组的容器节点。
 // 工业级泳道：header（集标题）→ 资产泳道（绑定资产 chips 单行滚动）→ 视频组泳道（已出片段单行滚动）。
 // 注意：泳道高度必须与 EP_HEADER_H/EP_VIDEO_LANE_EXTRA 常量对齐——段卡子节点按该高度绝对定位。
-function EpBoxNode({data}: NodeProps<Node<EpBoxNodeData>>) {
+function EpBoxNode({data}: NodeProps<FlowNode<EpBoxNodeData>>) {
   const {label, count, shots, assets, videoRatios, onVideoMeta} = data;
   const [assetsCollapsed, setAssetsCollapsed] = useState(true);
   const kinds = ['角色', '场景', '道具', '音色'] as const;
@@ -807,7 +807,7 @@ function EpBoxNode({data}: NodeProps<Node<EpBoxNodeData>>) {
   );
 }
 
-function SegmentNode({data}: NodeProps<Node<SegmentNodeData>>) {
+function SegmentNode({data}: NodeProps<FlowNode<SegmentNodeData>>) {
   const {segment, shots, boundAssets, onSelectShot, onZoom, videoRatios, onVideoMeta} = data;
   const [collapsed, setCollapsed] = useState(false);
   const sortedShots = [...shots].sort((a, b) => a.idx - b.idx);
@@ -950,7 +950,7 @@ function SegmentNode({data}: NodeProps<Node<SegmentNodeData>>) {
 
 type AssetNodeData = {item: CanvasAssetItem; onZoom: (url: string) => void};
 
-function AssetNode({data, kind, selected}: NodeProps<Node<AssetNodeData>> & {kind: 'char' | 'scene' | 'prop' | 'voice'}) {
+function AssetNode({data, kind, selected}: NodeProps<FlowNode<AssetNodeData>> & {kind: 'char' | 'scene' | 'prop' | 'voice'}) {
   const {item, onZoom} = data;
   const label = kind === 'char' ? '角色' : kind === 'scene' ? '场景' : kind === 'prop' ? '道具' : '音色';
   return (
@@ -993,7 +993,7 @@ type AssetGroupNodeData = {
   onToggle: () => void;
 };
 
-function AssetGroupNode({data}: NodeProps<Node<AssetGroupNodeData>>) {
+function AssetGroupNode({data}: NodeProps<FlowNode<AssetGroupNodeData>>) {
   const {kind, label, count, collapsed, onToggle} = data;
   const kindLabel = kind === 'char' ? '角色' : kind === 'scene' ? '场景' : kind === 'prop' ? '道具' : '音色';
   return (
@@ -1021,7 +1021,7 @@ type AssetCardNodeData = {
 };
 
 // 资产卡片子节点：图片/音频 + 名称 + 引用徽章，右侧一个 source 端口（hover 显示）
-function AssetCardNode({data}: NodeProps<Node<AssetCardNodeData>>) {
+function AssetCardNode({data}: NodeProps<FlowNode<AssetCardNodeData>>) {
   const {kindLabel, item, refs, clips, onDetail, onZoom} = data;
   return (
     <div className={`canvas-asset-card ${item.image_url ? '' : 'is-audio'}`} title={item.name}>
@@ -1048,7 +1048,7 @@ function AssetCardNode({data}: NodeProps<Node<AssetCardNodeData>>) {
   );
 }
 
-function AssetColNode({data}: NodeProps<Node<AssetColData>>) {
+function AssetColNode({data}: NodeProps<FlowNode<AssetColData>>) {
   const {label, count} = data;
   return (
     <div className="canvas-asset-col">
@@ -1076,7 +1076,7 @@ type NoteNodeData = {
   onPressGroup?: (members: string[]) => void;
 };
 
-function NoteNode({data}: NodeProps<Node<NoteNodeData>>) {
+function NoteNode({data}: NodeProps<FlowNode<NoteNodeData>>) {
   const {note, onChange, groupMembers, onPressGroup} = data;
   return (
     // 备注同样参与编组：按压时先把整组选中，否则 React Flow 的 startDrag 会把选中收敛成这一个
@@ -1964,7 +1964,7 @@ async function inspectLocalMedia(file: File): Promise<{
   return {};
 }
 
-function MediaNode({data, selected}: NodeProps<Node<MediaNodeData>>) {
+function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   const {node, renderMode = 'full', onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed} = data;
   const [menu, setMenu] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -3692,9 +3692,21 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     ordered.splice(to, 0, moved);
     const next = {
       ...paramsRef.current,
-      refs: ordered.filter((item) => !item.isVoice).map(({isVoice: _isVoice, ...item}) => item),
+      refs: ordered
+        .filter((item) => !item.isVoice)
+        .map(({isVoice: _isVoice, ...item}) => ({
+          nodeId: item.nodeId,
+          label: item.label || item.nodeId,
+          url: item.url,
+        })),
     };
-    const voices = ordered.filter((item) => item.isVoice).map(({isVoice: _isVoice, ...item}) => item);
+    const voices = ordered
+      .filter((item) => item.isVoice)
+      .map(({isVoice: _isVoice, ...item}) => ({
+        nodeId: item.nodeId,
+        label: item.label || item.nodeId,
+        url: item.url,
+      }));
     const withVoices = withVoiceRefs(next, voices);
     paramsRef.current = withVoices;
     onChange(node.id, {
@@ -4537,7 +4549,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                       }}
                     >
                       <RatioIcon r={r} />
-                      <span>{r === 'adaptive' ? '自适应' : r}</span>
+                      <span>{r}</span>
                     </button>
                   ))}
                 </div>
@@ -4916,10 +4928,10 @@ const nodeTypes = {
   'asset-group': AssetGroupNode,
   'asset-card': AssetCardNode,
   'ep-box': EpBoxNode,
-  char: (props: NodeProps<Node<AssetNodeData>>) => <AssetNode {...props} kind="char" />,
-  scene: (props: NodeProps<Node<AssetNodeData>>) => <AssetNode {...props} kind="scene" />,
-  prop: (props: NodeProps<Node<AssetNodeData>>) => <AssetNode {...props} kind="prop" />,
-  voice: (props: NodeProps<Node<AssetNodeData>>) => <AssetNode {...props} kind="voice" />,
+  char: (props: NodeProps<FlowNode<AssetNodeData>>) => <AssetNode {...props} kind="char" />,
+  scene: (props: NodeProps<FlowNode<AssetNodeData>>) => <AssetNode {...props} kind="scene" />,
+  prop: (props: NodeProps<FlowNode<AssetNodeData>>) => <AssetNode {...props} kind="prop" />,
+  voice: (props: NodeProps<FlowNode<AssetNodeData>>) => <AssetNode {...props} kind="voice" />,
   note: NoteNode,
   media: MediaNode,
 };
@@ -7517,7 +7529,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const ungroupByIdRef = useRef(ungroupById);
   ungroupByIdRef.current = ungroupById;
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   // edges 最新值：deleteEdgeById 需要按 edge id 找回真实端点（自动线 id 里的节点 id 含 '-'，不能靠正则反解）
   const edgesRef = useRef<Edge[]>([]);
@@ -7617,7 +7629,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           changed = true;
           return {
             ...node,
-            status: 'generating',
+            status: 'generating' as const,
             lastError: undefined,
             generationStartedAt: task.started_at || task.created_at || node.generationStartedAt || new Date().toISOString(),
             generationFinishedAt: undefined,
@@ -7641,7 +7653,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         changed = true;
         return {
           ...node,
-          status: terminal.status === 'succeeded' ? 'done' : 'failed',
+          status: (terminal.status === 'succeeded' ? 'done' : 'failed') as 'done' | 'failed',
           lastError: terminal.status === 'succeeded'
             ? undefined
             : (terminal.error || node.lastError || '生成任务已结束'),
@@ -9101,7 +9113,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         setUserEdges((prev) => prev.filter((edge) => edge.source !== mediaId && edge.target !== mediaId));
       });
     }
-    const deletedFlowIds = new Set(ids);
+    const deletedFlowIds = new Set(sel.map((node) => node.id));
     setUserEdges((prev) => prev.filter(
       (edge) => !deletedFlowIds.has(edge.source) && !deletedFlowIds.has(edge.target),
     ));
@@ -9813,7 +9825,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     // 否则只排选中节点。早期写法 `sel.length > 0 ? sel : all` 会在没选中时把整张画布重排。
     const list = scopeAll ? all : all.filter((n) => n.selected);
     if (list.length === 0) return 0;
-    const labelOf = (n: Node): string => {
+    const labelOf = (n: FlowNode): string => {
       if (n.id.startsWith(NOTE_PREFIX)) {
         const note = notesRef.current.find((x) => x.id === n.id.slice(NOTE_PREFIX.length));
         return (note?.text || '备注').trim() || '备注';
@@ -9821,7 +9833,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       const mn = mediaNodesRef.current.find((x) => x.id === n.id.slice(MEDIA_PREFIX.length));
       return mn?.title || '节点';
     };
-    const kindOf = (n: Node): string => {
+    const kindOf = (n: FlowNode): string => {
       if (n.id.startsWith(NOTE_PREFIX)) return 'note';
       const mn = mediaNodesRef.current.find((x) => x.id === n.id.slice(MEDIA_PREFIX.length));
       return mn?.kind ?? 'media';
@@ -9880,7 +9892,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // 不支持单独摆放；直接拖子卡会每帧被派生位置拽回，表现为"一闪一闪、跳过来跳过去"。
   // 因此：拖子卡 = 拖它所在的整框（分组框 / 整集框），子卡保持在槽位内随框移动。
   const childDragRef = useRef<{childId: string; parentId: string; childStart: {x: number; y: number}; parentStart: {x: number; y: number}; pointerStart: {x: number; y: number}} | null>(null);
-  const dragNodesRef = useRef<Node[]>([]);
+  const dragNodesRef = useRef<FlowNode[]>([]);
   const childIdsRef = useRef<Set<string>>(new Set());
   // 拖动期间冻结构建：flowNodes 会因为资产图比例回填 / SSE 数据刷新而重算，
   // 若此时整批替换节点对象，React Flow 会重新采纳被拖节点（positionAbsolute 重算），
@@ -10501,7 +10513,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // 子卡位置策略：
   // - 分段卡（type=segment）：允许自由拖拽 + Shift 多选批量拖动，位置持久化到 positionRef。
   // - 资产卡（资产分组框的子节点）：位置完全由槽位派生，不接受任何位置变更，避免闪帧。
-  const handleNodesChange = useCallback((changes: NodeChange<Node>[]) => {
+  const handleNodesChange = useCallback((changes: NodeChange<FlowNode>[]) => {
     const segmentIds = new Set(nodesRef.current.filter((n) => n.type === 'segment').map((n) => n.id));
     const allowed = changes.filter((change) => {
       if (change.type !== 'position') return true;
@@ -10537,7 +10549,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       syncGroupFrames();
       return;
     }
-    const posChanges = allowed.filter((c): c is NodeChange<Node> & {type: 'position'; position: {x: number; y: number}} =>
+    const posChanges = allowed.filter((c): c is NodeChange<FlowNode> & {type: 'position'; position: {x: number; y: number}} =>
       c.type === 'position' && !!c.position,
     );
     if (posChanges.length === 0) {
@@ -10611,7 +10623,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [alignSnapOn, onNodesChange, rf, updateAlignGuides, syncGroupFrames]);
 
 
-  const onNodeDragStart = useCallback((event: MouseEvent | TouchEvent, node: Node) => {
+  const onNodeDragStart = useCallback((event: MouseEvent | TouchEvent, node: FlowNode) => {
     setDraggingNode(true);
     draggingRef.current = true;
     // 新一轮拖动：清掉上一轮残留的实时位置
@@ -10645,7 +10657,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       : null;
   }, [pushHistory]);
 
-  const onNodeDrag = useCallback((event: MouseEvent | TouchEvent, node: Node) => {
+  const onNodeDrag = useCallback((event: MouseEvent | TouchEvent, node: FlowNode) => {
     // ★ 编组外框必须**跟着节点一起动**（用户："编组框起来的节点拖动的时候框框不连节点一起动"）。
     //   旧实现只在 onNodeDragStop 里同步框 —— 拖动全程框钉在原地，松手才"啪"地跳过去，
     //   视觉上框和卡片彻底脱节，等于框没用。这里每帧都同步（内部 rAF 节流，不会掉帧）。
@@ -10674,7 +10686,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     }));
   }, [rf, setNodes, syncGroupFrames]);
 
-  const onNodeDragStop = useCallback((_: unknown, node: Node) => {
+  const onNodeDragStop = useCallback((_: unknown, node: FlowNode) => {
     setDraggingNode(false);
     draggingRef.current = false;
     // 拖动结束：实时位置表作废，之后一律读 store（store 此时已经是最新值）
@@ -10769,7 +10781,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     syncGroupFrames();
   }, [setNodes, setEdges, syncSelBar, syncGroupFrames]);
 
-  const onNodeClick = useCallback((_: unknown, node: Node) => {
+  const onNodeClick = useCallback((_: unknown, node: FlowNode) => {
     setSelectedId(node.id);
     setOpenMenu(null);
     // 点击资产节点 → 弹出资产详情面板（即梦式：类型/名称/描述词/大图/音频）
@@ -10781,7 +10793,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, []);
 
   // ── 多选浮动操作条（对标即梦）─────────────────────────────────
-  const onSelectionChangeHandler = useCallback(({nodes: sel}: {nodes: Node[]}) => {
+  const onSelectionChangeHandler = useCallback(({nodes: sel}: {nodes: FlowNode[]}) => {
     setSelectedCount(sel.length);
     // 选区散掉时收起操作条内的小下拉，避免"菜单还在但对象没了"
     if (sel.length < 2) setSelBarMenu(null);
@@ -10810,7 +10822,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     // 按当前视觉位置排序（从上到下、从左到右），链式连线才符合"看图顺序"
     const ordered = sel
       .map((id) => ({id, node: rf.getNode(id)}))
-      .filter((x): x is {id: string; node: Node} => !!x.node)
+      .filter((x): x is {id: string; node: FlowNode} => !!x.node)
       .sort((a, b) => (a.node.position.y - b.node.position.y) || (a.node.position.x - b.node.position.x))
       .map((x) => x.id);
     const pairs: [string, string][] = [];
@@ -11016,7 +11028,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     setContextMenu({x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY, nodeId: null, nodeType: null});
   }, [rf]);
 
-  const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
+  const onNodeContextMenu = useCallback((event: React.MouseEvent, node: FlowNode) => {
     event.preventDefault();
     event.stopPropagation();
     // 段卡右键：只走 segMenu（段专用菜单），不再同时弹通用 contextMenu
@@ -11070,7 +11082,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   //     →「添加节点 → 文本备注」），不缺这一个手势。
   //   ★ 保守起见同时保留 React Flow 的原生双击缩放，什么都不拦。
 
-  const onBeforeDelete = useCallback(async ({nodes: delNodes, edges: delEdges}: {nodes: Node[]; edges: Edge[]}) => {
+  const onBeforeDelete = useCallback(async ({nodes: delNodes, edges: delEdges}: {nodes: FlowNode[]; edges: Edge[]}) => {
     const keepNodes = delNodes.filter((node) => node.type === 'note' || node.type === 'media');
     if (delEdges.length > 0) {
       pushHistory(userEdgesRef.current, notesRef.current);
@@ -11863,7 +11875,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const kindPrefix = ['char', 'scene', 'prop', 'voice'];
     const offsetOf = (kindIdx: number) => [0, canvas.characters.length, canvas.characters.length + canvas.scenes.length, canvas.characters.length + canvas.scenes.length + canvas.props.length][kindIdx];
     effectiveSegments.forEach((seg) => {
-      const shotIdxs = segShotIdxsOf(seg, canvas.shots, {overview: currentEp === null});
+      const shotIdxs = segShotIdxsOf(seg, canvas!.shots, {overview: currentEp === null});
       const byKey = new Map<string, {key: string; name: string; kind: string; image_url?: string; audio_url?: string}>();
       shotIdxs.forEach((shotIdx) => {
         const shot = canvas.shots.find((s) => s.idx === shotIdx);
@@ -11907,9 +11919,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     : zoomPct < 65
       ? 'compact'
       : 'full';
-  const flowNodes = useMemo((): Node[] => {
+  const flowNodes = useMemo((): FlowNode[] => {
     if (!canvas || largeCanvasOverview) return [];
-    const out: Node[] = [];
+    const out: FlowNode[] = [];
     const onZoom = (url: string) => setZoomTarget(url);
     const boundMap = segBoundAssets;
 
@@ -12038,7 +12050,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     let epCursorY = 0;
     sortedSegs.forEach((seg, i) => {
       if (true) return; // ← 原生段卡/分集盒停用：画布只留媒体节点卡片（角色/场景/道具/音色/视频），分段信息在对应视频节点内
-      const shotIdxs = segShotIdxsOf(seg, canvas.shots, {overview: currentEp === null});
+      const shotIdxs = segShotIdxsOf(seg, canvas!.shots, {overview: currentEp === null});
       const segShots = shotIdxs.map((idx) => shotByIdx.get(idx)).filter((s): s is CanvasShot => Boolean(s));
       const baseData = {
         segment: seg,
@@ -12063,7 +12075,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           .map((idx) => shotByIdx.get(idx))
           .filter((s): s is CanvasShot => Boolean(s?.clip_url))
           .sort((a, b) => a.idx - b.idx);
-        const epFinalUrl = canvas.meta.episodes?.find((e) => e.ep_id === (seg.ep_id || 'ep00'))?.final_video_url ?? null;
+        const epFinalUrl = canvas!.meta.episodes?.find((e) => e.ep_id === (seg.ep_id || 'ep00'))?.final_video_url ?? null;
         // 左右两栏：左栏成片视频（竖版 170 高 + 标签/padding）撑高；右栏资产多行 + 视频组
         const epHeadH = epFinalUrl
           ? 280
@@ -12086,7 +12098,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             initialWidth: EP_W,
             initialHeight: epHeadH + SEG_GAP + group.length * SEG_ROW + (group.length - 1) * SEG_GAP + EP_BOTTOM_PAD,
             style: {width: EP_W, height: epHeadH + SEG_GAP + group.length * SEG_ROW + (group.length - 1) * SEG_GAP + EP_BOTTOM_PAD},
-            data: {label: fmtEp(ep), count: group.length, shots: epShotCount, assets: epAssets, videoShots: epVideoShots, onOpenPrompt: (shot: CanvasShot) => setPromptShot(shot), qualityFlags, final_video_url: canvas.meta.episodes?.find((e) => e.ep_id === ep)?.final_video_url ?? null, videoRatios, onVideoMeta} satisfies EpBoxNodeData,
+            data: {label: fmtEp(ep), count: group.length, shots: epShotCount, assets: epAssets, videoShots: epVideoShots, onOpenPrompt: (shot: CanvasShot) => setPromptShot(shot), qualityFlags, final_video_url: canvas!.meta.episodes?.find((e) => e.ep_id === ep)?.final_video_url ?? null, videoRatios, onVideoMeta} satisfies EpBoxNodeData,
           });
           epCursorY += epHeadH + SEG_GAP + group.length * SEG_ROW + (group.length - 1) * SEG_GAP + EP_BOTTOM_PAD + EP_GAP;
         }
@@ -12154,14 +12166,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           onGenerate: onGenerateMediaNode,
           onDelete: requestDeleteMediaNode,
           onEdit: openMediaModal,
-          onZoom: (url) => setZoomTarget(url),
-          onReadText: (item) => setTextReader(item),
-          onCopyText: (item) => {
+          onZoom: (url: string) => setZoomTarget(url),
+          onReadText: (item: CanvasMediaNode) => setTextReader(item),
+          onCopyText: (item: CanvasMediaNode) => {
             navigator.clipboard?.writeText(item.prompt || '')
               .then(() => setToast('已复制全文'))
               .catch(() => setToast('复制失败，请展开后手动复制'));
           },
-          assets: mediaNodes.filter(a => a.id !== mn.id),
+          assets: mediaNodes.filter((a: CanvasMediaNode) => a.id !== mn.id),
           active: editNode?.id === mn.id,
           generationBusy: generationBusyIds.has(mn.id),
           groupMembers: groupMap.get(`media-${mn.id}`) ?? null,
@@ -12417,7 +12429,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       // ep-box 不在 cols 里，若不排除会被摆到 x=0，正好压在"角色"分组框上：
       // 角色组整块被整集框盖住，拖分组时 pointerdown 落到整集框上（拖不动 / 拖错对象）。
       // 整集框位置由 flowNodes 统一排布（段卡列 COL_X*4、按集纵向堆叠），这里保持不动。
-      const keyOf = (node: Node): string => {
+      const keyOf = (node: FlowNode): string => {
         const type = node.type ?? '';
         if (type === 'asset-group') {
           const d = node.data as {kind?: string};
@@ -12425,7 +12437,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         }
         return type;
       };
-      const groups: Record<string, Node[]> = {};
+      const groups: Record<string, FlowNode[]> = {};
       nds.forEach((node) => {
         const key = keyOf(node);
         if (key === 'note' || key === 'ep-box') return;
@@ -12436,7 +12448,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       nds.forEach((node) => {
         if (keyOf(node) === 'ep-box') delete positionRef.current[node.id];
       });
-      const sortKey = (node: Node): string => {
+      const sortKey = (node: FlowNode): string => {
         const data = node.data as {shot?: CanvasShot; segment?: CanvasSegment; item?: CanvasAssetItem};
         if (data.shot) return String(data.shot.idx);
         if (data.segment) return String(data.segment.segment_id);
