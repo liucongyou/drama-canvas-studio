@@ -110,8 +110,6 @@ class ProviderDiscoveryTests(unittest.TestCase):
 
         def fake_request(url, key, **kwargs):
             calls.append((url, kwargs))
-            if url.endswith("/models?limit=100&offset=0"):
-                raise provider_catalog.ProviderRequestTimeoutError("timeout")
             return 200, '{"data":[{"id":"demo-video"}]}'
 
         with (
@@ -123,12 +121,24 @@ class ProviderDiscoveryTests(unittest.TestCase):
         self.assertEqual(result["count"], 1)
         self.assertEqual(
             [url for url, _ in calls],
-            [
-                "https://api.example.com/v1/models?limit=100&offset=0",
-                "https://api.example.com/v1/models",
-            ],
+            ["https://api.example.com/v1/models"],
         )
         self.assertTrue(all(kwargs["timeout"] == 30 for _, kwargs in calls))
+        self.assertTrue(all(kwargs["read_limit"] == 1024 * 1024 for _, kwargs in calls))
+
+    def test_discovery_parses_truncated_model_payload(self):
+        with (
+            tenant_context.use_tenant("alpha", "alpha"),
+            patch.object(provider_catalog, "load_config", return_value=self.config),
+            patch.object(
+                provider_catalog,
+                "_request_status",
+                return_value=(200, '{"data":[{"id":"demo-video","supported_endpoint_types":["openai_video"]},{"id":"truncated'),
+            ),
+        ):
+            result = provider_catalog.discover_provider_models("demo")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["models"][0]["adapter"], "newapi_video")
 
     def test_endpoint_types_drive_discovered_capability(self):
         result = self.discover(

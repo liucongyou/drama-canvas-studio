@@ -1288,6 +1288,39 @@ def _model_endpoint_types_from_response(payload: Any) -> dict[str, list[str]]:
     return endpoint_types
 
 
+def _parse_model_payload(prefix: str) -> dict[str, Any]:
+    """Parse a truncated OpenAI model-list prefix by keeping complete items."""
+    text = str(prefix or "").strip()
+    data_start = text.find("[")
+    if data_start < 0:
+        raise RuntimeError("供应商返回的模型列表不是 JSON")
+    # Trim back to the last complete object before the truncation point.
+    object_end = text.rfind("}")
+    if object_end < data_start:
+        raise RuntimeError("供应商返回的模型列表不是 JSON")
+    candidate = text[: object_end + 1] + "]}"
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        # Try each earlier object boundary; relay payloads may contain nested
+        # objects, so the first complete top-level row is still useful.
+        cursor = object_end
+        while cursor > data_start:
+            cursor = text.rfind("}", 0, cursor)
+            if cursor < data_start:
+                break
+            try:
+                payload = json.loads(text[: cursor + 1] + "]}")
+            except json.JSONDecodeError:
+                continue
+            if _model_ids_from_response(payload):
+                return payload
+        raise RuntimeError("供应商返回的模型列表不是 JSON")
+    if not _model_ids_from_response(payload):
+        raise RuntimeError("供应商返回成功，但没有识别到模型 id 字段")
+    return payload
+
+
 def _infer_discovered_model(
     provider: dict[str, Any],
     remote_model: str,
@@ -1398,19 +1431,18 @@ def discover_provider_models(provider_id: str) -> dict[str, Any]:
     test_path = str(provider.get("test_path") or "/models").strip()
     if not test_path.startswith("/"):
         test_path = f"/{test_path}"
-    candidates = []
-    if "?" not in test_path:
-        # Some OpenAI-compatible relays stream huge /models responses slowly.
-        # A bounded page request keeps discovery responsive while remaining
-        # harmless for providers that ignore the parameters.
-        candidates.append(f"{base}{test_path}?limit=100&offset=0")
-    candidates.append(f"{base}{test_path}")
+    candidates = [f"{base}{test_path}"]
     status = 0
     text = ""
     last_timeout: ProviderRequestTimeoutError | None = None
     for url in dict.fromkeys(candidates):
         try:
-            status, text = _request_status(url, key, timeout=30)
+            status, text = _request_status(
+                url,
+                key,
+                timeout=30,
+                read_limit=1024 * 1024,
+            )
             if status == 200:
                 break
         except ProviderRequestTimeoutError as exc:
@@ -1423,8 +1455,8 @@ def discover_provider_models(provider_id: str) -> dict[str, Any]:
         raise RuntimeError(f"模型列表拉取失败 HTTP {status}{('：' + detail) if detail else ''}")
     try:
         payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("供应商返回的模型列表不是 JSON") from exc
+    except json.JSONDecodeError:
+        payload = _parse_model_payload(text)
     ids = _model_ids_from_response(payload)
     if not ids:
         raise RuntimeError("供应商返回成功，但没有识别到模型 id 字段")
