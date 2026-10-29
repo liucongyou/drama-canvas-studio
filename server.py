@@ -3628,6 +3628,7 @@ class Handler(BaseHTTPRequestHandler):
             incoming = body.get("positions")
             if not isinstance(incoming, list):
                 return self._send(400, {"error": "positions 字段缺失或不是数组"})
+            write_owner = str(body.get("writeOwner") or "").strip()[:120]
             by_id = {node.get("id"): node for node in proj["payload"].get("nodes", [])}
             episode_id = str(body.get("episodeId") or "").upper()
             episode_layout = (
@@ -3651,6 +3652,18 @@ class Handler(BaseHTTPRequestHandler):
                     "x": float(position.get("x") or 0),
                     "y": float(position.get("y") or 0),
                 }
+                try:
+                    write_seq = int(item.get("seq") or 0)
+                except (TypeError, ValueError):
+                    write_seq = 0
+                if (
+                    write_owner
+                    and write_seq
+                    and node.get("positionWriteOwner") == write_owner
+                    and int(node.get("positionWriteSeq") or 0) > write_seq
+                ):
+                    unchanged_ids.append(item["id"])
+                    continue
                 current_position = (
                     episode_layout.get(item["id"])
                     if episode_layout is not None
@@ -3668,6 +3681,9 @@ class Handler(BaseHTTPRequestHandler):
                     episode_layout[item["id"]] = position
                 else:
                     node["position"] = position
+                if write_owner:
+                    node["positionWriteOwner"] = write_owner
+                    node["positionWriteSeq"] = write_seq
                 node["positionUpdatedAt"] = position_updated_at
                 node["updatedAt"] = position_updated_at
                 updates.append({
@@ -3763,7 +3779,10 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     if "title" in item:
                         node["title"] = item["title"]
-                    if isinstance(item.get("position"), dict):
+                    if (
+                        isinstance(item.get("position"), dict)
+                        and item.get("positionWrite") is True
+                    ):
                         if node.get("position") != item["position"]:
                             node["positionUpdatedAt"] = store._now_iso()
                         node["position"] = item["position"]

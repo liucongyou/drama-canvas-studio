@@ -308,6 +308,74 @@ class TenantHttpTests(unittest.TestCase):
         self.assertEqual(final_node["position"], {"x": 320.0, "y": 260.0})
         self.assertEqual(final_node["metadata"]["prompt"], "second")
 
+    def test_stale_position_write_is_rejected_after_newer_write(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        _, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "迟到位置写入测试"},
+        )
+        pid = json.loads(body)["id"]
+        node = {
+            "id": "stale-position-node",
+            "type": "image",
+            "title": "拖拽测试",
+            "position": {"x": 10, "y": 10},
+            "metadata": {"prompt": "x"},
+        }
+        self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes",
+            "alpha.example.com",
+            cookie,
+            {"nodes": [node]},
+        )
+        owner = "tab-alpha"
+        self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes/positions",
+            "alpha.example.com",
+            cookie,
+            {"writeOwner": owner, "positions": [{
+                "id": node["id"],
+                "position": {"x": 200, "y": 200},
+                "seq": 2,
+            }]},
+        )
+        status, _, stale_body = self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes/positions",
+            "alpha.example.com",
+            cookie,
+            {"writeOwner": owner, "positions": [{
+                "id": node["id"],
+                "position": {"x": 10, "y": 10},
+                "seq": 1,
+            }]},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(stale_body)["updated"], 0)
+        _, _, project_body = self.request(
+            "GET",
+            f"/api/projects/{pid}",
+            "alpha.example.com",
+            cookie,
+        )
+        final_node = next(
+            item for item in json.loads(project_body)["payload"]["nodes"]
+            if item["id"] == node["id"]
+        )
+        self.assertEqual(final_node["position"], {"x": 200.0, "y": 200.0})
+
     def test_manual_connections_persist_without_overwriting_automatic_edges(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)

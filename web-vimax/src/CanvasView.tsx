@@ -7960,12 +7960,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     mediaPositionSaveTimer.current = setTimeout(() => {
       const snapshot = new Map(pendingPositionSavesRef.current);
       if (snapshot.size === 0) return;
+      if (!pendingPositionSavesRef.current.size) return;
       const moves = [...snapshot].map(([id, position]) => ({
         id,
         position: {x: position.x, y: position.y},
+        seq: position.seq,
       }));
       beginSave();
-      void saveCanvasMediaNodePositions(session, moves, currentEp)
+      void saveCanvasMediaNodePositions(session, moves, currentEp, syncInstanceIdRef.current)
         .then((result) => {
           const updates = new Map((result.updates || []).map((item) => [item.nodeId, item]));
           if (updates.size > 0) {

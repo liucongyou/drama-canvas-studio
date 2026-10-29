@@ -1325,7 +1325,8 @@ export async function saveCanvasMediaNodes(
       type: n.kind,
       title: n.title,
       baseUpdatedAt: n.updatedAt,
-      // 拖动位置持久化：写回载荷 node.position，刷新/切集后媒体卡片保持拖过的位置
+      // New nodes need their initial coordinates. Existing nodes ignore this
+      // field on the server unless the position-only path explicitly writes it.
       position: {x: n.x ?? 0, y: n.y ?? 0},
       metadata: {
         prompt: n.prompt,
@@ -1369,12 +1370,14 @@ export async function saveCanvasMediaNodes(
 export type CanvasPositionMove = {
   id: string;
   position: {x: number; y: number};
+  seq?: number;
 };
 
 export async function saveCanvasMediaNodePositions(
   sessionId: string,
   moves: CanvasPositionMove[],
   epId?: string | null,
+  writeOwner?: string,
 ) {
   return request<{
     ok: boolean;
@@ -1392,6 +1395,7 @@ export async function saveCanvasMediaNodePositions(
     body: JSON.stringify({
       episodeId: epId || null,
       positions: moves,
+      writeOwner,
     }),
   });
 }

@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.13';
+export const APP_VERSION = '2026.10.29.14';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.14',
+    date: '2026-10-29',
+    title: '阻止迟到位置写入覆盖撤销',
+    changes: [
+      '位置接口记录每个标签页的单调写入序号，迟到的拖动保存会被服务端拒绝。',
+      '普通节点批量保存不再覆盖已有节点坐标，只允许位置专用接口写入；新建节点仍会带初始坐标。',
+      '撤销后由较高序号提交恢复坐标，即使旧请求后到达也无法把节点推回拖动位置。',
+    ],
+  },
   {
     version: '2026.10.29.13',
     date: '2026-10-29',
