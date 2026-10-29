@@ -3137,6 +3137,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, provider_catalog.discover_provider_models(provider_id))
             except ValueError as exc:
                 return self._send(400, {"error": str(exc), "code": "PROVIDER_MODELS_INVALID"})
+            except provider_catalog.ProviderRequestTimeoutError as exc:
+                return self._send(504, {"error": str(exc), "code": "PROVIDER_MODELS_TIMEOUT"})
             except RuntimeError as exc:
                 return self._send(502, {"error": str(exc), "code": "PROVIDER_MODELS_FETCH_FAILED"})
         if path == "/api/providers/test":

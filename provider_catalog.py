@@ -1122,6 +1122,10 @@ def provider_key(provider: dict[str, Any]) -> str:
     return str(provider.get("api_key") or "").strip()
 
 
+class ProviderRequestTimeoutError(RuntimeError):
+    """Raised when a provider request exceeds the configured probe timeout."""
+
+
 def _request_status(url: str, key: str, method: str = "GET", body: dict[str, Any] | None = None) -> tuple[int, str]:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(
@@ -1135,6 +1139,10 @@ def _request_status(url: str, key: str, method: str = "GET", body: dict[str, Any
             return response.status, response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", errors="replace")
+    except TimeoutError as exc:
+        raise ProviderRequestTimeoutError(
+            "供应商接口响应超时，请检查网络、接口地址或稍后重试"
+        ) from exc
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
 
@@ -1159,7 +1167,21 @@ def test_provider(provider_id: str) -> dict[str, Any]:
     test_path = str(provider.get("test_path") or "/models").strip()
     if not test_path.startswith("/"):
         test_path = "/" + test_path
-    status, text = _request_status(f"{base}{test_path}", key)
+    try:
+        status, text = _request_status(f"{base}{test_path}", key)
+    except ProviderRequestTimeoutError as exc:
+        return {
+            "ok": False,
+            "message": str(exc),
+            "elapsedMs": round((time.time() - started) * 1000),
+            "timeout": True,
+        }
+    except RuntimeError as exc:
+        return {
+            "ok": False,
+            "message": f"连接失败：{exc}",
+            "elapsedMs": round((time.time() - started) * 1000),
+        }
     ok = status == 200
     elapsed = round((time.time() - started) * 1000)
     if ok:

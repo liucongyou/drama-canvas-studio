@@ -59,6 +59,23 @@ class ProviderDiscoveryTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.discover('{"data":[{"name":"no-id"}]}')
 
+    def test_provider_timeout_returns_readable_failure(self):
+        with (
+            tenant_context.use_tenant("alpha", "alpha"),
+            patch.object(provider_catalog, "load_config", return_value=self.config),
+            patch.object(
+                provider_catalog,
+                "_request_status",
+                side_effect=provider_catalog.ProviderRequestTimeoutError(
+                    "供应商接口响应超时，请检查网络、接口地址或稍后重试"
+                ),
+            ),
+        ):
+            result = provider_catalog.test_provider("demo")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["timeout"])
+        self.assertIn("响应超时", result["message"])
+
 
 if __name__ == "__main__":
     unittest.main()
