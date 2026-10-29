@@ -20,6 +20,7 @@ API：
 import json
 import math
 import os
+import queue
 import re
 import sys
 import base64
@@ -563,6 +564,71 @@ def persist_generated_media(url, fallback_ext):
         # in the server log for diagnosis.
         print(f"[media-cache] failed to localize {raw[:120]}: {exc}", file=sys.stderr)
         return raw
+
+
+_EVENT_SUBSCRIBERS: dict[str, list[queue.Queue]] = {}
+_EVENT_SUBSCRIBERS_LOCK = threading.Lock()
+
+
+def publish_project_event(project_id, kind, node_id="", payload=None):
+    """事件先落库，再唤醒订阅者。
+
+    只做内存广播是不够的：页面刷新、网络抖动、切项目都会断线一段时间，
+    断线期间发生的变化必须能按 Last-Event-ID 补回来，否则卡片会永久停在旧状态。
+    """
+    try:
+        event_id = store.append_event(project_id, kind, node_id, payload)
+    except Exception as exc:
+        print(f"[events] 写入事件失败：{exc}", file=sys.stderr)
+        return 0
+    with _EVENT_SUBSCRIBERS_LOCK:
+        subscribers = list(_EVENT_SUBSCRIBERS.get(project_id) or ())
+    for subscriber in subscribers:
+        try:
+            subscriber.put_nowait(event_id)
+        except queue.Full:
+            # 订阅者积压说明它自己会去补历史，丢一次通知不影响正确性
+            pass
+    return event_id
+
+
+def mark_provider_ready(project_id, node, meta, task_id, provider_url, ready_at):
+    """供应商已产出可用地址时，立刻把节点写成 done。
+
+    本地落盘 + 云存储转存动辄几秒（视频几十 MB 更久），而用户等的是"东西出来
+    了没有"。先把供应商地址挂上去让卡片亮起来，落盘完成后再用自有地址覆盖一次；
+    若覆盖失败，供应商地址依然可用，不会比原来更差。
+    """
+    url = str(provider_url or "").strip()
+    if not url:
+        return False
+    updates = {
+        "content": url,
+        "status": "done",
+        "generatedAt": ready_at,
+        "generationFinishedAt": ready_at,
+        "providerUrl": url,
+        "providerTaskStatus": "completed",
+        "providerTaskPhase": "已出结果，正在归档",
+        "finalizePending": True,
+    }
+    meta.update(updates)
+    commit_node_metadata(project_id, node["id"], updates)
+    publish_project_event(project_id, "media", node["id"], {
+        "status": "done",
+        "url": url,
+        "finalizePending": True,
+        "providerTaskStatus": "completed",
+        "providerTaskPhase": "已出结果，正在归档",
+        "providerTaskProgress": 100,
+        "generationFinishedAt": ready_at,
+    })
+    if task_id:
+        store.update_generation_task(
+            task_id, provider_finished_at=ready_at,
+            phase="已出结果，正在归档", error="", finished_at="",
+        )
+    return True
 
 
 def archive_generated_image(generated_url, provider, model, task_id, generated_at):
@@ -1339,7 +1405,9 @@ def reconcile_active_generation_task_for_node(project_id, node_id, node):
         age = (datetime.now(timezone.utc) - updated_at).total_seconds()
     except (TypeError, ValueError):
         age = 999
-    if not task.get("provider_task_id") and age >= 90:
+    # Only async video tasks require a provider task id. Image/audio calls are
+    # synchronous and legitimately have no task id until they return.
+    if str(task.get("kind") or "") == "video" and not task.get("provider_task_id") and age >= 90:
         return store.update_generation_task(
             task["id"],
             status="interrupted",
@@ -1642,6 +1710,10 @@ def reconcile_generation_task_records():
             node_status == "generating"
             and not str(task.get("provider_task_id") or "").strip()
             and str(task.get("phase") or "") in {"准备提交", "提交供应商"}
+            # Async video tasks must acquire a provider task id. Synchronous
+            # image/audio requests never do, so applying this rule to them
+            # mislabels a completed paid generation as a submit timeout.
+            and str(task.get("kind") or "") == "video"
         ):
             # A submit request that never produced a provider task id is not a
             # durable worker: process restarts, hung sockets, or a killed
@@ -2486,6 +2558,74 @@ class Handler(BaseHTTPRequestHandler):
             headers={"Set-Cookie": self._session_cookie(session["token"])},
         )
 
+    def _handle_project_events(self, project_id, parsed):
+        """SSE：把生成进度和完成事件推给前台，代替"等下一次轮询"。
+
+        连接建立后先把 since 之后的历史补发一遍（断线重连、刷新页面都能接上），
+        然后阻塞等新事件；15 秒没有事件就发一个注释心跳，避免中间代理断开。
+        """
+        params = urllib.parse.parse_qs(parsed.query)
+        raw_since = (params.get("since") or [""])[0] or self.headers.get("Last-Event-ID") or "0"
+        try:
+            since = max(0, int(str(raw_since).strip() or 0))
+        except (TypeError, ValueError):
+            since = 0
+
+        self.close_connection = True
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            self.wfile.write(b"retry: 3000\n: connected\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+
+        subscriber: queue.Queue = queue.Queue(maxsize=256)
+        with _EVENT_SUBSCRIBERS_LOCK:
+            _EVENT_SUBSCRIBERS.setdefault(project_id, []).append(subscriber)
+        try:
+            while True:
+                events = store.list_events(project_id, since, 200)
+                if not events:
+                    try:
+                        subscriber.get(timeout=15)
+                    except queue.Empty:
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+                        continue
+                    events = store.list_events(project_id, since, 200)
+                for event in events:
+                    since = max(since, event["id"])
+                    body = {
+                        **event["payload"],
+                        "id": event["id"],
+                        "kind": event["kind"],
+                        "nodeId": event["nodeId"],
+                        "at": event["at"],
+                    }
+                    chunk = (
+                        f"id: {event['id']}\n"
+                        f"event: {event['kind']}\n"
+                        f"data: {json.dumps(body, ensure_ascii=False)}\n\n"
+                    )
+                    self.wfile.write(chunk.encode("utf-8"))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        except Exception as exc:
+            print(f"[events] 推送中断：{exc}", file=sys.stderr)
+        finally:
+            with _EVENT_SUBSCRIBERS_LOCK:
+                subscribers = _EVENT_SUBSCRIBERS.get(project_id) or []
+                if subscriber in subscribers:
+                    subscribers.remove(subscriber)
+                if not subscribers:
+                    _EVENT_SUBSCRIBERS.pop(project_id, None)
+
     def _handle_auth_session(self):
         if _auth_mode() != "accounts":
             context = tenant_context.current()
@@ -2748,6 +2888,10 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/api/auth/session":
             return self._handle_auth_session()
+        if path.startswith("/api/projects/") and path.endswith("/events"):
+            project_id = path[len("/api/projects/"):-len("/events")].strip("/")
+            if project_id and "/" not in project_id:
+                return self._handle_project_events(project_id, parsed)
         if path == "/api/admin/accounts":
             return self._handle_admin_list_accounts()
         if path.startswith("/invite/"):
@@ -4577,8 +4721,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise RuntimeError(missing_note(missing))
                 validate_refs(refs)
                 result = provider_client.generate_image(provider, model, prompt, effective, refs)
+                provider_ready_at = store._now_iso()
+                mark_provider_ready(
+                    pid, node, meta, task_id,
+                    str(result.get("url") or ""), provider_ready_at,
+                )
                 local_generated_url = persist_generated_media(result["url"], ".png")
-                generated_at = store._now_iso()
+                generated_at = provider_ready_at
                 storage = archive_generated_image(
                     local_generated_url,
                     provider,
@@ -4685,16 +4834,15 @@ class Handler(BaseHTTPRequestHandler):
                             error="", finished_at="",
                         )
 
+                # 轮询已经加密到 1.5s，若每次都重写整份 payload，一个 5 分钟的视频
+                # 会多出上百次全量写。进度文字晚 3 秒无所谓，状态机不能因此抖动。
+                progress_write = {"at": 0.0, "phase": "", "progress": None}
+
                 def on_task_update(task):
                     raw_status = str(task.get("status") or "running")
                     progress = task.get("progress")
                     phase = str(task.get("phase") or "").strip() or _provider_task_phase(raw_status, progress)
                     meta.update({
-                        "providerTaskStatus": raw_status,
-                        "providerTaskPhase": phase,
-                        "providerTaskProgress": progress,
-                    })
-                    commit_node_metadata(pid, node["id"], {
                         "providerTaskStatus": raw_status,
                         "providerTaskPhase": phase,
                         "providerTaskProgress": progress,
@@ -4705,14 +4853,38 @@ class Handler(BaseHTTPRequestHandler):
                             progress=int(progress) if isinstance(progress, (int, float)) else None,
                             error="", finished_at="",
                         )
+                    now = time.time()
+                    if (
+                        phase == progress_write["phase"]
+                        and progress == progress_write["progress"]
+                        and now - progress_write["at"] < 3.0
+                    ):
+                        return
+                    progress_write.update({"at": now, "phase": phase, "progress": progress})
+                    commit_node_metadata(pid, node["id"], {
+                        "providerTaskStatus": raw_status,
+                        "providerTaskPhase": phase,
+                        "providerTaskProgress": progress,
+                    })
+                    publish_project_event(pid, "media.progress", node["id"], {
+                        "status": "generating",
+                        "providerTaskStatus": raw_status,
+                        "providerTaskPhase": phase,
+                        "providerTaskProgress": progress,
+                    })
 
                 result = provider_client.generate_video(
                     provider, model, prompt, effective, refs, voices,
                     on_task_created=on_task_created,
                     on_task_update=on_task_update,
                 )
+                provider_ready_at = store._now_iso()
+                mark_provider_ready(
+                    pid, node, meta, task_id,
+                    str(result.get("url") or ""), provider_ready_at,
+                )
                 generated_url = persist_generated_media(result["url"], ".mp4")
-                generated_at = store._now_iso()
+                generated_at = provider_ready_at
                 _record_video_version(
                     meta,
                     generated_url,
@@ -4786,6 +4958,7 @@ class Handler(BaseHTTPRequestHandler):
             # A successful retry supersedes any transient 429/5xx recorded by an
             # earlier attempt. Preserve an error only when the latest attempt fails.
             meta["lastError"] = ""
+            meta["finalizePending"] = False
             meta["provider"] = provider.get("id")
             meta["model"] = model.get("id")
             meta["remoteModel"] = model.get("remoteModel")
@@ -4828,6 +5001,13 @@ class Handler(BaseHTTPRequestHandler):
                 "providerTaskPhase": "生成失败",
                 "generationFinishedAt": store._now_iso(),
             })
+            publish_project_event(pid, "media", node["id"], {
+                "status": "failed",
+                "error": str(exc),
+                "finalizePending": False,
+                "providerTaskStatus": "failed",
+                "providerTaskPhase": "生成失败",
+            })
             if task_id:
                 store.update_generation_task(
                     task_id, status="failed", phase="生成失败", error=str(exc),
@@ -4859,7 +5039,7 @@ class Handler(BaseHTTPRequestHandler):
                 "generationStartedAt", "generationFinishedAt", "providerTaskStatus",
                 "providerTaskPhase", "providerTaskProgress",
                 "videoValidation", "actualDuration", "storage", "storageError",
-                "imgbb", "imageHostError", "source",
+                "imgbb", "imageHostError", "source", "providerUrl", "finalizePending",
             )
         }
         if ntype == "text":
@@ -4878,6 +5058,19 @@ class Handler(BaseHTTPRequestHandler):
                 ),
             }
         commit_node_metadata(pid, node["id"], generated_updates)
+        node_written_at = store._now_iso()
+        publish_project_event(pid, "media", node["id"], {
+            "status": str(meta.get("status") or "done"),
+            "url": str(meta.get("content") or ""),
+            "finalizePending": False,
+            "text": meta.get("prompt") if ntype == "text" else None,
+            "providerTaskStatus": str(meta.get("providerTaskStatus") or "completed"),
+            "providerTaskPhase": str(meta.get("providerTaskPhase") or "已完成"),
+            "providerTaskProgress": 100,
+            "generationFinishedAt": str(meta.get("generationFinishedAt") or node_written_at),
+            "mediaVersions": (meta.get("params") or {}).get("mediaVersions") or [],
+            "mediaVersionIndex": (meta.get("params") or {}).get("mediaVersionIndex") or 0,
+        })
         if ntype == "image" and str((meta.get("imgbb") or {}).get("status") or "") == "pending":
             queue_generated_image_imgbb_mirror(
                 pid,
@@ -4892,7 +5085,7 @@ class Handler(BaseHTTPRequestHandler):
             store.update_generation_task(
                 task_id, status="succeeded", phase="已完成", progress=100,
                 error="", provider_task_id=str(result.get("taskId") or ""),
-                finished_at=store._now_iso(),
+                finished_at=store._now_iso(), node_written_at=node_written_at,
             )
         store.record_audit_event(
             "generation.complete",

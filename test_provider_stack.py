@@ -963,7 +963,9 @@ class ProviderPayloadTests(unittest.TestCase):
 
         self.assertEqual(result["url"], "https://video.example/retried.mp4")
         self.assertEqual([call[0] for call in calls], ["POST", "GET", "GET"])
-        sleep.assert_called_once_with(5)
+        # 轮询节奏已改为自适应：前 60 秒按 1.5s 打，退避基准随之变成 1.5s。
+        # 关键断言是"没有重新 POST"，不是具体秒数。
+        sleep.assert_called_once_with(1.5)
         self.assertEqual(calls[1][1], calls[2][1])
 
     def test_agnes_video_retries_queue_full_before_creating_task(self):

@@ -21,6 +21,15 @@ export function apiUrl(path: string): string {
 }
 
 /**
+ * 画布事件流地址。since 用于断线重连时补齐缺失事件；不传则从服务端保留的
+ * 最近事件开始补发（EventSource 会自动带上 Last-Event-ID，二选一都行）。
+ */
+export function projectEventsUrl(sessionId: string, since?: number): string {
+  const suffix = typeof since === 'number' && since > 0 ? `?since=${since}` : '';
+  return apiUrl(`/api/projects/${encodeURIComponent(sessionId)}/events${suffix}`);
+}
+
+/**
  * Browser-facing media URL. Uploaded and generated assets stay stored as
  * canonical `/uploads/...` paths, but native <img>/<video>/<audio> requests
  * must hit the API host where the HttpOnly session cookie was issued.
@@ -417,6 +426,8 @@ export type CanvasMediaNode = {
   providerTaskStatus?: string;
   providerTaskPhase?: string;
   providerTaskProgress?: number;
+  // 供应商已出结果、本机还没落盘归档：此时卡片已可显示，但任务行仍是 running
+  finalizePending?: boolean;
   episodeId?: string;
   actualDuration?: number;
   videoValidation?: {
@@ -1134,6 +1145,7 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
     providerTaskStatus: typeof m.providerTaskStatus === 'string' ? m.providerTaskStatus : undefined,
     providerTaskPhase: typeof m.providerTaskPhase === 'string' ? m.providerTaskPhase : undefined,
     providerTaskProgress: Number.isFinite(Number(m.providerTaskProgress)) ? Number(m.providerTaskProgress) : undefined,
+    finalizePending: m.finalizePending === true,
     episodeId: typeof m.episodeId === 'string' ? m.episodeId : undefined,
     actualDuration: Number.isFinite(Number(m.actualDuration)) ? Number(m.actualDuration) : undefined,
     videoValidation: m.videoValidation && typeof m.videoValidation === 'object'

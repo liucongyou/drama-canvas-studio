@@ -107,7 +107,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, projectEventsUrl, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -2304,7 +2304,10 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   }, [editingText]);
   // 外部切换节点（弹窗打开别的卡等）时退出编辑态，免得残留聚焦
   useEffect(() => { if (!isText) setEditingText(false); }, [isText]);
-  const busy = node.status === 'generating' || !!generationBusy;
+  // finalizePending：供应商已经出结果、后端还在落盘归档。此时遮罩会把画面挡住，
+  // 而用户要看的正是这张画面，所以只要已有地址就不再盖一层「生成中」。
+  const busy = (node.status === 'generating' || !!generationBusy)
+    && !(node.finalizePending && !!node.mediaUrl);
   const done = node.status === 'done';
   const failed = node.status === 'failed';
   useEffect(() => {
@@ -7805,6 +7808,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [mediaNodes, setMediaNodes] = useState<CanvasMediaNode[]>([]);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
   const [generationBusyIds, setGenerationBusyIds] = useState<Set<string>>(() => new Set());
+  // 事件流是否在线：在线时轮询降级成兜底对账，离线时恢复 1.5s 的密集轮询。
+  const [eventsConnected, setEventsConnected] = useState(false);
   const mediaNodesRef = useRef<CanvasMediaNode[]>([]);
   useEffect(() => { mediaNodesRef.current = mediaNodes; }, [mediaNodes]);
   useEffect(() => {
@@ -7837,7 +7842,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       const next = prev.map((node) => {
         const task = activeByNode.get(node.id);
         if (task) {
-          if (node.status === 'generating') return node;
+          // finalizePending：供应商已出结果、后端还在落盘归档。此时卡片已经能看，
+          // 不能再退回「生成中」，否则用户会看到画面闪一下又变回转圈。
+          if (node.status === 'generating' || node.finalizePending) return node;
           changed = true;
           return {
             ...node,
@@ -7885,10 +7892,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
    * is the source of truth for media generation, so reconcile the final media
    * URL back into the local node instead of leaving a stale failure card.
    */
-  const reconciledSuccessTasksRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const succeededTasks = generationTasks.filter(
-      (task) => task.status === 'succeeded' && !reconciledSuccessTasksRef.current.has(task.id),
+      (task) => task.status === 'succeeded',
     );
     if (succeededTasks.length === 0) return;
     let alive = true;
@@ -7910,7 +7916,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           });
           return changed ? next : prev;
         });
-        for (const task of succeededTasks) reconciledSuccessTasksRef.current.add(task.id);
         void getCanvas(session, currentEp)
           .then((refreshed) => { if (alive && !('empty' in refreshed)) setCanvas(refreshed); })
           .catch(() => {});
@@ -9237,8 +9242,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     (node) => node.status === 'generating' || generationBusyIds.has(node.id),
   ).length;
   const hasGeneratingMedia = activeGenerationNodeCount > 0;
+  // 轮询就是「卡片多久变」的下限，所以有任务时按 1.5s 拉，闲时降到 15s 兜底。
+  // 早先没有任务就整个不轮询，一旦本地状态丢了（刷新、换标签页、任务过期），
+  // 后端明明完成也永远不会再回来。
+  const generationSyncMs = eventsConnected
+    ? 12_000
+    : hasGeneratingMedia ? 1_500 : 15_000;
   useEffect(() => {
-    if (!hasGeneratingMedia) return;
     let alive = true;
     let syncing = false;
     const syncTerminalState = async () => {
@@ -9259,7 +9269,16 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         setMediaNodes((prev) => {
           let changed = false;
           const next = prev.map((node) => {
-            if (node.status !== 'generating' && !generationBusyIds.has(node.id)) return node;
+            // 还有一种漏网状态：本地已经标成 done，但没有地址（任务先落终态、
+            // 内容稍后才写回，或刷新打断了提交）。只要远端有内容就补上。
+            const needsContent = !node.mediaUrl
+              && remoteById.get(node.id)?.status === 'done'
+              && !!remoteById.get(node.id)?.mediaUrl;
+            if (
+              node.status !== 'generating'
+              && !generationBusyIds.has(node.id)
+              && !needsContent
+            ) return node;
             const remote = remoteById.get(node.id);
             if (!remote) return node;
             if (remote.status === 'generating') {
@@ -9283,7 +9302,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             // terminal state. The first remote read can still contain the previous
             // completed attempt, and applying that `done` here makes the task chip
             // and edge animation alternate between running and idle.
-            if (generationBusyIds.has(node.id)) return node;
+            // 用「上一次的完成时间是否早于本次开始时间」判断新旧，而不是一味跳过：
+            // 后端现在拿到供应商结果就写 done，任务行还停在 running，条件太粗会
+            // 把这次真正的完成挡在门外。
+            if (generationBusyIds.has(node.id)) {
+              const remoteFinished = remote.generationFinishedAt || '';
+              const localStarted = node.generationStartedAt || '';
+              if (!remoteFinished || (localStarted && remoteFinished < localStarted)) return node;
+            }
             if (remote.status !== 'done' && remote.status !== 'failed') return node;
             changed = true;
             return {
@@ -9295,6 +9321,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               providerTaskStatus: remote.providerTaskStatus,
               providerTaskPhase: remote.providerTaskPhase,
               providerTaskProgress: remote.providerTaskProgress,
+              finalizePending: remote.finalizePending,
               promptStale: remote.promptStale,
               promptStaleReason: remote.promptStaleReason,
               sourcePromptUpdatedAt: remote.sourcePromptUpdatedAt,
@@ -9315,12 +9342,85 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       }
     };
     void syncTerminalState();
-    const timer = window.setInterval(() => void syncTerminalState(), 5_000);
+    const timer = window.setInterval(() => void syncTerminalState(), generationSyncMs);
     return () => {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [session, currentEp, hasGeneratingMedia, generationBusyIds]);
+  }, [session, currentEp, generationSyncMs, generationBusyIds]);
+
+  // 事件流：后端拿到供应商结果、落盘完成、失败时都会推一条，卡片直接改，
+  // 不再等下一次轮询。EventSource 自带重连，服务端按 Last-Event-ID 补发。
+  useEffect(() => {
+    if (typeof EventSource === 'undefined' || !session) return;
+    let source: EventSource | null = null;
+    let disposed = false;
+
+    const applyEvent = (raw: string) => {
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      const nodeId = typeof data.nodeId === 'string' ? data.nodeId : '';
+      if (!nodeId) return;
+      const rawStatus = data.status;
+      const nextStatus: CanvasMediaNode['status'] = rawStatus === 'failed'
+        ? 'failed'
+        : rawStatus === 'done' ? 'done' : undefined;
+      const url = typeof data.url === 'string' && data.url ? mediaSourceUrl(data.url) : '';
+      setMediaNodes((prev) => {
+        const index = prev.findIndex((node) => node.id === nodeId);
+        if (index < 0) return prev;
+        const node = prev[index];
+        const phase = typeof data.providerTaskPhase === 'string' ? data.providerTaskPhase : node.providerTaskPhase;
+        const progress = typeof data.providerTaskProgress === 'number'
+          ? data.providerTaskProgress
+          : node.providerTaskProgress;
+        if (!nextStatus && phase === node.providerTaskPhase && progress === node.providerTaskProgress) {
+          return prev;
+        }
+        const updated: CanvasMediaNode = {
+          ...node,
+          ...(nextStatus ? { status: nextStatus } : {}),
+          ...(url ? { mediaUrl: url } : {}),
+          ...(typeof data.finalizePending === 'boolean' ? { finalizePending: data.finalizePending } : {}),
+          ...(typeof data.providerTaskStatus === 'string' ? { providerTaskStatus: data.providerTaskStatus } : {}),
+          providerTaskPhase: phase,
+          providerTaskProgress: progress,
+          ...(typeof data.generationFinishedAt === 'string' && data.generationFinishedAt
+            ? { generationFinishedAt: data.generationFinishedAt }
+            : {}),
+          ...(node.kind === 'text' && typeof data.text === 'string' ? { prompt: data.text } : {}),
+          lastError: nextStatus === 'failed'
+            ? String(data.error || node.lastError || '生成失败')
+            : (nextStatus === 'done' ? undefined : node.lastError),
+          updatedAt: new Date().toISOString(),
+        };
+        const copy = prev.slice();
+        copy[index] = updated;
+        return copy;
+      });
+    };
+
+    const open = () => {
+      if (disposed) return;
+      source = new EventSource(projectEventsUrl(session));
+      source.onopen = () => { if (!disposed) setEventsConnected(true); };
+      source.onerror = () => { if (!disposed) setEventsConnected(false); };
+      source.addEventListener('media', (event) => applyEvent((event as MessageEvent<string>).data));
+      source.addEventListener('media.progress', (event) => applyEvent((event as MessageEvent<string>).data));
+    };
+
+    open();
+    return () => {
+      disposed = true;
+      setEventsConnected(false);
+      source?.close();
+      source = null;
+    };
+  }, [session]);
 
   // 用户手动连线：把来源媒体节点写进目标节点的 params.refs / voiceRef，
   // 让连线真正参与生成（生成时还会再次扫描边，但此处让弹窗即时反映连接）

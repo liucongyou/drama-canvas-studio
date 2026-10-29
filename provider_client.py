@@ -38,6 +38,21 @@ MAX_INLINE_BYTES = 24 * 1024 * 1024
 TaskEventCallback = Callable[[dict[str, Any]], None]
 
 
+def poll_delay(elapsed_seconds: float) -> float:
+    """任务轮询间隔（自适应）。
+
+    用户感知的"服务商已完成但卡片还没变"，下限就是一次轮询间隔：轮询越稀，
+    发现完成就越晚。因此前 60 秒加密到 1.5s（覆盖绝大多数图片和一成短视频），
+    之后逐步放缓，避免长任务把供应商接口打成 QPS 攻击。
+    """
+    elapsed = max(0.0, float(elapsed_seconds or 0.0))
+    if elapsed < 60:
+        return 1.5
+    if elapsed < 180:
+        return 3.0
+    return 6.0
+
+
 def _upload_dir() -> str:
     context = tenant_context.current()
     return str(context.upload_dir) if context is not None else UPLOAD_DIR
@@ -946,6 +961,7 @@ def _newapi_image(
         )
     poll_url = f"{base}{poll_prefix}{urllib.parse.quote(task_id, safe='')}"
     deadline = time.time() + 900
+    poll_started = time.time()
     while time.time() < deadline:
         status_raw = str(response.get("status") or "").lower()
         if status_raw in {"succeeded", "completed", "success", "done"}:
@@ -965,7 +981,7 @@ def _newapi_image(
             raise RuntimeError(
                 f"New API 图片生成失败：{detail or json.dumps(response, ensure_ascii=False)[:600]}"
             )
-        time.sleep(3)
+        time.sleep(poll_delay(time.time() - poll_started))
         response = _request_json("GET", poll_url, key, timeout=30)
     raise RuntimeError(f"New API 图片任务超时（900s，任务 {task_id}）")
 
@@ -1246,7 +1262,7 @@ def _agnes_video(
         "createdAt": time.time(),
     })
     deadline = time.time() + 900
-    poll_delay = 5
+    poll_started = time.time()
     retry_streak = 0
     last_poll_error = ""
     while time.time() < deadline:
@@ -1262,7 +1278,8 @@ def _agnes_video(
                 retry_after = int((exc.headers or {}).get("Retry-After", "0"))
             except (TypeError, ValueError):
                 retry_after = 0
-            wait_seconds = min(30, max(poll_delay, retry_after or poll_delay * (2 ** min(retry_streak - 1, 3))))
+            base_delay = poll_delay(time.time() - poll_started)
+            wait_seconds = min(30, max(base_delay, retry_after or base_delay * (2 ** min(retry_streak - 1, 3))))
             if time.time() + wait_seconds >= deadline:
                 break
             time.sleep(wait_seconds)
@@ -1285,7 +1302,7 @@ def _agnes_video(
             error = task.get("error")
             detail = error.get("message") if isinstance(error, dict) else error
             raise RuntimeError(f"Agnes 视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}")
-        time.sleep(poll_delay)
+        time.sleep(poll_delay(time.time() - poll_started))
     suffix = f"，最后错误：{last_poll_error}" if last_poll_error else ""
     raise RuntimeError(f"Agnes 视频任务超时（900s，video_id {video_id}）{suffix}")
 
@@ -1383,6 +1400,7 @@ def _newapi_video(
         "/videos/" + urllib.parse.quote(task_id, safe=""),
     )
     deadline = time.time() + 1800
+    poll_started = time.time()
     while time.time() < deadline:
         task = _request_json("GET", poll_url, key, timeout=30)
         status = str(task.get("status") or "").lower()
@@ -1400,7 +1418,7 @@ def _newapi_video(
             error = task.get("error")
             detail = error.get("message") if isinstance(error, dict) else error
             raise RuntimeError(f"视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}")
-        time.sleep(4)
+        time.sleep(poll_delay(time.time() - poll_started))
     raise RuntimeError(f"视频任务超时（1800s，任务 {task_id}）")
 
 
@@ -1489,6 +1507,7 @@ def _ark_video(
     )
     key = provider_catalog.provider_key(provider)
     deadline = time.time() + 900
+    poll_started = time.time()
     while time.time() < deadline:
         task = _request_json("GET", poll_url, key, timeout=30)
         status = str(task.get("status") or "").lower()
@@ -1504,7 +1523,7 @@ def _ark_video(
             return {"url": url, "raw": task, "taskId": task_id}
         if status in {"failed", "error", "cancelled", "canceled"}:
             raise RuntimeError(f"视频生成失败：{json.dumps(task, ensure_ascii=False)[:600]}")
-        time.sleep(4)
+        time.sleep(poll_delay(time.time() - poll_started))
     raise RuntimeError(f"视频任务超时（900s，任务 {task_id}）")
 
 

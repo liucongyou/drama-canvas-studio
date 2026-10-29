@@ -106,7 +106,9 @@ def _connect():
                 created_at TEXT,
                 started_at TEXT,
                 updated_at TEXT,
-                finished_at TEXT
+                finished_at TEXT,
+                provider_finished_at TEXT,
+                node_written_at TEXT
             )"""
             )
             con.execute(
@@ -139,6 +141,22 @@ def _connect():
             "CREATE INDEX IF NOT EXISTS idx_audit_events_created "
             "ON audit_events(created_at DESC)"
             )
+            # 画布事件的持久化日志：SSE 断线重连靠它补发，轮询降级后靠它对账。
+            # 只保留 id 自增，客户端用 Last-Event-ID 续传，不需要按时间排序。
+            con.execute(
+            """CREATE TABLE IF NOT EXISTS canvas_events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                node_id TEXT,
+                payload_json TEXT,
+                created_at TEXT
+            )"""
+            )
+            con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_events_project "
+            "ON canvas_events(project_id, id)"
+            )
             task_columns = {
                 row[1] for row in con.execute("PRAGMA table_info(generation_tasks)")
             }
@@ -153,6 +171,16 @@ def _connect():
             if "cost_currency" not in task_columns:
                 con.execute(
                     "ALTER TABLE generation_tasks ADD COLUMN cost_currency TEXT DEFAULT ''"
+                )
+            # 端到端延迟要靠时间戳切段定位：供应商出结果 → 落盘/转存 → 节点写库。
+            # 缺了这三段，只能靠轮询间隔反推，查不出"到底慢在哪"。
+            if "provider_finished_at" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN provider_finished_at TEXT"
+                )
+            if "node_written_at" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN node_written_at TEXT"
                 )
             snapshot_columns = {
                 row[1] for row in con.execute("PRAGMA table_info(canvas_snapshots)")
@@ -316,8 +344,58 @@ def delete_project(pid):
 _TASK_FIELDS = {
     "status", "phase", "progress", "provider", "model", "provider_task_id",
     "error", "started_at", "finished_at", "title", "kind",
-    "estimated_cost", "cost_currency",
+    "estimated_cost", "cost_currency", "provider_finished_at", "node_written_at",
 }
+
+
+def append_event(project_id, kind, node_id="", payload=None):
+    """写一条画布事件。落库不是给"在线的人"看的，是为了断线重连能补齐。"""
+    con = _connect()
+    cur = con.execute(
+        "INSERT INTO canvas_events(project_id,kind,node_id,payload_json,created_at) "
+        "VALUES(?,?,?,?,?)",
+        (
+            project_id,
+            str(kind),
+            str(node_id or ""),
+            json.dumps(payload or {}, ensure_ascii=False),
+            _now_iso(),
+        ),
+    )
+    event_id = int(cur.lastrowid or 0)
+    if event_id > 0:
+        # 只保留最近 2000 条：够补发一次断线，也不会让表无限增长
+        con.execute(
+            "DELETE FROM canvas_events WHERE project_id=? AND id<=?",
+            (project_id, event_id - 2000),
+        )
+    con.commit()
+    con.close()
+    return event_id
+
+
+def list_events(project_id, since_id=0, limit=200):
+    con = _connect()
+    rows = con.execute(
+        "SELECT id,kind,node_id,payload_json,created_at FROM canvas_events "
+        "WHERE project_id=? AND id>? ORDER BY id LIMIT ?",
+        (project_id, int(since_id or 0), max(1, min(int(limit or 200), 500))),
+    ).fetchall()
+    con.close()
+    events = []
+    for row in rows:
+        try:
+            payload = json.loads(row[3] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        events.append({
+            "id": int(row[0]),
+            "kind": row[1],
+            "nodeId": row[2] or "",
+            "payload": payload if isinstance(payload, dict) else {},
+            "at": row[4],
+        })
+    return events
 
 
 def create_generation_task(

@@ -162,12 +162,12 @@ class GenerationQueueTests(unittest.TestCase):
         node_id = "node-ghost"
         node = {
             "id": node_id,
-            "type": "image",
-            "title": "道具｜告示（图15）",
+            "type": "video",
+            "title": "段1 · 告别",
             "metadata": {
                 "status": "generating",
                 "provider": "agnes-ai",
-                "model": "agnes-image-2.5-flash",
+                "model": "agnes-video-2.5-flash",
                 "providerTaskStatus": "submitting",
                 "providerTaskPhase": "提交供应商",
             },
@@ -179,6 +179,7 @@ class GenerationQueueTests(unittest.TestCase):
             "node_id": node_id,
             "status": "running",
             "phase": "提交供应商",
+            "kind": "video",
             "provider_task_id": "",
             "created_at": stale,
             "started_at": stale,
@@ -199,6 +200,47 @@ class GenerationQueueTests(unittest.TestCase):
         commit.assert_called_once()
         self.assertEqual(commit.call_args.args[2]["status"], "failed")
         self.assertEqual(commit.call_args.args[2]["providerTaskPhase"], "提交超时")
+
+    def test_sync_image_without_provider_task_id_is_not_marked_submit_timeout(self):
+        """Agnes image is synchronous and has no provider task id by design."""
+        project_id = "project-image-sync"
+        node_id = "node-image-sync"
+        node = {
+            "id": node_id,
+            "type": "image",
+            "title": "角色｜钱万金（图2）",
+            "metadata": {
+                "status": "generating",
+                "provider": "agnes-ai",
+                "model": "agnes-image-2.5-flash",
+                "providerTaskStatus": "submitting",
+                "providerTaskPhase": "提交供应商",
+            },
+        }
+        stale = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat().replace("+00:00", "Z")
+        task = {
+            "id": "task-image-sync",
+            "project_id": project_id,
+            "node_id": node_id,
+            "kind": "image",
+            "status": "running",
+            "phase": "提交供应商",
+            "provider_task_id": "",
+            "created_at": stale,
+            "started_at": stale,
+            "updated_at": stale,
+        }
+        update_task = unittest.mock.Mock()
+        commit = unittest.mock.Mock()
+        with patch.object(server.store, "list_projects", return_value=[{"id": project_id}]), \
+                patch.object(server.store, "get_project", return_value={"id": project_id, "payload": {"nodes": [node]}}), \
+                patch.object(server.store, "list_generation_tasks", return_value=[task]), \
+                patch.object(server.store, "update_generation_task", update_task), \
+                patch.object(server, "commit_node_metadata", commit):
+            reconciled = server.reconcile_generation_task_records()
+        self.assertEqual(reconciled, 0)
+        update_task.assert_not_called()
+        commit.assert_not_called()
 
     def test_generation_preflight_blocks_invalid_provider_key(self):
         server._PROVIDER_AUTH_CACHE.clear()
