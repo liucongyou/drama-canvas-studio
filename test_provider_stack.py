@@ -100,6 +100,48 @@ class ProviderCatalogTests(unittest.TestCase):
         model = next(item for item in catalog["models"] if item["id"] == "relay-video")
         self.assertEqual(model["adapter"], "newapi_video")
 
+    def test_relay_video_uses_videos_endpoint(self):
+        requests = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            requests.append((method, url, body))
+            if method == "POST":
+                return {"id": "video-task-1", "status": "queued"}
+            return {
+                "id": "video-task-1",
+                "status": "completed",
+                "content": {"video_url": "https://cdn.example/video.mp4"},
+            }
+
+        provider = {
+            "id": "relay",
+            "name": "Relay",
+            "base_url": "https://api.example.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "relay-video",
+            "remoteModel": "relay-video",
+            "capability": "video",
+            "adapter": "newapi_video",
+            "params": {},
+        }
+        with patch.object(provider_client, "_request_json", side_effect=fake_request), \
+                patch.object(provider_client.time, "sleep"):
+            result = provider_client.generate_video(
+                provider,
+                model,
+                "测试视频",
+                {"duration": 5, "resolution": "720P"},
+                [{"kind": "image", "url": "https://cdn.example/ref.png"}],
+                [],
+            )
+        self.assertEqual(result["taskId"], "video-task-1")
+        self.assertEqual(requests[0][:2], ("POST", "https://api.example.com/v1/videos"))
+        self.assertEqual(requests[1][:2], ("GET", "https://api.example.com/v1/videos/video-task-1"))
+        self.assertEqual(requests[0][2]["images"], ["https://cdn.example/ref.png"])
+        self.assertEqual(requests[0][2]["metadata"]["resolution"], "720p")
+
     def test_provider_request_rejects_private_dns_targets(self):
         private_result = [(2, 1, 6, "", ("127.0.0.1", 80))]
         with patch(

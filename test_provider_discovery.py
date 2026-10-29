@@ -126,6 +126,11 @@ class ProviderDiscoveryTests(unittest.TestCase):
         self.assertTrue(all(kwargs["timeout"] == 30 for _, kwargs in calls))
         self.assertTrue(all(kwargs["read_limit"] == 1024 * 1024 for _, kwargs in calls))
 
+    def test_openai_video_defaults_to_relay_adapter(self):
+        result = self.discover('{"data":[{"id":"demo-seedance-video"}]}')
+        self.assertEqual(result["models"][0]["capability"], "video")
+        self.assertEqual(result["models"][0]["adapter"], "newapi_video")
+
     def test_discovery_parses_truncated_model_payload(self):
         with (
             tenant_context.use_tenant("alpha", "alpha"),

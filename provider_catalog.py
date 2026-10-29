@@ -431,6 +431,16 @@ def _deep_merge(defaults: Any, override: Any) -> Any:
     return copy.deepcopy(override)
 
 
+def _is_openai_video_relay(provider: dict[str, Any]) -> bool:
+    base_url = str(provider.get("base_url") or "").strip().lower()
+    provider_id = str(provider.get("id") or "").strip().lower()
+    return (
+        provider_id in {"new-api", "aijusheng"}
+        or "canvasproai.com" in base_url
+        or "aijusheng.com" in base_url
+    )
+
+
 def load_config(*, migrate: bool = True) -> dict[str, Any]:
     cfg: dict[str, Any] = {}
     local_path = _local_config_path()
@@ -557,6 +567,18 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
             model["params"]["clarity"]["options"] = ["1.5K", "2K", "4K"]
             if model["defaultParams"].get("clarity") == "1K":
                 model["defaultParams"]["clarity"] = "1.5K"
+    provider_by_id = {
+        p.get("id"): p for p in providers if isinstance(p, dict) and p.get("id")
+    }
+    for model in models:
+        if not isinstance(model, dict) or model.get("capability") != "video":
+            continue
+        provider = provider_by_id.get(model.get("providerId"))
+        if provider and _is_openai_video_relay(provider) and model.get("adapter") in {
+            "agnes_video",
+            "ark_video",
+        }:
+            model["adapter"] = "newapi_video"
     if migrate and merged != cfg:
         save_config(merged)
     return merged
@@ -1364,8 +1386,14 @@ def _infer_discovered_model(
     else:
         capability = "image"
     if "adapter" not in locals():
+        if provider.get("protocol") == "ark":
+            video_adapter = "ark_video"
+        elif str(provider.get("id") or "").strip().lower() == "agnes-ai":
+            video_adapter = "agnes_video"
+        else:
+            video_adapter = "newapi_video"
         adapter = {
-            "video": "ark_video" if provider.get("protocol") == "ark" else "agnes_video",
+            "video": video_adapter,
             "image": "ark_image" if provider.get("protocol") == "ark" else "openai_image",
             "audio": "dashscope_tts" if provider.get("protocol") == "dashscope" else "dashscope_tts",
             "text": "openai_chat",

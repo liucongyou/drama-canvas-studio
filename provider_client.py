@@ -792,14 +792,22 @@ def _newapi_video(
     ]
     seconds = _safe_int(params.get("duration") or params.get("seconds"), 5, 1, 30)
     resolution = str(params.get("resolution") or "720P").upper().replace("P", "p")
+    metadata = {
+        "resolution": resolution,
+        "generate_audio": bool(params.get("generateAudio", True)),
+        "watermark": bool(params.get("watermark", False)),
+    }
     body: dict[str, Any] = {
         "model": model["remoteModel"],
         "prompt": text,
         "seconds": seconds,
         "size": resolution,
+        "metadata": metadata,
     }
     if images:
+        body["images"] = images
         body["image"] = images[0] if len(images) == 1 else images
+        body["input_reference"] = images[0]
     _apply_declared_params(body, model, params)
     key = provider_catalog.provider_key(provider)
     response = _request_json(
