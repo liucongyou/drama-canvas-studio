@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.30.5';
+export const APP_VERSION = '2026.10.30.6';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.30.6',
+    date: '2026-10-30',
+    title: '视频生成参数面板重构',
+    changes: [
+      '视频参数弹窗改为独立紧凑布局：比例、分辨率、生成数量单行展示，常见窗口内一屏完整可见。',
+      '参数选中态统一为主题中性灰，不再出现蓝色描边或蓝底；视频弹窗宽度收窄至 360px。',
+      '模型设置是参数唯一来源，生成面板严格读取当前模型 Schema；数量选项不再固定写死。',
+    ],
+  },
   {
     version: '2026.10.30.5',
     date: '2026-10-30',

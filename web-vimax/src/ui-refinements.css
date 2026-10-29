@@ -8170,9 +8170,12 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 
 /* ── 外壳：更沉的底 + 更明确的一层描边 + 更深更柔的投影 ────────────────── */
 .jim-pop.jim-params-panel{
-  width:min(440px, calc(100vw - 32px));
-  max-height:min(70vh, 320px);
+  width:min(360px, calc(100vw - 24px));
+  max-height:calc(100vh - 24px);
+  overflow:hidden;
   padding:8px;
+  display:flex;
+  flex-direction:column;
   border-radius:16px;
   /* Keep the parameter surface on the exact same neutral base as the prompt
      composer. Selection remains a lighter gray layer inside this background. */
@@ -8185,6 +8188,221 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   scrollbar-gutter:stable;
 }
 
+.jim-params-panel .video-params-compact{
+  display:flex;
+  flex-direction:column;
+  gap:0;
+  padding:4px;
+}
+
+.jim-params-panel .video-params-group{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  padding:13px 13px 14px;
+  border-top:1px solid #29292c;
+}
+
+.jim-params-panel .video-params-group:first-child{
+  border-top:0;
+  padding-top:12px;
+}
+
+.jim-params-panel .video-params-label{
+  color:#858589;
+  font-size:11px;
+  font-weight:500;
+  line-height:1.4;
+}
+
+.jim-params-panel .video-params-ratio-row,
+.jim-params-panel .video-params-choice-row{
+  display:grid;
+  gap:2px;
+  padding:4px;
+  border-radius:11px;
+  background:#222225;
+}
+
+.jim-params-panel .video-params-ratio-row button,
+.jim-params-panel .video-params-choice-row button{
+  min-width:0;
+  min-height:48px;
+  padding:5px 2px;
+  border:0;
+  border-radius:8px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  background:transparent;
+  color:#a7a7ab;
+  font:inherit;
+  font-size:11px;
+  cursor:pointer;
+}
+
+.jim-params-panel .video-params-choice-row button{
+  min-height:40px;
+  flex-direction:row;
+  font-size:12px;
+  font-weight:600;
+}
+
+.jim-params-panel .video-params-ratio-row button:hover,
+.jim-params-panel .video-params-choice-row button:hover{
+  background:#29292d;
+  color:#e8e8eb;
+}
+
+.jim-params-panel .video-params-ratio-row button.is-active,
+.jim-params-panel .video-params-choice-row button.is-active{
+  background:#343438;
+  color:#f5f5f7;
+  box-shadow:none;
+}
+
+.video-param-ratio-glyph{
+  display:block;
+  border:1.5px solid currentColor;
+  border-radius:2px;
+  box-sizing:border-box;
+}
+
+.jim-params-panel .video-params-audio-toggle{
+  min-height:34px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  color:#a7a7ab;
+  font-size:11px;
+  padding:12px 13px 8px;
+  border-top:1px solid #29292c;
+}
+
+.jim-params-panel .video-params-switch{
+  width:34px;
+  height:19px;
+  padding:2px;
+  border:0;
+  border-radius:999px;
+  background:#333338;
+  cursor:pointer;
+}
+
+.jim-params-panel .video-params-switch i{
+  display:block;
+  width:15px;
+  height:15px;
+  border-radius:50%;
+  background:#8d8d93;
+  transition:transform .16s,background .16s;
+}
+
+.jim-params-panel .video-params-switch.is-on{
+  background:#4a4a50;
+}
+
+.jim-params-panel .video-params-switch.is-on i{
+  background:#f1f1f3;
+  transform:translateX(15px);
+}
+
+@media (max-height:720px){
+  .jim-params-panel .video-params-compact{
+    gap:0;
+    padding:3px;
+  }
+  .jim-params-panel .video-params-group{
+    gap:4px;
+    padding:9px 11px 10px;
+  }
+  .jim-params-panel .video-params-ratio-row button{
+    min-height:42px;
+  }
+  .jim-params-panel .video-params-choice-row button{
+    min-height:34px;
+  }
+}
+
+.jim-params-panel .jim-params-head{
+  flex:none;
+}
+
+.jim-params-panel .jim-params-scroll{
+  min-height:0;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+}
+
+.jim-params-panel .jim-params-compact-grid{
+  display:flex;
+  flex-direction:column;
+}
+
+.jim-params-panel .jim-param-ratio-section .jim-params-ratio-grid{
+  grid-template-columns:repeat(7,minmax(0,1fr));
+  gap:2px;
+}
+
+.jim-params-panel .jim-param-ratio-section .jim-ratio-item{
+  min-height:54px;
+  gap:4px;
+  padding:8px 2px 6px;
+  border:0;
+  border-radius:9px;
+  background:transparent;
+  color:var(--v-text-3,#a8a8ab);
+}
+
+.jim-params-panel .jim-param-ratio-section .jim-ratio-item:hover{
+  background:var(--v-surface-hover,#292929);
+  border:0;
+}
+
+.jim-params-panel .jim-param-ratio-section .jim-ratio-item.is-active{
+  background:#29292d;
+  border:0;
+  color:var(--v-text,#f0f0f2);
+  box-shadow:none;
+}
+
+.jim-params-panel .jim-param-resolution-section .jim-chip-row,
+.jim-params-panel .jim-param-count-section .jim-chip-row{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:2px;
+}
+
+.jim-params-panel .jim-param-count-section .jim-chip-row{
+  grid-template-columns:repeat(4,minmax(0,1fr));
+}
+
+.jim-params-panel .jim-param-resolution-section .jim-chip,
+.jim-params-panel .jim-param-count-section .jim-chip{
+  min-height:38px;
+  border:0;
+  border-radius:9px;
+  background:transparent;
+  color:var(--v-text-3,#a8a8ab);
+}
+
+.jim-params-panel .jim-param-resolution-section .jim-chip:hover,
+.jim-params-panel .jim-param-count-section .jim-chip:hover{
+  background:var(--v-surface-hover,#292929);
+  border:0;
+}
+
+.jim-params-panel .jim-param-resolution-section .jim-chip.is-active,
+.jim-params-panel .jim-param-count-section .jim-chip.is-active{
+  background:#29292d;
+  border:0;
+  color:var(--v-text,#f0f0f2);
+  box-shadow:none;
+}
+
 @media (max-width:1180px){
   .jim-pop.jim-params-panel{
     position:fixed;
@@ -8192,8 +8410,8 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
     right:auto !important;
     top:12px !important;
     bottom:auto !important;
-    width:min(520px,calc(100vw - 24px));
-    max-height:min(320px, calc(100vh - 24px));
+    width:min(360px,calc(100vw - 24px));
+    max-height:calc(100vh - 24px);
     transform:translateX(-50%) !important;
   }
 }
@@ -8210,7 +8428,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   .jim-pop.jim-params-panel{
     left:12px !important;
     top:12px !important;
-    width:420px;
+    width:360px;
     transform:none !important;
   }
 }
@@ -8603,12 +8821,12 @@ body,
 
 /* ── 分区：加大留白，分隔线用最淡的 --v-divider ────────────────────────── */
 .jim-params-panel .jim-param-section{
-  padding:15px 14px 17px;
+  padding:11px 12px 12px;
   border-top:1px solid var(--v-divider, #2b2b2b);
 }
 .jim-params-panel .jim-param-section:first-of-type{border-top:0}
 .jim-params-panel .jim-param-section-title{
-  margin-bottom:12px;
+  margin-bottom:8px;
   gap:12px;
 }
 .jim-params-panel .jim-param-section-title span{
@@ -8638,13 +8856,13 @@ body,
 /* ── 画幅比例：图标放大到 20px，格子更挺括，选中态用中性实心灰（不用蓝） ── */
 .jim-params-panel .jim-params-ratio-grid{
   grid-template-columns:repeat(4, minmax(0, 1fr));
-  gap:10px;
+  gap:7px;
 }
 .jim-params-panel .jim-params-ratio-grid .jim-ratio-item{
   min-width:0;
-  gap:8px;
-  padding:14px 5px 10px;
-  border-radius:13px;
+  gap:6px;
+  padding:9px 4px 7px;
+  border-radius:10px;
   background:var(--v-card-3, #1b1b1b);
   border:1px solid var(--v-border, #2e2e2e);
   color:var(--v-text-4, #8a8a8f);
@@ -8654,8 +8872,8 @@ body,
 }
 /* 图标原本只有 15px，21:9 / 16:9 / 4:3 三个横幅长得几乎一样，根本分不出来 */
 .jim-params-panel .jim-params-ratio-grid .jim-ratio-ico{
-  width:20px;
-  height:20px;
+  width:17px;
+  height:17px;
   display:block;
 }
 /* 「自适应」不是数字比例，RatioIcon 返回的是一个空 span。
@@ -8684,8 +8902,8 @@ body,
 /* ── 胶囊档位：更高更圆，字重与描边都提一档 ────────────────────────────── */
 .jim-params-panel .jim-chip-row{gap:7px}
 .jim-params-panel .jim-chip{
-  min-height:34px;
-  padding:8px 15px;
+  min-height:30px;
+  padding:6px 14px;
   border-radius:9px;
   background:var(--v-card-3, #1b1b1b);
   border:1px solid var(--v-border, #2e2e2e);
@@ -8725,8 +8943,45 @@ body,
 @media (max-width:720px){
   .jim-pop.jim-params-panel{
     width:calc(100vw - 24px);
-    max-height:min(320px,64vh);
+    max-height:calc(100vh - 24px);
   }
+}
+
+@media (max-height:720px){
+  .jim-pop.jim-params-panel .jim-params-head{
+    padding:9px 12px 10px;
+  }
+  .jim-pop.jim-params-panel .jim-param-section{
+    padding:8px 11px 9px;
+  }
+  .jim-pop.jim-params-panel .jim-param-section-title{
+    margin-bottom:6px;
+  }
+  .jim-pop.jim-params-panel .jim-params-ratio-grid{
+    gap:5px;
+  }
+  .jim-pop.jim-params-panel .jim-params-ratio-grid .jim-ratio-item{
+    gap:3px;
+    padding:6px 3px 5px;
+  }
+  .jim-pop.jim-params-panel .jim-params-ratio-grid .jim-ratio-ico{
+    width:15px;
+    height:15px;
+  }
+  .jim-pop.jim-params-panel .jim-chip{
+    min-height:27px;
+    padding:4px 12px;
+  }
+}
+
+/* Final precedence guard: model-settings values are the contract; selection
+   in the parameters panel is neutral, never an unrelated blue accent. */
+.jim-pop.jim-params-panel .jim-ratio-item.is-active,
+.jim-pop.jim-params-panel .jim-chip.is-active {
+  background: #29292d;
+  border-color: #4a4a4e;
+  color: var(--v-text, #f0f0f2);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
 }
 
 /* ── 批量生成（多选浮动工具条入口） ───────────────────────────── */

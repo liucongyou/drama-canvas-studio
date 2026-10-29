@@ -710,9 +710,12 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
             model["params"]["clarity"]["options"] = ["1.5K", "2K", "4K"]
             if model["defaultParams"].get("clarity") == "1K":
                 model["defaultParams"]["clarity"] = "1.5K"
-        if str(model.get("remoteModel") or "").startswith("即梦-") and model.get("capability") == "image":
-            # New API relay's aistars image route documents
-            # aspect_ratio + resolution=1K|2K|4K. This is not Volcengine Ark.
+        if (
+            str(model.get("remoteModel") or "") == "即梦-65-seedream-5-pro"
+            and model.get("capability") == "image"
+        ):
+            # New API relay's documented 65-pro image contract:
+            # aspect_ratio + clarity=1K|2K. This is not Volcengine Ark.
             model["defaultParams"].pop("duration", None)
             model["defaultParams"].pop("watermark", None)
             model["defaultParams"]["ratio"] = str(model["defaultParams"].get("ratio") or "1:1")
@@ -1245,7 +1248,7 @@ def upsert_model(input_data: dict[str, Any]) -> dict[str, Any]:
         current["params"] = copy.deepcopy(schema)
     elif "params" not in current:
         current["params"] = {}
-    if remote_model.startswith("即梦-") and capability == "image":
+    if remote_model == "即梦-65-seedream-5-pro" and capability == "image":
         normalized_defaults = current["defaultParams"]
         normalized_schema = current["params"]
         clarity = str(

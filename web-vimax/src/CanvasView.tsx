@@ -135,6 +135,7 @@ import {
   migrateUnavailableModelParams,
 } from './modelParamInheritance';
 import {validateModelParams} from './modelParamContract';
+import {VideoParamsPanel} from './VideoParamsPanel';
 import {
   evaluateBatchGeneration,
   evaluateReferenceLimits,
@@ -4628,15 +4629,37 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
               visibility: paramsPanelPos ? 'visible' : 'hidden',
             }}
           >
-            <div className="jim-params-head">
-              <strong>生成参数</strong>
-              <span title={modelPricingNote(curModelSpec, hasVideoInput)}>{curModelSpec?.label || curModel || meta.label} · {generationCostHint(node, curModelSpec, {hasVideoInput})}</span>
-            </div>
+            {!isVid && (
+              <div className="jim-params-head">
+                <strong>生成参数</strong>
+                <span title={modelPricingNote(curModelSpec, hasVideoInput)}>{curModelSpec?.label || curModel || meta.label} · {generationCostHint(node, curModelSpec, {hasVideoInput})}</span>
+              </div>
+            )}
 
+            <div className="jim-params-scroll">
+            {isVid ? (
+              <VideoParamsPanel
+                params={p}
+                ratioOptions={ratioOptions}
+                resolutionOptions={resolutionOptions}
+                countOptions={countOptions}
+                ratioLabel={ratioLabel}
+                resolutionLabel={resLabel}
+                countLabel={countLabel}
+                onPatch={patch}
+              />
+            ) : (
+            <>
+              <div className="jim-params-compact-grid">
             {!isAud && !isTxt && (
-              <section className="jim-param-section">
+              <section className="jim-param-section jim-param-ratio-section">
                 <div className="jim-param-section-title"><span>画幅比例</span><em>{ratioLabel}</em></div>
-                <div className="jim-ratio-grid jim-params-ratio-grid">
+                <div
+                  className="jim-ratio-grid jim-params-ratio-grid"
+                  style={{
+                    gridTemplateColumns: `repeat(${Math.max(1, ratioOptions.length)}, minmax(0, 1fr))`,
+                  }}
+                >
                   {ratioOptions.map((r) => (
                     <button
                       key={r}
@@ -4695,35 +4718,6 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
               </>
             )}
 
-            {isVid && (
-              <>
-                <section className="jim-param-section">
-                  <div className="jim-param-section-title"><span>分辨率</span><em>{resLabel}</em></div>
-                  <div className="jim-chip-row">
-                    {resolutionOptions.map((r) => (
-                      <button key={r} type="button" className={`jim-chip ${resLabel === r ? 'is-active' : ''}`} onClick={() => patch('resolution', r)}>{r}</button>
-                    ))}
-                  </div>
-                </section>
-                <section className="jim-param-section">
-                  <div className="jim-param-section-title"><span>生成数量</span><em>{countLabel}</em></div>
-                  <div className="jim-chip-row">
-                    {countOptions.map((count) => (
-                      <button
-                        key={count}
-                        type="button"
-                        className={`jim-chip ${Number(p.count ?? curModelSpec?.defaultParams?.count ?? 1) === Number(count) ? 'is-active' : ''}`}
-                        onClick={() => patch('count', Number(count))}
-                      >{count}</button>
-                    ))}
-                  </div>
-                  {countOptions.length === 1 && countOptions[0] === 1 && (
-                    <p className="jim-pop-note">当前模型仅支持单次生成 1 个结果</p>
-                  )}
-                </section>
-              </>
-            )}
-
             {isAud && (
               <>
                 <section className="jim-param-section">
@@ -4777,6 +4771,10 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 </section>
               </>
             )}
+              </div>
+            </>
+            )}
+            </div>
 
           </div>,
           document.body,
