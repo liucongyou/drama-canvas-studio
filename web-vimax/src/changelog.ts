@@ -7,10 +7,21 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.27';
+export const APP_VERSION = '2026.10.30.1';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.30.1',
+    date: '2026-10-30',
+    title: '生成结果即时显示与素材后台归档',
+    changes: [
+      '图片、视频生成成功后先显示结果，本地缓存和 TOS 转存改为后台完成；存储失败不会把已生成素材改判为失败。',
+      'TOS 新增视频自动转存开关，图片和视频卡片会显示当前版本的 TOS 原始或待转存状态。',
+      '兼容不同服务商返回的图片、视频地址结构，修复任务完成后结果地址丢失或无法及时显示的问题。',
+      '供应商视频队列已满时明确提示本次未创建任务，不再误显示为结果待确认。',
+    ],
+  },
   {
     version: '2026.10.29.27',
     date: '2026-10-29',

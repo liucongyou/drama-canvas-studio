@@ -319,6 +319,18 @@ def _submit_with_retry(
             raise
 
 
+def _provider_submit_error(exc: Exception) -> Exception:
+    """Return a precise final error after bounded retries have been exhausted."""
+    if isinstance(exc, ProviderHTTPError) and exc.status_code in {429, 500, 502, 503, 504}:
+        detail = str(exc.detail or "").lower()
+        if "video_queue_full" in detail or "视频队列已满" in detail:
+            return RuntimeError(
+                "供应商视频队列已满，本次未创建任务、未进入生成；"
+                "请等待 30–60 秒后重试，不要连续提交。"
+            )
+    return exc
+
+
 def _submit_json(
     method: str,
     url: str,
@@ -329,11 +341,14 @@ def _submit_json(
     on_task_update: TaskEventCallback | None = None,
     retry_window: int = SUBMIT_RETRY_WINDOW_SECONDS,
 ) -> dict[str, Any]:
-    return _submit_with_retry(
-        lambda: _request_json(method, url, key, body, timeout=timeout),
-        on_task_update=on_task_update,
-        retry_window=retry_window,
-    )
+    try:
+        return _submit_with_retry(
+            lambda: _request_json(method, url, key, body, timeout=timeout),
+            on_task_update=on_task_update,
+            retry_window=retry_window,
+        )
+    except Exception as exc:
+        raise _provider_submit_error(exc) from exc
 
 
 def _submit_multipart(
@@ -346,11 +361,14 @@ def _submit_multipart(
     on_task_update: TaskEventCallback | None = None,
     retry_window: int = SUBMIT_RETRY_WINDOW_SECONDS,
 ) -> dict[str, Any]:
-    return _submit_with_retry(
-        lambda: _request_multipart(method, url, key, fields, timeout=timeout),
-        on_task_update=on_task_update,
-        retry_window=retry_window,
-    )
+    try:
+        return _submit_with_retry(
+            lambda: _request_multipart(method, url, key, fields, timeout=timeout),
+            on_task_update=on_task_update,
+            retry_window=retry_window,
+        )
+    except Exception as exc:
+        raise _provider_submit_error(exc) from exc
 
 
 MEDIA_DOWNLOAD_TIMEOUT_SECONDS = 300

@@ -505,6 +505,9 @@ export function friendlyMediaError(raw?: string): string {
   if (lower.includes('http 429') || lower.includes('rate limit') || lower.includes('too many') || text.includes('过于频繁')) {
     return '供应商限流。请等待 30–60 秒后再试，不要连续重复提交。';
   }
+  if (lower.includes('video_queue_full') || text.includes('视频队列已满') || lower.includes('queue_full')) {
+    return '供应商视频队列已满，本次未创建任务。请等待 30–60 秒后再试。';
+  }
   if (lower.includes('model_not_found') || lower.includes('no available channel') || text.includes('无可用通道')) {
     return '供应商没有该模型的可用通道，请检查模型是否启用或分组路由是否正确。';
   }

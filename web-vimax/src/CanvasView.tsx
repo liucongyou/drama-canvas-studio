@@ -1483,6 +1483,9 @@ function friendlyTaskError(raw?: string): string {
   if (lower.includes('http 429') || lower.includes('rate limit') || lower.includes('too many') || text.includes('过于频繁')) {
     return '供应商限流。请等待 30–60 秒，系统会优先复用已有任务，不要连续重复提交。';
   }
+  if (lower.includes('video_queue_full') || text.includes('视频队列已满') || lower.includes('queue_full')) {
+    return `供应商视频队列已满，本次未创建任务。请等待 30–60 秒后再试。${text ? `详情：${text.slice(0, 180)}` : ''}`;
+  }
   if (lower.includes('overdue') || lower.includes('insufficient') || lower.includes('balance') || lower.includes('quota') || text.includes('余额') || text.includes('欠费') || text.includes('额度')) {
     return '供应商账户余额或额度不足。请先充值或更换供应商，再重新生成。';
   }

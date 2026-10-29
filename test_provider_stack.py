@@ -209,6 +209,27 @@ class ProviderCatalogTests(unittest.TestCase):
     def test_provider_submit_timeout_is_short_enough_for_interactive_retry(self):
         self.assertLessEqual(provider_client.SUBMIT_TIMEOUT_SECONDS, 60)
 
+    def test_exhausted_video_queue_is_reported_as_not_created(self):
+        with (
+            patch.object(
+                provider_client,
+                "_request_json",
+                side_effect=provider_client.ProviderHTTPError(
+                    503,
+                    '{"code":"video_queue_full","message":"视频队列已满，请稍后重试"}',
+                ),
+            ),
+            patch.object(provider_client.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "本次未创建任务"):
+                provider_client._submit_json(
+                    "POST",
+                    "https://provider.example/videos",
+                    "test-key",
+                    {"model": "m"},
+                    retry_window=0,
+                )
+
     def test_sync_image_media_uses_long_response_timeout(self):
         self.assertGreaterEqual(provider_client.SYNC_MEDIA_TIMEOUT_SECONDS, 600)
 
