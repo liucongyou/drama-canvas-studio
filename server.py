@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from email.utils import formatdate
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 from urllib.parse import urlparse, unquote
 
 import canvas_store as store
@@ -100,6 +101,41 @@ CANVAS_SESSION_COOKIE = os.environ.get("CANVAS_SESSION_COOKIE", "canvas_session"
 CANVAS_SESSION_TTL = max(
     300, int(os.environ.get("CANVAS_SESSION_TTL_SECONDS", str(30 * 24 * 3600)))
 )
+MAX_JSON_BODY_BYTES = max(
+    1024 * 1024,
+    int(os.environ.get("CANVAS_MAX_JSON_BODY_BYTES", str(8 * 1024 * 1024))),
+)
+MAX_JSON_DEPTH = max(
+    8,
+    int(os.environ.get("CANVAS_MAX_JSON_DEPTH", "64")),
+)
+
+
+class RequestBoundaryError(ValueError):
+    def __init__(self, status: int, message: str, code: str):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
+def _json_depth(value: Any, depth: int = 0) -> int:
+    if depth > MAX_JSON_DEPTH:
+        return depth
+    if isinstance(value, dict):
+        maximum = depth
+        for item in value.values():
+            maximum = max(maximum, _json_depth(item, depth + 1))
+            if maximum > MAX_JSON_DEPTH:
+                break
+        return maximum
+    if isinstance(value, list):
+        maximum = depth
+        for item in value:
+            maximum = max(maximum, _json_depth(item, depth + 1))
+            if maximum > MAX_JSON_DEPTH:
+                break
+        return maximum
+    return depth
 
 
 def _upload_dir():
@@ -1644,21 +1680,62 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _read_json(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_length = str(self.headers.get("Content-Length") or "0").strip()
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise RequestBoundaryError(
+                400,
+                "Content-Length 非法",
+                "INVALID_CONTENT_LENGTH",
+            ) from exc
+        if length < 0:
+            raise RequestBoundaryError(
+                400,
+                "Content-Length 不能为负数",
+                "INVALID_CONTENT_LENGTH",
+            )
         if length <= 0:
             return {}
+        if length > MAX_JSON_BODY_BYTES:
+            raise RequestBoundaryError(
+                413,
+                f"JSON 请求超过 {MAX_JSON_BODY_BYTES // (1024 * 1024)}MB 上限",
+                "JSON_BODY_TOO_LARGE",
+            )
         raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise RequestBoundaryError(
+                400,
+                "请求体读取不完整",
+                "JSON_BODY_TRUNCATED",
+            )
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             try:
                 text = raw.decode("gbk")
             except UnicodeDecodeError:
-                return {"_error": "body 编码无法解析"}
+                raise RequestBoundaryError(
+                    400,
+                    "请求体编码无法解析",
+                    "JSON_BODY_ENCODING_INVALID",
+                )
         try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return {"_raw": text}
+            value = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RequestBoundaryError(
+                400,
+                f"JSON 格式错误：{exc.msg}",
+                "JSON_PARSE_ERROR",
+            ) from exc
+        if _json_depth(value) > MAX_JSON_DEPTH:
+            raise RequestBoundaryError(
+                400,
+                f"JSON 嵌套超过 {MAX_JSON_DEPTH} 层",
+                "JSON_DEPTH_EXCEEDED",
+            )
+        return value
 
     def _send_upload_file(self, fpath: str, name: str):
         """Serve tenant media with session auth, CORS and single-range support."""
@@ -2538,8 +2615,15 @@ class Handler(BaseHTTPRequestHandler):
         scope = self._request_tenant_scope()
         if scope is None:
             return
-        with scope:
-            return self._do_post()
+        try:
+            with scope:
+                return self._do_post()
+        except RequestBoundaryError as exc:
+            self.close_connection = True
+            return self._send(exc.status, {
+                "error": str(exc),
+                "code": exc.code,
+            })
 
     def _do_post(self):
         parsed = urlparse(self.path)
@@ -2935,8 +3019,15 @@ class Handler(BaseHTTPRequestHandler):
         scope = self._request_tenant_scope()
         if scope is None:
             return
-        with scope:
-            return self._do_put()
+        try:
+            with scope:
+                return self._do_put()
+        except RequestBoundaryError as exc:
+            self.close_connection = True
+            return self._send(exc.status, {
+                "error": str(exc),
+                "code": exc.code,
+            })
 
     def _do_put(self):
         with PROJECT_WRITE_LOCK:

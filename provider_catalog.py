@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+import network_security
 import tenant_context
 import tenant_security
 
@@ -1074,7 +1075,7 @@ def _request_status(url: str, key: str, method: str = "GET", body: dict[str, Any
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with network_security.safe_urlopen(request, timeout=15) as response:
             return response.status, response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", errors="replace")

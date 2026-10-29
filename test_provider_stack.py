@@ -83,6 +83,18 @@ class ProviderCatalogTests(unittest.TestCase):
                     "remoteModel": "wrong-model",
                 })
 
+    def test_provider_request_rejects_private_dns_targets(self):
+        private_result = [(2, 1, 6, "", ("127.0.0.1", 80))]
+        with patch(
+            "network_security.socket.getaddrinfo",
+            return_value=private_result,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "内网|保留"):
+                provider_catalog._request_status(
+                    "http://localhost:8890/models",
+                    "audit-key",
+                )
+
     def test_model_reference_limits_are_normalized(self):
         limits = provider_catalog._normalize_model_limits({
             "maxRefs": "8",

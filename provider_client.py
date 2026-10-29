@@ -26,6 +26,7 @@ import wave
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+import network_security
 import provider_catalog
 import tenant_context
 import tos_storage
@@ -113,7 +114,7 @@ def _request_json(
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with network_security.safe_urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8", errors="replace")
             return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as exc:
@@ -126,7 +127,7 @@ def _request_json(
 def _download_bytes(url: str, timeout: int = 120) -> tuple[bytes, str]:
     request = urllib.request.Request(url, headers={"User-Agent": "drama-canvas-studio/1.0"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with network_security.safe_urlopen(request, timeout=timeout) as response:
             data = response.read()
             content_type = response.headers.get("Content-Type", "").split(";")[0].strip()
             return data, content_type

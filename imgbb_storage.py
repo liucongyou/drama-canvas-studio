@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+import network_security
 import provider_catalog
 
 
@@ -61,7 +62,7 @@ def upload_bytes(data: bytes, *, mime: str = "image/png", name: str = "", source
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:
+        with network_security.safe_urlopen(request, timeout=90) as response:
             payload = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:800]

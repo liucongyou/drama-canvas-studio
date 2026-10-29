@@ -43,7 +43,7 @@ class ImgbbStorageTests(unittest.TestCase):
         })
         with (
             mock.patch.object(imgbb_storage.provider_catalog, "storage_config", return_value=config),
-            mock.patch.object(imgbb_storage.urllib.request, "urlopen", return_value=response) as urlopen,
+            mock.patch.object(imgbb_storage.network_security, "safe_urlopen", return_value=response) as urlopen,
         ):
             result = imgbb_storage.upload_bytes(
                 b"\x89PNG\r\n\x1a\npayload",
