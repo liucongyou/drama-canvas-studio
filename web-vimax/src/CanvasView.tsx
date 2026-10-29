@@ -9909,6 +9909,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // 出现"拖到一半跳一下"。拖动结束后再补一次同步。
   const draggingRef = useRef(false);
   const dragPointerIdRef = useRef<number | null>(null);
+  const pointerSurfaceRef = useRef<HTMLDivElement | null>(null);
   const pendingFlowSyncRef = useRef(false);
   const [flowSyncTick, setFlowSyncTick] = useState(0);
   useEffect(() => {
@@ -10643,6 +10644,16 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const onNodeDragStart = useCallback((event: MouseEvent | TouchEvent, node: FlowNode) => {
     setDraggingNode(true);
     draggingRef.current = true;
+    // Only capture after the browser has committed to a real drag. Capturing on
+    // pointerdown swallowed normal clicks and prevented the prompt editor from
+    // opening.
+    if (dragPointerIdRef.current !== null && pointerSurfaceRef.current) {
+      try {
+        pointerSurfaceRef.current.setPointerCapture(dragPointerIdRef.current);
+      } catch {
+        // Pointer capture is a release-safety enhancement, not a drag prerequisite.
+      }
+    }
     // 新一轮拖动：清掉上一轮残留的实时位置
     livePosRef.current.clear();
     // 新一轮拖拽：重置磁吸状态与吸附坐标，避免上一轮的锁定/偏移残留
@@ -10801,13 +10812,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement | null;
     if (!target?.closest('.react-flow__node')) return;
-    const surface = event.currentTarget;
-    try {
-      surface.setPointerCapture(event.pointerId);
-      dragPointerIdRef.current = event.pointerId;
-    } catch {
-      dragPointerIdRef.current = null;
-    }
+    pointerSurfaceRef.current = event.currentTarget;
+    dragPointerIdRef.current = event.pointerId;
   }, []);
 
   const onCanvasPointerRelease = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
