@@ -123,6 +123,7 @@ import {
 } from './api';
 import {useDialogFocusTrap} from './useDialogFocusTrap';
 import {dialog} from './GDialog';
+import {reconcileSucceededNode} from './generationReconcile';
 import {
   evaluateBatchGeneration,
   evaluateReferenceLimits,
@@ -7877,6 +7878,50 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       return changed ? next : prev;
     });
   }, [generationTasks, generationBusyIds]);
+
+  /**
+   * A succeeded generation task is authoritative, even when an earlier
+   * provider attempt had already flipped the node to "failed". The task center
+   * is the source of truth for media generation, so reconcile the final media
+   * URL back into the local node instead of leaving a stale failure card.
+   */
+  const reconciledSuccessTasksRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const succeededTasks = generationTasks.filter(
+      (task) => task.status === 'succeeded' && !reconciledSuccessTasksRef.current.has(task.id),
+    );
+    if (succeededTasks.length === 0) return;
+    let alive = true;
+    void getCanvasMediaNodes(session, currentEp)
+      .then((remoteNodes) => {
+        if (!alive) return;
+        const remoteById = new Map(remoteNodes.map((node) => [node.id, node]));
+        setMediaNodes((prev) => {
+          let changed = false;
+          const next = prev.map((node) => {
+            const task = succeededTasks.find((item) => item.node_id === node.id);
+            if (!task) return node;
+            const remote = remoteById.get(node.id);
+            if (!remote) return node;
+            const reconciled = reconcileSucceededNode(node, task, remote);
+            if (!reconciled) return node;
+            changed = true;
+            return reconciled as CanvasMediaNode;
+          });
+          return changed ? next : prev;
+        });
+        for (const task of succeededTasks) reconciledSuccessTasksRef.current.add(task.id);
+        void getCanvas(session, currentEp)
+          .then((refreshed) => { if (alive && !('empty' in refreshed)) setCanvas(refreshed); })
+          .catch(() => {});
+      })
+      .catch(() => {
+        // Keep the task unmarked so the next poll retries the reconciliation.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [generationTasks, session, currentEp]);
   const mediaSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaBatchSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaBatchSaveInFlightRef = useRef<Promise<void> | null>(null);

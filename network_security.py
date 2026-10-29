@@ -27,20 +27,36 @@ class ResolvedTarget:
 
 
 class SafeHTTPResponse:
-    def __init__(self, response, connection):
+    def __init__(self, response, connection, timeout: float = 60):
         self._response = response
         self._connection = connection
+        self._timeout = max(1.0, float(timeout or 60))
         self.status = response.status
         self.reason = response.reason
         self.headers = response.headers
+        self._closed = False
 
     def read(self, amount: int = -1):
+        # http.client keeps the socket timeout that was set at connect time. Any
+        # global/default short timeout would cut a long provider response early
+        # and surface as "The read operation timed out", which looks like a
+        # provider failure even though the provider already produced the result.
+        # Re-apply the caller's intended timeout before every read attempt.
+        try:
+            sock = self._connection.sock
+            if sock is not None:
+                sock.settimeout(self._timeout)
+        except Exception:
+            pass
         return self._response.read(amount)
 
     def getheader(self, name: str, default=None):
         return self._response.getheader(name, default)
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         try:
             self._response.close()
         finally:
@@ -220,7 +236,7 @@ def safe_urlopen(
                     response.headers,
                     io.BytesIO(body),
                 )
-            return SafeHTTPResponse(response, connection)
+            return SafeHTTPResponse(response, connection, timeout=timeout)
         response.read()
         connection.close()
         redirects += 1

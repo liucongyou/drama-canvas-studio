@@ -252,7 +252,10 @@ def _submit_multipart(
     )
 
 
-def _download_bytes(url: str, timeout: int = 120) -> tuple[bytes, str]:
+MEDIA_DOWNLOAD_TIMEOUT_SECONDS = 300
+
+
+def _download_bytes(url: str, timeout: int = MEDIA_DOWNLOAD_TIMEOUT_SECONDS) -> tuple[bytes, str]:
     request = urllib.request.Request(url, headers={"User-Agent": "drama-canvas-studio/1.0"})
     try:
         with network_security.safe_urlopen(request, timeout=timeout) as response:
@@ -266,7 +269,11 @@ def _download_bytes(url: str, timeout: int = 120) -> tuple[bytes, str]:
         raise RuntimeError(f"下载生成结果失败：{exc.reason}") from exc
 
 
-def _download_bytes_with_key(url: str, key: str, timeout: int = 120) -> tuple[bytes, str]:
+def _download_bytes_with_key(
+    url: str,
+    key: str,
+    timeout: int = MEDIA_DOWNLOAD_TIMEOUT_SECONDS,
+) -> tuple[bytes, str]:
     request = urllib.request.Request(
         url,
         headers={
