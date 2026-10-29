@@ -7,10 +7,21 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.5';
+export const APP_VERSION = '2026.10.29.6';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.6',
+    date: '2026-10-29',
+    title: '中转供应商视频与图片模型识别',
+    changes: [
+      '新增 OpenAI 兼容中转站的视频协议支持，模型生成改走 /v1/videos 异步任务。',
+      '修复大型模型列表读取超时、截断或解析失败的问题，拉取时采用有界读取并保留完整模型记录。',
+      '修正 gpt-image、seedream 等图片模型被误识别为文本模型的问题。',
+      '供应商连接测试改为有限读取，接口可达但目录较大时不再误报超时。',
+    ],
+  },
   {
     version: '2026.10.29.5',
     date: '2026-10-29',
