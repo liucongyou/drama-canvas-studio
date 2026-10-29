@@ -2413,8 +2413,9 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
 
   const nodeW = Math.max(size.width + cardBoxExtra, 170);
   // 即梦风卡片：标题在上、图在中间、状态/参数信息条在下（⋯ 菜单收拢编辑/重生成/删除）
+  const selectedStorage = mediaVersions[currentMediaVersionIndex]?.storage || node.storage;
   const storageMeta = node.kind === 'image' || node.kind === 'video'
-    ? node.storage?.status === 'stored'
+    ? selectedStorage?.status === 'stored'
       ? ' · TOS原始'
       : node.storageError
         ? ' · TOS待转存'

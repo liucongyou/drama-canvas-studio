@@ -200,6 +200,7 @@ export type CanvasVideoVersion = {
   sha256?: string;
   width?: number;
   height?: number;
+  storage?: CanvasMediaNode['storage'];
 };
 
 // 生成参数（详细属性面板：模型/尺寸/清晰度/比例/推理强度/引用/音色）
@@ -451,6 +452,7 @@ export type CanvasMediaNode = {
     storedAt?: string;
     originalBytes?: boolean;
     error?: string;
+    url?: string;
   };
   storageError?: string;
   source?: {
