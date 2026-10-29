@@ -79,6 +79,10 @@ class ProviderHTTPError(RuntimeError):
 class ProviderOutcomeUncertain(RuntimeError):
     """The paid request may have been accepted, but no usable response arrived."""
 
+    def __init__(self, message: str, *, submitted_at: str = ""):
+        super().__init__(message)
+        self.submitted_at = submitted_at
+
 
 _GUIDANCE_WORDS = {
     "轻度": "\nlight detail, keep loose and natural",
@@ -1032,8 +1036,11 @@ def _newapi_image(
         if len(text) > 5000:
             raise RuntimeError("即梦图片提示词最多 5000 字符")
         resolution = str(params.get("clarity") or params.get("resolution") or "").strip().upper()
-        if resolution not in {"1K", "2K", "4K"}:
-            resolution = "2K"
+        if resolution not in {"1K", "2K"}:
+            raise RuntimeError(
+                f"即梦图片清晰度只支持 1K/2K，收到 {resolution or '<empty>'}；"
+                "请重新选择模型参数后再提交"
+            )
         aspect_ratio = ratio or "1:1"
         body = {
             "model": remote_model,
@@ -1053,9 +1060,24 @@ def _newapi_image(
         else:
             action = "generations"
         _apply_declared_params(body, model, params)
-        response = _request_json(
-            "POST", f"{base}{route}/{action}", key, body, timeout=360,
-        )
+        submitted_at = datetime.now(timezone.utc).isoformat()
+        try:
+            # New API relay docs require exactly one submit for this route.
+            # We do not auto-repeat 5xx here; an unknown outcome must be
+            # reconciled by request time/accounting, not another paid call.
+            response = _request_json(
+                "POST", f"{base}{route}/{action}", key, body, timeout=360,
+            )
+        except ProviderHTTPError as exc:
+            if exc.status_code in {500, 502, 503, 504}:
+                raise ProviderOutcomeUncertain(
+                    f"供应商请求已发出，但异步图片任务没有返回任务号；"
+                    f"HTTP {exc.status_code}：{str(exc.detail or '')[:500]}。"
+                    f"提交时间 {submitted_at}。"
+                    "请先到供应商账单/任务记录核对，确认前不要重复提交。",
+                    submitted_at=submitted_at,
+                ) from exc
+            raise
     else:
         raise RuntimeError(f"New API 图片线路未实现：{route}")
 

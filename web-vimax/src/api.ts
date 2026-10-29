@@ -428,6 +428,7 @@ export type CanvasMediaNode = {
   providerTaskStatus?: string;
   providerTaskPhase?: string;
   providerTaskProgress?: number;
+  providerSubmittedAt?: string;
   // 供应商已出结果、本机还没落盘归档：此时卡片已可显示，但任务行仍是 running
   finalizePending?: boolean;
   episodeId?: string;
@@ -493,6 +494,9 @@ export function friendlyMediaError(raw?: string): string {
   const text = String(raw || '').trim();
   const lower = text.toLowerCase();
   if (!text) return '';
+  if (lower.includes('没有返回任务号') && lower.includes('server_error')) {
+    return 'New API 中转未返回任务号，提交结果未知。请先核对供应商账单/任务记录，确认前不要重复提交。';
+  }
   if (lower.includes('read operation timed out') || lower.includes('write operation timed out') || lower.includes('timed out')) {
     return '供应商响应较慢，后台仍在继续处理。请到任务中心查看最终结果；不要连续重复提交，以免重复付费。';
   }
@@ -1151,6 +1155,7 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
     providerTaskStatus: typeof m.providerTaskStatus === 'string' ? m.providerTaskStatus : undefined,
     providerTaskPhase: typeof m.providerTaskPhase === 'string' ? m.providerTaskPhase : undefined,
     providerTaskProgress: Number.isFinite(Number(m.providerTaskProgress)) ? Number(m.providerTaskProgress) : undefined,
+    providerSubmittedAt: typeof m.providerSubmittedAt === 'string' ? m.providerSubmittedAt : undefined,
     finalizePending: m.finalizePending === true,
     episodeId: typeof m.episodeId === 'string' ? m.episodeId : undefined,
     actualDuration: Number.isFinite(Number(m.actualDuration)) ? Number(m.actualDuration) : undefined,

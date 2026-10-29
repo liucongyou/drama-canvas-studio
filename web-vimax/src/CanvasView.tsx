@@ -134,6 +134,7 @@ import {
   inheritModelParams,
   migrateUnavailableModelParams,
 } from './modelParamInheritance';
+import {validateModelParams} from './modelParamContract';
 import {
   evaluateBatchGeneration,
   evaluateReferenceLimits,
@@ -1482,6 +1483,9 @@ function friendlyTaskError(raw?: string): string {
   const text = String(raw || '').trim();
   const lower = text.toLowerCase();
   if (!text) return '';
+  if (lower.includes('没有返回任务号') && lower.includes('server_error')) {
+    return `New API 中转未返回任务号，提交结果未知。请先核对供应商账单/任务记录，确认前不要重复提交。${text ? `详情：${text.slice(0, 220)}` : ''}`;
+  }
   if (lower.includes('http 429') || lower.includes('rate limit') || lower.includes('too many') || text.includes('过于频繁')) {
     return '供应商限流。请等待 30–60 秒，系统会优先复用已有任务，不要连续重复提交。';
   }
@@ -3574,6 +3578,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     0,
   );
   const selectedUnknownCost = selectedPrepareTargets.some((item) => item.cost === null);
+  const modelParamIssues = validateModelParams(p, curModelSpec);
   const nodeNotices: string[] = [];
   if (catalog && modelOptions.length === 0) nodeNotices.push('当前类型没有可用模型，请到「模型接口」中启用或添加模型');
   if (missingProviderKey) nodeNotices.push(`供应商「${activeProvider?.name || curModelSpec?.providerId}」尚未配置 API Key`);
@@ -3584,6 +3589,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     nodeNotices.push(`还有 ${dependencyBlockers.length} 项引用未就绪：${names}${dependencyBlockers.length > 4 ? '…' : ''}`);
   }
   if (node.promptStale) nodeNotices.push(node.promptStaleReason || '源提示词已更新，当前素材仍是旧版本');
+  if (modelParamIssues.length) nodeNotices.push(modelParamIssues[0].message);
   if (node.status === 'failed' && node.lastError) nodeNotices.push(friendlyTaskError(node.lastError));
   const schema = curModelSpec?.params || {};
   const builtInParamKeys = new Set<string>(isTxt
@@ -4556,9 +4562,9 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
           <button
             type="button"
             className="jim-gen"
-            disabled={busy || !node.prompt.trim() || overPromptLimit || Boolean(referenceEvaluation.issue) || !curModelSpec || missingProviderKey || dependenciesBlocked}
+            disabled={busy || !node.prompt.trim() || overPromptLimit || Boolean(referenceEvaluation.issue) || !curModelSpec || missingProviderKey || dependenciesBlocked || modelParamIssues.length > 0}
             onClick={generateAndClose}
-            title={busy ? '当前节点正在生成，请到任务中心查看进度' : !curModelSpec ? '当前类型没有可用模型' : missingProviderKey ? '当前供应商尚未配置 API Key' : overPromptLimit ? `提示词超过当前模型上限（${promptLimit} 字符）` : referenceEvaluation.issue ? referenceEvaluation.message : dependenciesBlocked ? `缺少：${dependencyBlockers.map((item) => `${item.title}（${item.reason}）`).join('；')}` : isTxt ? '按当前内容生成/改写文本 · Ctrl+⏎' : '按当前供应商与参数生成 · Ctrl+⏎'}
+            title={busy ? '当前节点正在生成，请到任务中心查看进度' : !curModelSpec ? '当前类型没有可用模型' : missingProviderKey ? '当前供应商尚未配置 API Key' : overPromptLimit ? `提示词超过当前模型上限（${promptLimit} 字符）` : referenceEvaluation.issue ? referenceEvaluation.message : modelParamIssues.length ? modelParamIssues[0].message : dependenciesBlocked ? `缺少：${dependencyBlockers.map((item) => `${item.title}（${item.reason}）`).join('；')}` : isTxt ? '按当前内容生成/改写文本 · Ctrl+⏎' : '按当前供应商与参数生成 · Ctrl+⏎'}
           ><ArrowUp size={16} strokeWidth={2.6} aria-hidden="true" /></button>
           </div>
         </div>
@@ -15086,13 +15092,18 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                       || /参考素材未就绪|参考素材缺失|引用节点不存在|提示词为空|当前模型最多/.test(
                       String(task.error || ''),
                       );
+                    const outcomeUncertain = task.status === 'interrupted'
+                      && (
+                        task.phase === '结果待确认'
+                        || /没有返回任务号/.test(String(task.error || ''))
+                      );
                     const statusLabel: Record<GenerationTask['status'], string> = {
                       queued: '排队中',
                       submitting: '提交中',
                       running: '生成中',
                       succeeded: '已完成',
                       failed: localBlocked ? '待补素材' : '失败',
-                      interrupted: '已中断',
+                      interrupted: outcomeUncertain ? '结果待确认' : '已中断',
                     };
                     return (
                       <article key={task.id} className={`canvas-task-item is-${task.status}`}>

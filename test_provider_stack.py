@@ -96,6 +96,48 @@ class ProviderCatalogTests(unittest.TestCase):
             )],
         )
 
+    def test_aistars_image_503_without_task_id_is_uncertain_and_not_retried(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "65-seedream-5-pro",
+            "remoteModel": "即梦-65-seedream-5-pro",
+            "adapter": "newapi_image",
+            "params": {},
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            raise provider_client.ProviderHTTPError(
+                503,
+                '{"error":{"code":"server_error","message":"Task request failed"}}',
+            )
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request):
+            with self.assertRaisesRegex(
+                provider_client.ProviderOutcomeUncertain,
+                "没有返回任务号",
+            ):
+                provider_client.generate_image(
+                    provider,
+                    model,
+                    "test",
+                    {"ratio": "9:16", "clarity": "2K"},
+                    [],
+                )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "POST")
+        self.assertEqual(
+            calls[0][1],
+            "https://api.canvasproai.com/aistars/v1/images/generations",
+        )
+
     def test_newapi_video_adapter_dispatches_aistars_model_protocol(self):
         provider = {
             "id": "new-apl",
@@ -378,6 +420,41 @@ class ProviderCatalogTests(unittest.TestCase):
             })
         model = next(item for item in catalog["models"] if item["id"] == "relay-image")
         self.assertEqual(model["adapter"], "newapi_image")
+
+    def test_newapi_aistars_image_save_migrates_video_style_resolution(self):
+        cfg = {
+            "providers": [{"id": "new-apl", "name": "New APl", "api_key": "x"}],
+            "models": [],
+        }
+        with patch.object(provider_catalog, "load_config", return_value=cfg), \
+                patch.object(provider_catalog, "save_config") as save:
+            catalog = provider_catalog.upsert_model({
+                "id": "65-seedream-5-pro",
+                "providerId": "new-apl",
+                "capability": "image",
+                "adapter": "newapi_image",
+                "remoteModel": "即梦-65-seedream-5-pro",
+                "defaultParams": {
+                    "ratio": "9:16",
+                    "resolution": "480P",
+                    "duration": 5,
+                    "watermark": False,
+                },
+                "params": {
+                    "ratio": {"type": "select", "options": ["1:1", "16:9", "9:16"]},
+                    "resolution": {"type": "select", "options": ["480P", "720P", "1080P"]},
+                    "duration": {"type": "range", "min": 1, "max": 30},
+                },
+            })
+
+        model = next(item for item in catalog["models"] if item["id"] == "65-seedream-5-pro")
+        self.assertEqual(model["defaultParams"]["ratio"], "9:16")
+        self.assertEqual(model["defaultParams"]["clarity"], "2K")
+        self.assertNotIn("resolution", model["defaultParams"])
+        self.assertNotIn("duration", model["defaultParams"])
+        self.assertEqual(model["params"]["clarity"]["options"], ["1K", "2K"])
+        self.assertNotIn("resolution", model["params"])
+        save.assert_called_once()
 
     def test_relay_video_uses_videos_endpoint(self):
         requests = []

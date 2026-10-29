@@ -1098,6 +1098,7 @@ GENERATION_OWNED_METADATA_FIELDS = {
     "providerTaskStatus",
     "providerTaskPhase",
     "providerTaskProgress",
+    "providerSubmittedAt",
     "generatedAt",
     "production",
     "videoValidation",
@@ -4654,19 +4655,21 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return None
             if isinstance(exc, provider_client.ProviderOutcomeUncertain):
+                submitted_at = str(getattr(exc, "submitted_at", "") or "")
                 if task_id:
                     store.update_generation_task(
                         task_id,
                         status="interrupted",
                         phase="结果待确认",
                         error=str(exc),
-                        finished_at=store._now_iso(),
+                        finished_at="",
                     )
                 commit_node_metadata(pid, node["id"], {
                     "status": "failed",
                     "lastError": str(exc),
                     "providerTaskStatus": "uncertain",
                     "providerTaskPhase": "结果待确认",
+                    "providerSubmittedAt": submitted_at,
                 })
                 return self._send(202, {
                     "accepted": True,
@@ -4675,6 +4678,7 @@ class Handler(BaseHTTPRequestHandler):
                     "status": "pending",
                     "code": "PROVIDER_OUTCOME_UNCERTAIN",
                     "error": str(exc),
+                    "providerSubmittedAt": submitted_at,
                 })
             if task_id:
                 store.update_generation_task(

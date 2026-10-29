@@ -710,6 +710,28 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
             model["params"]["clarity"]["options"] = ["1.5K", "2K", "4K"]
             if model["defaultParams"].get("clarity") == "1K":
                 model["defaultParams"]["clarity"] = "1.5K"
+        if str(model.get("remoteModel") or "").startswith("即梦-") and model.get("capability") == "image":
+            # New API relay's aistars image route documents
+            # aspect_ratio + resolution=1K|2K|4K. This is not Volcengine Ark.
+            model["defaultParams"].pop("duration", None)
+            model["defaultParams"].pop("watermark", None)
+            model["defaultParams"]["ratio"] = str(model["defaultParams"].get("ratio") or "1:1")
+            clarity = str(
+                model["defaultParams"].get("clarity")
+                or model["defaultParams"].get("resolution")
+                or "2K"
+            ).upper()
+            model["defaultParams"]["clarity"] = clarity if clarity in {"1K", "2K", "4K"} else "2K"
+            model["defaultParams"].pop("resolution", None)
+            params = model.setdefault("params", {})
+            params["ratio"] = {
+                "type": "select",
+                "options": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+            }
+            params["clarity"] = {"type": "select", "options": ["1K", "2K"]}
+            params.pop("resolution", None)
+            params.pop("duration", None)
+            params.pop("watermark", None)
     provider_by_id = {
         p.get("id"): p for p in providers if isinstance(p, dict) and p.get("id")
     }
@@ -1216,13 +1238,34 @@ def upsert_model(input_data: dict[str, Any]) -> dict[str, Any]:
     limits = source.get("limits")
     pricing = source.get("pricing")
     if isinstance(defaults, dict):
-        current["defaultParams"] = defaults
+        current["defaultParams"] = copy.deepcopy(defaults)
     elif "defaultParams" not in current:
         current["defaultParams"] = {}
     if isinstance(schema, dict):
-        current["params"] = schema
+        current["params"] = copy.deepcopy(schema)
     elif "params" not in current:
         current["params"] = {}
+    if remote_model.startswith("即梦-") and capability == "image":
+        normalized_defaults = current["defaultParams"]
+        normalized_schema = current["params"]
+        clarity = str(
+            normalized_defaults.get("clarity")
+            or normalized_defaults.get("resolution")
+            or "2K"
+        ).upper()
+        normalized_defaults["clarity"] = clarity if clarity in {"1K", "2K", "4K"} else "2K"
+        for key in ("resolution", "duration", "watermark"):
+            normalized_defaults.pop(key, None)
+        normalized_schema["ratio"] = {
+            "type": "select",
+            "options": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+        }
+        normalized_schema["clarity"] = {
+            "type": "select",
+            "options": ["1K", "2K"],
+        }
+        for key in ("resolution", "duration", "watermark"):
+            normalized_schema.pop(key, None)
     if isinstance(limits, dict):
         current["limits"] = _normalize_model_limits(limits)
     elif "limits" not in current:

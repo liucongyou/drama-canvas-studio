@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.30.4';
+export const APP_VERSION = '2026.10.30.5';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.30.5',
+    date: '2026-10-30',
+    title: 'New API 中转图片任务收口',
+    changes: [
+      '即梦图片模型按 New API 中转接口合同使用 aspect_ratio 与 1K/2K 分辨率，不再把视频清晰度参数带入图片请求。',
+      'New API 图片提交严格只发送一次；5xx 且没有返回任务号时标记“结果待确认”，不再自动重提造成重复扣费风险。',
+      '结果待确认时显示提交时间和原始错误，便于核对供应商账单与任务记录。',
+    ],
+  },
   {
     version: '2026.10.30.4',
     date: '2026-10-30',
