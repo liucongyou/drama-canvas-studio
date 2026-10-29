@@ -1706,8 +1706,12 @@ def reconcile_generation_task_records():
         node = nodes.get((task.get("project_id"), task.get("node_id")))
         meta = (node or {}).get("metadata") or {}
         node_status = str(meta.get("status") or "")
+        inflight_key = (str(task.get("project_id") or ""), str(task.get("node_id") or ""))
+        with GENERATION_INFLIGHT_LOCK:
+            worker_alive = inflight_key in GENERATION_INFLIGHT
         if (
             node_status == "generating"
+            and not worker_alive
             and not str(task.get("provider_task_id") or "").strip()
             and str(task.get("phase") or "") in {"准备提交", "提交供应商"}
             # Async video tasks must acquire a provider task id. Synchronous
