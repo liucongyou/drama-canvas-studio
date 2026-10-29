@@ -1746,12 +1746,12 @@ async function pollProjectOnce(sessionId: string) {
   } catch {
     return;
   }
-  const generating = (proj.nodes || []).find(n => {
-    const t = (n.title || '');
-    // 文本节点也走同一生成管线，避免文本卡永久停在 generating。
-    return (n.type === 'image' || n.type === 'video' || n.type === 'audio' || n.type === 'text')
-      && n.metadata?.status === 'generating'
-      && !(t.startsWith('音频') && n.metadata?.status !== 'generating');
+  const generating = (proj.nodes || []).find((node) => {
+    // Media nodes are submitted exactly once by generateCanvasNodeNow. The
+    // old recovery poller only sees a persisted "generating" flag and cannot
+    // know whether another tab owns the request, so letting it POST here
+    // produces duplicate paid submissions and misleading "准备提交" states.
+    return node.type === 'text' && node.metadata?.status === 'generating';
   });
   if (generating && generating.metadata?.status === 'generating') {
     const key = `${sessionId}::${generating.id}`;
@@ -1797,8 +1797,8 @@ async function pollProjectOnce(sessionId: string) {
 function startPolling(sessionId: string) {
   pollSessions.add(sessionId);
   ensurePollTimer();
-  // Do not wait a full interval before the first scan; the UI has already
-  // persisted status=generating before calling sendMessage.
+  // Recovery polling observes text jobs only. Media production has one POST
+  // path in generateCanvasNodeNow and reconciles from persisted node/task state.
   void pollProjectOnce(sessionId);
 }
 

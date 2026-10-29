@@ -3743,7 +3743,7 @@ class Handler(BaseHTTPRequestHandler):
                 "generationStartedAt": generation_started_at,
                 "generationFinishedAt": None,
                 "providerTaskStatus": "queued",
-                "providerTaskPhase": "准备提交",
+                "providerTaskPhase": "正在连接供应商",
                 "providerTaskProgress": 0,
                 "_paramsPatch": params,
             }
@@ -4507,7 +4507,7 @@ class Handler(BaseHTTPRequestHandler):
             GENERATION_INFLIGHT.add(key)
         if task_id:
             store.update_generation_task(
-                task_id, status="running", phase="准备提交",
+                task_id, status="running", phase="正在连接供应商",
                 progress=10, error="", finished_at="",
                 started_at=store._now_iso(),
             )
