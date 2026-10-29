@@ -105,6 +105,38 @@ class ProviderDiscoveryTests(unittest.TestCase):
         self.assertEqual(text, '{"data":[]}')
         self.assertEqual(response.read_amounts, [4096])
 
+    def test_discovery_retries_with_bounded_page_query(self):
+        calls = []
+
+        def fake_request(url, key, **kwargs):
+            calls.append((url, kwargs))
+            if url.endswith("/models?limit=100&offset=0"):
+                raise provider_catalog.ProviderRequestTimeoutError("timeout")
+            return 200, '{"data":[{"id":"demo-video"}]}'
+
+        with (
+            tenant_context.use_tenant("alpha", "alpha"),
+            patch.object(provider_catalog, "load_config", return_value=self.config),
+            patch.object(provider_catalog, "_request_status", side_effect=fake_request),
+        ):
+            result = provider_catalog.discover_provider_models("demo")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(
+            [url for url, _ in calls],
+            [
+                "https://api.example.com/v1/models?limit=100&offset=0",
+                "https://api.example.com/v1/models",
+            ],
+        )
+        self.assertTrue(all(kwargs["timeout"] == 30 for _, kwargs in calls))
+
+    def test_endpoint_types_drive_discovered_capability(self):
+        result = self.discover(
+            '{"data":[{"id":"relay-video","supported_endpoint_types":["openai_video"]}]}'
+        )
+        self.assertEqual(result["models"][0]["capability"], "video")
+        self.assertEqual(result["models"][0]["adapter"], "newapi_video")
+
 
 if __name__ == "__main__":
     unittest.main()

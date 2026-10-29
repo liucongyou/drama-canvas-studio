@@ -916,6 +916,7 @@ ADAPTER_CAPABILITIES = {
     "agnes_image": "image",
     "ark_video": "video",
     "agnes_video": "video",
+    "newapi_video": "video",
     "openai_chat": "text",
     "dashscope_tts": "audio",
 }
@@ -1132,6 +1133,7 @@ def _request_status(
     method: str = "GET",
     body: dict[str, Any] | None = None,
     *,
+    timeout: float = 15,
     read_limit: int | None = None,
 ) -> tuple[int, str]:
     data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -1146,7 +1148,7 @@ def _request_status(
         },
     )
     try:
-        with network_security.safe_urlopen(request, timeout=15) as response:
+        with network_security.safe_urlopen(request, timeout=timeout) as response:
             body_bytes = (
                 response.read(read_limit)
                 if read_limit is not None
@@ -1255,19 +1257,60 @@ def _model_ids_from_response(payload: Any) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
+def _model_endpoint_types_from_response(payload: Any) -> dict[str, list[str]]:
+    if isinstance(payload, dict):
+        candidates = (
+            payload.get("data")
+            or payload.get("models")
+            or payload.get("result")
+            or payload.get("items")
+        )
+        raw_items = candidates if isinstance(candidates, list) else []
+    elif isinstance(payload, list):
+        raw_items = payload
+    else:
+        raw_items = []
+    endpoint_types: dict[str, list[str]] = {}
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        if not model_id:
+            continue
+        values = (
+            item.get("supported_endpoint_types")
+            or item.get("supportedEndpointTypes")
+            or item.get("endpoint_types")
+            or []
+        )
+        if isinstance(values, list):
+            endpoint_types[model_id] = [str(value) for value in values if str(value).strip()]
+    return endpoint_types
+
+
 def _infer_discovered_model(
     provider: dict[str, Any],
     remote_model: str,
     index: int,
+    supported_endpoint_types: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a conservative editable draft from a provider /models row."""
     name = remote_model.lower()
+    endpoint_marker = " ".join(
+        str(item).lower() for item in (supported_endpoint_types or [])
+    )
     marker = " ".join([
         name,
         str(provider.get("name") or "").lower(),
         str(provider.get("id") or "").lower(),
+        endpoint_marker,
     ])
-    if any(word in marker for word in (
+    if "openai_video" in endpoint_marker:
+        capability = "video"
+        adapter = "newapi_video"
+    elif any(word in endpoint_marker for word in (
+        "seedance", "suanli-seedance", "video",
+    )) or any(word in marker for word in (
         "seedance", "seedream", "kling", "wan", "video", "veo", "sora",
         "hailuo", "pika", "runway", "minimax", "cogvideo", "luma",
     )):
@@ -1287,12 +1330,13 @@ def _infer_discovered_model(
         capability = "text"
     else:
         capability = "image"
-    adapter = {
-        "video": "ark_video" if provider.get("protocol") == "ark" else "agnes_video",
-        "image": "ark_image" if provider.get("protocol") == "ark" else "openai_image",
-        "audio": "dashscope_tts" if provider.get("protocol") == "dashscope" else "dashscope_tts",
-        "text": "openai_chat",
-    }[capability]
+    if "adapter" not in locals():
+        adapter = {
+            "video": "ark_video" if provider.get("protocol") == "ark" else "agnes_video",
+            "image": "ark_image" if provider.get("protocol") == "ark" else "openai_image",
+            "audio": "dashscope_tts" if provider.get("protocol") == "dashscope" else "dashscope_tts",
+            "text": "openai_chat",
+        }[capability]
     label = remote_model
     model_id = normalize_model_id(remote_model)
     if capability == "video":
@@ -1354,7 +1398,26 @@ def discover_provider_models(provider_id: str) -> dict[str, Any]:
     test_path = str(provider.get("test_path") or "/models").strip()
     if not test_path.startswith("/"):
         test_path = f"/{test_path}"
-    status, text = _request_status(f"{base}{test_path}", key)
+    candidates = []
+    if "?" not in test_path:
+        # Some OpenAI-compatible relays stream huge /models responses slowly.
+        # A bounded page request keeps discovery responsive while remaining
+        # harmless for providers that ignore the parameters.
+        candidates.append(f"{base}{test_path}?limit=100&offset=0")
+    candidates.append(f"{base}{test_path}")
+    status = 0
+    text = ""
+    last_timeout: ProviderRequestTimeoutError | None = None
+    for url in dict.fromkeys(candidates):
+        try:
+            status, text = _request_status(url, key, timeout=30)
+            if status == 200:
+                break
+        except ProviderRequestTimeoutError as exc:
+            last_timeout = exc
+            continue
+    if last_timeout is not None and status != 200:
+        raise last_timeout
     if status != 200:
         detail = text[:240]
         raise RuntimeError(f"模型列表拉取失败 HTTP {status}{('：' + detail) if detail else ''}")
@@ -1365,13 +1428,19 @@ def discover_provider_models(provider_id: str) -> dict[str, Any]:
     ids = _model_ids_from_response(payload)
     if not ids:
         raise RuntimeError("供应商返回成功，但没有识别到模型 id 字段")
+    endpoint_types = _model_endpoint_types_from_response(payload)
     existing = {
         str(model.get("remoteModel") or model.get("id") or "")
         for model in cfg.get("models", [])
         if isinstance(model, dict) and model.get("providerId") == provider_id
     }
     drafts = [
-        _infer_discovered_model(provider, remote_model, index)
+        _infer_discovered_model(
+            provider,
+            remote_model,
+            index,
+            endpoint_types.get(remote_model),
+        )
         for index, remote_model in enumerate(ids)
     ]
     for draft in drafts:

@@ -769,6 +769,78 @@ def _video_url_from_task(task: dict[str, Any]) -> str:
     return ""
 
 
+def _newapi_video(
+    provider: dict[str, Any],
+    model: dict[str, Any],
+    prompt: str,
+    params: dict[str, Any],
+    refs: list[dict[str, Any]],
+    voices: list[dict[str, Any]],
+    *,
+    on_task_created: TaskEventCallback | None = None,
+    on_task_update: TaskEventCallback | None = None,
+) -> dict[str, Any]:
+    """OpenAI-compatible video relay: POST /v1/videos, GET /v1/videos/{id}."""
+    text = _reference_prompt(prompt, refs + voices)
+    text_refs = _text_refs(refs)
+    if text_refs:
+        text += "\n\n" + text_refs
+    images = [
+        _asset_url_for_provider(str(ref["url"]))
+        for ref in refs
+        if ref.get("kind") == "image" and ref.get("url")
+    ]
+    seconds = _safe_int(params.get("duration") or params.get("seconds"), 5, 1, 30)
+    resolution = str(params.get("resolution") or "720P").upper().replace("P", "p")
+    body: dict[str, Any] = {
+        "model": model["remoteModel"],
+        "prompt": text,
+        "seconds": seconds,
+        "size": resolution,
+    }
+    if images:
+        body["image"] = images[0] if len(images) == 1 else images
+    _apply_declared_params(body, model, params)
+    key = provider_catalog.provider_key(provider)
+    response = _request_json(
+        "POST",
+        _join_url(provider["base_url"], "/videos"),
+        key,
+        body,
+    )
+    task_id = _task_id(response)
+    _emit_task_event(on_task_created, {
+        "taskId": task_id,
+        "status": "queued",
+        "progress": response.get("progress") or 0,
+        "createdAt": time.time(),
+    })
+    poll_url = _join_url(
+        provider["base_url"],
+        "/videos/" + urllib.parse.quote(task_id, safe=""),
+    )
+    deadline = time.time() + 1800
+    while time.time() < deadline:
+        task = _request_json("GET", poll_url, key, timeout=30)
+        status = str(task.get("status") or "").lower()
+        _emit_task_event(on_task_update, {
+            "taskId": task_id,
+            "status": status or "running",
+            "progress": task.get("progress"),
+        })
+        if status in {"completed", "succeeded", "success", "done"}:
+            url = _video_url_from_task(task)
+            if not url:
+                raise RuntimeError(f"视频任务完成但没有视频地址：{json.dumps(task, ensure_ascii=False)[:500]}")
+            return {"url": url, "raw": task, "taskId": task_id}
+        if status in {"failed", "error", "cancelled", "canceled"}:
+            error = task.get("error")
+            detail = error.get("message") if isinstance(error, dict) else error
+            raise RuntimeError(f"视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}")
+        time.sleep(4)
+    raise RuntimeError(f"视频任务超时（1800s，任务 {task_id}）")
+
+
 def _ark_video(
     provider: dict[str, Any],
     model: dict[str, Any],
@@ -1132,6 +1204,12 @@ def generate_video(
             on_task_created=on_task_created,
             on_task_update=on_task_update,
         )
+    if adapter == "newapi_video":
+        return _newapi_video(
+            provider, model, prompt, params, refs, voices,
+            on_task_created=on_task_created,
+            on_task_update=on_task_update,
+        )
     if adapter == "agnes_video":
         return _agnes_video(
             provider, model, prompt, params, refs, voices,
@@ -1161,6 +1239,11 @@ def check_video_task(
         poll_url = _join_url(
             provider["base_url"],
             "/contents/generations/tasks/" + urllib.parse.quote(task_id, safe=""),
+        )
+    elif adapter == "newapi_video":
+        poll_url = _join_url(
+            provider["base_url"],
+            "/videos/" + urllib.parse.quote(task_id, safe=""),
         )
     else:
         raise RuntimeError(f"不支持恢复的视频适配器：{adapter}")

@@ -79,6 +79,7 @@ const CAPABILITIES = [
 const ADAPTERS = [
   ['ark_image', '火山方舟图片 / Ark 兼容图片'],
   ['ark_video', '火山方舟视频 / Ark 兼容异步视频'],
+  ['newapi_video', 'OpenAI 兼容视频 / /v1/videos'],
   ['agnes_image', 'Agnes Images'],
   ['agnes_video', 'Agnes Videos'],
   ['openai_chat', 'OpenAI 兼容 Chat Completions'],

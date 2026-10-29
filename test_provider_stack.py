@@ -83,6 +83,23 @@ class ProviderCatalogTests(unittest.TestCase):
                     "remoteModel": "wrong-model",
                 })
 
+    def test_newapi_video_adapter_is_supported(self):
+        cfg = {
+            "providers": [{"id": "relay", "name": "Relay", "api_key": "x"}],
+            "models": [],
+        }
+        with patch.object(provider_catalog, "load_config", return_value=cfg), \
+                patch.object(provider_catalog, "save_config"):
+            catalog = provider_catalog.upsert_model({
+                "id": "relay-video",
+                "providerId": "relay",
+                "capability": "video",
+                "adapter": "newapi_video",
+                "remoteModel": "relay-video",
+            })
+        model = next(item for item in catalog["models"] if item["id"] == "relay-video")
+        self.assertEqual(model["adapter"], "newapi_video")
+
     def test_provider_request_rejects_private_dns_targets(self):
         private_result = [(2, 1, 6, "", ("127.0.0.1", 80))]
         with patch(
