@@ -149,6 +149,25 @@ class CanvasFeedNegativeContractTests(unittest.TestCase):
             ErrorCode.VOICE_DIALECT_MISSING,
         )
 
+    def test_duplicate_segment_number_reports_single_root_cause(self):
+        feed = json.loads(
+            (VALID_FIXTURES / "generic.json").read_text(encoding="utf-8")
+        )
+        feed["segments"].append(copy.deepcopy(feed["segments"][0]))
+
+        plan = prepare_import(
+            {"nodes": [], "connections": [], "episodeImports": []},
+            feed,
+            "project-1",
+            1,
+        )
+
+        codes = {issue.code for issue in plan.errors}
+        self.assertIn(ErrorCode.SEGMENT_NO_DUPLICATE, codes)
+        self.assertNotIn(ErrorCode.ASSET_EDGE_MISMATCH, codes)
+        self.assertNotIn(ErrorCode.VOICE_EDGE_MISMATCH, codes)
+        self.assertNotIn(ErrorCode.SEGMENT_INVALID, codes)
+
     def test_prepare_import_is_pure_and_passes_both_gates(self):
         feed = json.loads((VALID_FIXTURES / "generic.json").read_text(encoding="utf-8"))
         existing = {

@@ -20,6 +20,7 @@ class ErrorCode(StrEnum):
     SCHEMA_VERSION_UNSUPPORTED = "SCHEMA_VERSION_UNSUPPORTED"
     FEED_PATH_FORBIDDEN = "FEED_PATH_FORBIDDEN"
     SEGMENT_INVALID = "SEGMENT_INVALID"
+    SEGMENT_NO_DUPLICATE = "SEGMENT_NO_DUPLICATE"
     ASSET_CODE_INVALID = "ASSET_CODE_INVALID"
     ASSET_CODE_DUPLICATE = "ASSET_CODE_DUPLICATE"
     ASSET_DECLARED_MISSING = "ASSET_DECLARED_MISSING"
@@ -578,6 +579,7 @@ def analyze_declared_feed(payload: dict) -> GateResult:
 
     segment_expectations: list[SegmentExpectation] = []
     speaker_names: set[str] = set()
+    seen_video_numbers: dict[int, int] = {}
     for index, segment in enumerate(segments):
         path = f"segments[{index}]"
         if not isinstance(segment, dict):
@@ -629,6 +631,15 @@ def analyze_declared_feed(payload: dict) -> GateResult:
             video_no = int(segment.get("no"))
         except (TypeError, ValueError):
             video_no = index + 1
+        if video_no in seen_video_numbers:
+            issues.append(_issue(
+                ErrorCode.SEGMENT_NO_DUPLICATE,
+                f"段号 {video_no} 重复，首次出现在 segments[{seen_video_numbers[video_no]}]",
+                path=f"{path}.no",
+                segment=index,
+            ))
+        else:
+            seen_video_numbers[video_no] = index
         asset_codes = asset_ref_codes(raw)
         for role, voice in voice_by_name.items():
             code = str(voice.get("code") or "")
