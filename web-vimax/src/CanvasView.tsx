@@ -55,11 +55,13 @@ import {
   Clapperboard,
   ClipboardList,
   Copy,
+  Crosshair,
   Download,
   Eraser,
   Eye,
   EyeOff,
   Film,
+  Focus,
   Group,
   Hand,
   History,
@@ -84,7 +86,6 @@ import {
   Rows3,
   Ruler,
   Repeat2,
-  Scan,
   Scissors,
   Search,
   SendToBack,
@@ -12896,17 +12897,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     fitCanvas({animate: true});
   }, [fitCanvas, mediaNodes]);
   const focusWorkspace = useCallback(() => {
-    const viewport = viewportRef.current;
-    setLargeCanvasVisibleBounds(visibleBoundsForViewport(
-      viewport,
-      window.innerWidth,
-      window.innerHeight,
-    ));
     setLargeCanvasOverview(false);
-    window.setTimeout(() => {
-      rf.setViewport(viewport, {duration: 180});
-    }, 0);
-  }, [rf]);
+    window.requestAnimationFrame(() => fitCanvas({animate: true, focus: true}));
+  }, [fitCanvas]);
   const focusOverviewNode = useCallback((node: CanvasMediaNode) => {
     const zoom = 0.8;
     setLargeCanvasOverview(false);
@@ -14339,7 +14332,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   <span className="canvas-tool-ico"><Maximize2 size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">适应</span>
                 </button>
                 <button type="button" onClick={focusWorkspace} title="聚焦当前工作区" aria-label="聚焦工作区">
-                  <span className="canvas-tool-ico"><Scan size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">聚焦</span>
+                  <span className="canvas-tool-ico"><Crosshair size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">聚焦</span>
                 </button>
                 <button type="button" onClick={zoomOut} title="缩小" aria-label="缩小"><Minus size={14} strokeWidth={2.2} aria-hidden="true" /></button>
                 <button type="button" className="canvas-toolbar-zoom" onClick={() => rf.zoomTo(1, {duration: 200})} title="重置为 100%（Ctrl+0）">{zoomPct}%</button>
@@ -14389,7 +14382,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                       title="把视口聚焦到选中的节点（Shift+F）"
                       aria-label="适应所选"
                     >
-                      <span className="canvas-tool-ico"><Scan size={14} strokeWidth={1.9} aria-hidden="true" /></span>
+                      <span className="canvas-tool-ico"><Focus size={14} strokeWidth={1.9} aria-hidden="true" /></span>
                       <span className="canvas-tool-label">适应所选</span>
                     </button>
                   </>
