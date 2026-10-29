@@ -15,4 +15,13 @@ describe('frontend changelog', () => {
       expect(entry.changes.length).toBeGreaterThan(0);
     }
   });
+
+  it('keeps the 2026.10.29.21 account presence work out of the visible release notes', () => {
+    expect(CHANGELOG.some((entry) => entry.version === '2026.10.29.21')).toBe(false);
+    expect(CHANGELOG.some((entry) => entry.version === '2026.10.29.22')).toBe(false);
+    const visibleText = CHANGELOG
+      .flatMap((entry) => [entry.title, ...entry.changes])
+      .join(' ');
+    expect(visibleText).not.toMatch(/在线状态|最后活动|账号状态|会话心跳/);
+  });
 });
