@@ -10,6 +10,7 @@ from canvas_feed_contract import (
     RevisionConflictError,
     WarningCode,
     analyze_declared_feed,
+    canonical_code,
     commit_import,
     issue_dict,
     prepare_import,
@@ -97,6 +98,50 @@ class CanvasFeedNegativeContractTests(unittest.TestCase):
             "05-duplicate-asset-code.json",
             ErrorCode.ASSET_CODE_DUPLICATE,
         )
+
+    def test_rejects_zero_padded_duplicate_asset_code(self):
+        feed = json.loads(
+            (VALID_FIXTURES / "generic.json").read_text(encoding="utf-8")
+        )
+        duplicate = copy.deepcopy(feed["asset_prompts"][0])
+        duplicate["code"] = "图09"
+        duplicate["name"] = "Lin Xia（零填充重复）"
+        feed["asset_prompts"].append(duplicate)
+
+        result = analyze_declared_feed(feed)
+
+        self.assertIn(
+            ErrorCode.ASSET_CODE_DUPLICATE,
+            {issue.code for issue in result.errors},
+        )
+
+    def test_canonical_code_normalizes_figure_variants(self):
+        self.assertEqual(canonical_code("图9"), "图9")
+        self.assertEqual(canonical_code("图09"), "图9")
+        self.assertEqual(canonical_code("图 9"), "图9")
+
+    def test_zero_padded_declarations_match_unpadded_prompt_references(self):
+        feed = json.loads(
+            (VALID_FIXTURES / "generic.json").read_text(encoding="utf-8")
+        )
+        feed["asset_prompts"][0]["code"] = "图09"
+        feed["voice_prompts"][0]["code"] = "图09"
+
+        plan = prepare_import(
+            {"nodes": [], "connections": [], "episodeImports": []},
+            feed,
+            "project-1",
+            1,
+        )
+
+        self.assertTrue(plan.ok, [issue_dict(item) for item in plan.errors])
+        image = next(
+            node
+            for node in plan.merged_payload["nodes"]
+            if node.get("type") == "image"
+        )
+        self.assertIn("（图9）", image["title"])
+        self.assertNotIn("（图09）", image["title"])
 
     def test_rejects_missing_dialect(self):
         self.assert_fixture_rejected(

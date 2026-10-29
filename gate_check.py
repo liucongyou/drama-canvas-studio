@@ -9,8 +9,6 @@
 """
 import canvas_feed_contract
 
-_TITLE_FIG_RE = canvas_feed_contract.TITLE_CODE_RE
-
 
 def run_check(payload, episode_id=None):
     nodes = payload.get("nodes", [])
@@ -33,14 +31,14 @@ def run_check(payload, episode_id=None):
 
     fig_of = {}
     for n in images:
-        m = _TITLE_FIG_RE.search(n.get("title", ""))
-        if m:
-            fig_of.setdefault(n["id"], "图" + m.group(1))
+        code = canvas_feed_contract.canonical_code_from_text(n.get("title", ""))
+        if code:
+            fig_of.setdefault(n["id"], code)
     audio_fig_of = {}
     for n in audios:
-        m = _TITLE_FIG_RE.search(n.get("title", ""))
-        if m:
-            audio_fig_of.setdefault(n["id"], "图" + m.group(1))
+        code = canvas_feed_contract.canonical_code_from_text(n.get("title", ""))
+        if code:
+            audio_fig_of.setdefault(n["id"], code)
 
     in_edges = {}
     for c in conns:

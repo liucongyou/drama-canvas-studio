@@ -144,6 +144,19 @@ BAD_AGE_RE = re.compile(
 )
 
 
+def canonical_code(value: Any) -> str:
+    """Normalize asset codes so 图9, 图09, and 图 9 share one identity."""
+    match = CODE_RE.fullmatch(str(value or "").strip())
+    if not match:
+        return ""
+    return f"图{int(match.group(1))}"
+
+
+def canonical_code_from_text(value: Any) -> str:
+    match = CODE_RE.search(str(value or ""))
+    return canonical_code(match.group(0)) if match else ""
+
+
 def dialogue_speakers(text: str) -> set[str]:
     speakers = {
         match.group(1).strip()
@@ -159,16 +172,25 @@ def dialogue_speakers(text: str) -> set[str]:
 
 
 def asset_ref_codes(text: str) -> set[str]:
-    codes = {f"图{code}" for code in ASSET_REF_RE.findall(str(text or ""))}
-    codes.update(f"图{code}" for code in LEGACY_ASSET_REF_RE.findall(str(text or "")))
+    codes = {
+        canonical_code(f"图{code}")
+        for code in ASSET_REF_RE.findall(str(text or ""))
+    }
+    codes.update(
+        canonical_code(f"图{code}")
+        for code in LEGACY_ASSET_REF_RE.findall(str(text or ""))
+    )
+    codes.discard("")
     return codes
 
 
 def audio_ref_entries(text: str) -> set[tuple[str, str]]:
-    return {
-        (match.group(1).strip(), f"图{match.group(2)}")
-        for match in AUDIO_REF_RE.finditer(str(text or ""))
-    }
+    entries = set()
+    for match in AUDIO_REF_RE.finditer(str(text or "")):
+        code = canonical_code(f"图{match.group(2)}")
+        if code:
+            entries.add((match.group(1).strip(), code))
+    return entries
 
 
 def _issue(
@@ -268,7 +290,7 @@ def analyze_declared_feed(payload: dict) -> GateResult:
                 path=f"{path}.code",
             ))
             continue
-        code = f"图{code_match.group(1)}"
+        code = canonical_code(code_match.group(0))
         if code in seen_asset_codes:
             issues.append(_issue(
                 ErrorCode.ASSET_CODE_DUPLICATE,
@@ -303,7 +325,7 @@ def analyze_declared_feed(payload: dict) -> GateResult:
         code_value = str(voice.get("code") or "").strip()
         code_match = CODE_RE.fullmatch(code_value)
         if code_match:
-            code = f"图{code_match.group(1)}"
+            code = canonical_code(code_match.group(0))
         else:
             code = ""
             issues.append(_issue(ErrorCode.VOICE_PROMPT_INCOMPLETE, "音色图号非法", path=f"{path}.code", role=name))
@@ -460,9 +482,10 @@ def analyze_declared_feed(payload: dict) -> GateResult:
             canvas = {}
         canvas = canvas if isinstance(canvas, dict) else {}
         raw_canvas_codes = {
-            f"图{code}"
+            canonical_code(f"图{code}")
             for code in re.findall(r"图\s*(\d+)", raw)
         }
+        raw_canvas_codes.discard("")
         canvas_codes: set[str] | None = None
         if "asset_codes" in canvas:
             values = canvas.get("asset_codes")
@@ -485,7 +508,7 @@ def analyze_declared_feed(payload: dict) -> GateResult:
                             segment=index,
                         ))
                         continue
-                    code = f"图{match.group(1)}"
+                    code = canonical_code(match.group(0))
                     if code in canvas_codes:
                         issues.append(_issue(
                             ErrorCode.ASSET_CODE_DUPLICATE,
@@ -525,7 +548,9 @@ def analyze_declared_feed(payload: dict) -> GateResult:
                             segment=index,
                         ))
                         continue
-                    ref_codes.add(f"图{match.group(1)}")
+                    ref_code = canonical_code(match.group(0))
+                    if ref_code:
+                        ref_codes.add(ref_code)
         for field_name, declared_codes in (
             ("asset_codes", canvas_codes),
             ("asset_refs", ref_codes),
@@ -648,16 +673,16 @@ def validate_final_payload(
         if node.get("type") == "image" and (not group_node_ids or node.get("id") in group_node_ids)
     ]
     audio_by_code = {
-        f"图{match.group(1)}": node
+        code: node
         for node in audio_nodes
-        for match in [TITLE_CODE_RE.search(str(node.get("title") or ""))]
-        if match
+        for code in [canonical_code_from_text(node.get("title"))]
+        if code
     }
     image_by_code = {
-        f"图{match.group(1)}": node
+        code: node
         for node in image_nodes
-        for match in [TITLE_CODE_RE.search(str(node.get("title") or ""))]
-        if match
+        for code in [canonical_code_from_text(node.get("title"))]
+        if code
     }
 
     # Cross-episode code conflicts are only visible after merge.
@@ -665,11 +690,11 @@ def validate_final_payload(
     for node in nodes:
         if node.get("type") not in {"image", "audio"}:
             continue
-        code_match = TITLE_CODE_RE.search(str(node.get("title") or ""))
+        code = canonical_code_from_text(node.get("title"))
         role_match = TITLE_ROLE_RE.match(str(node.get("title") or ""))
-        if not code_match or not role_match:
+        if not code or not role_match:
             continue
-        key = (str(node.get("type")), f"图{code_match.group(1)}")
+        key = (str(node.get("type")), code)
         code_roles.setdefault(key, set()).add(role_match.group(1).strip())
     for (_kind, code), roles in code_roles.items():
         if len(roles) > 1:
@@ -884,9 +909,9 @@ def _expectations_with_incoming_assets(
                 source = nodes.get(str(ref.get("nodeId") or ""))
                 if not source or source.get("type") != "image":
                     continue
-                match = TITLE_CODE_RE.search(str(source.get("title") or ""))
-                if match:
-                    asset_codes.add(f"图{match.group(1)}")
+                code = canonical_code_from_text(source.get("title"))
+                if code:
+                    asset_codes.add(code)
         segments.append(SegmentExpectation(
             segment_index=expected.segment_index,
             video_no=expected.video_no,

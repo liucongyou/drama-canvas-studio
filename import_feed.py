@@ -43,6 +43,14 @@ def _now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+def _canonical_figure(value):
+    raw = str(value or "").strip()
+    return (
+        canvas_feed_contract.canonical_code(raw)
+        or canvas_feed_contract.canonical_code(f"图{raw}")
+    )
+
+
 # 五区列 x 坐标（按卡片真实尺寸紧密排布）
 COL_ROLE, COL_SCENE, COL_PROP, COL_AUDIO, COL_VIDEO = 0, 320, 640, 960, 1240
 
@@ -203,19 +211,21 @@ def node_dependency_blockers(payload, node):
         r"@(?:角色|场景|道具)｜[^（(\n]+[（(](?:参考)?图\s*(\d+)[）)]",
         prompt,
     ):
-        figure = re.compile(rf"[（(]图\s*{re.escape(code)}[）)]")
+        code = _canonical_figure(code)
         source = next(
             (
                 item for item in nodes.values()
                 if str(item.get("type") or "") == "image"
-                and figure.search(str(item.get("title") or ""))
+                and _canonical_figure(
+                    canvas_feed_contract.canonical_code_from_text(item.get("title"))
+                ) == code
             ),
             None,
         )
         if not source:
             blockers.append({
                 "nodeId": "",
-                "title": f"图{code}",
+                "title": code,
                 "kind": "image",
                 "reason": "提示词引用但节点不存在",
             })
@@ -224,7 +234,7 @@ def node_dependency_blockers(payload, node):
         if source_id not in bound_ids:
             blockers.append({
                 "nodeId": source_id,
-                "title": str(source.get("title") or f"图{code}"),
+                "title": str(source.get("title") or code),
                 "kind": "image",
                 "status": str((source.get("metadata") or {}).get("status") or "idle"),
                 "reason": "提示词已引用但未绑定参考素材",
@@ -234,19 +244,20 @@ def node_dependency_blockers(payload, node):
         prompt,
     ):
         role = role.strip()
+        code = _canonical_figure(code)
         source = next(
             (
                 item for item in nodes.values()
                 if str(item.get("type") or "") == "audio"
                 and role in str(item.get("title") or "")
-                and re.search(rf"[（(]图\s*{re.escape(code)}[）)]", str(item.get("title") or ""))
+                and canvas_feed_contract.canonical_code_from_text(item.get("title")) == code
             ),
             None,
         )
         if not source:
             blockers.append({
                 "nodeId": "",
-                "title": f"音频｜{role}（图{code}）",
+                "title": f"音频｜{role}（{code}）",
                 "kind": "audio",
                 "reason": "提示词引用但音色节点不存在",
             })
@@ -255,7 +266,7 @@ def node_dependency_blockers(payload, node):
         if source_id not in bound_ids:
             blockers.append({
                 "nodeId": source_id,
-                "title": str(source.get("title") or f"音频｜{role}（图{code}）"),
+                "title": str(source.get("title") or f"音频｜{role}（{code}）"),
                 "kind": "audio",
                 "status": str((source.get("metadata") or {}).get("status") or "idle"),
                 "reason": "提示词已引用但未绑定音色",
@@ -413,7 +424,7 @@ def _resolve_mention_ref(kind, name, tail, refs):
 
     figure = re.search(r"图\s*(\d+)", str(tail or ""))
     if figure:
-        code = f"图{figure.group(1)}"
+        code = _canonical_figure(figure.group(1))
         by_code = [label for label in candidates if code in label]
         if by_code:
             if "九宫格" in str(tail):
@@ -454,11 +465,12 @@ def _mention_tail_without_code(tail):
 
 
 def _resolve_figure_ref(name, figure, refs):
-    code = f"图{figure}"
+    code = _canonical_figure(figure)
     candidates = [
         str(item.get("label") or "")
         for item in refs or []
-        if isinstance(item, dict) and code in str(item.get("label") or "")
+        if isinstance(item, dict)
+        and canvas_feed_contract.canonical_code_from_text(item.get("label")) == code
     ]
     if not candidates:
         return "", ""
@@ -511,11 +523,16 @@ def repair_prompt_mentions(prompt, refs):
         if len(base) >= 2:
             aliases.append((base, title))
     for base, title in sorted(aliases, key=lambda item: len(item[0]), reverse=True):
-        canonical_code = re.search(r"图\s*(\d+)", title)
-        alias_codes = set(re.findall(
-            rf"{re.escape(base)}\s*[（(]\s*图\s*(\d+)",
-            repaired,
-        ))
+        canonical_figure = _canonical_figure(
+            canvas_feed_contract.canonical_code_from_text(title)
+        )
+        alias_codes = {
+            _canonical_figure(code)
+            for code in re.findall(
+                rf"{re.escape(base)}\s*[（(]\s*图\s*(\d+)",
+                repaired,
+            )
+        }
         figure_mention = rf"{re.escape(base)}\s*[（(]\s*图\s*\d+\s*[）)]"
         repaired = re.sub(
             rf"(?<![@｜]){figure_mention}",
@@ -532,13 +549,14 @@ def repair_prompt_mentions(prompt, refs):
             f"@{title}",
             repaired,
         )
-        if canonical_code:
+        if canonical_figure:
             for alias_code in alias_codes:
-                if alias_code == canonical_code.group(1):
+                if alias_code == canonical_figure:
                     continue
+                alias_digits = alias_code[1:] if alias_code.startswith("图") else alias_code
                 repaired = re.sub(
-                    rf"图\s*{re.escape(alias_code)}(?!\d)",
-                    f"图{canonical_code.group(1)}",
+                    rf"图\s*{re.escape(alias_digits)}(?!\d)",
+                    canonical_figure,
                     repaired,
                 )
 
@@ -548,9 +566,9 @@ def repair_prompt_mentions(prompt, refs):
     for ref in refs or []:
         if not isinstance(ref, dict):
             continue
-        code_match = re.search(r"图\s*(\d+)", str(ref.get("label") or ""))
-        if code_match:
-            refs_by_code.setdefault(code_match.group(1), []).append(
+        code = canvas_feed_contract.canonical_code_from_text(ref.get("label"))
+        if code:
+            refs_by_code.setdefault(code, []).append(
                 str(ref.get("label") or "").strip()
             )
     code_pattern = re.compile(
@@ -562,7 +580,7 @@ def repair_prompt_mentions(prompt, refs):
     def replace_unique_code(match):
         if match.start() > 0 and repaired[match.start() - 1] == "｜":
             return match.group(0)
-        titles = refs_by_code.get(match.group("code")) or []
+        titles = refs_by_code.get(_canonical_figure(match.group("code"))) or []
         if len(titles) != 1:
             return match.group(0)
         title = titles[0]
@@ -981,8 +999,22 @@ def _normalize_voice_catalog_item(voice):
 
 def build_payload(feed, asset_pool=None, target_project_id=""):
     """投喂载荷 → 画布 payload dict。"""
-    assets = feed.get("asset_prompts", [])      # 9 项（图6 ×2）
-    voice_prompts = feed.get("voice_prompts", [])
+    assets = [
+        {
+            **asset,
+            "code": _canonical_figure(asset.get("code")),
+        }
+        for asset in feed.get("asset_prompts", [])
+        if isinstance(asset, dict)
+    ]      # 9 项（图6 ×2）
+    voice_prompts = [
+        {
+            **voice,
+            "code": _canonical_figure(voice.get("code")),
+        }
+        for voice in feed.get("voice_prompts", [])
+        if isinstance(voice, dict)
+    ]
     normalized_voices = [
         item
         for voice in voice_prompts
@@ -1252,7 +1284,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             continue
         if role not in speaking:
             continue
-        catalog_voice = voice_by_code.get(f"图{code}") or voice_by_role.get(role)
+        catalog_voice = voice_by_code.get(_canonical_figure(code)) or voice_by_role.get(role)
         voice = _extract_voice(raw)
         lm = re.search(r"Voice Description Label[^\n]*?(?::|\*\*)\s*([A-Za-z][^/\n]*)", raw)
         label = lm.group(1).strip() if lm else ""
@@ -1306,7 +1338,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             continue
         node_title = str(node.get("title") or "")
         code_match = re.search(r"图\s*(\d+)", node_title)
-        code = f"图{code_match.group(1)}" if code_match else ""
+        code = _canonical_figure(code_match.group(0)) if code_match else ""
         if node.get("type") == "image":
             if code:
                 image_ids.setdefault(code, []).append(node["id"])
@@ -1329,7 +1361,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             continue
         seen = set()
         for _name, fig_no in _REF_RE.findall(raw):
-            candidates = image_ids.get("图" + fig_no.strip(), [])
+            candidates = image_ids.get(_canonical_figure(fig_no), [])
             if not candidates:
                 continue
             target = candidates[1] if (len(candidates) > 1 and ("九宫格" in _name or "窗内" in _name)) else candidates[0]
@@ -1347,10 +1379,10 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         speaking_in_segment = _dialog_speaker_names(raw)
         seen_a = set()
         for _name, fig_no in _REF_RE.findall(raw):
-            role = character_names.get("图" + fig_no.strip(), "")
+            role = character_names.get(_canonical_figure(fig_no), "")
             if role not in speaking_in_segment:
                 continue
-            role_audio = audio_ids.get("图" + fig_no.strip())
+            role_audio = audio_ids.get(_canonical_figure(fig_no))
             if not role_audio:
                 continue
             key = (role_audio, vid)
@@ -1921,7 +1953,7 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
         item = _normalize_voice_catalog_item(voice)
         if not item:
             continue
-        code = str(item.get("code") or "")
+        code = _canonical_figure(item.get("code"))
         role = str(item.get("name") or "")
         if code:
             voice_by_code[code] = item
@@ -1930,7 +1962,7 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
     for asset in asset_sources or []:
         if not isinstance(asset, dict):
             continue
-        code = str(asset.get("code") or "")
+        code = _canonical_figure(asset.get("code"))
         canvas = asset.get("canvas") if isinstance(asset.get("canvas"), dict) else {}
         canvas_kind = str(canvas.get("kind") or "")
         if canvas_kind in {"character", "scene", "prop"}:
@@ -2002,7 +2034,7 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
             if key:
                 image_by_key.setdefault(key, node)
             for code in re.findall(r"图\s*(\d+)", str(node.get("title") or "")):
-                image_by_code.setdefault(code, node)
+                image_by_code.setdefault(_canonical_figure(code), node)
         elif node.get("type") == "audio":
             audio_meta = node.get("metadata") or {}
             if _is_placeholder_asset_prompt(audio_meta.get("prompt")):
@@ -2039,6 +2071,7 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
     used_ids = set()
 
     def find_image(kind, name, code):
+        code = _canonical_figure(code)
         existing = image_by_code.get(code)
         if existing:
             return existing
@@ -2049,22 +2082,23 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
         return existing
 
     def add_image(kind, name, code, video):
-        source = source_by_code.get(f"图{code}") or source_by_key.get(_asset_identity(name, kind))
+        code = _canonical_figure(code)
+        source = source_by_code.get(code) or source_by_key.get(_asset_identity(name, kind))
         if source:
             kind = source["kind"] or kind
             name = source["name"] or name
         raw_prompt = source.get("raw", "") if source else ""
         canvas = source.get("canvas", {}) if source else {}
-        title = f"{kind}｜{name}（图{code}）"
+        title = f"{kind}｜{name}（{code}）"
         ratio = _aspect(canvas.get("ratio"), "16:9")
         model = str(canvas.get("model") or "doubao-seedream-5-0-pro")
         clarity = str(canvas.get("clarity") or "1.5K")
         size = str(canvas.get("size") or _image_size(ratio))
         prompt = (
-            f"### 图{code} · {name}\n\n{raw_prompt}"
+            f"### {code} · {name}\n\n{raw_prompt}"
             if raw_prompt
             else (
-                f"### 图{code} · {name}\n\n"
+                f"### {code} · {name}\n\n"
                 "该资产由视频提示词引用，但当前投喂载荷未提供资产提示词；"
                 "已自动补占位卡，请补充提示词后再生成。"
             )
@@ -2113,8 +2147,9 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
         return node
 
     def add_audio(role, code, video):
-        title = f"音频｜{role}（图{code}）"
-        voice_source = voice_by_code.get(f"图{code}") or voice_by_role.get(role) or {}
+        code = _canonical_figure(code)
+        title = f"音频｜{role}（{code}）"
+        voice_source = voice_by_code.get(code) or voice_by_role.get(role) or {}
         detailed_prompt = str(voice_source.get("prompt") or "").strip()
         generic_prompt = (
             f"{role}，普通话对白参考音色，短剧配音参考，"
@@ -2136,7 +2171,7 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
             "id": node_id,
             "metadata": {
                 "content": "",
-                "composerContent": f"角色：{role}（图{code}）\n\n【音色占位 · 4.5S】\n{prompt}",
+                "composerContent": f"角色：{role}（{code}）\n\n【音色占位 · 4.5S】\n{prompt}",
                 "assetKey": _asset_identity(role, "音色"),
                 "prompt": prompt,
                 "status": "idle",
