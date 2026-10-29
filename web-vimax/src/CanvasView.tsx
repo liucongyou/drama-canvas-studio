@@ -113,6 +113,15 @@ import {
   type BatchGenerationCandidate,
 } from './batchGeneration';
 import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, segShotIdxsOf, solveAlignSnap, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
+import {
+  filterMediaNodesInBounds,
+  focusedNodeVisibleBounds,
+  LARGE_CANVAS_OVERVIEW_CHUNK_SIZE,
+  shouldUseLargeCanvasOverview,
+  visibleBoundsForViewport,
+  type CanvasViewport,
+  type CanvasVisibleBounds,
+} from './canvasViewport';
 
 type Props = {
   session: string;
@@ -1125,8 +1134,123 @@ function KindIcon({kind, size = 20, className}: {kind: CanvasMediaNodeKind; size
   return <Glyph className={className} size={size} strokeWidth={1.75} aria-hidden="true" />;
 }
 
+function LargeCanvasOverview({
+  nodes,
+  edges,
+  onFocus,
+  onClose,
+}: {
+  nodes: CanvasMediaNode[];
+  edges: Edge[];
+  onFocus: (node: CanvasMediaNode) => void;
+  onClose: () => void;
+}) {
+  const nodeKey = useMemo(
+    () => `${nodes.length}:${nodes[0]?.id || ''}:${nodes[nodes.length - 1]?.id || ''}`,
+    [nodes],
+  );
+  const [renderedCount, setRenderedCount] = useState(() => (
+    Math.min(nodes.length, LARGE_CANVAS_OVERVIEW_CHUNK_SIZE)
+  ));
+  useEffect(() => {
+    setRenderedCount(Math.min(nodes.length, LARGE_CANVAS_OVERVIEW_CHUNK_SIZE));
+  }, [nodeKey, nodes.length]);
+  useEffect(() => {
+    if (renderedCount >= nodes.length) return;
+    const timer = window.setTimeout(() => {
+      startTransition(() => {
+        setRenderedCount((count) => (
+          Math.min(nodes.length, count + LARGE_CANVAS_OVERVIEW_CHUNK_SIZE)
+        ));
+      });
+    }, 16);
+    return () => window.clearTimeout(timer);
+  }, [nodes.length, renderedCount]);
+  const layout = useMemo(() => {
+    if (nodes.length === 0) {
+      return {width: 1, height: 1, byId: new Map<string, CanvasMediaNode>()};
+    }
+    const width = Math.max(...nodes.map((node) => node.x + MEDIA_KIND_META[node.kind].w)) + 160;
+    const height = Math.max(...nodes.map((node) => node.y + MEDIA_KIND_META[node.kind].h + 80)) + 160;
+    return {
+      width,
+      height,
+      byId: new Map(nodes.map((node) => [`media-${node.id}`, node])),
+    };
+  }, [nodes]);
+  const renderedNodes = useMemo(
+    () => nodes.slice(0, renderedCount),
+    [nodes, renderedCount],
+  );
+  const renderedNodeIds = useMemo(
+    () => new Set(renderedNodes.map((node) => `media-${node.id}`)),
+    [renderedNodes],
+  );
+  const visibleEdges = useMemo(
+    () => edges.filter((edge) => (
+      renderedNodeIds.has(edge.source) && renderedNodeIds.has(edge.target)
+    )),
+    [edges, renderedNodeIds],
+  );
+  return (
+    <section
+      className="canvas-large-overview"
+      aria-label="大型画布总览"
+      aria-busy={renderedCount < nodes.length}
+    >
+      <header className="canvas-large-overview-head">
+        <span><LayoutGrid size={15} strokeWidth={1.9} aria-hidden="true" />大型画布总览</span>
+        <small>{nodes.length} 个节点 · 点击卡片进入工作区</small>
+        <button type="button" onClick={onClose}><Maximize2 size={13} strokeWidth={1.9} aria-hidden="true" />进入工作区</button>
+      </header>
+      <div className="canvas-large-overview-map">
+        <svg
+          className="canvas-large-overview-edges"
+          viewBox={`0 0 ${layout.width} ${layout.height}`}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          {visibleEdges.map((edge) => {
+            const source = layout.byId.get(edge.source);
+            const target = layout.byId.get(edge.target);
+            if (!source || !target) return null;
+            return (
+              <line
+                key={edge.id}
+                x1={source.x + MEDIA_KIND_META[source.kind].w}
+                y1={source.y + MEDIA_KIND_META[source.kind].h / 2}
+                x2={target.x}
+                y2={target.y + MEDIA_KIND_META[target.kind].h / 2}
+              />
+            );
+          })}
+        </svg>
+        {renderedNodes.map((node) => (
+          <button
+            key={node.id}
+            type="button"
+            className={`canvas-large-overview-node is-${node.kind} is-${node.status || 'idle'}`}
+            style={{
+              left: `${(node.x / layout.width) * 100}%`,
+              top: `${(node.y / layout.height) * 100}%`,
+              width: `${Math.max(0.8, (MEDIA_KIND_META[node.kind].w / layout.width) * 100)}%`,
+              height: `${Math.max(1.2, ((MEDIA_KIND_META[node.kind].h + 44) / layout.height) * 100)}%`,
+            }}
+            title={`${node.title || MEDIA_KIND_META[node.kind].label} · ${node.status || 'idle'}`}
+            onClick={() => onFocus(node)}
+          >
+            <KindIcon kind={node.kind} size={12} />
+            <span>{node.title || MEDIA_KIND_META[node.kind].label}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 type MediaNodeData = {
   node: CanvasMediaNode;
+  renderMode?: 'overview' | 'compact' | 'full';
   onChange: (
     id: string,
     patch: Partial<CanvasMediaNode>,
@@ -1827,7 +1951,7 @@ async function inspectLocalMedia(file: File): Promise<{
 }
 
 function MediaNode({data, selected}: NodeProps<Node<MediaNodeData>>) {
-  const {node, onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed} = data;
+  const {node, renderMode = 'full', onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed} = data;
   const [menu, setMenu] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoShellRef = useRef<HTMLDivElement>(null);
@@ -2285,6 +2409,46 @@ function MediaNode({data, selected}: NodeProps<Node<MediaNodeData>>) {
     ? (busy ? '生成中' : failed ? '生成失败' : done ? '已生成' : '文本')
     : busy ? '生成中' : done ? '已生成' : failed ? '生成失败' : '待生成';
   const statusCls = localUploading || busy ? 'is-busy' : done ? 'is-done' : failed ? 'is-failed' : 'is-idle';
+  if (renderMode === 'overview' && !selected && !active) {
+    return (
+      <div
+        className={`canvas-node canvas-media-node canvas-media-overview-node ${statusCls}`}
+        style={{width: nodeW}}
+      >
+        <Handle type="target" position={Position.Left} className={`canvas-media-port is-target${hasLink ? ' is-linked' : ''}`}>
+          <svg className="canvas-port-icon" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M6 1.6V10.4M1.6 6H10.4" fill="none" stroke="currentColor"
+              strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </Handle>
+        <button
+          type="button"
+          className="canvas-media-overview-card"
+          title={`${node.title || meta.label} · ${statusText}`}
+          onClick={(event) => {
+            if (event.shiftKey || event.ctrlKey || event.metaKey) return;
+            event.stopPropagation();
+            onEdit(node);
+          }}
+        >
+          <KindIcon kind={node.kind} size={16} className="canvas-media-overview-icon" />
+          <span className="canvas-media-overview-title">{node.title || meta.label}</span>
+          {(assetState || node.source?.type === 'local') && (
+            <span className="canvas-media-overview-badge">
+              {assetState?.label || '本地'}
+            </span>
+          )}
+          <i className="canvas-media-overview-status" />
+        </button>
+        <Handle type="source" position={Position.Right} className={`canvas-media-port is-source${hasLink ? ' is-linked' : ''}`}>
+          <svg className="canvas-port-icon" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M6 1.6V10.4M1.6 6H10.4" fill="none" stroke="currentColor"
+              strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </Handle>
+      </div>
+    );
+  }
   return (
     <div
       className={`canvas-node canvas-media-node ${isText ? 'is-text-node' : ''} ${active ? 'is-active' : ''} ${statusCls}`}
@@ -6733,6 +6897,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const editNodeRef = useRef<string | null>(null);
   // 实时缩放百分比（onMove 回写），工具栏显示 + 点击重置 100%
   const [zoomPct, setZoomPct] = useState(100);
+  const [largeCanvasOverview, setLargeCanvasOverview] = useState(false);
+  const [largeCanvasVisibleBounds, setLargeCanvasVisibleBounds] = useState<CanvasVisibleBounds | null>(null);
+  const overviewKeyRef = useRef('');
+  const visibleBoundsTimerRef = useRef<number | null>(null);
   // 网格吸附：默认关。开启后节点按 12px 栅格对齐，手工排版不再歪斜。
   const [snapGrid, setSnapGrid] = useState(false);
   // 智能对齐参考线（对标即梦）：拖动卡片时与其它卡片边缘/中线对齐会亮起参考线并自动吸附。
@@ -7003,6 +7171,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [generationBusyIds, setGenerationBusyIds] = useState<Set<string>>(() => new Set());
   const mediaNodesRef = useRef<CanvasMediaNode[]>([]);
   useEffect(() => { mediaNodesRef.current = mediaNodes; }, [mediaNodes]);
+  useEffect(() => {
+    if (mediaNodes.length === 0) return;
+    const key = currentEp || '__project__';
+    if (overviewKeyRef.current === key) return;
+    overviewKeyRef.current = key;
+    setLargeCanvasOverview(mediaNodes.length > 400);
+  }, [currentEp, mediaNodes.length]);
   useEffect(() => {
     const latestByNode = new Map<string, GenerationTask>();
     for (const task of generationTasks) {
@@ -7462,6 +7637,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             }
           }
           setNotes(noteList);
+          if (mediaList.length > 400 && mediaList.some((node) => node.kind !== 'text')) {
+            overviewKeyRef.current = currentEp || '__project__';
+            setLargeCanvasVisibleBounds(null);
+            setLargeCanvasOverview(true);
+          } else {
+            setLargeCanvasVisibleBounds(null);
+          }
           setMediaNodes(mediaList);
         });
       })
@@ -11291,8 +11473,31 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     return map;
   }, [canvas, effectiveSegments, currentEp]);
 
+  const visibleMediaNodes = useMemo(() => {
+    if (
+      mediaNodes.length <= 400
+      || largeCanvasOverview
+      || !largeCanvasVisibleBounds
+    ) {
+      return mediaNodes;
+    }
+    return filterMediaNodesInBounds(
+      mediaNodes,
+      largeCanvasVisibleBounds,
+      (node) => ({
+        w: MEDIA_KIND_META[node.kind].w,
+        h: MEDIA_KIND_META[node.kind].h + 44,
+      }),
+    );
+  }, [largeCanvasOverview, largeCanvasVisibleBounds, mediaNodes]);
+  const mediaRenderMode: 'overview' | 'compact' | 'full' = zoomPct < 35
+    ? 'overview'
+    : zoomPct < 65
+      ? 'compact'
+      : 'full';
   const flowNodes = useMemo((): Node[] => {
-    if (!canvas) return [];    const out: Node[] = [];
+    if (!canvas || largeCanvasOverview) return [];
+    const out: Node[] = [];
     const onZoom = (url: string) => setZoomTarget(url);
     const boundMap = segBoundAssets;
 
@@ -11506,7 +11711,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       });
     });
 
-    mediaNodes.forEach((mn) => {
+    visibleMediaNodes.forEach((mn) => {
       // 初始尺寸必须显式给足（header ~32px + 预览区按比例换算 + 卡片 padding）：
       // React Flow 对无 initialWidth/Height 的节点走 ResizeObserver 测量，若测量链路
       // 不触发（节点 hidden）则边 path 永远算不出 → 连线不渲染（实测 0 条）。
@@ -11532,6 +11737,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         style: zOrder[`media-${mn.id}`] ? {zIndex: zOrder[`media-${mn.id}`]} : undefined,
         data: {
           node: mn,
+          renderMode: mediaRenderMode,
           onChange: updateMediaNode,
           onGenerate: onGenerateMediaNode,
           onDelete: requestDeleteMediaNode,
@@ -11568,7 +11774,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       return saved ? {...node, position: saved} : node;
     });
     return placed;
-  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, mediaNodes, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed]);
+  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasOverview]);
+  const renderedEdges = useMemo(() => {
+    if (largeCanvasOverview) return [];
+    const ids = new Set(flowNodes.map((node) => node.id));
+    return edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target));
+  }, [edges, flowNodes, largeCanvasOverview]);
 
   useEffect(() => {
     // 关键：程序化重建节点时必须继承上一轮已测量的尺寸。
@@ -11718,11 +11929,65 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [canvas, effectiveSegments, notes, rf, assetRatios, mediaNodes]);
 
   const fitView = useCallback(() => {
+    if (shouldUseLargeCanvasOverview(mediaNodes)) {
+      setLargeCanvasOverview(true);
+      return;
+    }
     fitCanvas({animate: true});
-  }, [fitCanvas]);
+  }, [fitCanvas, mediaNodes]);
   const focusWorkspace = useCallback(() => {
-    fitCanvas({animate: true, focus: true});
-  }, [fitCanvas]);
+    const viewport = viewportRef.current;
+    setLargeCanvasVisibleBounds(visibleBoundsForViewport(
+      viewport,
+      window.innerWidth,
+      window.innerHeight,
+    ));
+    setLargeCanvasOverview(false);
+    window.setTimeout(() => {
+      rf.setViewport(viewport, {duration: 180});
+    }, 0);
+  }, [rf]);
+  const focusOverviewNode = useCallback((node: CanvasMediaNode) => {
+    const zoom = 0.8;
+    setLargeCanvasOverview(false);
+    setLargeCanvasVisibleBounds(focusedNodeVisibleBounds(
+      {
+        x: node.x,
+        y: node.y,
+        w: MEDIA_KIND_META[node.kind].w,
+        h: MEDIA_KIND_META[node.kind].h,
+      },
+      zoom,
+      window.innerWidth,
+      window.innerHeight,
+    ));
+    window.setTimeout(() => {
+      rf.setCenter(
+        node.x + MEDIA_KIND_META[node.kind].w / 2,
+        node.y + MEDIA_KIND_META[node.kind].h / 2,
+        {zoom, duration: 260},
+      );
+    }, 0);
+  }, [rf]);
+  const updateLargeCanvasViewport = useCallback((viewport: CanvasViewport) => {
+    if (mediaNodes.length <= 400 || largeCanvasOverview) return;
+    if (visibleBoundsTimerRef.current !== null) {
+      window.clearTimeout(visibleBoundsTimerRef.current);
+    }
+    visibleBoundsTimerRef.current = window.setTimeout(() => {
+      visibleBoundsTimerRef.current = null;
+      setLargeCanvasVisibleBounds(visibleBoundsForViewport(
+        viewport,
+        window.innerWidth,
+        window.innerHeight,
+      ));
+    }, 90);
+  }, [largeCanvasOverview, mediaNodes.length]);
+  useEffect(() => () => {
+    if (visibleBoundsTimerRef.current !== null) {
+      window.clearTimeout(visibleBoundsTimerRef.current);
+    }
+  }, []);
 
   // LibTV 式自动布局：资产生成组在前（角色/场景/道具/音色），段卡列在最右（备注/列头保持原位）
   const autoLayout = useCallback(() => {
@@ -12432,6 +12697,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               </div>
             </div>
           )}
+          {largeCanvasOverview && mediaNodes.length > 0 && (
+            <LargeCanvasOverview
+              nodes={mediaNodes}
+              edges={edges}
+              onFocus={focusOverviewNode}
+              onClose={focusWorkspace}
+            />
+          )}
           <div className="canvas-bg-switch" title="画布底纹">
             {([
               ['dots', '点阵'],
@@ -12641,8 +12914,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             onConnectStart={() => setConnecting(true)}
             onConnectEnd={() => setConnecting(false)}
             data-mouse-mode={mouseMode}
-            nodes={nodes}
-            edges={edges}
+            nodes={largeCanvasOverview ? [] : nodes}
+            edges={largeCanvasOverview ? [] : renderedEdges}
             edgeTypes={CANVAS_EDGE_TYPES}
             onNodesChange={handleNodesChange}
             onEdgesChange={onEdgesChange}
@@ -12669,6 +12942,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             snapGrid={CANVAS_SNAP_GRID}
             onMove={(_evt, viewport) => {
               setZoomPct(Math.round(viewport.zoom * 100));
+              updateLargeCanvasViewport(viewport);
               rememberViewport(viewport);
               syncSelBar();
               syncGroupFrames();

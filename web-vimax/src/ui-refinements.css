@@ -9059,3 +9059,263 @@ button.jim-dependency-prepare-item:disabled{
     margin-inline:12px;
   }
 }
+
+/* Overview LOD: keep the graph readable while avoiding hundreds of media
+   controls and preview DOM nodes per viewport. */
+.canvas-media-overview-node {
+  min-height: 68px;
+}
+
+.canvas-media-overview-card {
+  position: relative;
+  width: 100%;
+  height: 68px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  color: var(--v-text);
+  text-align: left;
+  background: color-mix(in srgb, var(--v-surface) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--v-border) 82%, transparent);
+  border-radius: 7px;
+  box-shadow: var(--v-shadow-card);
+  cursor: pointer;
+}
+
+.canvas-media-overview-card:hover {
+  border-color: color-mix(in srgb, var(--v-accent) 58%, var(--v-border));
+  background: color-mix(in srgb, var(--v-surface-hover) 88%, var(--v-accent) 12%);
+}
+
+.canvas-media-overview-icon {
+  color: var(--v-accent);
+}
+
+.canvas-media-overview-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--v-text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-media-overview-badge {
+  max-width: 72px;
+  overflow: hidden;
+  color: var(--v-text-4);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-media-overview-status {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 6px;
+  height: 6px;
+  background: var(--v-text-4);
+  border-radius: 50%;
+}
+
+.canvas-media-overview-node.is-done .canvas-media-overview-status {
+  background: var(--v-success);
+}
+
+.canvas-media-overview-node.is-busy .canvas-media-overview-status {
+  background: var(--v-accent);
+}
+
+.canvas-media-overview-node.is-failed .canvas-media-overview-status {
+  background: var(--v-danger);
+}
+
+.canvas-large-overview {
+  position: absolute;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 12px 76px;
+  background: color-mix(in srgb, var(--v-canvas) 94%, transparent);
+  backdrop-filter: blur(5px);
+}
+
+.canvas-large-overview-head {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px;
+  color: var(--v-text);
+}
+
+.canvas-large-overview-head > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.canvas-large-overview-head small {
+  min-width: 0;
+  color: var(--v-text-4);
+  font-size: 10.5px;
+}
+
+.canvas-large-overview-head button {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--v-border);
+  border-radius: 7px;
+  color: var(--v-text-2);
+  background: var(--v-surface);
+  cursor: pointer;
+}
+
+.canvas-large-overview-head button:hover {
+  border-color: var(--v-border-strong);
+  color: var(--v-text);
+  background: var(--v-surface-hover);
+}
+
+.canvas-large-overview-map {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--v-border-hair);
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 1px 1px, var(--v-border-hair) 1px, transparent 1px) 0 0 / 18px 18px,
+    color-mix(in srgb, var(--v-surface-sunken) 84%, transparent);
+}
+
+.canvas-large-overview-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.canvas-large-overview-edges line {
+  stroke: color-mix(in srgb, var(--v-accent) 32%, transparent);
+  stroke-width: 0.7;
+  vector-effect: non-scaling-stroke;
+}
+
+.canvas-large-overview-node {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 10px;
+  min-height: 8px;
+  overflow: hidden;
+  padding: 2px 4px;
+  border: 1px solid color-mix(in srgb, var(--v-border) 75%, transparent);
+  border-radius: 4px;
+  color: var(--v-text-3);
+  background: color-mix(in srgb, var(--v-surface) 92%, transparent);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--v-canvas) 44%, transparent);
+  cursor: pointer;
+}
+
+.canvas-large-overview-node span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-large-overview-node:hover {
+  z-index: 2;
+  border-color: var(--v-accent);
+  color: var(--v-text);
+  background: var(--v-surface-hover);
+  box-shadow: 0 0 0 1px var(--v-accent), var(--v-shadow-card);
+}
+
+.canvas-large-overview-node.is-image {
+  border-left-color: var(--v-accent);
+}
+
+.canvas-large-overview-node.is-video {
+  border-left-color: var(--v-success);
+}
+
+.canvas-large-overview-node.is-audio {
+  border-left-color: var(--v-text-3);
+}
+
+@media (max-width: 640px) {
+  .canvas-large-overview {
+    gap: 8px;
+    padding: 10px 8px 104px;
+  }
+
+  .canvas-large-overview-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 8px;
+  }
+
+  .canvas-large-overview-head > span {
+    white-space: nowrap;
+  }
+
+  .canvas-large-overview-head small {
+    overflow: hidden;
+    font-size: 9.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .canvas-large-overview-head button {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    min-height: 36px;
+    padding-inline: 9px;
+    white-space: nowrap;
+  }
+
+  .canvas-large-overview-map {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    align-content: start;
+    gap: 4px;
+    overflow: auto;
+    padding: 8px;
+  }
+
+  .canvas-large-overview-edges {
+    display: none;
+  }
+
+  .canvas-large-overview-node {
+    position: static !important;
+    width: auto !important;
+    height: 38px !important;
+    min-width: 0;
+    min-height: 38px;
+    padding: 3px 4px;
+  }
+
+  .canvas-large-overview-node span {
+    font-size: 9.5px;
+  }
+}
