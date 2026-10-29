@@ -2,8 +2,11 @@
 import email.message
 import io
 import json
+import os
+import tempfile
 import urllib.request
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import network_security
@@ -114,6 +117,42 @@ class JsonRequestBoundaryTests(unittest.TestCase):
         body = json.dumps({"ok": True}).encode("utf-8")
         handler = self.handler(len(body), body)
         self.assertEqual(handler._read_json(), {"ok": True})
+
+
+class ServerSecurityPolicyTests(unittest.TestCase):
+    def test_security_headers_include_csp_and_frame_protection(self):
+        with patch.dict(os.environ, {
+            "CANVAS_COOKIE_SECURE": "1",
+            "CANVAS_API_HOST": "api.example.com",
+        }):
+            headers = server._security_headers()
+        self.assertEqual(headers["X-Frame-Options"], "DENY")
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
+        self.assertIn("https://api.example.com", headers["Content-Security-Policy"])
+        self.assertIn("Strict-Transport-Security", headers)
+
+    def test_multitenant_feed_path_requires_configured_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            allowed = root / "allowed.json"
+            denied = root.parent / "denied.json"
+            with patch.dict(os.environ, {
+                "CANVAS_MULTI_TENANT": "1",
+                "CANVAS_FEED_IMPORT_ROOTS": "",
+            }):
+                with self.assertRaises(PermissionError):
+                    server._resolve_feed_import_path(str(allowed))
+            with patch.dict(os.environ, {
+                "CANVAS_MULTI_TENANT": "1",
+                "CANVAS_FEED_IMPORT_ROOTS": str(root),
+            }):
+                self.assertEqual(
+                    server._resolve_feed_import_path(str(allowed)),
+                    str(allowed.resolve()),
+                )
+                with self.assertRaises(PermissionError):
+                    server._resolve_feed_import_path(str(denied))
 
 
 if __name__ == "__main__":

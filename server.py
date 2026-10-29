@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from email.utils import formatdate
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, unquote
 
@@ -146,6 +147,63 @@ def _upload_dir():
 def _cookie_secure() -> bool:
     raw = os.environ.get("CANVAS_COOKIE_SECURE", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
+
+
+def _security_headers() -> dict[str, str]:
+    connect_sources = ["'self'", "https:"]
+    api_host = _api_host()
+    if api_host:
+        connect_sources.append(f"https://{api_host}")
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+        "Content-Security-Policy": (
+            "default-src 'self'; "
+            "base-uri 'self'; "
+            "object-src 'none'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob: https:; "
+            "media-src 'self' blob: https:; "
+            "font-src 'self' data:; "
+            f"connect-src {' '.join(dict.fromkeys(connect_sources))}; "
+            "worker-src 'self' blob:"
+        ),
+    }
+    if _cookie_secure():
+        headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return headers
+
+
+def _feed_import_roots() -> list[str]:
+    raw = os.environ.get("CANVAS_FEED_IMPORT_ROOTS", "")
+    return [
+        os.path.realpath(item.strip())
+        for item in raw.split(os.pathsep)
+        if item.strip()
+    ]
+
+
+def _resolve_feed_import_path(value: str) -> str:
+    requested = os.path.realpath(os.path.expanduser(str(value or "").strip()))
+    if not requested:
+        raise ValueError("载荷文件路径为空")
+    if not tenant_context.multi_tenant_enabled():
+        return requested
+    roots = _feed_import_roots()
+    if not roots:
+        raise PermissionError("当前部署不允许读取服务器本地载荷路径，请上传 JSON 文件")
+    for root in roots:
+        try:
+            if os.path.commonpath([requested, root]) == root:
+                return requested
+        except ValueError:
+            continue
+    raise PermissionError("载荷文件不在允许的导入目录内")
 
 
 def _auth_mode() -> str:
@@ -1672,7 +1730,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        response_headers = {**self._cors_headers(), **(headers or {})}
+        response_headers = {
+            **_security_headers(),
+            **self._cors_headers(),
+            **(headers or {}),
+        }
         for key, value in response_headers.items():
             self.send_header(str(key), str(value))
         self.end_headers()
@@ -1750,7 +1812,11 @@ class Handler(BaseHTTPRequestHandler):
         }
         if self.command in {"GET", "HEAD"} and self.headers.get("If-None-Match", "").strip() == etag:
             self.send_response(304)
-            for key, value in {**cache_headers, **self._cors_headers()}.items():
+            for key, value in {
+                **_security_headers(),
+                **cache_headers,
+                **self._cors_headers(),
+            }.items():
                 self.send_header(str(key), str(value))
             self.end_headers()
             return
@@ -1768,7 +1834,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(416)
                 self.send_header("Content-Range", f"bytes */{size}")
                 self.send_header("Content-Length", "0")
-                for key, value in self._cors_headers().items():
+                for key, value in {
+                    **_security_headers(),
+                    **self._cors_headers(),
+                }.items():
                     self.send_header(str(key), str(value))
                 self.end_headers()
                 return
@@ -1784,7 +1853,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(416)
                 self.send_header("Content-Range", f"bytes */{size}")
                 self.send_header("Content-Length", "0")
-                for key, value in self._cors_headers().items():
+                for key, value in {
+                    **_security_headers(),
+                    **self._cors_headers(),
+                }.items():
                     self.send_header(str(key), str(value))
                 self.end_headers()
                 return
@@ -1798,11 +1870,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         for key, value in cache_headers.items():
             self.send_header(key, value)
-        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Cross-Origin-Resource-Policy", "cross-origin")
         if partial:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        for key, value in self._cors_headers().items():
+        for key, value in {
+            **_security_headers(),
+            **self._cors_headers(),
+        }.items():
             self.send_header(str(key), str(value))
         self.end_headers()
         if self.command == "HEAD" or length == 0:
@@ -2038,6 +2112,8 @@ class Handler(BaseHTTPRequestHandler):
         with open(target, "rb") as f:
             body = f.read()
         self.send_response(200)
+        for key, value in _security_headers().items():
+            self.send_header(key, value)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         # assets 下都是带指纹的文件，可长缓存；index.html 必须每次回源，
@@ -2773,11 +2849,24 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(404, {"error": "项目不存在"})
                 feed_path = body.get("feed_path") or ""
                 feed_json = body.get("feed_json")
+                resolved_feed_path = ""
                 if not feed_json and feed_path:
-                    if not os.path.exists(feed_path):
+                    try:
+                        resolved_feed_path = _resolve_feed_import_path(feed_path)
+                    except PermissionError as exc:
+                        return self._send(403, {
+                            "error": str(exc),
+                            "code": canvas_feed_contract.ErrorCode.FEED_PATH_FORBIDDEN,
+                        })
+                    except ValueError as exc:
+                        return self._send(400, {
+                            "error": str(exc),
+                            "code": canvas_feed_contract.ErrorCode.FEED_PATH_FORBIDDEN,
+                        })
+                    if not os.path.isfile(resolved_feed_path):
                         return self._send(400, {"error": f"载荷文件不存在：{feed_path}"})
                     try:
-                        with open(feed_path, encoding="utf-8-sig") as f:
+                        with open(resolved_feed_path, encoding="utf-8-sig") as f:
                             feed_json = json.load(f)
                     except (OSError, json.JSONDecodeError) as exc:
                         return self._send(400, {
@@ -2794,8 +2883,13 @@ class Handler(BaseHTTPRequestHandler):
                 source_meta = body.get("source") if isinstance(body.get("source"), dict) else {}
                 source_meta = {
                     **source_meta,
-                    "name": source_meta.get("name") or (os.path.basename(feed_path) if feed_path else ""),
-                    "path": source_meta.get("path") or feed_path,
+                    "name": source_meta.get("name") or (
+                        os.path.basename(resolved_feed_path or feed_path)
+                        if feed_path else ""
+                    ),
+                    "path": source_meta.get("path") or (
+                        "" if tenant_context.multi_tenant_enabled() else resolved_feed_path
+                    ),
                 }
                 plan = canvas_feed_contract.prepare_import(
                     proj["payload"],
