@@ -887,45 +887,6 @@ def _node_save_conflict(incoming, current, include_position=False):
     )
 
 
-def _position_save_conflict(current_node, incoming, current_position):
-    """Detect a real position race without treating metadata timestamps as movement."""
-    if not isinstance(current_node, dict) or not isinstance(current_position, dict):
-        return False
-    incoming_position = incoming.get("position")
-    if not isinstance(incoming_position, dict):
-        return False
-    normalized_current = {
-        "x": float(current_position.get("x") or 0),
-        "y": float(current_position.get("y") or 0),
-    }
-    normalized_incoming = {
-        "x": float(incoming_position.get("x") or 0),
-        "y": float(incoming_position.get("y") or 0),
-    }
-    base_position = incoming.get("basePosition")
-    if isinstance(base_position, dict):
-        normalized_base = {
-            "x": float(base_position.get("x") or 0),
-            "y": float(base_position.get("y") or 0),
-        }
-        return normalized_current != normalized_base
-    base_updated_at = str(
-        incoming.get("basePositionUpdatedAt")
-        or incoming.get("baseUpdatedAt")
-        or ""
-    )
-    current_updated_at = str(
-        current_node.get("positionUpdatedAt")
-        or current_node.get("updatedAt")
-        or ""
-    )
-    return bool(
-        base_updated_at
-        and current_updated_at > base_updated_at
-        and normalized_current != normalized_incoming
-    )
-
-
 def merge_node_metadata(meta, incoming, generation_active=False):
     """Merge editable client fields while generation result fields stay authoritative."""
     explicit_media_import = bool((incoming or {}).get("_mediaImport"))
@@ -3497,30 +3458,6 @@ class Handler(BaseHTTPRequestHandler):
                 if episode_id
                 else None
             )
-            position_conflicts = []
-            for item in incoming:
-                if not isinstance(item, dict) or not item.get("id"):
-                    continue
-                node = by_id.get(item["id"])
-                position = item.get("position")
-                current_position = (
-                    episode_layout.get(item["id"])
-                    if episode_layout is not None
-                    else (node or {}).get("position")
-                )
-                if _position_save_conflict(node, item, current_position):
-                    position_conflicts.append({
-                        "nodeId": item["id"],
-                        "title": node.get("title") or item["id"],
-                    })
-            if position_conflicts:
-                names = "、".join(item["title"] for item in position_conflicts[:5])
-                suffix = "…" if len(position_conflicts) > 5 else ""
-                return self._send(409, {
-                    "error": f"另一个标签页刚移动过此节点，已拒绝覆盖位置：{names}{suffix}。请刷新后再拖动。",
-                    "code": "NODE_POSITION_CONFLICT",
-                    "conflicts": position_conflicts,
-                })
             updates = []
             unchanged_ids = []
             missing_ids = []

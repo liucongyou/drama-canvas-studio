@@ -200,7 +200,7 @@ class TenantHttpTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("文件内容与扩展名不匹配", json.loads(body)["error"])
 
-    def test_position_save_uses_position_version_not_generic_updated_at(self):
+    def test_position_save_is_last_writer_wins_and_preserves_metadata(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
         status, headers, _ = self.request(
@@ -215,7 +215,7 @@ class TenantHttpTests(unittest.TestCase):
             "/api/projects",
             "alpha.example.com",
             cookie,
-            {"title": "位置冲突测试"},
+            {"title": "位置竞态测试"},
         )
         self.assertEqual(status, 200)
         pid = json.loads(body)["id"]
@@ -281,7 +281,7 @@ class TenantHttpTests(unittest.TestCase):
         self.assertEqual(moved["updated"], 1)
         self.assertTrue(moved["updates"][0]["positionUpdatedAt"])
 
-        status, _, conflict_body = self.request(
+        status, _, last_write_body = self.request(
             "PUT",
             f"/api/projects/{pid}/nodes/positions",
             "alpha.example.com",
@@ -292,8 +292,21 @@ class TenantHttpTests(unittest.TestCase):
                 "basePosition": {"x": 100, "y": 80},
             }]},
         )
-        self.assertEqual(status, 409)
-        self.assertEqual(json.loads(conflict_body)["code"], "NODE_POSITION_CONFLICT")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(last_write_body)["updated"], 1)
+        status, _, project_body = self.request(
+            "GET",
+            f"/api/projects/{pid}",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 200)
+        final_node = next(
+            item for item in json.loads(project_body)["payload"]["nodes"]
+            if item["id"] == node["id"]
+        )
+        self.assertEqual(final_node["position"], {"x": 320.0, "y": 260.0})
+        self.assertEqual(final_node["metadata"]["prompt"], "second")
 
     def test_import_preview_and_commit_share_validation_and_revision(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")

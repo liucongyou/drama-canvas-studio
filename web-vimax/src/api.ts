@@ -1330,17 +1330,15 @@ export async function saveCanvasMediaNodes(
   return result;
 }
 
-export type CanvasPositionBase = {
-  x: number;
-  y: number;
-  positionUpdatedAt?: string;
+export type CanvasPositionMove = {
+  id: string;
+  position: {x: number; y: number};
 };
 
 export async function saveCanvasMediaNodePositions(
   sessionId: string,
-  nodes: CanvasMediaNode[],
+  moves: CanvasPositionMove[],
   epId?: string | null,
-  bases?: Map<string, CanvasPositionBase>,
 ) {
   return request<{
     ok: boolean;
@@ -1357,14 +1355,7 @@ export async function saveCanvasMediaNodePositions(
     method: 'PUT',
     body: JSON.stringify({
       episodeId: epId || null,
-      positions: nodes.map((node) => ({
-        id: node.id,
-        position: {x: node.x ?? 0, y: node.y ?? 0},
-        basePosition: bases?.get(node.id),
-        basePositionUpdatedAt: bases?.get(node.id)?.positionUpdatedAt
-          || node.positionUpdatedAt
-          || node.updatedAt,
-      })),
+      positions: moves,
     }),
   });
 }

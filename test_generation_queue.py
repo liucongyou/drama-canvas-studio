@@ -507,39 +507,6 @@ class GenerationQueueTests(unittest.TestCase):
             ["/uploads/first.png", "https://i.ibb.co/second.png"],
         )
 
-    def test_position_conflict_ignores_newer_metadata_timestamp(self):
-        current = {
-            "position": {"x": 100, "y": 80},
-            "updatedAt": "2026-10-28T14:00:10Z",
-        }
-        incoming = {
-            "position": {"x": 240, "y": 180},
-            "basePosition": {"x": 100, "y": 80},
-            "basePositionUpdatedAt": "2026-10-28T14:00:00Z",
-        }
-
-        self.assertFalse(server._position_save_conflict(
-            current,
-            incoming,
-            current["position"],
-        ))
-
-    def test_position_conflict_detects_real_move_in_another_tab(self):
-        current = {
-            "position": {"x": 300, "y": 220},
-            "updatedAt": "2026-10-28T14:00:10Z",
-        }
-        incoming = {
-            "position": {"x": 240, "y": 180},
-            "basePosition": {"x": 100, "y": 80},
-        }
-
-        self.assertTrue(server._position_save_conflict(
-            current,
-            incoming,
-            current["position"],
-        ))
-
     def test_imgbb_backfill_keeps_available_local_image_as_preview(self):
         upload_dir = Path(self.temp_dir.name) / "uploads"
         upload_dir.mkdir()

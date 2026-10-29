@@ -106,7 +106,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasPositionBase, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -7700,7 +7700,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const mediaPositionSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingMediaPatchesRef = useRef<Map<string, CanvasMediaNode>>(new Map());
   const pendingMediaNodeSavesRef = useRef<Map<string, CanvasMediaNode>>(new Map());
-  const pendingPositionBasesRef = useRef<Map<string, CanvasPositionBase>>(new Map());
+  const pendingPositionSavesRef = useRef<Map<string, {x: number; y: number; seq: number}>>(new Map());
+  const positionMutationSeqRef = useRef(0);
   const broadcastMediaChange = useCallback((nodeIds: string[]) => {
     if (!syncChannelRef.current || nodeIds.length === 0) return;
     syncChannelRef.current.postMessage({
@@ -7745,14 +7746,17 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         });
     }, 600);
   }, [beginSave, broadcastMediaChange, currentEp, finishSave, session, setToast]);
-  const persistMediaPositions = useCallback((next: CanvasMediaNode[]) => {
+  const persistMediaPositions = useCallback((_next: CanvasMediaNode[]) => {
     if (mediaPositionSaveTimer.current) clearTimeout(mediaPositionSaveTimer.current);
     mediaPositionSaveTimer.current = setTimeout(() => {
-      const bases = new Map(pendingPositionBasesRef.current);
-      const movedNodes = next.filter((node) => bases.has(node.id));
-      if (movedNodes.length === 0) return;
+      const snapshot = new Map(pendingPositionSavesRef.current);
+      if (snapshot.size === 0) return;
+      const moves = [...snapshot].map(([id, position]) => ({
+        id,
+        position: {x: position.x, y: position.y},
+      }));
       beginSave();
-      void saveCanvasMediaNodePositions(session, movedNodes, currentEp, bases)
+      void saveCanvasMediaNodePositions(session, moves, currentEp)
         .then((result) => {
           const updates = new Map((result.updates || []).map((item) => [item.nodeId, item]));
           if (updates.size > 0) {
@@ -7767,21 +7771,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                 : node;
             }));
           }
-          for (const node of movedNodes) {
-            const sent = bases.get(node.id);
-            const pending = pendingPositionBasesRef.current.get(node.id);
-            if (
-              sent
-              && pending
-              && pending.x === sent.x
-              && pending.y === sent.y
-              && pending.positionUpdatedAt === sent.positionUpdatedAt
-            ) {
-              pendingPositionBasesRef.current.delete(node.id);
-            }
+          for (const [nodeId, sent] of snapshot) {
+            const pending = pendingPositionSavesRef.current.get(nodeId);
+            if (pending?.seq === sent.seq) pendingPositionSavesRef.current.delete(nodeId);
           }
           const missingIds = new Set(result.missing || []);
-          const missingNodes = movedNodes.filter((node) => missingIds.has(node.id));
+          const missingNodes = mediaNodesRef.current.filter((node) => missingIds.has(node.id));
           if (missingNodes.length > 0) {
             void saveCanvasMediaNodes(session, missingNodes, currentEp)
               .then(() => broadcastMediaChange(missingNodes.map((node) => node.id)))
@@ -7791,28 +7786,18 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               });
           }
           finishSave(true);
-          broadcastMediaChange(movedNodes.map((node) => node.id));
+          broadcastMediaChange(moves.map((move) => move.id));
+          if (pendingPositionSavesRef.current.size > 0) {
+            persistMediaPositions(mediaNodesRef.current);
+          }
         })
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('另一个标签页')) {
-            const movedIds = new Set(movedNodes.map((node) => node.id));
-            for (const nodeId of movedIds) pendingPositionBasesRef.current.delete(nodeId);
-            void getCanvasMediaNodes(session, currentEp)
-              .then((remoteNodes) => {
-                const byId = new Map(remoteNodes.map((item) => [item.id, item]));
-                setMediaNodes((prev) => prev.map((node) => (
-                  movedIds.has(node.id) ? (byId.get(node.id) || node) : node
-                )));
-              })
-              .catch(() => {});
-          }
           finishSave(false);
           setSaveError(message);
-          if (message.includes('另一个标签页')) setToast(message);
         });
     }, 300);
-  }, [beginSave, broadcastMediaChange, currentEp, finishSave, session, setToast]);
+  }, [beginSave, broadcastMediaChange, currentEp, finishSave, session]);
 
   useEffect(() => {
     if (typeof BroadcastChannel === 'undefined') return;
@@ -8273,11 +8258,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   ) => {
     const previousNode = mediaNodesRef.current.find((node) => node.id === id);
     const onlyMetadata = !('x' in patch) && !('y' in patch);
-    if (previousNode && !onlyMetadata && !pendingPositionBasesRef.current.has(id)) {
-      pendingPositionBasesRef.current.set(id, {
-        x: previousNode.x,
-        y: previousNode.y,
-        positionUpdatedAt: previousNode.positionUpdatedAt,
+    if (previousNode && !onlyMetadata) {
+      const seq = ++positionMutationSeqRef.current;
+      pendingPositionSavesRef.current.set(id, {
+        x: typeof patch.x === 'number' ? patch.x : previousNode.x,
+        y: typeof patch.y === 'number' ? patch.y : previousNode.y,
+        seq,
       });
     }
     const nonEditableKeys = Object.keys(patch).filter((key) => key !== 'prompt' && key !== 'params');
@@ -9711,13 +9697,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         const next = prev.map((mn) => {
           const pos = patchMap.get(MEDIA_PREFIX + mn.id);
           if (!pos) return mn;
-          if (!pendingPositionBasesRef.current.has(mn.id)) {
-            pendingPositionBasesRef.current.set(mn.id, {
-              x: mn.x,
-              y: mn.y,
-              positionUpdatedAt: mn.positionUpdatedAt,
-            });
-          }
+          const seq = ++positionMutationSeqRef.current;
+          pendingPositionSavesRef.current.set(mn.id, {x: pos.x, y: pos.y, seq});
           return {...mn, x: pos.x, y: pos.y, updatedAt: new Date().toISOString()};
         });
         persistMediaPositions(next);

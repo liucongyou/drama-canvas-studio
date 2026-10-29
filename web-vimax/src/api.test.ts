@@ -149,7 +149,7 @@ describe('api request recovery', () => {
     expect(workspace.mediaNodes).toEqual([]);
   });
 
-  it('sends an isolated position base instead of the generic node timestamp', async () => {
+  it('sends position-only moves without conflict preconditions', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,
       updated: 1,
@@ -171,30 +171,18 @@ describe('api request recovery', () => {
       'project-1',
       [{
         id: 'role-1',
-        kind: 'image',
-        title: '角色｜赵铁柱（图1）',
-        prompt: '',
-        status: 'done',
-        x: 240,
-        y: 180,
-        updatedAt: '2026-10-28T14:00:03Z',
-        positionUpdatedAt: '2026-10-28T13:59:00Z',
+        position: {x: 240, y: 180},
       }],
       'EP002',
-      new Map([['role-1', {
-        x: 100,
-        y: 80,
-        positionUpdatedAt: '2026-10-28T13:58:00Z',
-      }]]),
     );
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
-    expect(body.positions[0]).toMatchObject({
+    expect(body.positions[0]).toEqual({
       id: 'role-1',
-      basePosition: {x: 100, y: 80},
-      basePositionUpdatedAt: '2026-10-28T13:58:00Z',
+      position: {x: 240, y: 180},
     });
-    expect(body.positions[0].baseUpdatedAt).toBeUndefined();
+    expect(body.positions[0].basePosition).toBeUndefined();
+    expect(body.positions[0].basePositionUpdatedAt).toBeUndefined();
   });
 
   it('does not show a sequence video as a generation ref unless the prompt names it', async () => {
