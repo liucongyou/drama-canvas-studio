@@ -2426,7 +2426,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
     ? (busy ? '生成中' : failed ? '生成失败' : done ? '已生成' : '文本')
     : busy ? '生成中' : done ? '已生成' : failed ? '生成失败' : '待生成';
   const statusCls = localUploading || busy ? 'is-busy' : done ? 'is-done' : failed ? 'is-failed' : 'is-idle';
-  if (renderMode === 'overview' && !selected && !active) {
+  if (renderMode === 'overview' && !active) {
     return (
       <div
         className={`canvas-node canvas-media-node canvas-media-overview-node ${statusCls}`}
@@ -12210,12 +12210,15 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         : ((_rm && Number(_rm[2]) > 0)
           ? Math.round((_meta.w * Number(_rm[2])) / Number(_rm[1]))
           : (mn.kind === 'audio' ? 100 : _meta.h));
+      const _overviewHeight = mediaRenderMode === 'overview' && editNode?.id !== mn.id
+        ? 68
+        : 32 + _th + 12;
       out.push({
         id: `media-${mn.id}`,
         type: 'media',
         position: {x: mn.x, y: mn.y},
         initialWidth: _tw,
-        initialHeight: 32 + _th + 12,
+        initialHeight: _overviewHeight,
         style: zOrder[`media-${mn.id}`] ? {zIndex: zOrder[`media-${mn.id}`]} : undefined,
         data: {
           node: mn,
@@ -12256,7 +12259,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       return saved ? {...node, position: saved} : node;
     });
     return placed;
-  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasOverview]);
+  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasOverview, editNode?.id]);
   const renderedEdges = useMemo(() => {
     if (largeCanvasOverview) return [];
     const ids = new Set(flowNodes.map((node) => node.id));
