@@ -6,6 +6,8 @@ import re
 import copy
 import hashlib
 import json
+from functools import lru_cache
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -14,6 +16,7 @@ from typing import Any
 
 class ErrorCode(StrEnum):
     FEED_PARSE_ERROR = "FEED_PARSE_ERROR"
+    SCHEMA_VALIDATION_FAILED = "SCHEMA_VALIDATION_FAILED"
     SCHEMA_VERSION_UNSUPPORTED = "SCHEMA_VERSION_UNSUPPORTED"
     FEED_PATH_FORBIDDEN = "FEED_PATH_FORBIDDEN"
     SEGMENT_INVALID = "SEGMENT_INVALID"
@@ -143,6 +146,7 @@ BAD_AGE_RE = re.compile(
     r"A \d+(?:-\d+)?-year-old (?:male|female)|A (?:male|female) in his ",
     re.IGNORECASE,
 )
+SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "canvas_feed.schema.json"
 
 
 def canonical_code(value: Any) -> str:
@@ -213,6 +217,153 @@ def _issue(
     )
 
 
+@lru_cache(maxsize=1)
+def load_feed_schema() -> dict:
+    try:
+        payload = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"无法加载画布载荷 Schema：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("画布载荷 Schema 根节点必须是对象")
+    return payload
+
+
+def _schema_type_matches(value: Any, expected: str) -> bool:
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "null":
+        return value is None
+    return True
+
+
+def _schema_validate(
+    value: Any,
+    schema: dict,
+    path: str,
+    issues: list[ValidationIssue],
+) -> None:
+    if not isinstance(schema, dict):
+        return
+    expected_type = schema.get("type")
+    if expected_type:
+        expected_types = (
+            expected_type if isinstance(expected_type, list) else [expected_type]
+        )
+        if not any(_schema_type_matches(value, str(item)) for item in expected_types):
+            issues.append(_issue(
+                ErrorCode.SCHEMA_VALIDATION_FAILED,
+                f"字段类型应为 {'/'.join(map(str, expected_types))}",
+                path=path or "$",
+            ))
+            return
+    if "const" in schema and value != schema["const"]:
+        issues.append(_issue(
+            ErrorCode.SCHEMA_VALIDATION_FAILED,
+            f"字段必须等于 {schema['const']!r}",
+            path=path or "$",
+        ))
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and value not in enum_values:
+        issues.append(_issue(
+            ErrorCode.SCHEMA_VALIDATION_FAILED,
+            f"字段值必须是 {enum_values!r} 之一",
+            path=path or "$",
+        ))
+    if isinstance(value, str):
+        minimum_length = schema.get("minLength")
+        if isinstance(minimum_length, int) and len(value) < minimum_length:
+            issues.append(_issue(
+                ErrorCode.SCHEMA_VALIDATION_FAILED,
+                f"字符串长度不能小于 {minimum_length}",
+                path=path or "$",
+            ))
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str):
+            try:
+                matches = re.fullmatch(pattern, value) is not None
+            except re.error:
+                matches = True
+            if not matches:
+                issues.append(_issue(
+                    ErrorCode.SCHEMA_VALIDATION_FAILED,
+                    f"字符串格式不匹配：{pattern}",
+                    path=path or "$",
+                ))
+    if isinstance(value, dict):
+        required = schema.get("required")
+        if isinstance(required, list):
+            for key in required:
+                if key not in value:
+                    child = f"{path}.{key}" if path else str(key)
+                    issues.append(_issue(
+                        ErrorCode.SCHEMA_VALIDATION_FAILED,
+                        f"缺少必填字段：{key}",
+                        path=child,
+                    ))
+        properties = schema.get("properties")
+        properties = properties if isinstance(properties, dict) else {}
+        for key, child_schema in properties.items():
+            if key in value:
+                child = f"{path}.{key}" if path else key
+                _schema_validate(value[key], child_schema, child, issues)
+        if schema.get("additionalProperties") is False:
+            for key in sorted(set(value) - set(properties)):
+                child = f"{path}.{key}" if path else str(key)
+                issues.append(_issue(
+                    ErrorCode.SCHEMA_VALIDATION_FAILED,
+                    f"不允许的字段：{key}",
+                    path=child,
+                ))
+    if isinstance(value, list):
+        minimum_items = schema.get("minItems")
+        if isinstance(minimum_items, int) and len(value) < minimum_items:
+            issues.append(_issue(
+                ErrorCode.SCHEMA_VALIDATION_FAILED,
+                f"数组至少需要 {minimum_items} 项",
+                path=path or "$",
+            ))
+        if schema.get("uniqueItems") is True:
+            serialized = [
+                json.dumps(item, ensure_ascii=False, sort_keys=True)
+                for item in value
+            ]
+            if len(serialized) != len(set(serialized)):
+                issues.append(_issue(
+                    ErrorCode.SCHEMA_VALIDATION_FAILED,
+                    "数组项不能重复",
+                    path=path or "$",
+                ))
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                _schema_validate(
+                    item,
+                    item_schema,
+                    f"{path}[{index}]" if path else f"[{index}]",
+                    issues,
+                )
+
+
+def validate_feed_schema(payload: Any) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    try:
+        schema = load_feed_schema()
+    except RuntimeError as exc:
+        return [_issue(ErrorCode.SCHEMA_VALIDATION_FAILED, str(exc), path="$")]
+    _schema_validate(payload, schema, "", issues)
+    return issues
+
+
 def _canonical_field(
     item: dict,
     canonical: str,
@@ -253,7 +404,12 @@ def _normalize_age(value: Any) -> str:
 
 def analyze_declared_feed(payload: dict) -> GateResult:
     """Gate 1: validate declarations without touching store or derived edges."""
-    issues: list[ValidationIssue] = []
+    issues: list[ValidationIssue] = validate_feed_schema(payload)
+    if not isinstance(payload, dict):
+        return GateResult(
+            issues=tuple(issues),
+            expectations=DeclaredExpectations(segments=(), warnings=()),
+        )
     contract = payload.get("canvas_contract") if isinstance(payload, dict) else None
     schema = str((contract or {}).get("schema") or "") if isinstance(contract, dict) else ""
     if schema != SCHEMA_VERSION:

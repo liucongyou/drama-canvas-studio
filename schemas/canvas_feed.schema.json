@@ -112,13 +112,7 @@
         "required": [
           "code",
           "name",
-          "format",
-          "prompt",
-          "label",
-          "description",
-          "age",
-          "gender",
-          "dialect"
+          "format"
         ],
         "properties": {
           "code": {
@@ -136,6 +130,10 @@
             "type": "string",
             "minLength": 1
           },
+          "voicePrompt": {
+            "type": "string",
+            "minLength": 1
+          },
           "label": {
             "type": "string",
             "minLength": 1
@@ -144,7 +142,15 @@
             "type": "string",
             "minLength": 1
           },
+          "voiceDescription": {
+            "type": "string",
+            "minLength": 1
+          },
           "age": {
+            "type": "string",
+            "pattern": "^[0-9]+(?:-[0-9]+)?$"
+          },
+          "voiceAge": {
             "type": "string",
             "pattern": "^[0-9]+(?:-[0-9]+)?$"
           },
@@ -154,7 +160,17 @@
               "female"
             ]
           },
+          "voiceGender": {
+            "enum": [
+              "male",
+              "female"
+            ]
+          },
           "dialect": {
+            "type": "string",
+            "minLength": 1
+          },
+          "voiceDialect": {
             "type": "string",
             "minLength": 1
           }
@@ -183,6 +199,37 @@
           "raw": {
             "type": "string",
             "minLength": 1
+          },
+          "canvas": {
+            "type": "object",
+            "properties": {
+              "asset_codes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^图\\s*[0-9]+$"
+                },
+                "uniqueItems": true
+              },
+              "asset_refs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "code"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "pattern": "^图\\s*[0-9]+$"
+                    }
+                  },
+                  "additionalProperties": true
+                },
+                "uniqueItems": true
+              }
+            },
+            "additionalProperties": true
           }
         },
         "additionalProperties": true
