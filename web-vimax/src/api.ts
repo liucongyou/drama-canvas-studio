@@ -312,7 +312,7 @@ export type ModelSpec = {
 export type DiscoveredModelSpec = {
   id: string;
   providerId: string;
-  capability: 'image' | 'video' | 'audio' | 'text';
+  capability: 'image' | 'video' | 'audio' | 'text' | 'unknown';
   adapter: string;
   remoteModel: string;
   label: string;

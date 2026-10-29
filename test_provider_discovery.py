@@ -65,27 +65,32 @@ class ProviderDiscoveryTests(unittest.TestCase):
             patch.object(provider_catalog, "load_config", return_value=self.config),
             patch.object(provider_catalog, "_request_status", return_value=(200, payload)),
         ):
-            return provider_catalog.discover_provider_models("demo")
+            return provider_catalog.discover_provider_models(
+                str(self.config["providers"][0]["id"])
+            )
 
-    def test_discovers_models_and_infers_capabilities(self):
+    def test_models_without_declared_types_require_explicit_selection(self):
         result = self.discover(
             '{"data":[{"id":"demo-video-15s"},{"id":"demo-image-pro"},{"id":"demo-tts"}]}'
         )
         self.assertEqual(result["count"], 3)
         self.assertEqual(
             [item["capability"] for item in result["models"]],
-            ["video", "image", "audio"],
+            ["unknown", "unknown", "unknown"],
         )
-        self.assertIn("duration", result["models"][0]["params"])
-        self.assertIn("ratio", result["models"][1]["defaultParams"])
+        self.assertTrue(all(item["enabled"] is False for item in result["models"]))
 
-    def test_gpt_image_is_not_inferred_as_text(self):
+    def test_declared_types_are_used_without_name_guessing(self):
         result = self.discover(
-            '{"data":[{"id":"即梦-55-gpt-image-2"},{"id":"gpt-6-astra"},{"id":"seedance-2.0"}]}'
+            '{"data":['
+            '{"id":"即梦-55-gpt-image-2","supported_endpoint_types":["openai_image"]},'
+            '{"id":"gpt-6-astra","supported_endpoint_types":["openai"]},'
+            '{"id":"seedance-2.0","supported_endpoint_types":["openai_video"]}'
+            ']}'
         )
         self.assertEqual(
             [item["capability"] for item in result["models"]],
-            ["image", "text", "video"],
+            ["image", "unknown", "video"],
         )
 
     def test_marks_existing_remote_models_without_writing(self):
@@ -104,7 +109,7 @@ class ProviderDiscoveryTests(unittest.TestCase):
 
     def test_rejects_model_list_without_ids(self):
         with self.assertRaises(RuntimeError):
-            self.discover('{"data":[{"name":"no-id"}]}')
+            self.discover('{"data":[{"description":"no-id"}]}')
 
     def test_provider_timeout_returns_readable_failure(self):
         with (
@@ -188,18 +193,24 @@ class ProviderDiscoveryTests(unittest.TestCase):
         self.assertTrue(all(kwargs["read_limit"] == 1024 * 1024 for _, kwargs in calls))
 
     def test_openai_video_defaults_to_relay_adapter(self):
-        result = self.discover('{"data":[{"id":"demo-seedance-video"}]}')
+        result = self.discover(
+            '{"data":[{"id":"demo-seedance-video","supported_endpoint_types":["openai_video"]}]}'
+        )
         self.assertEqual(result["models"][0]["capability"], "video")
         self.assertEqual(result["models"][0]["adapter"], "newapi_video")
 
     def test_newapi_image_defaults_to_relay_adapter(self):
         self.config["providers"][0]["base_url"] = "https://api.canvasproai.com/v1"
-        result = self.discover('{"data":[{"id":"gpt-image-2"}]}')
+        result = self.discover(
+            '{"data":[{"id":"gpt-image-2","supported_endpoint_types":["openai_image"]}]}'
+        )
         self.assertEqual(result["models"][0]["capability"], "image")
         self.assertEqual(result["models"][0]["adapter"], "newapi_image")
 
     def test_generic_openai_image_keeps_openai_adapter(self):
-        result = self.discover('{"data":[{"id":"custom-gpt-image-model"}]}')
+        result = self.discover(
+            '{"data":[{"id":"custom-gpt-image-model","supported_endpoint_types":["openai_image"]}]}'
+        )
         self.assertEqual(result["models"][0]["capability"], "image")
         self.assertEqual(result["models"][0]["adapter"], "openai_image")
 
@@ -284,6 +295,122 @@ class ProviderDiscoveryTests(unittest.TestCase):
         )
         self.assertEqual(result["models"][0]["capability"], "video")
         self.assertEqual(result["models"][0]["adapter"], "newapi_video")
+
+    def test_declared_endpoint_types_win_over_model_name(self):
+        result = self.discover(json.dumps({
+            "data": [
+                {
+                    "id": "即梦-47-seedance-2.5",
+                    "supported_endpoint_types": ["openai_image"],
+                },
+                {
+                    "id": "gpt-image-2",
+                    "supported_endpoint_types": ["openai_video"],
+                },
+            ],
+        }))
+        self.assertEqual(
+            [item["capability"] for item in result["models"]],
+            ["image", "video"],
+        )
+
+    def test_ark_task_type_and_output_modalities_drive_capability(self):
+        result = self.discover(json.dumps({
+            "data": [
+                {
+                    "id": "ark-video",
+                    "task_type": ["TextToVideo"],
+                    "modalities": {
+                        "input_modalities": ["text"],
+                        "output_modalities": ["video"],
+                    },
+                },
+                {
+                    "id": "ark-image",
+                    "task_type": ["TextToImage"],
+                    "modalities": {
+                        "input_modalities": ["text"],
+                        "output_modalities": ["image"],
+                    },
+                },
+                {
+                    "id": "ark-text",
+                    "task_type": ["TextGeneration"],
+                    "modalities": {
+                        "input_modalities": ["text"],
+                        "output_modalities": ["text"],
+                    },
+                },
+            ],
+        }))
+        self.assertEqual(
+            [item["capability"] for item in result["models"]],
+            ["video", "image", "text"],
+        )
+
+    def test_bailian_output_models_are_discovered(self):
+        result = self.discover(json.dumps({
+            "code": None,
+            "message": None,
+            "success": True,
+            "output": {
+                "total": 2,
+                "page_no": 1,
+                "page_size": 20,
+                "models": [
+                    {"model": "qwen3.8-max", "name": "Qwen3.8-Max"},
+                    {"model": "cosyvoice-v3.5-flash", "name": "CosyVoice v3.5"},
+                ],
+            },
+        }))
+        self.assertEqual(
+            [item["remoteModel"] for item in result["models"]],
+            ["qwen3.8-max", "cosyvoice-v3.5-flash"],
+        )
+        self.assertEqual(
+            [item["capability"] for item in result["models"]],
+            ["unknown", "unknown"],
+        )
+
+    def test_agnes_documented_catalog_types_are_used(self):
+        self.config["providers"][0].update({
+            "id": "agnes-ai",
+            "name": "Agnes AI",
+        })
+        result = self.discover(json.dumps({
+            "data": [
+                {
+                    "id": "agnes-2.5-flash",
+                    "supported_endpoint_types": ["openai"],
+                },
+                {
+                    "id": "agnes-image-2.5-flash",
+                    "supported_endpoint_types": ["openai"],
+                },
+                {
+                    "id": "agnes-video-2.5-flash",
+                    "supported_endpoint_types": ["openai"],
+                },
+            ],
+        }))
+        self.assertEqual(
+            [item["capability"] for item in result["models"]],
+            ["text", "image", "video"],
+        )
+
+    def test_one_provider_keeps_one_video_adapter_for_all_video_lines(self):
+        result = self.discover(json.dumps({
+            "data": [
+                {"id": "即梦-47-seedance-2.5", "supported_endpoint_types": ["openai_video"]},
+                {"id": "官转doubao-seedance-2.0-fast", "supported_endpoint_types": ["openai_video"]},
+                {"id": "算力-视频-示例", "supported_endpoint_types": ["openai_video"]},
+            ],
+        }))
+        self.assertEqual(result["count"], 3)
+        self.assertEqual(
+            {item["adapter"] for item in result["models"]},
+            {"newapi_video"},
+        )
 
 
 if __name__ == "__main__":

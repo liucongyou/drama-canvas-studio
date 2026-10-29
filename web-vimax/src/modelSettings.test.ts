@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest';
 import {
   adaptersForCapability,
   defaultAdapterForCapability,
+  defaultAdapterForProvider,
   modelDraft,
   parameterRowsFromDraft,
   pricingRowsFromDraft,
@@ -67,5 +68,13 @@ describe('model settings visual editors', () => {
     ]);
     expect(defaultAdapterForCapability('image')).toBe('ark_image');
     expect(adaptersForCapability('image').some((item) => item.value === 'newapi_video')).toBe(false);
+  });
+
+  it('picks the adapter for the provider rather than the first global adapter', () => {
+    expect(defaultAdapterForProvider('image', 'agnes-ai')).toBe('agnes_image');
+    expect(defaultAdapterForProvider('video', 'agnes-ai')).toBe('agnes_video');
+    expect(defaultAdapterForProvider('image', 'new-apl')).toBe('newapi_image');
+    expect(defaultAdapterForProvider('video', 'new-apl')).toBe('newapi_video');
+    expect(defaultAdapterForProvider('video', 'ark')).toBe('ark_video');
   });
 });

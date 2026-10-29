@@ -96,6 +96,72 @@ class ProviderCatalogTests(unittest.TestCase):
             )],
         )
 
+    def test_newapi_video_adapter_dispatches_aistars_model_protocol(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "47-seedance-2.5",
+            "remoteModel": "即梦-47-seedance-2.5",
+            "adapter": "newapi_video",
+            "params": {},
+        }
+        calls = []
+        downloads = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            if method == "POST":
+                return {"id": "video-task-1", "status": "queued"}
+            return {
+                "id": "video-task-1",
+                "status": "completed",
+                "artifacts": [{
+                    "key": "video-0",
+                    "type": "video",
+                    "content_url": "/v1/tasks/video-task-1/artifacts/video-0/content",
+                }],
+            }
+
+        def fake_download(url, key, **kwargs):
+            downloads.append((url, key))
+            return b"video-bytes", "video/mp4"
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request), \
+                patch.object(provider_client, "_download_bytes_with_key", side_effect=fake_download), \
+                patch.object(provider_client, "save_generated_bytes", return_value="/uploads/result.mp4"), \
+                patch.object(provider_client.time, "sleep"):
+            result = provider_client.generate_video(
+                provider,
+                model,
+                "参考图一的人物沿运河行走",
+                {
+                    "ratio": "16:9",
+                    "resolution": "480P",
+                    "duration": 5,
+                    "mode": "image2video",
+                },
+                [{"kind": "image", "url": "https://example.com/ref.png", "label": "角色"}],
+                [],
+            )
+
+        self.assertEqual(result["taskId"], "video-task-1")
+        self.assertEqual(result["url"], "/uploads/result.mp4")
+        self.assertEqual(calls[0][0], "POST")
+        self.assertEqual(calls[0][1], "https://api.canvasproai.com/aistars/v1/videos")
+        self.assertEqual(calls[1][0], "GET")
+        self.assertEqual(calls[1][1], "https://api.canvasproai.com/aistars/v1/tasks/video-task-1")
+        self.assertEqual(
+            downloads,
+            [(
+                "https://api.canvasproai.com/v1/tasks/video-task-1/artifacts/video-0/content",
+                "test-key",
+            )],
+        )
+
     def test_provider_submit_timeout_is_short_enough_for_interactive_retry(self):
         self.assertLessEqual(provider_client.SUBMIT_TIMEOUT_SECONDS, 60)
 

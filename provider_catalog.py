@@ -478,6 +478,111 @@ def _looks_like_image_model(value: Any) -> bool:
     )
 
 
+def _capability_from_endpoint_types(values: list[str] | None) -> str | None:
+    """Read the model capability from the provider's declared endpoint types."""
+    tokens = {
+        str(item).strip().lower()
+        for item in (values or [])
+        if str(item).strip()
+    }
+    if not tokens:
+        return None
+    if any(
+        "video" in token
+        or "seedance" in token
+        or token.endswith("-video-submit")
+        for token in tokens
+    ):
+        return "video"
+    if any(
+        "image" in token
+        or token in {"openai_image", "image-generation-async"}
+        for token in tokens
+    ):
+        return "image"
+    if any(
+        token in {"audio", "speech", "tts", "audio_speech"}
+        or "audio" in token
+        or "speech" in token
+        for token in tokens
+    ):
+        return "audio"
+    if any(
+        token in {
+            "embedding", "embeddings", "rerank",
+            "openai-response", "chat", "responses", "text",
+        }
+        or "chat" in token
+        or "embedding" in token
+        or "response" in token
+        for token in tokens
+    ):
+        return "text"
+    return None
+
+
+def _capability_from_ark_model(item: dict[str, Any]) -> str | None:
+    task_types = {
+        str(value).strip().lower()
+        for value in (item.get("task_type") or [])
+        if str(value).strip()
+    }
+    modalities = item.get("modalities")
+    outputs = set()
+    if isinstance(modalities, dict):
+        outputs = {
+            str(value).strip().lower()
+            for value in (modalities.get("output_modalities") or [])
+            if str(value).strip()
+        }
+    if outputs & {"video"} or any("video" in value for value in task_types):
+        return "video"
+    if outputs & {"image"} or any("imageto" in value or "texttoimage" in value for value in task_types):
+        return "image"
+    if outputs & {"text"} or any(
+        value in {"textgeneration", "visualquestionanswering"}
+        for value in task_types
+    ):
+        return "text"
+    if "audio" in outputs or any("audio" in value for value in task_types):
+        return "audio"
+    return None
+
+
+def _documented_provider_capability(
+    provider: dict[str, Any],
+    remote_model: str,
+) -> str | None:
+    """Capabilities from the provider's published model catalogue."""
+    provider_id = str(provider.get("id") or "").strip().lower()
+    model_id = str(remote_model or "").strip().lower()
+    if provider_id != "agnes-ai":
+        return None
+    text_models = {
+        "agnes-2.5-flash",
+        "agnes-2.5-pro",
+        "agnes-2.5-pro-beta",
+        "agnes-3.0-flash",
+        "agnes-3.0-pro",
+    }
+    image_models = {
+        "agnes-image-2.0-flash",
+        "agnes-image-2.1-flash",
+        "agnes-image-2.5-flash",
+    }
+    video_models = {
+        "agnes-video-2.5",
+        "agnes-video-2.5-flash",
+    }
+    if model_id in text_models:
+        return "text"
+    if model_id in image_models:
+        return "image"
+    if model_id in video_models:
+        return "video"
+    return None
+
+
 def load_config(*, migrate: bool = True) -> dict[str, Any]:
     cfg: dict[str, Any] = {}
     local_path = _local_config_path()
@@ -1389,31 +1494,45 @@ def _model_ids_from_response(payload: Any) -> list[str]:
     if isinstance(payload, list):
         raw_items = payload
     elif isinstance(payload, dict):
+        output = payload.get("output")
         candidates = (
             payload.get("data")
             or payload.get("models")
             or payload.get("result")
             or payload.get("items")
+            or (output.get("models") if isinstance(output, dict) else None)
         )
         raw_items = candidates if isinstance(candidates, list) else []
     else:
         raw_items = []
     ids: list[str] = []
     for item in raw_items:
-        value = item.get("id") if isinstance(item, dict) else item
+        value = (
+            (
+                item.get("id")
+                or item.get("model")
+                or item.get("name")
+            )
+            if isinstance(item, dict)
+            else item
+        )
         text = str(value or "").strip()
         if text:
             ids.append(text)
     return list(dict.fromkeys(ids))
 
 
-def _model_endpoint_types_from_response(payload: Any) -> dict[str, list[str]]:
+def _model_type_metadata_from_response(
+    payload: Any,
+) -> tuple[dict[str, list[str]], dict[str, str]]:
     if isinstance(payload, dict):
+        output = payload.get("output")
         candidates = (
             payload.get("data")
             or payload.get("models")
             or payload.get("result")
             or payload.get("items")
+            or (output.get("models") if isinstance(output, dict) else None)
         )
         raw_items = candidates if isinstance(candidates, list) else []
     elif isinstance(payload, list):
@@ -1421,21 +1540,26 @@ def _model_endpoint_types_from_response(payload: Any) -> dict[str, list[str]]:
     else:
         raw_items = []
     endpoint_types: dict[str, list[str]] = {}
+    ark_capabilities: dict[str, str] = {}
     for item in raw_items:
         if not isinstance(item, dict):
             continue
-        model_id = str(item.get("id") or "").strip()
+        model_id = str(item.get("id") or item.get("model") or item.get("name") or "").strip()
         if not model_id:
             continue
         values = (
             item.get("supported_endpoint_types")
             or item.get("supportedEndpointTypes")
             or item.get("endpoint_types")
+            or item.get("endpointTypes")
             or []
         )
         if isinstance(values, list):
             endpoint_types[model_id] = [str(value) for value in values if str(value).strip()]
-    return endpoint_types
+        ark_capability = _capability_from_ark_model(item)
+        if ark_capability:
+            ark_capabilities[model_id] = ark_capability
+    return endpoint_types, ark_capabilities
 
 
 def _parse_model_payload(prefix: str) -> dict[str, Any]:
@@ -1476,6 +1600,7 @@ def _infer_discovered_model(
     remote_model: str,
     index: int,
     supported_endpoint_types: list[str] | None = None,
+    declared_capability: str | None = None,
 ) -> dict[str, Any]:
     """Create a conservative editable draft from a provider /models row."""
     name = remote_model.lower()
@@ -1488,33 +1613,23 @@ def _infer_discovered_model(
         str(provider.get("id") or "").lower(),
         endpoint_marker,
     ])
-    if "openai_video" in endpoint_marker:
-        capability = "video"
-        adapter = "newapi_video"
-    elif any(word in endpoint_marker for word in (
-        "seedance", "suanli-seedance", "video",
-    )) or any(word in marker for word in (
-        "seedance", "seedream", "kling", "wan", "video", "veo", "sora",
-        "hailuo", "pika", "runway", "minimax", "cogvideo", "luma",
-    )):
-        capability = "video"
-    elif _looks_like_image_model(marker):
-        capability = "image"
-    elif any(word in marker for word in (
-        "tts", "speech", "voice", "audio", "sound", "cosyvoice",
-    )):
-        capability = "audio"
-    elif any(word in marker for word in (
-        "embedding", "embed", "rerank",
-    )):
-        capability = "text"
-    elif any(word in marker for word in (
-        "chat", "text", "deepseek", "qwen", "gpt", "claude", "glm",
-        "moonshot", "doubao", "llama", "mistral",
-    )):
-        capability = "text"
-    else:
-        capability = "image"
+    capability = (
+        declared_capability
+        or _documented_provider_capability(provider, remote_model)
+        or _capability_from_endpoint_types(supported_endpoint_types)
+    )
+    if capability is None:
+        return {
+            "id": normalize_model_id(remote_model),
+            "providerId": provider.get("id", ""),
+            "remoteModel": remote_model,
+            "label": remote_model,
+            "capability": "unknown",
+            "adapter": "",
+            "enabled": False,
+            "discovered": True,
+            "index": index,
+        }
     if "adapter" not in locals():
         if provider.get("protocol") == "ark":
             video_adapter = "ark_video"
@@ -1634,7 +1749,7 @@ def discover_provider_models(provider_id: str) -> dict[str, Any]:
     ids = _model_ids_from_response(payload)
     if not ids:
         raise RuntimeError("供应商返回成功，但没有识别到模型 id 字段")
-    endpoint_types = _model_endpoint_types_from_response(payload)
+    endpoint_types, declared_capabilities = _model_type_metadata_from_response(payload)
     existing = {
         str(model.get("remoteModel") or model.get("id") or "")
         for model in cfg.get("models", [])
@@ -1646,6 +1761,7 @@ def discover_provider_models(provider_id: str) -> dict[str, Any]:
             remote_model,
             index,
             endpoint_types.get(remote_model),
+            declared_capabilities.get(remote_model),
         )
         for index, remote_model in enumerate(ids)
     ]

@@ -110,6 +110,26 @@ export function defaultAdapterForCapability(capability: string): string {
   return adaptersForCapability(capability)[0]?.value || 'openai_image';
 }
 
+export function defaultAdapterForProvider(
+  capability: string,
+  providerId: string,
+): string {
+  const normalized = providerId.toLowerCase();
+  if (normalized === 'ark') {
+    return capability === 'image' ? 'ark_image' : capability === 'video' ? 'ark_video' : defaultAdapterForCapability(capability);
+  }
+  if (normalized === 'agnes-ai') {
+    return capability === 'image' ? 'agnes_image' : capability === 'video' ? 'agnes_video' : defaultAdapterForCapability(capability);
+  }
+  if (normalized === 'aliyun_bailian') {
+    return capability === 'audio' ? 'dashscope_tts' : defaultAdapterForCapability(capability);
+  }
+  if (normalized === 'teamorouter') {
+    return capability === 'text' ? 'openai_chat' : defaultAdapterForCapability(capability);
+  }
+  return capability === 'image' ? 'newapi_image' : capability === 'video' ? 'newapi_video' : defaultAdapterForCapability(capability);
+}
+
 function providerDraft(provider?: ProviderSpec): ProviderDraft {
   return provider ? {
     id: provider.id,
@@ -519,6 +539,7 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
   const [status, setStatus] = useState('');
   const [testState, setTestState] = useState<{ok: boolean; message: string} | null>(null);
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModelSpec[] | null>(null);
+  const [discoveredCapabilities, setDiscoveredCapabilities] = useState<Record<string, string>>({});
   const [discovering, setDiscovering] = useState(false);
   const [discoverQuery, setDiscoverQuery] = useState('');
   const [discoverMessage, setDiscoverMessage] = useState('');
@@ -733,6 +754,7 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
     try {
       const result = await discoverProviderModels(provider.id);
       setDiscoveredModels(result.models);
+      setDiscoveredCapabilities({});
       setDiscoverMessage(`发现 ${result.count} 个模型，请确认后导入`);
     } catch (error) {
       setDiscoverMessage(error instanceof Error ? error.message : String(error));
@@ -742,18 +764,35 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
   };
 
   const importDiscoveredModels = async () => {
-    const pending = filteredDiscoveredModels.filter((model) => !model.alreadyConfigured);
+    const pending = filteredDiscoveredModels.filter((model) => {
+      if (model.alreadyConfigured) return false;
+      const capability = model.capability === 'unknown'
+        ? discoveredCapabilities[`${model.providerId}:${model.remoteModel}`]
+        : model.capability;
+      return Boolean(capability);
+    });
     if (!pending.length || modelBusy) return;
     setModelBusy(true);
     setStatus('');
     try {
       let next = catalog;
       for (const item of pending) {
-        next = await saveModelConfig(item as unknown as Record<string, unknown>);
+        const key = `${item.providerId}:${item.remoteModel}`;
+        const capability = item.capability === 'unknown'
+          ? discoveredCapabilities[key]
+          : item.capability;
+        const adapter = item.adapter || defaultAdapterForProvider(capability, item.providerId);
+        next = await saveModelConfig({
+          ...item,
+          capability,
+          adapter,
+          enabled: true,
+        } as unknown as Record<string, unknown>);
       }
       if (next) applyCatalog(next);
       setStatus(`已导入 ${pending.length} 个模型`);
       setDiscoveredModels(null);
+      setDiscoveredCapabilities({});
       setDiscoverQuery('');
       setDiscoverMessage('');
       window.dispatchEvent(new CustomEvent('canvas-model-catalog-changed'));
@@ -985,7 +1024,9 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
                         setModel({
                           ...model,
                           capability: v,
-                          adapter: currentAdapterMatches ? model.adapter : defaultAdapterForCapability(v),
+                          adapter: currentAdapterMatches
+                            ? model.adapter
+                            : defaultAdapterForProvider(v, model.providerId),
                         });
                         setOpenSelect('');
                       }}
@@ -1179,20 +1220,55 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
               {discoverQuery && <button type="button" onClick={() => setDiscoverQuery('')} aria-label="清空搜索"><X size={12} /></button>}
             </label>
             <div className="model-discover-list">
-              {filteredDiscoveredModels.map((item) => (
-                <div key={`${item.providerId}:${item.remoteModel}`}>
-                  <span className={`model-settings-kind is-${item.capability}`}>{item.capability}</span>
-                  <span><strong>{item.label}</strong><small>{item.remoteModel} · {item.adapter}</small></span>
-                  <em>{item.alreadyConfigured ? '已配置' : '待导入'}</em>
-                </div>
-              ))}
+              {filteredDiscoveredModels.map((item) => {
+                const key = `${item.providerId}:${item.remoteModel}`;
+                const selectedCapability = item.capability === 'unknown'
+                  ? discoveredCapabilities[key] || ''
+                  : item.capability;
+                return (
+                  <div key={key}>
+                    <span className={`model-settings-kind is-${selectedCapability || 'unknown'}`}>
+                      {selectedCapability || '待选择'}
+                    </span>
+                    <span><strong>{item.label}</strong><small>{item.remoteModel}{item.adapter ? ` · ${item.adapter}` : ''}</small></span>
+                    {item.capability === 'unknown' && !item.alreadyConfigured ? (
+                      <select
+                        aria-label={`选择 ${item.remoteModel} 的类型`}
+                        value={selectedCapability}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setDiscoveredCapabilities((current) => ({
+                            ...current,
+                            [key]: value,
+                          }));
+                        }}
+                      >
+                        <option value="">选择类型</option>
+                        {CAPABILITIES.map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <em>{item.alreadyConfigured ? '已配置' : '待导入'}</em>
+                    )}
+                  </div>
+                );
+              })}
               {!filteredDiscoveredModels.length && <p className="model-discover-empty">没有匹配的模型。</p>}
             </div>
             <footer>
               <span>{discoverQueryText ? `当前筛选 ${filteredDiscoveredModels.length} 个，导入只作用于筛选结果。` : '导入后仍可在模型详情中编辑参数。'}</span>
               <button type="button" onClick={() => { setDiscoveredModels(null); setDiscoverQuery(''); }}>取消</button>
-              <button type="button" className="is-primary" disabled={modelBusy || !filteredDiscoveredModels.some((item) => !item.alreadyConfigured)} onClick={() => void importDiscoveredModels()}>
-                {modelBusy ? '导入中…' : `导入 ${filteredDiscoveredModels.filter((item) => !item.alreadyConfigured).length} 个`}
+              <button type="button" className="is-primary" disabled={modelBusy || !filteredDiscoveredModels.some((item) => {
+                if (item.alreadyConfigured) return false;
+                return item.capability !== 'unknown'
+                  || Boolean(discoveredCapabilities[`${item.providerId}:${item.remoteModel}`]);
+              })} onClick={() => void importDiscoveredModels()}>
+                {modelBusy ? '导入中…' : `导入 ${filteredDiscoveredModels.filter((item) => {
+                  if (item.alreadyConfigured) return false;
+                  return item.capability !== 'unknown'
+                    || Boolean(discoveredCapabilities[`${item.providerId}:${item.remoteModel}`]);
+                }).length} 个`}
               </button>
             </footer>
           </div>

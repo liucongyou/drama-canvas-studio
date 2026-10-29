@@ -1446,7 +1446,31 @@ def _newapi_video(
     on_task_created: TaskEventCallback | None = None,
     on_task_update: TaskEventCallback | None = None,
 ) -> dict[str, Any]:
-    """OpenAI-compatible video relay: POST /v1/videos, GET /v1/videos/{id}."""
+    """New APl video adapter.
+
+    The provider is one adapter. Its published models have different task
+    protocols, so protocol selection happens inside this adapter by exact
+    model name instead of leaking one adapter per product line.
+    """
+    remote_model = str(model.get("remoteModel") or model.get("id") or "")
+    if remote_model.startswith("即梦-"):
+        return _newapi_aistars_video(
+            provider, model, prompt, params, refs, voices,
+            on_task_created=on_task_created,
+            on_task_update=on_task_update,
+        )
+    if remote_model.startswith("官转doubao-"):
+        return _newapi_hc_video(
+            provider, model, prompt, params, refs, voices,
+            on_task_created=on_task_created,
+            on_task_update=on_task_update,
+        )
+    if remote_model.startswith(("算力", "特价", "SVIP系列/")):
+        return _newapi_suanli_video(
+            provider, model, prompt, params, refs, voices,
+            on_task_created=on_task_created,
+            on_task_update=on_task_update,
+        )
     text = _reference_prompt(prompt, refs + voices)
     text_refs = _text_refs(refs)
     if text_refs:
@@ -1515,6 +1539,274 @@ def _newapi_video(
             raise RuntimeError(f"视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}")
         time.sleep(poll_delay(time.time() - poll_started))
     raise RuntimeError(f"视频任务超时（1800s，任务 {task_id}）")
+
+
+def _newapi_aistars_video(
+    provider: dict[str, Any],
+    model: dict[str, Any],
+    prompt: str,
+    params: dict[str, Any],
+    refs: list[dict[str, Any]],
+    voices: list[dict[str, Any]],
+    *,
+    on_task_created: TaskEventCallback | None = None,
+    on_task_update: TaskEventCallback | None = None,
+) -> dict[str, Any]:
+    """即梦视频：提交 /aistars/v1/videos，按 id 查询，再带 Key 下载 video-0。"""
+    image_refs = [ref for ref in refs if ref.get("kind") == "image" and ref.get("url")]
+    video_refs = [ref for ref in refs if ref.get("kind") == "video" and ref.get("url")]
+    audio_refs = [ref for ref in voices if ref.get("url")]
+    text_refs = [ref for ref in refs if ref.get("kind") == "text"]
+    text = str(prompt or "")
+    extra_text = _text_refs(text_refs)
+    if extra_text:
+        text += "\n\n" + extra_text
+    mode = str(params.get("mode") or "auto").strip().lower()
+    if mode == "auto":
+        mode = "image2video" if (image_refs or video_refs or audio_refs) else "text2video"
+    mode_map = {
+        "reference": "image2video",
+        "keyframe": "image2video",
+        "text": "text2video",
+    }
+    mode = mode_map.get(mode, mode)
+    if mode not in {"text2video", "image2video", "first-frame-to-video", "frames2video"}:
+        raise RuntimeError("即梦视频模式无效")
+    body: dict[str, Any] = {
+        "model": model["remoteModel"],
+        "prompt": text,
+        "aspect_ratio": str(params.get("ratio") or "16:9"),
+        "resolution": str(params.get("resolution") or "720P").lower(),
+        "seconds": _safe_int(params.get("duration"), 5, 1, 30),
+        "mode": mode,
+    }
+    images = [_asset_url_for_provider(str(ref["url"])) for ref in image_refs]
+    videos = [_asset_url_for_provider(str(ref["url"])) for ref in video_refs]
+    audios = [_asset_url_for_provider(str(ref["url"])) for ref in audio_refs]
+    if images:
+        body["images"] = images
+    if videos:
+        body["videos"] = videos
+    if audios:
+        body["audios"] = audios
+    base = _newapi_api_origin(provider["base_url"])
+    key = provider_catalog.provider_key(provider)
+    response = _request_json(
+        "POST",
+        f"{base}/aistars/v1/videos",
+        key,
+        body,
+        timeout=120,
+    )
+    task_id = str(response.get("id") or response.get("task_id") or "").strip()
+    if not task_id:
+        raise RuntimeError(
+            f"即梦视频未返回任务号：{json.dumps(response, ensure_ascii=False)[:500]}"
+        )
+    _emit_task_event(on_task_created, {
+        "taskId": task_id,
+        "status": "queued",
+        "progress": 0,
+        "createdAt": time.time(),
+    })
+    poll_url = f"{base}/aistars/v1/tasks/{urllib.parse.quote(task_id, safe='')}"
+    deadline = time.time() + 3600
+    poll_started = time.time()
+    task = response
+    while time.time() < deadline:
+        status = str(task.get("status") or "").lower()
+        _emit_task_event(on_task_update, {
+            "taskId": task_id,
+            "status": status or "running",
+            "progress": task.get("progress"),
+        })
+        if status == "completed":
+            artifacts = task.get("artifacts") or []
+            if isinstance(artifacts, dict):
+                artifacts = [artifacts]
+            artifact = next(
+                (
+                    item for item in artifacts
+                    if isinstance(item, dict)
+                    and (item.get("content_url") or item.get("url"))
+                ),
+                None,
+            )
+            if not artifact:
+                raise RuntimeError("即梦视频已完成，但没有返回视频制品")
+            raw_url = str(artifact.get("content_url") or artifact.get("url"))
+            url = raw_url if raw_url.startswith("http") else base + raw_url
+            data, mime = _download_bytes_with_key(url, key)
+            return {
+                "url": save_generated_bytes(data, mime, ".mp4"),
+                "raw": task,
+                "taskId": task_id,
+            }
+        if status in {"failed", "error", "cancelled", "canceled"}:
+            error = task.get("error")
+            detail = error.get("message") if isinstance(error, dict) else error
+            raise RuntimeError(
+                f"即梦视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}"
+            )
+        time.sleep(max(10.0, poll_delay(time.time() - poll_started)))
+        task = _request_json("GET", poll_url, key, timeout=30)
+    raise RuntimeError(f"即梦视频任务超时（3600s，任务 {task_id}）")
+
+
+def _newapi_hc_video(
+    provider: dict[str, Any],
+    model: dict[str, Any],
+    prompt: str,
+    params: dict[str, Any],
+    refs: list[dict[str, Any]],
+    voices: list[dict[str, Any]],
+    *,
+    on_task_created: TaskEventCallback | None = None,
+    on_task_update: TaskEventCallback | None = None,
+) -> dict[str, Any]:
+    """官转 Seedance：/hc-cn/v1/video/tasks，task_id/succeeded。"""
+    content: list[dict[str, Any]] = [{"type": "text", "text": str(prompt or "")}]
+    for ref in refs:
+        if not ref.get("url"):
+            continue
+        kind = str(ref.get("kind") or "image")
+        item_type = {
+            "image": "image_url",
+            "video": "video_url",
+            "audio": "audio_url",
+        }.get(kind)
+        if not item_type:
+            continue
+        content.append({
+            "type": item_type,
+            item_type: {"url": _asset_url_for_provider(str(ref["url"]))},
+        })
+    body = {
+        "model": model["remoteModel"],
+        "content": content,
+        "resolution": str(params.get("resolution") or "480P").lower(),
+        "ratio": str(params.get("ratio") or "16:9"),
+        "duration": _safe_int(params.get("duration"), 5, 1, 30),
+        "generate_audio": bool(params.get("generateAudio", False)),
+    }
+    base = _newapi_api_origin(provider["base_url"])
+    key = provider_catalog.provider_key(provider)
+    response = _request_json(
+        "POST",
+        f"{base}/hc-cn/v1/video/tasks",
+        key,
+        body,
+        timeout=120,
+    )
+    task_id = _task_id(response)
+    if not task_id:
+        raise RuntimeError(f"官转视频未返回 task_id：{json.dumps(response, ensure_ascii=False)[:500]}")
+    _emit_task_event(on_task_created, {
+        "taskId": task_id,
+        "status": "queued",
+        "progress": 0,
+        "createdAt": time.time(),
+    })
+    poll_url = f"{base}/hc-cn/v1/video/tasks/{urllib.parse.quote(task_id, safe='')}"
+    deadline = time.time() + 3600
+    poll_started = time.time()
+    while time.time() < deadline:
+        task = _request_json("GET", poll_url, key, timeout=30)
+        status = str(task.get("status") or "").lower()
+        _emit_task_event(on_task_update, {
+            "taskId": task_id,
+            "status": status or "running",
+            "progress": task.get("progress"),
+        })
+        if status == "succeeded":
+            url = _video_url_from_task(task)
+            if not url:
+                raise RuntimeError("官转视频已完成，但没有返回视频地址")
+            return {"url": url, "raw": task, "taskId": task_id}
+        if status == "failed":
+            raise RuntimeError(f"官转视频生成失败：{json.dumps(task, ensure_ascii=False)[:600]}")
+        time.sleep(max(10.0, poll_delay(time.time() - poll_started)))
+    raise RuntimeError(f"官转视频任务超时（3600s，任务 {task_id}）")
+
+
+def _newapi_suanli_video(
+    provider: dict[str, Any],
+    model: dict[str, Any],
+    prompt: str,
+    params: dict[str, Any],
+    refs: list[dict[str, Any]],
+    voices: list[dict[str, Any]],
+    *,
+    on_task_created: TaskEventCallback | None = None,
+    on_task_update: TaskEventCallback | None = None,
+) -> dict[str, Any]:
+    """特价/算力视频：/suanli/v1/videos，id/completed。"""
+    images = [
+        _asset_url_for_provider(str(ref["url"]))
+        for ref in refs
+        if ref.get("kind") == "image" and ref.get("url")
+    ]
+    videos = [
+        _asset_url_for_provider(str(ref["url"]))
+        for ref in refs
+        if ref.get("kind") == "video" and ref.get("url")
+    ]
+    audios = [
+        _asset_url_for_provider(str(ref["url"]))
+        for ref in voices
+        if ref.get("url")
+    ]
+    body = {
+        "model": model["remoteModel"],
+        "prompt": str(prompt or ""),
+        "resolution": str(params.get("resolution") or "720P").lower(),
+        "ratio": str(params.get("ratio") or "16:9"),
+        "seconds": _safe_int(params.get("duration"), 5, 1, 30),
+    }
+    if images:
+        body["images"] = images
+    if videos:
+        body["video_refs"] = videos
+    if audios:
+        body["audio_refs"] = audios
+    base = _newapi_api_origin(provider["base_url"])
+    key = provider_catalog.provider_key(provider)
+    response = _request_json(
+        "POST",
+        f"{base}/suanli/v1/videos",
+        key,
+        body,
+        timeout=120,
+    )
+    task_id = _task_id(response)
+    if not task_id:
+        raise RuntimeError(f"特价视频未返回任务号：{json.dumps(response, ensure_ascii=False)[:500]}")
+    _emit_task_event(on_task_created, {
+        "taskId": task_id,
+        "status": "queued",
+        "progress": 0,
+        "createdAt": time.time(),
+    })
+    poll_url = f"{base}/suanli/v1/videos/{urllib.parse.quote(task_id, safe='')}"
+    deadline = time.time() + 3600
+    poll_started = time.time()
+    while time.time() < deadline:
+        task = _request_json("GET", poll_url, key, timeout=30)
+        status = str(task.get("status") or "").lower()
+        _emit_task_event(on_task_update, {
+            "taskId": task_id,
+            "status": status or "running",
+            "progress": task.get("progress"),
+        })
+        if status == "completed":
+            url = _video_url_from_task(task)
+            if not url:
+                raise RuntimeError("特价视频已完成，但没有返回视频地址")
+            return {"url": url, "raw": task, "taskId": task_id}
+        if status == "failed":
+            raise RuntimeError(f"特价视频生成失败：{json.dumps(task, ensure_ascii=False)[:600]}")
+        time.sleep(max(10.0, poll_delay(time.time() - poll_started)))
+    raise RuntimeError(f"特价视频任务超时（3600s，任务 {task_id}）")
 
 
 def _ark_video(
@@ -1921,10 +2213,28 @@ def check_video_task(
             "/contents/generations/tasks/" + urllib.parse.quote(task_id, safe=""),
         )
     elif adapter == "newapi_video":
-        poll_url = _join_url(
-            provider["base_url"],
-            "/videos/" + urllib.parse.quote(task_id, safe=""),
-        )
+        remote_model = str(model.get("remoteModel") or model.get("id") or "")
+        base = _newapi_api_origin(provider["base_url"])
+        if remote_model.startswith("即梦-"):
+            poll_url = (
+                f"{base}/aistars/v1/tasks/"
+                + urllib.parse.quote(task_id, safe="")
+            )
+        elif remote_model.startswith("官转doubao-"):
+            poll_url = (
+                f"{base}/hc-cn/v1/video/tasks/"
+                + urllib.parse.quote(task_id, safe="")
+            )
+        elif remote_model.startswith(("算力", "特价", "SVIP系列/")):
+            poll_url = (
+                f"{base}/suanli/v1/videos/"
+                + urllib.parse.quote(task_id, safe="")
+            )
+        else:
+            poll_url = _join_url(
+                provider["base_url"],
+                "/videos/" + urllib.parse.quote(task_id, safe=""),
+            )
     else:
         raise RuntimeError(f"不支持恢复的视频适配器：{adapter}")
     task = _request_json("GET", poll_url, key, timeout=30)

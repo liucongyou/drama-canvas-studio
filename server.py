@@ -4904,7 +4904,16 @@ class Handler(BaseHTTPRequestHandler):
                 provider_url = str(result.get("url") or "")
                 if not provider_url:
                     raise RuntimeError("供应商未返回视频地址，本次生成没有产生新视频")
-                generated_url = persist_generated_media(provider_url, ".mp4")
+                try:
+                    generated_url = persist_generated_media(provider_url, ".mp4")
+                except Exception as exc:
+                    raise provider_client.ProviderOutcomeUncertain(
+                        f"供应商已生成视频，但下载新视频失败：{exc}"
+                    ) from exc
+                if not generated_url.startswith(("/uploads/", "data:")):
+                    raise provider_client.ProviderOutcomeUncertain(
+                        "供应商已生成视频，但没有拿到本地新文件"
+                    )
                 generated_at = provider_ready_at
                 _record_video_version(
                     meta,
