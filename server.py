@@ -2221,6 +2221,13 @@ class Handler(BaseHTTPRequestHandler):
             return True
         origin_host = urlparse(origin).netloc.lower()
         request_host = self.headers.get("Host", "").strip().lower()
+        if _auth_mode() != "accounts":
+            local_hosts = {"127.0.0.1", "localhost", "::1"}
+            if (
+                _normalized_host(origin_host) in local_hosts
+                and _normalized_host(request_host) in local_hosts
+            ):
+                return True
         return bool(origin_host and origin_host == request_host)
 
     def _request_tenant_scope(self):

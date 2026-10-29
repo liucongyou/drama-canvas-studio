@@ -126,6 +126,8 @@ $env:CANVAS_FRONTEND_ORIGIN="https://yj.pduoduo.vip"
 $env:CANVAS_ALLOWED_ORIGINS="https://yj.pduoduo.vip"
 ```
 
+本地正式联调也使用同一套账号模式。`启动画布.bat` 会设置 `CANVAS_MULTI_TENANT=1`、`CANVAS_AUTH_MODE=accounts`，前端仍通过 `127.0.0.1:8891` 访问，API 固定为 `127.0.0.1:8890`。本地管理员账号通过 `tenant_admin.py account-create owner admin` 创建；本地账号、租户和项目数据与线上结构一致，但数据库完全独立。
+
 账号管理：
 
 ```powershell

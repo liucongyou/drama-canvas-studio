@@ -173,7 +173,7 @@ if not defined ONLY_FRONT (
         echo  ------------------------------------------------------------
         if not exist "data" mkdir "data" >nul 2>nul
         if not exist "logs" mkdir "logs" >nul 2>nul
-        start "戏剧画布-后端(8890)" cmd /k "set PYTHONIOENCODING=gbk&& set PYTHONUTF8=0&& %PY% -u server.py"
+        start "戏剧画布-后端(8890)" cmd /k "set PYTHONIOENCODING=gbk&& set PYTHONUTF8=0&& set CANVAS_MULTI_TENANT=1&& set CANVAS_AUTH_MODE=accounts&& set CANVAS_API_HOST=127.0.0.1&& set CANVAS_FRONTEND_ORIGIN=http://127.0.0.1:8891&& set CANVAS_ALLOWED_ORIGINS=http://127.0.0.1:8891&& set CANVAS_COOKIE_SECURE=0&& set CANVAS_OWNER_ADMIN_USERNAME=admin&& %PY% -u server.py"
         echo   已在新窗口启动
     )
 )

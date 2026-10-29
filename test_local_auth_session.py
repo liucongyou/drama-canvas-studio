@@ -36,6 +36,25 @@ class LocalAuthSessionTests(unittest.TestCase):
         self.assertEqual(body["role"], "admin")
         self.assertTrue(body["local"])
 
+    def test_local_host_mode_allows_loopback_dev_port_origin(self):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        body = b"{}"
+        connection.request(
+            "PUT",
+            "/api/not-a-real-route",
+            headers={
+                "Host": "127.0.0.1:8890",
+                "Origin": "http://127.0.0.1:8891",
+                "Content-Type": "application/json",
+            },
+            body=body,
+        )
+        response = connection.getresponse()
+        response_body = response.read()
+        connection.close()
+        self.assertNotEqual(response.status, 403)
+        self.assertNotIn(b"ORIGIN_REJECTED", response_body)
+
 
 if __name__ == "__main__":
     unittest.main()

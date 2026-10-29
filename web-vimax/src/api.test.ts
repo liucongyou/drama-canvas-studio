@@ -354,6 +354,18 @@ describe('api request recovery', () => {
     expect(dispatchEvent).not.toHaveBeenCalled();
   });
 
+  it('preserves an origin rejection instead of reporting provider auth failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: '跨站请求已拒绝',
+      code: 'ORIGIN_REJECTED',
+    }), {
+      status: 403,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    await expect(saveCanvasMediaNodePositions('project-1', [])).rejects.toThrow('跨站请求已拒绝');
+  });
+
   it('logs out when the server reports an expired account session', async () => {
     const dispatchEvent = vi.fn();
     vi.stubGlobal('window', {dispatchEvent});

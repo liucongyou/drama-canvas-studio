@@ -617,6 +617,8 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
       || code === 'PASSWORD_TOO_SHORT'
       || code === 'CURRENT_PASSWORD_INVALID'
       || code === 'USE_CHANGE_PASSWORD'
+      || code === 'ORIGIN_REJECTED'
+      || code === 'CSRF_REJECTED'
     );
     throw new Error(preserveServerMessage ? raw : friendlyRequestError(response.status, raw));
   }
