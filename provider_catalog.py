@@ -441,6 +441,27 @@ def _is_openai_video_relay(provider: dict[str, Any]) -> bool:
     )
 
 
+def _looks_like_image_model(value: Any) -> bool:
+    marker = str(value or "").lower()
+    return any(
+        word in marker
+        for word in (
+            "gpt-image",
+            "seedream",
+            "nano-banana",
+            "stable-diffusion",
+            "sdxl",
+            "qwen-image",
+            "z-image",
+            "dall-e",
+            "dalle",
+            "imagen",
+            "flux",
+            "image generation",
+        )
+    )
+
+
 def load_config(*, migrate: bool = True) -> dict[str, Any]:
     cfg: dict[str, Any] = {}
     local_path = _local_config_path()
@@ -579,6 +600,19 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
             "ark_video",
         }:
             model["adapter"] = "newapi_video"
+    for model in models:
+        if not isinstance(model, dict) or model.get("capability") != "text":
+            continue
+        provider = provider_by_id.get(model.get("providerId"))
+        if not provider or not _is_openai_video_relay(provider):
+            continue
+        model_ref = " ".join(
+            str(model.get(key) or "")
+            for key in ("id", "label", "remoteModel")
+        )
+        if _looks_like_image_model(model_ref):
+            model["capability"] = "image"
+            model["adapter"] = "openai_image"
     if migrate and merged != cfg:
         save_config(merged)
     return merged
@@ -1370,6 +1404,8 @@ def _infer_discovered_model(
         "hailuo", "pika", "runway", "minimax", "cogvideo", "luma",
     )):
         capability = "video"
+    elif _looks_like_image_model(marker):
+        capability = "image"
     elif any(word in marker for word in (
         "tts", "speech", "voice", "audio", "sound", "cosyvoice",
     )):

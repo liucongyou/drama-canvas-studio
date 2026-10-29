@@ -58,6 +58,15 @@ class ProviderDiscoveryTests(unittest.TestCase):
         self.assertIn("duration", result["models"][0]["params"])
         self.assertIn("ratio", result["models"][1]["defaultParams"])
 
+    def test_gpt_image_is_not_inferred_as_text(self):
+        result = self.discover(
+            '{"data":[{"id":"即梦-55-gpt-image-2"},{"id":"gpt-6-astra"},{"id":"seedance-2.0"}]}'
+        )
+        self.assertEqual(
+            [item["capability"] for item in result["models"]],
+            ["image", "text", "video"],
+        )
+
     def test_marks_existing_remote_models_without_writing(self):
         self.config["models"] = [{
             "id": "demo-image-pro",
