@@ -768,6 +768,69 @@ def queue_generated_image_finalize(
     return True
 
 
+def queue_generated_image_tos_archive(
+    project_id,
+    node_id,
+    local_url,
+    provider,
+    model,
+    task_id,
+    generated_at,
+):
+    """Archive a locally cached image without delaying the visible result."""
+    context = tenant_context.current()
+    tenant_id = context.tenant_id if context else None
+    tenant_slug = context.slug if context else "local"
+
+    def run():
+        storage = archive_generated_image(
+            local_url,
+            provider,
+            model,
+            task_id,
+            generated_at,
+        )
+        storage = storage if isinstance(storage, dict) else {}
+        storage_error = str(storage.get("error") or "")
+        commit_node_metadata(project_id, node_id, {
+            "storage": storage,
+            "storageError": storage_error,
+        })
+        if not storage.get("status") == "stored":
+            return
+        with project_write_lock(project_id):
+            current = store.get_project(project_id)
+            if not current:
+                return
+            current_node = next(
+                (
+                    item for item in current["payload"].get("nodes", [])
+                    if item.get("id") == node_id
+                ),
+                None,
+            )
+            if not current_node:
+                return
+            meta = current_node.setdefault("metadata", {})
+            params = meta.setdefault("params", {})
+            versions = params.get("mediaVersions") or []
+            changed = False
+            for item in versions:
+                if isinstance(item, dict) and item.get("url") == local_url:
+                    item["storage"] = storage
+                    changed = True
+            if changed:
+                store.update_project(project_id, payload=current["payload"])
+
+    threading.Thread(
+        target=_run_in_tenant,
+        args=(tenant_id, tenant_slug, run),
+        name=f"image-tos-archive-{node_id}",
+        daemon=True,
+    ).start()
+    return True
+
+
 def queue_generated_video_finalize(
     project_id,
     node_id,
@@ -4805,35 +4868,19 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 generated_at = provider_ready_at
                 generated_url = local_generated_url
-                storage = (
-                    archive_generated_image(
-                        local_generated_url,
-                        provider,
-                        model,
-                        str(result.get("taskId") or ""),
-                        generated_at,
-                    )
-                    if local_generated_url.startswith("/uploads/")
-                    else None
-                )
                 _record_media_version(
                     meta,
                     "image",
                     generated_url,
                     str(result.get("taskId") or ""),
                     generated_at,
-                    storage,
                 )
                 meta["content"] = generated_url
                 meta["status"] = "done"
                 meta["generatedAt"] = generated_at
                 meta["finalizePending"] = False
-                meta["storage"] = storage if isinstance(storage, dict) else {}
-                meta["storageError"] = (
-                    str(storage.get("error") or "")
-                    if isinstance(storage, dict)
-                    else ""
-                )
+                meta["storage"] = {}
+                meta["storageError"] = ""
                 imgbb_pending = imgbb_storage.is_ready()
                 meta["imgbb"] = {
                     "status": "pending",
@@ -4845,6 +4892,15 @@ class Handler(BaseHTTPRequestHandler):
                 meta["promptStaleReason"] = ""
                 meta.pop("sourcePromptUpdatedAt", None)
                 if local_generated_url.startswith("/uploads/"):
+                    queue_generated_image_tos_archive(
+                        pid,
+                        node["id"],
+                        local_generated_url,
+                        provider,
+                        model,
+                        str(result.get("taskId") or ""),
+                        str(generated_at or ""),
+                    )
                     queue_generated_image_imgbb_mirror(
                         pid,
                         node["id"],

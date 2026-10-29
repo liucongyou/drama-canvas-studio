@@ -884,6 +884,7 @@ class GenerationQueueTests(unittest.TestCase):
             patch.object(server, "archive_generated_image", return_value=None),
             patch.object(server.imgbb_storage, "is_ready", return_value=True),
             patch.object(server, "queue_generated_image_imgbb_mirror", side_effect=lambda *args: queued.append(args)),
+            patch.object(server, "queue_generated_image_tos_archive"),
             patch.object(server, "commit_node_metadata", side_effect=lambda *args: committed.append(args)),
         ):
             handler._generate_once("project-1", project, node)
@@ -893,6 +894,58 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(node["metadata"]["imgbb"]["status"], "pending")
         self.assertEqual(queued[0][2], "/uploads/generated.png")
         self.assertEqual(committed[-1][2]["content"], "/uploads/generated.png")
+
+    def test_image_tos_archive_runs_after_local_success(self):
+        node = {
+            "id": "image-tos",
+            "type": "image",
+            "title": "角色｜甲（图1）",
+            "updatedAt": "2026-10-30T00:00:00.000Z",
+            "metadata": {
+                "prompt": "test image",
+                "status": "generating",
+                "params": {"provider": "ark", "model": "seedream"},
+            },
+        }
+        project = {"id": "project-image-tos", "payload": {"nodes": [node]}}
+        provider = {
+            "id": "ark",
+            "name": "Ark",
+            "api_key": "test-key",
+            "base_url": "https://ark.example/api/v3",
+        }
+        model = {
+            "id": "seedream",
+            "remoteModel": "doubao-seedream",
+            "defaultParams": {},
+            "limits": {},
+        }
+        archived = []
+        sent = []
+        handler = object.__new__(server.Handler)
+        handler._send = lambda status, payload: sent.append((status, payload)) or payload
+        with (
+            patch.object(server.provider_catalog, "resolve_model", return_value=(provider, model, {})),
+            patch.object(server.provider_catalog, "test_provider", return_value={"ok": True}),
+            patch.object(
+                server.provider_client,
+                "generate_image",
+                return_value={"url": "https://provider/result.png"},
+            ),
+            patch.object(server, "persist_generated_media", return_value="/uploads/generated.png"),
+            patch.object(
+                server,
+                "queue_generated_image_tos_archive",
+                side_effect=lambda *args: archived.append(args),
+            ),
+            patch.object(server.imgbb_storage, "is_ready", return_value=False),
+            patch.object(server, "commit_node_metadata"),
+        ):
+            handler._generate_once(project["id"], project, node)
+
+        self.assertEqual(sent[-1][0], 200)
+        self.assertEqual(sent[-1][1]["status"], "done")
+        self.assertEqual(archived[0][2], "/uploads/generated.png")
 
     def test_provider_success_with_download_failure_is_pending_not_failed(self):
         node = {
