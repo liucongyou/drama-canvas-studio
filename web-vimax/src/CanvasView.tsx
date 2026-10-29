@@ -60,7 +60,6 @@ import {
   Eye,
   EyeOff,
   Film,
-  Focus,
   Group,
   Hand,
   History,
@@ -7615,6 +7614,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   groupsRef.current = groups;   // persistLayout 里要读最新值（不能挂 deps，会连锁重建回调）
   const viewportRef = useRef({x: 0, y: 0, zoom: 1});
   const overviewReturnViewportRef = useRef<CanvasViewport | null>(null);
+  const focusSelectionRef = useRef<(showEmptyHint?: boolean) => boolean>(() => false);
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadPersistedLayout = useCallback(() => {
@@ -11781,12 +11781,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         }
         if (key === 'f') {
           event.preventDefault();
-          const sel = rf.getNodes().filter((node) => node.selected);
-          if (sel.length > 0) {
-            rf.fitView({nodes: sel.map((node) => ({id: node.id})), padding: 0.3, duration: 300});
-          } else {
-            setToast('先选中节点，再按 Ctrl+F 聚焦所选');
-          }
+          focusSelectionRef.current();
           return;
         }
         if (key === '0') { event.preventDefault(); rf.zoomTo(1, {duration: 200}); return; }
@@ -11809,11 +11804,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       // L：一键隐藏/显示所有连线（Logic=连线，和 V/H/C 同一组单键视图快捷键）
       else if (key === 'l') { event.preventDefault(); toggleEdgesHidden(); }
       else if (key === 'f' && event.shiftKey) {
-        // Shift+F：视口聚焦到当前选中节点（F 是适应全部）
+        // Shift+F：聚焦已选卡片并固定 50%（F 是适应全部）
         event.preventDefault();
-        const sel = rf.getNodes().filter((n) => n.selected);
-        if (sel.length === 0) { setToast('先选中节点，再按 Shift+F 聚焦所选'); return; }
-        rf.fitView({nodes: sel.map((n) => ({id: n.id})), padding: 0.3, duration: 300});
+        focusSelectionRef.current();
       }
       else if (key === 'f') { event.preventDefault(); rf.fitView({padding: 0.2}); }
       else if (key === '?') { event.preventDefault(); setHelpOpen(true); }
@@ -12898,41 +12891,41 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     }
     fitCanvas({animate: true});
   }, [fitCanvas, mediaNodes]);
-  const focusWorkspace = useCallback(() => {
+  const focusSelection = useCallback((showEmptyHint = true) => {
     setLargeCanvasOverview(false);
+    const flowNodes = rf.getNodes();
+    const selected = flowNodes.filter((node) => node.selected);
+    if (selected.length === 0) {
+      if (showEmptyHint) setToast('先选择节点，再点「聚焦」');
+      return false;
+    }
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    selected.forEach((node) => {
+      const absolute = absolutePositionOf(node.id, flowNodes) ?? node.position;
+      const width = node.measured?.width ?? node.width ?? 0;
+      const height = node.measured?.height ?? node.height ?? 0;
+      minX = Math.min(minX, absolute.x);
+      minY = Math.min(minY, absolute.y);
+      maxX = Math.max(maxX, absolute.x + width);
+      maxY = Math.max(maxY, absolute.y + height);
+    });
+    if (!Number.isFinite(minX)) return false;
     window.requestAnimationFrame(() => {
-      const flowNodes = rf.getNodes();
-      if (flowNodes.length === 0) {
-        rf.zoomTo(0.5, {duration: 220});
-        return;
-      }
-      const host = document.querySelector('.react-flow') as HTMLElement | null;
-      const center = rf.screenToFlowPosition({
-        x: (host?.clientWidth || window.innerWidth) / 2,
-        y: (host?.clientHeight || window.innerHeight) / 2,
-      });
-      const selected = flowNodes.filter((node) => node.selected);
-      const candidates = selected.length > 0 ? selected : flowNodes;
-      const target = candidates.reduce((best, node) => {
-        const absolute = absolutePositionOf(node.id, flowNodes) ?? node.position;
-        const width = node.measured?.width ?? node.width ?? 0;
-        const height = node.measured?.height ?? node.height ?? 0;
-        const distance = Math.hypot(
-          absolute.x + width / 2 - center.x,
-          absolute.y + height / 2 - center.y,
-        );
-        return !best || distance < best.distance ? {node, absolute, distance} : best;
-      }, null as {node: (typeof flowNodes)[number]; absolute: {x: number; y: number}; distance: number} | null);
-      if (!target) return;
-      const width = target.node.measured?.width ?? target.node.width ?? 0;
-      const height = target.node.measured?.height ?? target.node.height ?? 0;
       rf.setCenter(
-        target.absolute.x + width / 2,
-        target.absolute.y + height / 2,
+        (minX + maxX) / 2,
+        (minY + maxY) / 2,
         {zoom: 0.5, duration: 280},
       );
     });
-  }, [rf]);
+    return true;
+  }, [rf, setToast]);
+  const focusWorkspace = useCallback(() => {
+    focusSelection(true);
+  }, [focusSelection]);
+  focusSelectionRef.current = focusSelection;
   const returnFromOverview = useCallback(() => {
     const viewport = overviewReturnViewportRef.current;
     setLargeCanvasOverview(false);
@@ -14372,7 +14365,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                 <button type="button" onClick={fitView} title="适配视图（F / Ctrl+1）" aria-label="适应视图">
                   <span className="canvas-tool-ico"><Maximize2 size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">适应</span>
                 </button>
-                <button type="button" onClick={focusWorkspace} title="聚焦当前工作区" aria-label="聚焦工作区">
+                <button
+                  type="button"
+                  onClick={focusWorkspace}
+                  disabled={selectedCount === 0}
+                  title={selectedCount === 0 ? '先选择节点，再聚焦到已选卡片（固定 50%）' : '聚焦到已选卡片（固定 50%）'}
+                  aria-label="聚焦已选节点"
+                >
                   <span className="canvas-tool-ico"><ScanSearch size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">聚焦</span>
                 </button>
                 <button type="button" onClick={zoomOut} title="缩小" aria-label="缩小"><Minus size={14} strokeWidth={2.2} aria-hidden="true" /></button>
@@ -14408,26 +14407,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   </span>
                   <span className="canvas-tool-label">{edgesHidden ? '显示连线' : '隐藏连线'}</span>
                 </button>
-                {/* 选中上下文：≥1 个给「适应所选」；≥2 个的批量操作改由浮动操作条承担，
-                    工具栏这里不再重复显示「已选 N / 整理…」，避免同一件事出现两个入口。 */}
-                {selectedCount >= 1 && (
-                  <>
-                    <span className="canvas-toolbar-sep" />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const sel = rf.getNodes().filter((n) => n.selected);
-                        if (sel.length === 0) return;
-                        rf.fitView({nodes: sel.map((n) => ({id: n.id})), padding: 0.3, duration: 300});
-                      }}
-                      title="把视口聚焦到选中的节点（Shift+F）"
-                      aria-label="适应所选"
-                    >
-                      <span className="canvas-tool-ico"><Focus size={14} strokeWidth={1.9} aria-hidden="true" /></span>
-                      <span className="canvas-tool-label">适应所选</span>
-                    </button>
-                  </>
-                )}
                 {/* 无选中时保留一个整理入口：在没有选区的情况下对齐/分布/排序整张画布 */}
                 {selectedCount < 2 && (
                   <button
@@ -14738,7 +14717,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   <button type="button" onClick={() => { setDeleteTargets(contextMenu.selIds!.map((id) => ({id, type: id.startsWith(NOTE_PREFIX) ? 'note' : 'media'}))); setContextMenu(null); }}><Trash2 size={13} strokeWidth={1.9} aria-hidden="true" />删除…（{contextMenu.selIds.length} 项）</button>
                   <button type="button" onClick={() => { const n = cutSelectedNodes(); if (n > 0) setToast(`已剪切 ${n} 个节点，Ctrl+V 粘贴`); setContextMenu(null); }}><Scissors size={13} strokeWidth={1.9} aria-hidden="true" />剪切（Ctrl+X）</button>
                   <button type="button" onClick={() => { const n = duplicateSelectedNodes(); if (n > 0) setToast(`已复制 ${n} 个节点`); setContextMenu(null); }}><Copy size={13} strokeWidth={1.9} aria-hidden="true" />复制（Ctrl+D）</button>
-                  <button type="button" onClick={() => { rf.fitView({nodes: contextMenu.selIds!.map((id) => ({id})), padding: 0.3, duration: 300}); setContextMenu(null); }}><Maximize2 size={13} strokeWidth={1.9} aria-hidden="true" />适应所选（Shift+F）</button>
+                  <button type="button" onClick={() => { focusSelection(true); setContextMenu(null); }}><ScanSearch size={13} strokeWidth={1.9} aria-hidden="true" />聚焦所选（Shift+F）</button>
                   <button type="button" onClick={() => { setNodeZOrder(contextMenu.selIds!, 'front'); setContextMenu(null); }}><ArrowUpToLine size={13} strokeWidth={1.9} aria-hidden="true" />置于顶层（{contextMenu.selIds!.length} 项）</button>
                   <button type="button" onClick={() => { setNodeZOrder(contextMenu.selIds!, 'back'); setContextMenu(null); }}><ArrowDownToLine size={13} strokeWidth={1.9} aria-hidden="true" />置于底层（{contextMenu.selIds!.length} 项）</button>
                   <span className="canvas-context-sep" />
