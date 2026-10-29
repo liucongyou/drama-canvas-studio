@@ -157,7 +157,7 @@ class GenerationQueueTests(unittest.TestCase):
         with patch.object(server.store, "get_generation_task", return_value={"status": "failed"}):
             self.assertFalse(server.preserve_generation_outcome("task-1", RuntimeError("provider failed")))
 
-    def test_submit_timeout_releases_ghost_task_without_provider_id(self):
+    def test_runtime_does_not_reap_active_task_without_provider_id(self):
         project_id = "project-ghost"
         node_id = "node-ghost"
         node = {
@@ -193,13 +193,9 @@ class GenerationQueueTests(unittest.TestCase):
                 patch.object(server.store, "update_generation_task", update_task), \
                 patch.object(server, "commit_node_metadata", commit):
             reconciled = server.reconcile_generation_task_records()
-        self.assertEqual(reconciled, 1)
-        update_task.assert_called_once()
-        self.assertEqual(update_task.call_args.kwargs["status"], "interrupted")
-        self.assertEqual(update_task.call_args.kwargs["phase"], "提交超时")
-        commit.assert_called_once()
-        self.assertEqual(commit.call_args.args[2]["status"], "failed")
-        self.assertEqual(commit.call_args.args[2]["providerTaskPhase"], "提交超时")
+        self.assertEqual(reconciled, 0)
+        update_task.assert_not_called()
+        commit.assert_not_called()
 
     def test_sync_image_without_provider_task_id_is_not_marked_submit_timeout(self):
         """Agnes image is synchronous and has no provider task id by design."""

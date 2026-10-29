@@ -1706,37 +1706,6 @@ def reconcile_generation_task_records():
         node = nodes.get((task.get("project_id"), task.get("node_id")))
         meta = (node or {}).get("metadata") or {}
         node_status = str(meta.get("status") or "")
-        inflight_key = (str(task.get("project_id") or ""), str(task.get("node_id") or ""))
-        with GENERATION_INFLIGHT_LOCK:
-            worker_alive = inflight_key in GENERATION_INFLIGHT
-        if (
-            str(task.get("kind") or "") == "video"
-            and not worker_alive
-            and node_status == "generating"
-            and not str(task.get("provider_task_id") or "").strip()
-            and str(task.get("phase") or "") in {"准备提交", "提交供应商"}
-        ):
-            updated_raw = str(task.get("updated_at") or task.get("started_at") or task.get("created_at") or "")
-            try:
-                updated_at = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
-                age = (datetime.now(timezone.utc) - updated_at).total_seconds()
-            except (TypeError, ValueError):
-                age = 999
-            if age >= max(90, provider_client.SUBMIT_TIMEOUT_SECONDS + 30):
-                error = "提交供应商超时，未取得供应商任务 ID。请检查网络/供应商状态后重试。"
-                store.update_generation_task(
-                    task["id"], status="interrupted", phase="提交超时",
-                    error=error, finished_at=store._now_iso(),
-                )
-                commit_node_metadata(task["project_id"], task["node_id"], {
-                    "status": "failed",
-                    "lastError": error,
-                    "providerTaskStatus": "interrupted",
-                    "providerTaskPhase": "提交超时",
-                    "generationFinishedAt": store._now_iso(),
-                })
-                reconciled += 1
-                continue
         fields = None
         if not node:
             fields = {
