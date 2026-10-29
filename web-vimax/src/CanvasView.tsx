@@ -11565,7 +11565,21 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     }
     persistNotes(snapshot.notes);
     if (changedNodes.length > 0) persistMediaNodes(merged, changedNodes);
-    if (snapshot.positions) persistMediaPositions(merged);
+    if (snapshot.positions) {
+      // A drag stop already queued its final coordinates. Cancel that pending
+      // write before restoring, otherwise it lands after the undo and the card
+      // snaps back to the dragged position.
+      if (mediaPositionSaveTimer.current) {
+        clearTimeout(mediaPositionSaveTimer.current);
+        mediaPositionSaveTimer.current = null;
+      }
+      pendingPositionSavesRef.current.clear();
+      for (const item of merged) {
+        const seq = ++positionMutationSeqRef.current;
+        pendingPositionSavesRef.current.set(item.id, {x: item.x, y: item.y, seq});
+      }
+      persistMediaPositions(merged);
+    }
     for (const removed of removedMedia) {
       void deleteMediaNodePersistently(removed.id).catch((error: unknown) => {
         setToast(error instanceof Error ? error.message : '撤销新增节点失败');
