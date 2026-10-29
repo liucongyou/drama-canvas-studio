@@ -10,12 +10,15 @@
   4. 文本头卡 → 全段；段1→段2→…→段N 串联。
 """
 import json
+import copy
 import math
 import re
 import secrets
 import string
 import time
 from datetime import datetime, timezone
+
+import canvas_feed_contract
 
 _B62 = string.digits + string.ascii_letters
 _NODE_CHARS = string.ascii_lowercase + string.digits
@@ -43,8 +46,6 @@ def _now_iso():
 # 五区列 x 坐标（按卡片真实尺寸紧密排布）
 COL_ROLE, COL_SCENE, COL_PROP, COL_AUDIO, COL_VIDEO = 0, 320, 640, 960, 1240
 
-# 台词行判定（有对白 → 才生成音色）
-_DIALOG_RE = re.compile(r"台词[:：]\s*([^（(：:]{1,10}?)\s*（[^）)]*?）\s*[:：]\s*[\"“『]")
 _REF_RE = re.compile(
     r"@(?:(?://(?:chr|scn|prp)\s*/\s*-\s*)|(?:角色|场景|道具|音频)\s*[｜|:：]\s*)"
     r"([^（(]+?)\s*（(?:参考)?图\s*(\d+)"
@@ -65,6 +66,10 @@ _PLAIN_FIGURE_MENTION_RE = re.compile(
 )
 _MENTION_KIND_PREFIX = {"chr": "角色", "scn": "场景", "prp": "道具"}
 REIMPORT_IDENTITY_POLICY = "episode-stable-node-edge-v1"
+
+
+def _dialog_speaker_names(text):
+    return canvas_feed_contract.dialogue_speakers(str(text or ""))
 
 
 def _asset_kind_from_title(title):
@@ -109,6 +114,30 @@ def _asset_pool(records, allow_idle_project_id=""):
         if not key:
             continue
         pool.append({**item, "kind": kind, "assetKey": key, "content": content})
+    return pool
+
+
+def build_asset_pool_from_payload(payload, project_id):
+    """Build an isolated image asset pool from a project payload copy."""
+    pool = []
+    for source_node in (payload or {}).get("nodes") or []:
+        if not isinstance(source_node, dict) or source_node.get("type") != "image":
+            continue
+        source_meta = source_node.get("metadata") or {}
+        pool.append({
+            "assetKey": source_meta.get("assetKey", ""),
+            "id": source_node.get("id", ""),
+            "projectId": project_id,
+            "title": source_node.get("title", ""),
+            "prompt": source_meta.get("prompt", ""),
+            "composerContent": source_meta.get("composerContent", ""),
+            "content": source_meta.get("content", ""),
+            "status": source_meta.get("status", ""),
+            "params": copy.deepcopy(source_meta.get("params") or {}),
+            "reusedAsset": copy.deepcopy(source_meta.get("reusedAsset") or {}),
+            "createdAt": source_node.get("createdAt", ""),
+            "updatedAt": source_node.get("updatedAt", ""),
+        })
     return pool
 
 
@@ -567,6 +596,10 @@ def repair_prompt_mentions(prompt, refs):
 
 def _ensure_audio_mentions(prompt, voices):
     """Keep concrete voice nodes visible in the prompt, not only in voiceRefs."""
+    text = str(prompt or "")
+    existing = re.compile(r"(?m)^【音色引用】[^\n]*(?:\n|$)")
+    text = existing.sub("", text, count=1)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     labels = []
     seen = set()
     for voice in voices or []:
@@ -578,12 +611,8 @@ def _ensure_audio_mentions(prompt, voices):
         seen.add(label)
         labels.append(f"@{label}")
     if not labels:
-        return prompt
+        return text
     section = "【音色引用】" + "；".join(labels)
-    text = str(prompt or "")
-    existing = re.compile(r"(?m)^【音色引用】[^\n]*(?:\n|$)")
-    text = existing.sub("", text, count=1)
-    text = re.sub(r"\n{3,}", "\n\n", text)
     core = re.search(r"(?m)^【核心人物】[^\n]*(?:\n|$)", text)
     if core:
         return text[:core.end()] + "\n" + section + "\n" + text[core.end():]
@@ -593,30 +622,207 @@ def _ensure_audio_mentions(prompt, voices):
     return text.rstrip() + "\n\n" + section + "\n"
 
 
+_ASSET_PLACEHOLDER_MARKERS = (
+    "请根据角色补充音色描述后再生成",
+    "音色占位",
+    "当前投喂载荷未提供资产提示词",
+    "已自动补占位卡",
+)
+
+
+def _is_placeholder_asset_prompt(prompt):
+    text = str(prompt or "").strip()
+    return not text or any(marker in text for marker in _ASSET_PLACEHOLDER_MARKERS)
+
+
+def _restore_generated_asset_prompt(meta, node_type, title=""):
+    """Recover a generated asset prompt that a placeholder import overwrote."""
+    if not isinstance(meta, dict) or node_type not in {"image", "audio"}:
+        return False
+    if not str(meta.get("content") or "").strip():
+        return False
+    prompt = str(meta.get("prompt") or "").strip()
+    if not _is_placeholder_asset_prompt(prompt):
+        return False
+    params = meta.get("params") if isinstance(meta.get("params"), dict) else {}
+    fallback = (
+        str(params.get("voicePrompt") or "").strip()
+        if node_type == "audio"
+        else ""
+    )
+    if not fallback or _is_placeholder_asset_prompt(fallback):
+        return False
+    meta["prompt"] = fallback
+    if node_type == "audio":
+        role = _asset_title_base(title, audio=True).split("·", 1)[0].strip()
+        meta["composerContent"] = (
+            f"角色：{role}\n\n【音色自动提示词 · Audio Prompt · 4.5S 参考音色】\n"
+            f"{fallback}"
+        )
+    else:
+        meta["composerContent"] = fallback
+    meta["autoPlaceholder"] = False
+    if str(meta.get("promptStaleReason") or "").startswith("源音色提示词已更新"):
+        meta["promptStale"] = False
+        meta["promptStaleReason"] = ""
+        meta.pop("sourcePromptUpdatedAt", None)
+    return True
+
+
+def repair_reused_asset_prompts(payload):
+    changed = 0
+    for node in payload.get("nodes") or []:
+        if not isinstance(node, dict) or node.get("type") not in {"image", "audio"}:
+            continue
+        meta = node.setdefault("metadata", {})
+        if _restore_generated_asset_prompt(meta, node.get("type"), node.get("title")):
+            changed += 1
+    return changed
+
+
+def detach_cross_project_reused_assets(payload, project_id):
+    """Make legacy cross-project image links independent without deleting files."""
+    project_id = str(project_id or "").strip()
+    if not project_id:
+        return 0
+    changed = 0
+    for node in payload.get("nodes") or []:
+        if not isinstance(node, dict) or node.get("type") != "image":
+            continue
+        meta = node.setdefault("metadata", {})
+        reused = meta.get("reusedAsset")
+        if not isinstance(reused, dict):
+            continue
+        source_project_id = str(reused.get("sourceProjectId") or "").strip()
+        if not source_project_id or source_project_id == project_id:
+            continue
+        meta["content"] = ""
+        meta["status"] = "idle"
+        meta.pop("reusedAsset", None)
+        meta["promptStale"] = False
+        meta["promptStaleReason"] = ""
+        meta.pop("sourcePromptUpdatedAt", None)
+        for key in (
+            "generatedAt",
+            "generationStartedAt",
+            "generationFinishedAt",
+            "providerTaskStatus",
+            "providerTaskPhase",
+            "providerTaskProgress",
+            "taskId",
+            "lastError",
+        ):
+            meta.pop(key, None)
+        params = meta.get("params") if isinstance(meta.get("params"), dict) else {}
+        params.pop("mediaVersions", None)
+        params.pop("mediaVersionIndex", None)
+        params.pop("thumbUrl", None)
+        changed += 1
+    return changed
+
+
 def repair_payload_prompt_mentions(payload):
     """幂等修复已导入视频节点的提示词；返回发生变更的节点数。"""
     changed = 0
-    for node in payload.get("nodes", []) or []:
+    nodes = [
+        node for node in payload.get("nodes", []) or []
+        if isinstance(node, dict)
+    ]
+    node_by_id = {
+        str(node.get("id") or ""): node
+        for node in nodes
+        if node.get("id")
+    }
+    role_names = {
+        _asset_title_base(node.get("title")).split("·", 1)[0]
+        for node in nodes
+        if node.get("type") == "image"
+        and str(node.get("title") or "").startswith("角色｜")
+    }
+    allowed_audio_by_video = {}
+
+    def voice_role(ref):
+        source = node_by_id.get(str(ref.get("nodeId") or ""))
+        title = (
+            source.get("title")
+            if source and source.get("type") == "audio"
+            else ref.get("label")
+        )
+        return _asset_title_base(title, audio=True).split("·", 1)[0].strip()
+
+    for node in nodes:
         if not isinstance(node, dict) or node.get("type") != "video":
             continue
         meta = node.get("metadata") or {}
         params = meta.get("params") or {}
-        refs = params.get("refs") or meta.get("refs") or []
-        voices = params.get("voiceRefs") or meta.get("voiceRefs") or []
+        refs = list(params.get("refs") or meta.get("refs") or [])
+        voices = list(params.get("voiceRefs") or meta.get("voiceRefs") or [])
+        prompt = str(meta.get("prompt") or "")
+        composer = str(meta.get("composerContent") or "")
+        speaking = _prompt_speaking_roles(f"{prompt}\n{composer}", role_names)
+        filtered_voices = [
+            voice for voice in voices
+            if isinstance(voice, dict) and voice_role(voice) in speaking
+        ]
+        filtered_refs = [
+            ref for ref in refs
+            if not (
+                isinstance(ref, dict)
+                and (
+                    (node_by_id.get(str(ref.get("nodeId") or "")) or {}).get("type") == "audio"
+                    or str(ref.get("label") or "").startswith("音频｜")
+                )
+                and voice_role(ref) not in speaking
+            )
+        ]
+        allowed_audio_by_video[str(node.get("id") or "")] = {
+            str(voice.get("nodeId") or "")
+            for voice in filtered_voices
+            if voice.get("nodeId")
+        }
         node_changed = False
+        if filtered_voices != voices:
+            params["voiceRefs"] = filtered_voices
+            params["voiceRef"] = filtered_voices[0] if filtered_voices else None
+            meta["voiceRefs"] = filtered_voices
+            node_changed = True
+        if filtered_refs != refs:
+            params["refs"] = filtered_refs
+            meta["refs"] = filtered_refs
+            node_changed = True
         for key in ("prompt", "composerContent"):
             value = str(meta.get(key) or "")
             if not value:
                 continue
             repaired = _ensure_audio_mentions(
-                repair_prompt_mentions(value, refs),
-                voices,
+                repair_prompt_mentions(value, filtered_refs),
+                filtered_voices,
             )
             if repaired != value:
                 meta[key] = repaired
                 node_changed = True
         if node_changed:
+            meta["params"] = params
             changed += 1
+    connections = payload.get("connections") or []
+    kept_connections = []
+    for connection in connections:
+        if not isinstance(connection, dict):
+            kept_connections.append(connection)
+            continue
+        target_id = str(connection.get("toNodeId") or "")
+        source = node_by_id.get(str(connection.get("fromNodeId") or ""))
+        if (
+            target_id in allowed_audio_by_video
+            and source
+            and source.get("type") == "audio"
+            and str(source.get("id") or "") not in allowed_audio_by_video[target_id]
+        ):
+            changed += 1
+            continue
+        kept_connections.append(connection)
+    if len(kept_connections) != len(connections):
+        payload["connections"] = kept_connections
     return changed
 
 
@@ -686,9 +892,105 @@ def _extract_voice(raw):
     return voice
 
 
+_AUDIO_PROMPT_SUFFIX = (
+    "short drama dubbing reference clip, 4.5 seconds clean voice, no background noise."
+)
+
+
+def _compose_audio_prompt(label, description, gender, age, dialect):
+    normalized_age = re.sub(r"\s*[~～—–-]\s*", "-", str(age or ""))
+    if gender and normalized_age:
+        identity = f"A {gender} aged {normalized_age}"
+    else:
+        identity = f"A {gender}" if gender else ""
+    prefix = " ".join(
+        part for part in (
+            f"{label}." if label else "",
+            str(description or "").strip(),
+        ) if part
+    ).strip()
+    tail = ", ".join(part for part in (
+        identity,
+        (
+            f"speaking {dialect or 'standard'} Mandarin, short drama dubbing reference clip, "
+            "4.5 seconds clean voice, no background noise"
+        ),
+    ) if part) + "."
+    return f"{prefix} {tail}".strip()
+
+
+def _audio_prompt_is_complete(prompt):
+    return str(prompt or "").strip().casefold().endswith(_AUDIO_PROMPT_SUFFIX.casefold())
+
+
+def _normalize_voice_catalog_item(voice):
+    if not isinstance(voice, dict):
+        return None
+    prompt = str(voice.get("prompt") or voice.get("voicePrompt") or "").strip()
+    description = str(
+        voice.get("description")
+        or voice.get("voiceDescription")
+        or ""
+    ).strip()
+    label = str(voice.get("label") or voice.get("voiceLabel") or "").strip()
+    age = str(voice.get("age") or voice.get("voiceAge") or "").strip()
+    gender = str(voice.get("gender") or voice.get("voiceGender") or "").strip().lower()
+    dialect = str(voice.get("dialect") or voice.get("voiceDialect") or "").strip()
+    if not age:
+        age_match = re.search(r"(\d+\s*[~～-]\s*\d+|\d+)\s*岁", description + "\n" + prompt)
+        age = re.sub(r"\s+", "", age_match.group(1)) if age_match else ""
+    if not gender:
+        gender = (
+            "female"
+            if re.search(r"女性|\bfemale voice\b", description, re.IGNORECASE)
+            else ("male" if re.search(r"男性|\bmale voice\b", description, re.IGNORECASE) else "")
+        )
+    if not dialect:
+        dialect = "northeastern-accented" if "northeastern" in description.lower() else "standard"
+    normalized_age = re.sub(r"\s*[~～—–-]\s*", "-", age)
+    identity_ok = (
+        not (gender and normalized_age)
+        or bool(re.search(
+            rf"\bA {re.escape(gender)} aged {re.escape(normalized_age)}\b",
+            prompt,
+            re.IGNORECASE,
+        ))
+    )
+    if description and (not _audio_prompt_is_complete(prompt) or not identity_ok):
+        prompt = _compose_audio_prompt(label, description, gender, age, dialect)
+    if not prompt or _is_placeholder_asset_prompt(prompt) or not _audio_prompt_is_complete(prompt):
+        return None
+    code = str(voice.get("code") or "").strip()
+    role = str(
+        voice.get("name")
+        or _asset_title_base(voice.get("title"), audio=True).split("·", 1)[0]
+        or ""
+    ).strip()
+    return {
+        **voice,
+        "code": code,
+        "name": role,
+        "prompt": prompt,
+        "description": description,
+        "label": label,
+        "age": normalized_age,
+        "gender": gender,
+        "dialect": dialect,
+    }
+
+
 def build_payload(feed, asset_pool=None, target_project_id=""):
     """投喂载荷 → 画布 payload dict。"""
     assets = feed.get("asset_prompts", [])      # 9 项（图6 ×2）
+    voice_prompts = feed.get("voice_prompts", [])
+    normalized_voices = [
+        item
+        for voice in voice_prompts
+        for item in [_normalize_voice_catalog_item(voice)]
+        if item
+    ]
+    voice_by_code = {item["code"]: item for item in normalized_voices if item.get("code")}
+    voice_by_role = {item["name"]: item for item in normalized_voices if item.get("name")}
     segs = feed.get("segments", [])              # N 段
     meta = feed.get("meta", {}) or {}
     p0a = feed.get("p0a") or {}
@@ -696,7 +998,11 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         p0a = (p0a[0] if p0a and isinstance(p0a[0], dict) else {})
     script = feed.get("script", "")
     contract = feed.get("canvas_contract") if isinstance(feed.get("canvas_contract"), dict) else {}
-    reusable_assets = _asset_pool(asset_pool, target_project_id)
+    reusable_assets = [
+        item
+        for item in _asset_pool(asset_pool, target_project_id)
+        if target_project_id and item.get("projectId") == target_project_id
+    ]
     master_scene_codes = {
         str(asset.get("code") or "")
         for asset in assets
@@ -713,11 +1019,11 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
     vtone = meta.get("visual_tone") or meta.get("视觉基调") or "2006 年东北铁西旧工业区，冷灰蓝与铁锈红，自然硬光，轻手持纪实感，克制表演，细颗粒。"
 
     pid = "".join(secrets.choice(_B62) for _ in range(22))
-    title = feed.get("title") or meta.get("title") or "画布工作流"
-    if title and "画布工作流" not in title:
-        title = f"{title} · 画布工作流"
-    now0 = _now_iso()
     episode_id, episode_title = _episode_identity(feed)
+    # Project identity belongs to the episode, not to whichever node happened
+    # to occupy the feed's top-level title field.
+    title = episode_title or feed.get("title") or meta.get("title") or "画布工作流"
+    now0 = _now_iso()
     nodes, conns = [], []
 
     # ---------- 1) text 头卡 ----------
@@ -780,13 +1086,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             item for item in reusable_assets
             if item.get("assetKey") == asset_key and item.get("projectId") == target_project_id
         ]
-        cross_project = [
-            item for item in reusable_assets
-            if item.get("assetKey") == asset_key
-            and item.get("projectId") != target_project_id
-            and kind == "角色"
-        ]
-        candidates = same_project or cross_project
+        candidates = same_project
         candidates.sort(
             key=lambda item: (
                 bool(str(item.get("content") or "").strip()),
@@ -807,8 +1107,9 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         asset_kinds[nid] = kind
         # All role/scene/prop/staging cards share one canvas card ratio. The
         # provider-side ratio stays 16:9 as well so generated previews match.
-        visible_ratio = "16:9"
-        visible_size = "1536x864"
+        visible_ratio = _aspect(canvas_asset.get("ratio"), "16:9")
+        visible_clarity = str(canvas_asset.get("clarity") or "1.5K")
+        visible_size = str(canvas_asset.get("size") or _image_size(visible_ratio))
         image_model = str(canvas_asset.get("model") or "doubao-seedream-5-0-pro")
         generated_composer = f"### {code} · {name}\n\n{raw}"
         source_reuse_meta = (
@@ -851,10 +1152,13 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             and previous_prompt.strip() != image_prompt.strip()
         )
         image_params = {
-            "provider": "ark", "model": image_model,
-            "ratio": visible_ratio, "clarity": "1.5K", "size": visible_size,
-            "guidance": "中等", "watermark": False,
+            "provider": str(canvas_asset.get("provider") or "ark"), "model": image_model,
+            "ratio": visible_ratio, "clarity": visible_clarity, "size": visible_size,
+            "guidance": str(canvas_asset.get("guidance") or "中等"),
+            "watermark": bool(canvas_asset.get("watermark", False)),
         }
+        if isinstance(canvas_asset.get("params"), dict):
+            image_params.update(canvas_asset["params"])
         if source_asset and isinstance(source_asset.get("params"), dict):
             image_params = {**image_params, **source_asset["params"]}
         reuse_meta = None
@@ -877,6 +1181,9 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
                 "size": visible_size, "status": "done" if reused_content else "idle",
                 "transparentBackground": "false", "nodeRole": "generator",
                 "assetKey": asset_key, "reusedAsset": reuse_meta,
+                "assetId": str(canvas_asset.get("assetId") or ""),
+                "seriesId": str(canvas_asset.get("seriesId") or ""),
+                "variantKey": str(canvas_asset.get("variantKey") or "default"),
                 "promptStale": prompt_stale,
                 "promptStaleReason": "源提示词已更新，当前复用图片仍是旧版本" if prompt_stale else "",
                 "sourcePromptUpdatedAt": now0 if prompt_stale else "",
@@ -911,7 +1218,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             "height": 746.7, "width": 420, "id": nid,
             "metadata": {
                 "composerContent": raw, "content": "", "generateAudio": "true",
-                "episodeId": episode_id,
+                "episodeId": episode_id, "segmentNo": no,
                 "model": segment_model, "prompt": raw,
                 "seconds": str(duration), "size": vsize,
                 "status": "idle", "vquality": "480p", "nodeRole": "generator",
@@ -930,8 +1237,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
     # ---------- 3.5) audio 节点（只有有对白的角色才生成音色） ----------
     speaking = set()
     for _s in segs:
-        for _m in _DIALOG_RE.finditer(_s.get("raw", "")):
-            speaking.add(_m.group(1).strip())
+        speaking |= _dialog_speaker_names(_s.get("raw", ""))
     character_names = {
         a.get("code", ""): _short_asset_name(a.get("name", ""))
         for a in assets
@@ -946,6 +1252,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             continue
         if role not in speaking:
             continue
+        catalog_voice = voice_by_code.get(f"图{code}") or voice_by_role.get(role)
         voice = _extract_voice(raw)
         lm = re.search(r"Voice Description Label[^\n]*?(?::|\*\*)\s*([A-Za-z][^/\n]*)", raw)
         label = lm.group(1).strip() if lm else ""
@@ -953,9 +1260,11 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         age = gm.group(1) if gm else ""
         gender = "male" if (gm and gm.group(2) == "男性") else ("female" if (gm and gm.group(2) == "女性") else "")
         dialect = "northeastern-accented" if "northeastern" in voice.lower() else "standard"
-        audio_prompt = (f"{label}. {voice} A {gender}"
-                        + (f" in his {age}" if gender == "male" and age else (f" in her {age}" if gender == "female" and age else ""))
-                        + f", speaking {dialect} Mandarin, short drama dubbing reference clip, 4.5 seconds clean voice, no background noise.")
+        audio_prompt = (
+            str(catalog_voice.get("prompt") or "").strip()
+            if catalog_voice
+            else _compose_audio_prompt(label, voice, gender, age, dialect)
+        )
         aid = _rid_audio()
         audio_ids[code], audio_by_role[role] = aid, aid
         audio_composer = f"角色：{role}（{code}）\n\n【音色自动提示词 · Audio Prompt · 4.5S 参考音色】\n{audio_prompt}"
@@ -989,23 +1298,23 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             "nodeIds": [node["id"] for node in nodes],
             "videoNodeIds": [node["id"] for node in nodes if node.get("type") == "video"],
         }],
-    }, episode_id)
+    }, episode_id, assets, voice_prompts)
     # The synthesis helper appends cards after the initial asset loop, so
     # rebuild the code indexes before the wiring phase.
     for node in nodes:
         if not isinstance(node, dict):
             continue
-        title = str(node.get("title") or "")
-        code_match = re.search(r"图\s*(\d+)", title)
+        node_title = str(node.get("title") or "")
+        code_match = re.search(r"图\s*(\d+)", node_title)
         code = f"图{code_match.group(1)}" if code_match else ""
         if node.get("type") == "image":
             if code:
                 image_ids.setdefault(code, []).append(node["id"])
-            kind = _asset_kind_from_title(title)
+            kind = _asset_kind_from_title(node_title)
             if kind == "角色" and code:
-                character_names[code] = _asset_title_base(title).split("·", 1)[0]
+                character_names[code] = _asset_title_base(node_title).split("·", 1)[0]
         elif node.get("type") == "audio":
-            role = _asset_title_base(title, audio=True).split("·", 1)[0].strip()
+            role = _asset_title_base(node_title, audio=True).split("·", 1)[0].strip()
             if code:
                 audio_ids.setdefault(code, node["id"])
             if role:
@@ -1035,10 +1344,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         vid = video_ids.get(no)
         if not vid:
             continue
-        speaking_in_segment = {
-            match.group(1).strip()
-            for match in _DIALOG_RE.finditer(raw)
-        }
+        speaking_in_segment = _dialog_speaker_names(raw)
         seen_a = set()
         for _name, fig_no in _REF_RE.findall(raw):
             role = character_names.get("图" + fig_no.strip(), "")
@@ -1156,6 +1462,65 @@ def _ensure_episode_imports(payload):
     }]
 
 
+def attach_nodes_to_episode(payload, episode_id, node_ids):
+    """Associate newly saved canvas cards with the episode currently open."""
+    episode_id = str(episode_id or "").strip().upper()
+    wanted = list(dict.fromkeys(
+        str(node_id)
+        for node_id in (node_ids or [])
+        if node_id
+    ))
+    if not episode_id or not wanted:
+        return 0
+
+    groups = payload.setdefault("episodeImports", [])
+    group = next(
+        (
+            item
+            for item in groups
+            if isinstance(item, dict)
+            and str(item.get("id") or "").strip().upper() == episode_id
+        ),
+        None,
+    )
+    if group is None:
+        group = {
+            "id": episode_id,
+            "title": payload.get("episodeTitle") or payload.get("title") or episode_id,
+            "nodeIds": [],
+            "videoNodeIds": [],
+            "connectionIds": [],
+            "importedAt": _now_iso(),
+        }
+        groups.append(group)
+
+    existing = list(group.get("nodeIds") or [])
+    existing_set = set(existing)
+    added_ids = [node_id for node_id in wanted if node_id not in existing_set]
+    group["nodeIds"] = list(dict.fromkeys([*existing, *wanted]))
+
+    node_by_id = {
+        str(node.get("id")): node
+        for node in payload.get("nodes") or []
+        if isinstance(node, dict) and node.get("id")
+    }
+    group["videoNodeIds"] = [
+        node_id
+        for node_id in group["nodeIds"]
+        if str((node_by_id.get(node_id) or {}).get("type") or "") == "video"
+    ]
+
+    layout = payload.setdefault("episodeLayouts", {}).setdefault(episode_id, {})
+    for node_id in wanted:
+        position = (node_by_id.get(node_id) or {}).get("position")
+        if isinstance(position, dict):
+            layout[node_id] = {
+                "x": float(position.get("x") or 0),
+                "y": float(position.get("y") or 0),
+            }
+    return len(added_ids)
+
+
 def _series_title(value):
     title = str(value or "").strip()
     title = re.sub(r"\s*·\s*第\s*\d+\s*集.*$", "", title).strip()
@@ -1225,7 +1590,10 @@ def apply_import_layout(payload, episode_ids=None):
     }
     video_columns = 3
     video_x_step = 260
-    video_y_step = 380
+    # Portrait video cards are ~364px tall after their chrome. The old 380px
+    # row pitch left only ~16px between rows and made segment cards look glued
+    # together. Keep a readable ~76px breathing gap at import time.
+    video_y_step = 440
     layouts = payload.setdefault("episodeLayouts", {})
     globally_positioned = set()
     laid_out = 0
@@ -1417,9 +1785,9 @@ def _prompt_speaking_roles(prompt, role_names):
         if str(role or "").strip()
     }
     speaking = {
-        match.group(1).strip()
-        for match in _DIALOG_RE.finditer(str(prompt or ""))
-        if match.group(1).strip() in known
+        role
+        for role in _dialog_speaker_names(prompt)
+        if role in known
     }
     for line in str(prompt or "").splitlines():
         if "台词" not in line or not re.search(r"\bOS\b|内心独白", line, re.IGNORECASE):
@@ -1542,9 +1910,55 @@ def _remove_unmentioned_video_refs(payload):
     return removed
 
 
-def _ensure_referenced_assets(payload, episode_id=None):
+def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voice_sources=None):
     """Create placeholder cards for assets referenced by prompts but absent from the feed."""
     nodes = payload.setdefault("nodes", [])
+    source_by_code = {}
+    source_by_key = {}
+    voice_by_code = {}
+    voice_by_role = {}
+    for voice in voice_sources or []:
+        item = _normalize_voice_catalog_item(voice)
+        if not item:
+            continue
+        code = str(item.get("code") or "")
+        role = str(item.get("name") or "")
+        if code:
+            voice_by_code[code] = item
+        if role:
+            voice_by_role[role] = item
+    for asset in asset_sources or []:
+        if not isinstance(asset, dict):
+            continue
+        code = str(asset.get("code") or "")
+        canvas = asset.get("canvas") if isinstance(asset.get("canvas"), dict) else {}
+        canvas_kind = str(canvas.get("kind") or "")
+        if canvas_kind in {"character", "scene", "prop"}:
+            kind = {"character": "角色", "scene": "场景", "prop": "道具"}[canvas_kind]
+            short_name = str(canvas.get("name") or _short_asset_name(asset.get("name", "")))
+        elif "角色立绘" in str(asset.get("name") or ""):
+            kind = "角色"
+            short_name = str(asset.get("name") or "").replace("（角色立绘）", "")
+        elif "场景" in str(asset.get("name") or "") or "母版" in str(asset.get("name") or ""):
+            kind = "场景"
+            short_name = str(asset.get("name") or "").replace("（场景母版）", "")
+            if "母版" not in short_name:
+                short_name = f"{short_name}·母版"
+        else:
+            kind = "道具"
+            short_name = str(asset.get("name") or "").replace("（道具设定图）", "")
+        source = {
+            "code": code,
+            "kind": kind,
+            "name": short_name,
+            "raw": str(asset.get("raw") or "").strip(),
+            "canvas": canvas,
+        }
+        if code:
+            source_by_code[code] = source
+        key = _asset_identity(short_name, kind)
+        if key:
+            source_by_key[key] = source
     groups = _ensure_episode_imports(payload)
     target_group = next(
         (
@@ -1590,8 +2004,11 @@ def _ensure_referenced_assets(payload, episode_id=None):
             for code in re.findall(r"图\s*(\d+)", str(node.get("title") or "")):
                 image_by_code.setdefault(code, node)
         elif node.get("type") == "audio":
-            if not str((node.get("metadata") or {}).get("content") or "").strip():
-                (node.get("metadata") or {})["autoPlaceholder"] = True
+            audio_meta = node.get("metadata") or {}
+            if _is_placeholder_asset_prompt(audio_meta.get("prompt")):
+                audio_meta["autoPlaceholder"] = True
+            elif audio_meta.get("autoPlaceholder"):
+                audio_meta["autoPlaceholder"] = False
             role = _asset_title_base(node.get("title"), audio=True).split("·", 1)[0].strip()
             if role:
                 audio_by_role.setdefault(role, node)
@@ -1632,40 +2049,56 @@ def _ensure_referenced_assets(payload, episode_id=None):
         return existing
 
     def add_image(kind, name, code, video):
+        source = source_by_code.get(f"图{code}") or source_by_key.get(_asset_identity(name, kind))
+        if source:
+            kind = source["kind"] or kind
+            name = source["name"] or name
+        raw_prompt = source.get("raw", "") if source else ""
+        canvas = source.get("canvas", {}) if source else {}
         title = f"{kind}｜{name}（图{code}）"
-        ratio = "16:9"
+        ratio = _aspect(canvas.get("ratio"), "16:9")
+        model = str(canvas.get("model") or "doubao-seedream-5-0-pro")
+        clarity = str(canvas.get("clarity") or "1.5K")
+        size = str(canvas.get("size") or _image_size(ratio))
+        prompt = (
+            f"### 图{code} · {name}\n\n{raw_prompt}"
+            if raw_prompt
+            else (
+                f"### 图{code} · {name}\n\n"
+                "该资产由视频提示词引用，但当前投喂载荷未提供资产提示词；"
+                "已自动补占位卡，请补充提示词后再生成。"
+            )
+        )
+        image_params = {
+            "provider": str(canvas.get("provider") or "ark"),
+            "model": model,
+            "ratio": ratio,
+            "clarity": clarity,
+            "size": size,
+            "guidance": str(canvas.get("guidance") or "中等"),
+            "watermark": bool(canvas.get("watermark", False)),
+        }
+        if isinstance(canvas.get("params"), dict):
+            image_params.update(canvas["params"])
         node_id = _rid_node()
         node = {
             "height": 405,
             "width": 720,
             "id": node_id,
             "metadata": {
-                "composerContent": (
-                    f"### 图{code} · {name}\n\n"
-                    "该资产由视频提示词引用，但当前投喂载荷未提供资产提示词；"
-                    "已自动补占位卡，请补充提示词后再生成。"
-                ),
+                "composerContent": prompt,
                 "content": "",
-                "model": "doubao-seedream-5-0-pro",
-                "prompt": (
-                    f"### 图{code} · {name}\n\n"
-                    "该资产由视频提示词引用，但当前投喂载荷未提供资产提示词；"
-                    "已自动补占位卡，请补充提示词后再生成。"
-                ),
+                "model": model,
+                "prompt": prompt,
                 "status": "idle",
                 "nodeRole": "generator",
                 "autoPlaceholder": True,
                 "assetKey": _asset_identity(name, kind),
+                "assetId": str(canvas.get("assetId") or ""),
+                "seriesId": str(canvas.get("seriesId") or ""),
+                "variantKey": str(canvas.get("variantKey") or "default"),
                 "episodeId": str(episode_id or payload.get("episodeId") or ""),
-                "params": {
-                    "provider": "ark",
-                    "model": "doubao-seedream-5-0-pro",
-                    "ratio": ratio,
-                    "clarity": "1.5K",
-                    "size": _image_size(ratio),
-                    "guidance": "中等",
-                    "watermark": False,
-                },
+                "params": image_params,
             },
             "position": {"x": 0, "y": 0},
             "title": title,
@@ -1681,10 +2114,21 @@ def _ensure_referenced_assets(payload, episode_id=None):
 
     def add_audio(role, code, video):
         title = f"音频｜{role}（图{code}）"
-        prompt = (
+        voice_source = voice_by_code.get(f"图{code}") or voice_by_role.get(role) or {}
+        detailed_prompt = str(voice_source.get("prompt") or "").strip()
+        generic_prompt = (
             f"{role}，普通话对白参考音色，短剧配音参考，"
             "4.5 秒清晰人声，无背景噪声。请根据角色补充音色描述后再生成。"
         )
+        if detailed_prompt:
+            label = str(voice_source.get("label") or "").strip()
+            prompt = (
+                f"{label}. {detailed_prompt}"
+                if label and not detailed_prompt.casefold().startswith(label.casefold())
+                else detailed_prompt
+            )
+        else:
+            prompt = generic_prompt
         node_id = _rid_audio()
         node = {
             "height": 320,
@@ -1698,7 +2142,7 @@ def _ensure_referenced_assets(payload, episode_id=None):
                 "status": "idle",
                 "generationMode": "audio",
                 "nodeRole": "generator",
-                "autoPlaceholder": True,
+                "autoPlaceholder": not bool(detailed_prompt),
                 "episodeId": str(episode_id or payload.get("episodeId") or ""),
                 "params": {
                     "provider": "aliyun_bailian",
@@ -1732,10 +2176,7 @@ def _ensure_referenced_assets(payload, episode_id=None):
             for kind, name, _code in _NAMED_REF_RE.findall(reference_text)
             if kind == "角色" and name.strip()
         }
-        speaking = {
-            match.group(1).strip()
-            for match in _DIALOG_RE.finditer(reference_text)
-        }
+        speaking = _dialog_speaker_names(reference_text)
         speaking |= _prompt_speaking_roles(
             reference_text,
             set(audio_by_role.keys()) | named_roles,
@@ -2267,6 +2708,7 @@ def _prune_orphan_duplicate_assets(payload):
 def bind_shared_assets_for_all_episodes(payload):
     removed_grids = _remove_redundant_scene_grids(payload)
     total = removed_grids + _repair_reused_asset_identities(payload)
+    total += repair_reused_asset_prompts(payload)
     total += _remove_unmentioned_video_refs(payload)
     total += repair_payload_prompt_mentions(payload)
     for group in _ensure_episode_imports(payload):
@@ -2286,6 +2728,8 @@ def merge_payload_by_episode(existing, incoming):
     nodes and connections. Generated image/audio assets are preserved by stable
     identity so later episodes continue using the same series assets.
     """
+    existing = copy.deepcopy(existing)
+    incoming = copy.deepcopy(incoming)
     if not isinstance(existing, dict) or not existing.get("nodes"):
         return incoming
     base = {**existing}
@@ -2406,25 +2850,53 @@ def merge_payload_by_episode(existing, incoming):
         if old and old.get("id") != node.get("id"):
             old_meta = old.setdefault("metadata", {})
             new_meta = node.get("metadata") or {}
+            restored = _restore_generated_asset_prompt(
+                old_meta,
+                "audio",
+                old.get("title"),
+            )
             old_prompt = str(old_meta.get("prompt") or "").strip()
             new_prompt = str(new_meta.get("prompt") or "").strip()
             has_content = bool(str(old_meta.get("content") or "").strip())
-            old_meta["prompt"] = new_prompt or old_prompt
-            old_meta["composerContent"] = (
-                str(new_meta.get("composerContent") or "").strip()
-                or old_meta.get("composerContent")
-                or old_meta["prompt"]
+            incoming_placeholder = _is_placeholder_asset_prompt(new_prompt)
+            cross_episode_reuse = str(old.get("id") or "") in shared_by_other_episodes
+            preserve_generated_prompt = bool(
+                has_content and (incoming_placeholder or cross_episode_reuse)
             )
-            prompt_changed = bool(
-                has_content and old_prompt and new_prompt and old_prompt != new_prompt
-            )
-            old_meta["promptStale"] = bool(prompt_changed or (has_content and old_meta.get("promptStale")))
-            old_meta["promptStaleReason"] = (
-                "源音色提示词已更新，当前参考音频仍是旧版本"
-                if old_meta["promptStale"] else ""
-            )
-            if old_meta["promptStale"]:
-                old_meta["sourcePromptUpdatedAt"] = _now_iso()
+            if preserve_generated_prompt:
+                prompt_changed = bool(
+                    not incoming_placeholder
+                    and old_prompt
+                    and new_prompt
+                    and old_prompt != new_prompt
+                )
+                if prompt_changed:
+                    old_meta["promptStale"] = True
+                    old_meta["promptStaleReason"] = "源音色提示词已更新，当前参考音频仍是旧版本"
+                    old_meta["sourcePromptUpdatedAt"] = _now_iso()
+                elif restored:
+                    old_meta["promptStale"] = False
+                    old_meta["promptStaleReason"] = ""
+                    old_meta.pop("sourcePromptUpdatedAt", None)
+            else:
+                old_meta["prompt"] = new_prompt or old_prompt
+                old_meta["composerContent"] = (
+                    str(new_meta.get("composerContent") or "").strip()
+                    or old_meta.get("composerContent")
+                    or old_meta["prompt"]
+                )
+                prompt_changed = bool(
+                    has_content and old_prompt and new_prompt and old_prompt != new_prompt
+                )
+                old_meta["promptStale"] = bool(
+                    prompt_changed or (has_content and old_meta.get("promptStale"))
+                )
+                old_meta["promptStaleReason"] = (
+                    "源音色提示词已更新，当前参考音频仍是旧版本"
+                    if old_meta["promptStale"] else ""
+                )
+                if old_meta["promptStale"]:
+                    old_meta["sourcePromptUpdatedAt"] = _now_iso()
             if not has_content and isinstance(new_meta.get("params"), dict):
                 old_meta["params"] = {
                     **(old_meta.get("params") or {}),
@@ -2538,28 +3010,57 @@ def merge_payload_by_episode(existing, incoming):
             continue
         old_meta = old.get("metadata") or {}
         new_meta = node.get("metadata") or {}
+        restored = _restore_generated_asset_prompt(old_meta, node.get("type"), old.get("title"))
         merged_meta = {**old_meta, **new_meta}
         if node.get("type") in {"image", "audio"} and str(old_meta.get("content") or "").strip():
             old_prompt = str(old_meta.get("prompt") or "").strip()
             new_prompt = str(new_meta.get("prompt") or "").strip()
-            if old_prompt and new_prompt and old_prompt != new_prompt:
-                merged_meta["promptStale"] = True
-                merged_meta["promptStaleReason"] = (
-                    "源音色提示词已更新，当前参考音频仍是旧版本"
-                    if node.get("type") == "audio"
-                    else "源提示词已更新，当前复用图片仍是旧版本"
+            incoming_placeholder = _is_placeholder_asset_prompt(new_prompt)
+            cross_episode_reuse = str(old.get("id") or "") in shared_by_other_episodes
+            if incoming_placeholder or cross_episode_reuse:
+                merged_meta["prompt"] = old_prompt
+                merged_meta["composerContent"] = (
+                    old_meta.get("composerContent")
+                    or old_prompt
                 )
-                merged_meta["sourcePromptUpdatedAt"] = _now_iso()
-            elif old_meta.get("promptStale"):
-                merged_meta["promptStale"] = True
-                merged_meta["promptStaleReason"] = (
-                    old_meta.get("promptStaleReason")
-                    or (
+                merged_meta["autoPlaceholder"] = False
+                prompt_changed = bool(
+                    not incoming_placeholder
+                    and old_prompt
+                    and new_prompt
+                    and old_prompt != new_prompt
+                )
+                if prompt_changed:
+                    merged_meta["promptStale"] = True
+                    merged_meta["promptStaleReason"] = (
                         "源音色提示词已更新，当前参考音频仍是旧版本"
                         if node.get("type") == "audio"
                         else "源提示词已更新，当前复用图片仍是旧版本"
                     )
-                )
+                    merged_meta["sourcePromptUpdatedAt"] = _now_iso()
+                elif restored:
+                    merged_meta["promptStale"] = False
+                    merged_meta["promptStaleReason"] = ""
+                    merged_meta.pop("sourcePromptUpdatedAt", None)
+            else:
+                if old_prompt and new_prompt and old_prompt != new_prompt:
+                    merged_meta["promptStale"] = True
+                    merged_meta["promptStaleReason"] = (
+                        "源音色提示词已更新，当前参考音频仍是旧版本"
+                        if node.get("type") == "audio"
+                        else "源提示词已更新，当前复用图片仍是旧版本"
+                    )
+                    merged_meta["sourcePromptUpdatedAt"] = _now_iso()
+                elif old_meta.get("promptStale"):
+                    merged_meta["promptStale"] = True
+                    merged_meta["promptStaleReason"] = (
+                        old_meta.get("promptStaleReason")
+                        or (
+                            "源音色提示词已更新，当前参考音频仍是旧版本"
+                            if node.get("type") == "audio"
+                            else "源提示词已更新，当前复用图片仍是旧版本"
+                        )
+                    )
         for key in generated_keys:
             if old_meta.get(key) not in (None, "", [], {}):
                 merged_meta[key] = old_meta[key]
@@ -2593,6 +3094,7 @@ def merge_payload_by_episode(existing, incoming):
         if conn.get("fromNodeId") in valid_node_ids and conn.get("toNodeId") in valid_node_ids:
             merged_conns[conn.get("id") or _rid_edge()] = conn
 
+    imported_now = _now_iso()
     incoming_group = {
         **incoming_group,
         "id": episode_id,
@@ -2602,7 +3104,13 @@ def merge_payload_by_episode(existing, incoming):
         ])),
         "videoNodeIds": [node.get("id") for node in incoming_nodes if node.get("type") == "video"],
         "connectionIds": [conn.get("id") for conn in incoming_conns if conn.get("id")],
-        "importedAt": _now_iso(),
+        "firstImportedAt": (
+            str((same_old or {}).get("firstImportedAt") or "").strip()
+            or str((same_old or {}).get("importedAt") or "").strip()
+            or imported_now
+        ),
+        "lastImportedAt": imported_now,
+        "importedAt": imported_now,
     }
     merged_groups = sorted(
         [*other_groups, incoming_group],
@@ -2634,6 +3142,7 @@ def merge_payload_by_episode(existing, incoming):
     _ensure_referenced_assets(merged_payload, episode_id)
     _prune_orphan_duplicate_assets(merged_payload)
     repair_payload_prompt_mentions(merged_payload)
+    repair_reused_asset_prompts(merged_payload)
     for connection in merged_payload.get("connections") or []:
         if not isinstance(connection, dict):
             continue

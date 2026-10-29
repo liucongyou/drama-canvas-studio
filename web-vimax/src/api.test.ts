@@ -1,8 +1,9 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, generateCanvasNodeNow, getCanvasMediaNodes, getModelCatalog, getQualityReport, getSessions, mediaVersionList, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, generateCanvasNodeNow, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, loginAccount, mediaVersionList, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.resetModules();
 });
 
 describe('api request recovery', () => {
@@ -38,6 +39,19 @@ describe('api request recovery', () => {
     expect(message).not.toContain('供应商服务暂时异常');
   });
 
+  it('keeps account login errors separate from provider auth failures', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: '账号或密码错误',
+      code: 'AUTH_INVALID',
+    }), {
+      status: 401,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    await expect(loginAccount('a365879766', 'wrong-password'))
+      .rejects.toThrow('账号或密码错误');
+  });
+
   it('uses the compact position for the selected episode', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       id: 'project-1',
@@ -48,6 +62,7 @@ describe('api request recovery', () => {
           type: 'image',
           title: '角色｜赵铁柱（图1）',
           position: {x: 880, y: 1200},
+          positionUpdatedAt: '2026-10-28T13:59:00Z',
           metadata: {status: 'done', content: '/uploads/role.webp', params: {ratio: '1:1'}},
         }],
         connections: [],
@@ -61,7 +76,125 @@ describe('api request recovery', () => {
 
     const nodes = await getCanvasMediaNodes('project-1', 'EP002');
     expect(nodes).toHaveLength(1);
-    expect(nodes[0]).toMatchObject({id: 'role-1', x: 0, y: 0});
+    expect(nodes[0]).toMatchObject({
+      id: 'role-1',
+      x: 0,
+      y: 0,
+      positionUpdatedAt: '2026-10-28T13:59:00Z',
+    });
+  });
+
+  it('loads canvas, notes and media nodes from one project snapshot', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'project-1',
+      title: '测试项目',
+      payload: {
+        title: '测试项目',
+        extras: {
+          notes: [{id: 'note-1', text: '备注', x: 0, y: 0, updatedAt: '2026-10-28T00:00:00Z'}],
+        },
+        nodes: [{
+          id: 'video-1',
+          type: 'video',
+          title: '段1',
+          position: {x: 10, y: 20},
+          metadata: {prompt: '第一段', status: 'idle', params: {ratio: '9:16'}},
+        }],
+        connections: [],
+        episodeImports: [{
+          id: 'EP001',
+          title: '第01集',
+          nodeIds: ['video-1'],
+          videoNodeIds: ['video-1'],
+        }],
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const workspace = await getCanvasWorkspace('project-1', 'EP001');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(workspace.canvas).not.toHaveProperty('empty');
+    expect(workspace.notes).toHaveLength(1);
+    expect(workspace.mediaNodes).toMatchObject([{id: 'video-1', x: 10, y: 20}]);
+  });
+
+  it('treats a newly created empty project as an editable canvas', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'project-empty',
+      title: '空白项目',
+      payload: {
+        title: '空白项目',
+        nodes: [],
+        connections: [],
+        episodeImports: [],
+        extras: {notes: []},
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    const workspace = await getCanvasWorkspace('project-empty', null);
+
+    expect(workspace.canvas).not.toHaveProperty('empty');
+    if (!('empty' in workspace.canvas)) {
+      expect(workspace.canvas.meta.episodes).toMatchObject([{ep_id: 'EP001', shot_count: 0}]);
+      expect(workspace.canvas.shots).toEqual([]);
+    }
+    expect(workspace.notes).toEqual([]);
+    expect(workspace.mediaNodes).toEqual([]);
+  });
+
+  it('sends an isolated position base instead of the generic node timestamp', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      updated: 1,
+      unchanged: [],
+      missing: [],
+      updates: [{
+        nodeId: 'role-1',
+        position: {x: 240, y: 180},
+        positionUpdatedAt: '2026-10-28T14:00:01Z',
+        updatedAt: '2026-10-28T14:00:01Z',
+      }],
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await saveCanvasMediaNodePositions(
+      'project-1',
+      [{
+        id: 'role-1',
+        kind: 'image',
+        title: '角色｜赵铁柱（图1）',
+        prompt: '',
+        status: 'done',
+        x: 240,
+        y: 180,
+        updatedAt: '2026-10-28T14:00:03Z',
+        positionUpdatedAt: '2026-10-28T13:59:00Z',
+      }],
+      'EP002',
+      new Map([['role-1', {
+        x: 100,
+        y: 80,
+        positionUpdatedAt: '2026-10-28T13:58:00Z',
+      }]]),
+    );
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.positions[0]).toMatchObject({
+      id: 'role-1',
+      basePosition: {x: 100, y: 80},
+      basePositionUpdatedAt: '2026-10-28T13:58:00Z',
+    });
+    expect(body.positions[0].baseUpdatedAt).toBeUndefined();
   });
 
   it('does not show a sequence video as a generation ref unless the prompt names it', async () => {
@@ -181,6 +314,31 @@ describe('api request recovery', () => {
     unsubscribe();
   });
 
+  it('sends the current prompt and params with the generation request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      url: '/uploads/generated-current.png',
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await generateCanvasNodeNow('project-1', 'node-1', {
+      prompt: '角色定妆，正面半身像',
+      params: {provider: 'agnes-ai', model: 'agnes-image-2.5-flash', ratio: '16:9'},
+    });
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(requestBody).toMatchObject({
+      prompt: '角色定妆，正面半身像',
+      params: {
+        provider: 'agnes-ai',
+        model: 'agnes-image-2.5-flash',
+        ratio: '16:9',
+      },
+    });
+  });
+
   it('does not treat a provider 401 as an expired canvas session', async () => {
     const dispatchEvent = vi.fn();
     vi.stubGlobal('window', {dispatchEvent});
@@ -210,5 +368,43 @@ describe('api request recovery', () => {
     await expect(getSessions()).rejects.toThrow();
     expect(dispatchEvent).toHaveBeenCalledWith(expect.any(Event));
     expect((dispatchEvent.mock.calls[0][0] as Event).type).toBe(AUTH_REQUIRED_EVENT);
+  });
+
+  it('routes tenant media through the API host and stores canonical upload paths', async () => {
+    vi.resetModules();
+    vi.stubGlobal('window', {__CANVAS_API_BASE__: 'https://yjapi.pduoduo.vip'});
+    const remoteApi = await import('./api');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ok: true}), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(remoteApi.mediaSourceUrl('/uploads/generated.png')).toBe(
+      'https://yjapi.pduoduo.vip/uploads/generated.png',
+    );
+
+    await remoteApi.saveCanvasMediaNodes('project-1', [{
+      id: 'media-1',
+      kind: 'image',
+      title: '角色｜赵铁柱（图1）',
+      prompt: '',
+      mediaUrl: 'https://yjapi.pduoduo.vip/uploads/generated.png',
+      status: 'done',
+      x: 0,
+      y: 0,
+      updatedAt: '2026-10-27T00:00:00Z',
+      params: {
+        ratio: '16:9',
+        mediaVersions: [
+          {url: 'https://yjapi.pduoduo.vip/uploads/generated.png'},
+        ],
+      },
+    }], 'EP002');
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(requestBody.episodeId).toBe('EP002');
+    expect(requestBody.nodes[0].metadata.content).toBe('/uploads/generated.png');
+    expect(requestBody.nodes[0].metadata.params.mediaVersions[0].url).toBe('/uploads/generated.png');
   });
 });

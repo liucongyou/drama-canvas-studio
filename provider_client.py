@@ -188,6 +188,21 @@ def _trim_wav_bytes(data: bytes, max_seconds: float) -> bytes:
         return data
 
 
+def _ffmpeg_executable() -> str:
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        return system_ffmpeg
+    try:
+        import imageio_ffmpeg
+
+        bundled = str(imageio_ffmpeg.get_ffmpeg_exe() or "").strip()
+        if bundled and os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+            return bundled
+    except Exception:
+        pass
+    return ""
+
+
 def _trim_audio_bytes(data: bytes, fallback_ext: str, max_seconds: float) -> bytes:
     if not data or max_seconds <= 0:
         return data
@@ -197,7 +212,7 @@ def _trim_audio_bytes(data: bytes, fallback_ext: str, max_seconds: float) -> byt
         if trimmed != data:
             return trimmed
 
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = _ffmpeg_executable()
     if not ffmpeg:
         raise RuntimeError("裁剪非 WAV 音频需要 ffmpeg，但当前系统未找到 ffmpeg")
     codec = {

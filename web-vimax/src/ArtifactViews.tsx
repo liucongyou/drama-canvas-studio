@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
 import {dialog} from './GDialog';
 import {ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ChevronsDown, ChevronsUp, Copy, Download, FileJson, Files, Film, Image as ImageIcon, Maximize2, Mountain, Music, Package, Pause, Play, RefreshCw, RotateCcw, Search, User, Video, X} from 'lucide-react';
-import {getJsonArtifact, regenerateCharacterPortraits} from './api';
+import {apiUrl, getJsonArtifact, regenerateCharacterPortraits} from './api';
 import {notify} from './toast';
 import {
   activeRenderCheckpoint,
@@ -828,12 +828,14 @@ function VideoThumbnail({artifact, onMetadata}: {artifact: Artifact; onMetadata?
   metadataRef.current = onMetadata;
 
   // P2：优先用服务端 ffmpeg 生成的 poster（稳定、不依赖浏览器截帧），失败才回退前端截帧。
-  const posterUrl = artifact.url ? artifact.url.replace('/api/artifact?', '/api/video-poster?') : '';
+  const posterUrl = artifact.url
+    ? apiUrl(artifact.url.replace('/api/artifact?', '/api/video-poster?'))
+    : '';
 
   useEffect(() => {
     if (thumbnail || !posterUrl) return;
     let cancelled = false;
-    fetch(posterUrl).then((response) => {
+    fetch(posterUrl, {credentials: 'include'}).then((response) => {
       if (cancelled) return;
       if (response.ok) {
         videoThumbnailCache.set(cacheKey, posterUrl);
@@ -1614,7 +1616,7 @@ function formatArtifactAge(timestamp: string): string {
 
 export function mediaUrl(artifact: Artifact): string {
   const separator = artifact.url.includes('?') ? '&' : '?';
-  return `${artifact.url}${separator}updated=${encodeURIComponent(artifact.updatedAt)}`;
+  return apiUrl(`${artifact.url}${separator}updated=${encodeURIComponent(artifact.updatedAt)}`);
 }
 
 export function visualArtifactLabel(artifact: Artifact): string {

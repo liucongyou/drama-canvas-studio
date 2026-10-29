@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import canvas_store
 import server
@@ -21,9 +22,13 @@ class GenerationQueueTests(unittest.TestCase):
             self.old_global_active = server.GENERATION_QUEUE_ACTIVE_GLOBAL
             self.old_provider_active = dict(server.GENERATION_QUEUE_ACTIVE_PROVIDERS)
             self.old_tenant_active = dict(server.GENERATION_QUEUE_ACTIVE_TENANTS)
+            self.old_model_active = dict(server.GENERATION_QUEUE_ACTIVE_MODELS)
+            self.old_provider_cooldown = dict(server.GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL)
             server.GENERATION_QUEUE_ACTIVE_GLOBAL = 0
             server.GENERATION_QUEUE_ACTIVE_PROVIDERS.clear()
             server.GENERATION_QUEUE_ACTIVE_TENANTS.clear()
+            server.GENERATION_QUEUE_ACTIVE_MODELS.clear()
+            server.GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL.clear()
 
     def tearDown(self):
         with server.GENERATION_QUEUE_CONDITION:
@@ -32,6 +37,10 @@ class GenerationQueueTests(unittest.TestCase):
             server.GENERATION_QUEUE_ACTIVE_PROVIDERS.update(self.old_provider_active)
             server.GENERATION_QUEUE_ACTIVE_TENANTS.clear()
             server.GENERATION_QUEUE_ACTIVE_TENANTS.update(self.old_tenant_active)
+            server.GENERATION_QUEUE_ACTIVE_MODELS.clear()
+            server.GENERATION_QUEUE_ACTIVE_MODELS.update(self.old_model_active)
+            server.GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL.clear()
+            server.GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL.update(self.old_provider_cooldown)
             server.GENERATION_QUEUE_CONDITION.notify_all()
         canvas_store.DB_PATH = self.old_db_path
         canvas_store._SCHEMA_READY = self.old_schema_ready
@@ -96,26 +105,159 @@ class GenerationQueueTests(unittest.TestCase):
         incoming["metadata"]["prompt"] = "用户看到新状态后的主动修改"
         self.assertFalse(server._node_save_conflict(incoming, current))
 
+    def test_generation_input_uses_the_explicit_ui_snapshot(self):
+        node = {
+            "id": "node-1",
+            "type": "image",
+            "metadata": {
+                "prompt": "旧提示词",
+                "params": {"provider": "ark", "model": "old-model", "ratio": "1:1"},
+            },
+        }
+        meta = server.apply_generation_input(node, {
+            "prompt": "角色定妆，正面半身像",
+            "params": {"provider": "agnes-ai", "model": "agnes-image-2.5-flash", "ratio": "16:9"},
+        })
+        self.assertEqual(meta["prompt"], "角色定妆，正面半身像")
+        self.assertEqual(meta["params"], {
+            "provider": "agnes-ai",
+            "model": "agnes-image-2.5-flash",
+            "ratio": "16:9",
+        })
+
+    def test_generation_input_cannot_overwrite_generation_owned_versions(self):
+        node = {
+            "id": "node-1",
+            "type": "image",
+            "metadata": {
+                "prompt": "提示词",
+                "params": {
+                    "model": "current-model",
+                    "mediaVersions": [{"url": "/uploads/current.png"}],
+                    "mediaVersionIndex": 0,
+                },
+            },
+        }
+        meta = server.apply_generation_input(node, {
+            "params": {
+                "model": "new-model",
+                "mediaVersions": [{"url": "/uploads/stale.png"}],
+                "mediaVersionIndex": 9,
+            },
+        })
+        self.assertEqual(meta["params"]["model"], "new-model")
+        self.assertEqual(meta["params"]["mediaVersions"], [{"url": "/uploads/current.png"}])
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 0)
+
+    def test_client_disconnect_never_rewrites_a_successful_generation_outcome(self):
+        self.assertTrue(server.preserve_generation_outcome("task-1", BrokenPipeError(32, "Broken pipe")))
+        with patch.object(server.store, "get_generation_task", return_value={"status": "succeeded"}):
+            self.assertTrue(server.preserve_generation_outcome("task-1", RuntimeError("response write failed")))
+        with patch.object(server.store, "get_generation_task", return_value={"status": "failed"}):
+            self.assertFalse(server.preserve_generation_outcome("task-1", RuntimeError("provider failed")))
+
     def test_local_validation_and_provider_failures_are_classified_separately(self):
         self.assertTrue(server.is_local_validation_error("参考素材未就绪 2 项：角色未生成"))
         self.assertTrue(server.is_local_validation_error("音色节点尚未生成"))
         self.assertFalse(server.is_local_validation_error("供应商接口 HTTP429: rate limit"))
 
-    def test_provider_concurrency_slot_is_serialized(self):
+    def test_provider_concurrency_limit_is_enforced_when_configured(self):
         provider = "test-provider"
-        first = server.acquire_generation_slot(None, provider)
+        with patch.object(server, "GENERATION_QUEUE_PROVIDER_LIMIT", 1):
+            first = server.acquire_generation_slot(None, provider, "image-model", "image")
+            acquired = threading.Event()
+
+            def acquire_second():
+                slot = server.acquire_generation_slot(None, provider, "image-model", "image")
+                acquired.set()
+                server.release_generation_slot(slot)
+
+            thread = threading.Thread(target=acquire_second, daemon=True)
+            thread.start()
+            time.sleep(0.15)
+            self.assertFalse(acquired.is_set())
+            server.release_generation_slot(first)
+            self.assertTrue(acquired.wait(timeout=2))
+            thread.join(timeout=2)
+
+    def test_multiple_image_tasks_can_use_independent_slots(self):
+        first = server.acquire_generation_slot(None, "ark", "image-model", "image")
+        second = server.acquire_generation_slot(None, "ark", "image-model", "image")
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertGreaterEqual(server.GENERATION_QUEUE_ACTIVE_MODELS.get(first["model"], 0), 2)
+        server.release_generation_slot(first)
+        server.release_generation_slot(second)
+
+    def test_different_providers_do_not_block_each_other(self):
+        first = server.acquire_generation_slot(None, "ark", "image-model", "image")
+        second = server.acquire_generation_slot(None, "agnes-ai", "image-model", "image")
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        server.release_generation_slot(first)
+        server.release_generation_slot(second)
+
+    def test_ten_video_tasks_can_run_together_by_default(self):
+        slots = [
+            server.acquire_generation_slot(None, "ark", "video-model", "video")
+            for _ in range(10)
+        ]
+        self.assertEqual(len(slots), 10)
+        self.assertEqual(
+            server.GENERATION_QUEUE_ACTIVE_MODELS.get(slots[0]["model"]),
+            10,
+        )
+        for slot in slots:
+            server.release_generation_slot(slot)
+
+    def test_model_concurrency_limit_blocks_only_after_its_own_capacity(self):
+        with patch.object(server, "generation_model_concurrency", return_value=2):
+            first = server.acquire_generation_slot(None, "ark", "image-model", "image")
+            second = server.acquire_generation_slot(None, "ark", "image-model", "image")
+            acquired = threading.Event()
+
+            def acquire_third():
+                slot = server.acquire_generation_slot(None, "ark", "image-model", "image")
+                acquired.set()
+                server.release_generation_slot(slot)
+
+            thread = threading.Thread(target=acquire_third, daemon=True)
+            thread.start()
+            time.sleep(0.15)
+            self.assertFalse(acquired.is_set())
+            server.release_generation_slot(first)
+            self.assertTrue(acquired.wait(timeout=2))
+            server.release_generation_slot(second)
+            thread.join(timeout=2)
+
+    def test_model_json_concurrency_override_is_used(self):
+        catalog = {
+            "models": [{
+                "id": "video-model",
+                "remoteModel": "video-model-remote",
+                "limits": {"maxConcurrency": 3},
+            }],
+        }
+        with patch.object(server.provider_catalog, "public_catalog", return_value=catalog):
+            self.assertEqual(server.generation_model_concurrency("video-model", "video"), 3)
+            self.assertEqual(server.generation_model_concurrency("video-model-remote", "video"), 3)
+
+    def test_provider_rate_limit_cools_only_that_provider_lane(self):
+        tenant_key = server.tenant_context.current_tenant_id()
+        provider_key = f"{tenant_key}\x1fark"
+        with server.GENERATION_QUEUE_CONDITION:
+            server.GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL[provider_key] = time.monotonic() + 0.3
         acquired = threading.Event()
 
-        def acquire_second():
-            slot = server.acquire_generation_slot(None, provider)
+        def acquire_after_cooldown():
+            slot = server.acquire_generation_slot(None, "ark", "video-model", "video")
             acquired.set()
             server.release_generation_slot(slot)
 
-        thread = threading.Thread(target=acquire_second, daemon=True)
+        thread = threading.Thread(target=acquire_after_cooldown, daemon=True)
         thread.start()
-        time.sleep(0.15)
+        time.sleep(0.1)
         self.assertFalse(acquired.is_set())
-        server.release_generation_slot(first)
         self.assertTrue(acquired.wait(timeout=2))
         thread.join(timeout=2)
 
@@ -157,6 +299,55 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(updated["phase"], "已完成")
         self.assertTrue(updated["finished_at"])
 
+    def test_ghost_active_task_is_closed_before_retry(self):
+        pid = canvas_store.create_project("queue-ghost")
+        node = {
+            "id": "node-1",
+            "type": "video",
+            "title": "段1",
+            "position": {"x": 0, "y": 0},
+            "metadata": {
+                "status": "failed",
+                "lastError": "后端重启，任务未取得供应商任务 ID",
+                "providerTaskPhase": "服务中断",
+            },
+        }
+        project = canvas_store.get_project(pid)
+        project["payload"]["nodes"] = [node]
+        canvas_store.update_project(pid, payload=project["payload"])
+        task = canvas_store.create_generation_task(pid, "node-1", kind="video")
+        canvas_store.update_generation_task(task["id"], status="running", phase="排队中")
+
+        repaired = server.reconcile_active_generation_task_for_node(pid, "node-1", node)
+
+        self.assertEqual(repaired["status"], "failed")
+        retry = canvas_store.create_generation_task(pid, "node-1", kind="video")
+        self.assertTrue(retry["created_new"])
+
+    def test_active_task_adopts_provider_id_from_node_metadata(self):
+        pid = canvas_store.create_project("queue-adopt-provider-id")
+        node = {
+            "id": "node-1",
+            "type": "video",
+            "title": "段1",
+            "position": {"x": 0, "y": 0},
+            "metadata": {
+                "status": "generating",
+                "taskId": "provider-task-42",
+                "providerTaskStatus": "in_progress",
+            },
+        }
+        project = canvas_store.get_project(pid)
+        project["payload"]["nodes"] = [node]
+        canvas_store.update_project(pid, payload=project["payload"])
+        task = canvas_store.create_generation_task(pid, "node-1", kind="video")
+        canvas_store.update_generation_task(task["id"], status="running", phase="提交供应商")
+
+        repaired = server.reconcile_active_generation_task_for_node(pid, "node-1", node)
+
+        self.assertEqual(repaired["provider_task_id"], "provider-task-42")
+        self.assertEqual(repaired["status"], "running")
+
     def test_reconcile_marks_stale_generating_node_failed_after_provider_failure(self):
         pid = canvas_store.create_project("queue-failed")
         node = {
@@ -186,6 +377,37 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(meta["status"], "failed")
         self.assertIn("HTTP 401", meta["lastError"])
 
+    def test_reconcile_keeps_active_provider_task_running_when_node_is_stale_failed(self):
+        pid = canvas_store.create_project("queue-active-provider-task")
+        node = {
+            "id": "node-1",
+            "type": "video",
+            "title": "段7",
+            "position": {"x": 0, "y": 0},
+            "metadata": {
+                "status": "failed",
+                "lastError": "旧的失败信息",
+                "taskId": "provider-task-live",
+                "providerTaskStatus": "in_progress",
+            },
+        }
+        project = canvas_store.get_project(pid)
+        project["payload"]["nodes"] = [node]
+        canvas_store.update_project(pid, payload=project["payload"])
+        task = canvas_store.create_generation_task(pid, "node-1", kind="video")
+        canvas_store.update_generation_task(
+            task["id"],
+            status="running",
+            phase="生成中 10%",
+            provider_task_id="provider-task-live",
+        )
+
+        server.reconcile_generation_task_records()
+
+        current = canvas_store.get_generation_task(task["id"])
+        self.assertEqual(current["status"], "running")
+        self.assertEqual(current["provider_task_id"], "provider-task-live")
+
     def test_active_generation_metadata_cannot_be_overwritten(self):
         meta = {
             "status": "generating",
@@ -208,6 +430,197 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(meta["content"], "/uploads/current.mp4")
         self.assertEqual(meta["providerTaskStatus"], "running")
         self.assertEqual(meta["prompt"], "edited prompt")
+
+    def test_stale_media_save_preserves_generated_versions_without_explicit_selection(self):
+        meta = {
+            "status": "done",
+            "content": "https://i.ibb.co/second.png",
+            "params": {
+                "ratio": "16:9",
+                "mediaVersions": [
+                    {"url": "/uploads/first.png"},
+                    {"url": "https://i.ibb.co/second.png"},
+                ],
+                "mediaVersionIndex": 1,
+            },
+        }
+        server.merge_node_metadata(meta, {
+            "prompt": "更新后的提示词",
+            "content": "/uploads/first.png",
+            "params": {
+                "ratio": "16:9",
+                "mediaVersions": [{"url": "/uploads/first.png"}],
+                "mediaVersionIndex": 0,
+            },
+        })
+
+        self.assertEqual(meta["prompt"], "更新后的提示词")
+        self.assertEqual(len(meta["params"]["mediaVersions"]), 2)
+        self.assertEqual(meta["content"], "https://i.ibb.co/second.png")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
+
+        server.merge_node_metadata(meta, {
+            "params": {
+                "mediaVersions": [{"url": "/uploads/stale.png"}],
+                "mediaVersionIndex": 1,
+            },
+        })
+        self.assertEqual(len(meta["params"]["mediaVersions"]), 2)
+        self.assertEqual(meta["content"], "https://i.ibb.co/second.png")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
+
+    def test_imgbb_version_backfill_restores_a_lost_generated_image(self):
+        payload = {
+            "nodes": [{
+                "id": "image-1",
+                "type": "image",
+                "title": "道具",
+                "metadata": {
+                    "content": "/uploads/first.png",
+                    "status": "done",
+                    "provider": "agnes-ai",
+                    "model": "agnes-image",
+                    "params": {
+                        "mediaVersions": [
+                            {"url": "/uploads/first.png", "kind": "image"},
+                        ],
+                        "mediaVersionIndex": 0,
+                    },
+                    "imgbb": {
+                        "status": "stored",
+                        "url": "https://i.ibb.co/second.png",
+                        "uploadedAt": "2026-10-28T03:42:40Z",
+                        "source": {"provider": "agnes-ai", "model": "agnes-image"},
+                    },
+                },
+            }],
+        }
+
+        changed = server._backfill_image_host_versions(payload)
+
+        self.assertEqual(changed, 1)
+        meta = payload["nodes"][0]["metadata"]
+        self.assertEqual(meta["content"], "https://i.ibb.co/second.png")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
+        self.assertEqual(
+            [item["url"] for item in meta["params"]["mediaVersions"]],
+            ["/uploads/first.png", "https://i.ibb.co/second.png"],
+        )
+
+    def test_position_conflict_ignores_newer_metadata_timestamp(self):
+        current = {
+            "position": {"x": 100, "y": 80},
+            "updatedAt": "2026-10-28T14:00:10Z",
+        }
+        incoming = {
+            "position": {"x": 240, "y": 180},
+            "basePosition": {"x": 100, "y": 80},
+            "basePositionUpdatedAt": "2026-10-28T14:00:00Z",
+        }
+
+        self.assertFalse(server._position_save_conflict(
+            current,
+            incoming,
+            current["position"],
+        ))
+
+    def test_position_conflict_detects_real_move_in_another_tab(self):
+        current = {
+            "position": {"x": 300, "y": 220},
+            "updatedAt": "2026-10-28T14:00:10Z",
+        }
+        incoming = {
+            "position": {"x": 240, "y": 180},
+            "basePosition": {"x": 100, "y": 80},
+        }
+
+        self.assertTrue(server._position_save_conflict(
+            current,
+            incoming,
+            current["position"],
+        ))
+
+    def test_imgbb_backfill_keeps_available_local_image_as_preview(self):
+        upload_dir = Path(self.temp_dir.name) / "uploads"
+        upload_dir.mkdir()
+        (upload_dir / "first.png").write_bytes(b"png")
+        payload = {
+            "nodes": [{
+                "id": "image-1",
+                "type": "image",
+                "title": "道具",
+                "metadata": {
+                    "content": "https://i.ibb.co/second.png",
+                    "status": "done",
+                    "params": {
+                        "mediaVersions": [
+                            {"url": "/uploads/first.png", "kind": "image"},
+                            {"url": "https://i.ibb.co/second.png", "kind": "image"},
+                        ],
+                        "mediaVersionIndex": 1,
+                    },
+                    "imgbb": {
+                        "status": "stored",
+                        "url": "https://i.ibb.co/second.png",
+                        "source": {"localUrl": "/uploads/first.png"},
+                    },
+                },
+            }],
+        }
+
+        with patch.object(server, "_upload_dir", return_value=str(upload_dir)):
+            changed = server._backfill_image_host_versions(payload)
+
+        self.assertGreater(changed, 0)
+        meta = payload["nodes"][0]["metadata"]
+        self.assertEqual(meta["content"], "/uploads/first.png")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 0)
+        self.assertEqual(
+            [item["url"] for item in meta["params"]["mediaVersions"]],
+            ["/uploads/first.png"],
+        )
+
+    def test_image_generation_returns_local_preview_before_imgbb_mirror(self):
+        node = {
+            "id": "image-1",
+            "type": "image",
+            "title": "角色｜测试（图1）",
+            "metadata": {
+                "prompt": "test image",
+                "status": "generating",
+                "params": {"provider": "ark", "model": "seedream"},
+            },
+        }
+        project = {"payload": {"nodes": [node]}}
+        provider = {"id": "ark"}
+        model = {
+            "id": "seedream",
+            "remoteModel": "doubao-seedream",
+            "defaultParams": {},
+            "limits": {},
+        }
+        sent = []
+        queued = []
+        committed = []
+        handler = object.__new__(server.Handler)
+        handler._send = lambda status, payload: sent.append((status, payload)) or payload
+
+        with (
+            patch.object(server.provider_catalog, "resolve_model", return_value=(provider, model, {})),
+            patch.object(server.provider_client, "generate_image", return_value={"url": "https://provider/result.png"}),
+            patch.object(server, "persist_generated_media", return_value="/uploads/generated.png"),
+            patch.object(server, "archive_generated_image", return_value=None),
+            patch.object(server.imgbb_storage, "is_ready", return_value=True),
+            patch.object(server, "queue_generated_image_imgbb_mirror", side_effect=lambda *args: queued.append(args)),
+            patch.object(server, "commit_node_metadata", side_effect=lambda *args: committed.append(args)),
+        ):
+            handler._generate_once("project-1", project, node)
+
+        self.assertEqual(sent[-1][1]["url"], "/uploads/generated.png")
+        self.assertEqual(node["metadata"]["content"], "/uploads/generated.png")
+        self.assertEqual(node["metadata"]["imgbb"]["status"], "pending")
+        self.assertEqual(queued[0][2], "/uploads/generated.png")
+        self.assertEqual(committed[-1][2]["content"], "/uploads/generated.png")
 
 
 if __name__ == "__main__":

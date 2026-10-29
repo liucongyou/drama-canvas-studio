@@ -4,6 +4,123 @@ import server
 
 
 class MediaVersionTests(unittest.TestCase):
+    def test_explicit_selection_persists_and_rejects_unknown_url(self):
+        meta = {
+            "content": "/uploads/v1.png",
+            "status": "done",
+            "source": {"type": "generated"},
+            "params": {
+                "mediaVersions": [
+                    {"url": "/uploads/v1.png", "sourceType": "generated"},
+                    {"url": "/uploads/v2.png", "sourceType": "generated"},
+                ],
+                "mediaVersionIndex": 0,
+            },
+        }
+
+        server.merge_node_metadata(meta, {
+            "content": "/uploads/v2.png",
+            "status": "done",
+            "source": {"type": "generated"},
+            "params": {"mediaVersionIndex": 1},
+            "_mediaVersionSelection": True,
+        })
+
+        self.assertEqual(meta["content"], "/uploads/v2.png")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
+
+        server.merge_node_metadata(meta, {
+            "content": "/uploads/not-a-version.png",
+            "source": {"type": "generated"},
+            "params": {"mediaVersionIndex": 0},
+            "_mediaVersionSelection": True,
+        })
+
+        self.assertEqual(meta["content"], "/uploads/v2.png")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
+
+    def test_stale_save_without_explicit_selection_cannot_change_current_version(self):
+        meta = {
+            "content": "/uploads/v2.png",
+            "status": "done",
+            "source": {"type": "generated"},
+            "params": {
+                "mediaVersions": [
+                    {"url": "/uploads/v1.png", "sourceType": "generated"},
+                    {"url": "/uploads/v2.png", "sourceType": "generated"},
+                ],
+                "mediaVersionIndex": 1,
+            },
+        }
+
+        server.merge_node_metadata(meta, {
+            "prompt": "旧标签页里的提示词",
+            "content": "/uploads/v1.png",
+            "status": "done",
+            "source": {"type": "generated"},
+            "params": {"mediaVersionIndex": 0},
+        })
+
+        self.assertEqual(meta["prompt"], "旧标签页里的提示词")
+        self.assertEqual(meta["content"], "/uploads/v2.png")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
+
+    def test_local_upload_can_append_a_media_version(self):
+        meta = {
+            "content": "/uploads/generated.png",
+            "status": "done",
+            "source": {"type": "generated"},
+            "params": {
+                "mediaVersions": [{"url": "/uploads/generated.png", "sourceType": "generated"}],
+                "mediaVersionIndex": 0,
+            },
+        }
+        incoming = {
+            "_mediaImport": True,
+            "content": "/uploads/local.png",
+            "status": "done",
+            "source": {"type": "local", "fileName": "local.png"},
+            "params": {
+                "mediaVersions": [
+                    {"url": "/uploads/generated.png", "sourceType": "generated"},
+                    {"url": "/uploads/local.png", "sourceType": "local", "fileName": "local.png"},
+                ],
+                "mediaVersionIndex": 1,
+            },
+        }
+
+        server.merge_node_metadata(meta, incoming)
+
+        self.assertEqual(meta["content"], "/uploads/local.png")
+        self.assertEqual(meta["source"]["type"], "local")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
+        self.assertEqual(meta["params"]["mediaVersions"][-1]["fileName"], "local.png")
+
+    def test_normal_edit_of_local_asset_cannot_replace_media_content(self):
+        meta = {
+            "content": "/uploads/current.png",
+            "status": "done",
+            "source": {"type": "local", "fileName": "current.png"},
+            "params": {
+                "mediaVersions": [{"url": "/uploads/current.png", "sourceType": "local"}],
+                "mediaVersionIndex": 0,
+            },
+        }
+
+        server.merge_node_metadata(meta, {
+            "prompt": "只改提示词",
+            "content": "/uploads/stale.png",
+            "source": {"type": "local", "fileName": "stale.png"},
+            "params": {
+                "mediaVersions": [{"url": "/uploads/stale.png", "sourceType": "local"}],
+                "mediaVersionIndex": 0,
+            },
+        })
+
+        self.assertEqual(meta["prompt"], "只改提示词")
+        self.assertEqual(meta["content"], "/uploads/current.png")
+        self.assertEqual(meta["source"]["fileName"], "current.png")
+
     def test_image_versions_keep_previous_generation_current(self):
         meta = {
             "content": "/uploads/old.png",

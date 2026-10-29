@@ -47,7 +47,7 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import {deleteSession, getAgentConfig, getArtifacts, getHealth, getHistory, getProjectMeta, getRuntimeConfig, getSessions, HttpError, retryAgentTool, saveAgentConfig, saveProjectMeta, saveRuntimeConfig, sendMessage, startAgent, stopAgent, subscribeToEvents, testAgentConfig, uploadWorkspaceFile} from './api';
+import {apiUrl, deleteSession, getAgentConfig, getArtifacts, getHealth, getHistory, getProjectMeta, getRuntimeConfig, getSessions, HttpError, retryAgentTool, saveAgentConfig, saveProjectMeta, saveRuntimeConfig, sendMessage, startAgent, stopAgent, subscribeToEvents, testAgentConfig, uploadWorkspaceFile} from './api';
 import {ArtifactsView, StoryboardPanel, mediaUrl, visualArtifactLabel} from './ArtifactViews';
 import {resolveMediaOrientation, type MediaOrientation} from './artifactPresentation';
 // P2-4：画布/预算/台账按视图懒加载（react-flow 等只在切到对应视图时才下载），
@@ -1899,7 +1899,7 @@ function videoPosterFor(artifact: Artifact, images: Artifact[]): string | undefi
   try {
     const session = new URL(artifact.url, window.location.origin).searchParams.get('session');
     if (!session) return undefined;
-    return `/api/artifact?session=${encodeURIComponent(session)}&path=${encodeURIComponent(posterPath)}`;
+    return apiUrl(`/api/artifact?session=${encodeURIComponent(session)}&path=${encodeURIComponent(posterPath)}`);
   } catch {
     return undefined;
   }

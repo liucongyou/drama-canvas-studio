@@ -71,9 +71,10 @@
 
 /* ── 头部 ───────────────────────────────────────────────── */
 .gdialog-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 24px;
   align-items: flex-start;
-  gap: 11px;
+  gap: 12px;
   padding: 20px 22px 0;
 }
 .gdialog-icon {
@@ -97,7 +98,7 @@
   background: var(--v-danger-soft);
   color: var(--v-danger);
 }
-.gdialog-title-wrap { flex: 1; min-width: 0; padding-top: 4px; }
+.gdialog-title-wrap { min-width: 0; padding-top: 5px; }
 .gdialog-title {
   margin: 0;
   font-size: 14.5px;
@@ -146,7 +147,10 @@
         正文与图标对齐反而让输入框变窄；改成与标题左侧对齐即可（标题本身已缩进）；
      ② 左右内边距严格相等（22px），并让图标与标题的间距参与计算，
         保证输入框左边缘 = 标题左边缘，视觉上一条竖线。 */
-.gdialog.has-icon .gdialog-body { padding-left: 43px; }
+.gdialog.has-icon .gdialog-body {
+  padding-left: 66px;
+  padding-right: 22px;
+}
 .gdialog-message { margin: 0; white-space: pre-wrap; word-break: break-word; }
 /* ★★ 标题必须与正文/输入框落在**同一条竖线**上（内容列左缘 = 距框 43px）。
    踩过的坑（两次）：head 给 padding-left:22 + 图标 absolute left:22 + 标题
@@ -156,13 +160,21 @@
      数字不再跨层相加，改的时候也不会再叠错。
    为什么是 43：图标 32 + 间隙 11。正文/输入框也用 43，
    于是"图标 — 标题 — 正文 — 输入框"全部对齐在同一条内容列上。 */
-.gdialog.has-icon .gdialog-head { position: relative; padding-left: 0; padding-right: 22px; }
-.gdialog.has-icon .gdialog-head .gdialog-icon {
-  position: absolute;
-  left: 22px;
-  top: 16px;
+.gdialog.has-icon .gdialog-head {
+  position: static;
+  padding-left: 22px;
+  padding-right: 22px;
 }
-.gdialog.has-icon .gdialog-title { padding-left: 43px; }
+.gdialog.has-icon .gdialog-head .gdialog-icon {
+  position: static;
+  margin-top: 0;
+  grid-column: 1;
+}
+.gdialog.has-icon .gdialog-title {
+  padding-left: 0;
+}
+.gdialog-title-wrap { grid-column: 2; }
+.gdialog-close { grid-column: 3; align-self: start; }
 
 /* ── 输入框（prompt 专用）────────────────────────────────── */
 .gdialog-input-wrap { position: relative; margin-top: 12px; }

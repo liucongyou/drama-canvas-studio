@@ -10,6 +10,7 @@ class GateCheckTests(unittest.TestCase):
         payload = {
             "nodes": [
                 {"id": "img-1", "type": "image", "title": "角色｜赵铁柱（图1）"},
+                {"id": "audio-1", "type": "audio", "title": "音频｜赵铁柱（图1）"},
                 {
                     "id": "video-1",
                     "type": "video",
@@ -18,14 +19,20 @@ class GateCheckTests(unittest.TestCase):
                         "prompt": (
                             "【核心人物】@角色｜赵铁柱（图1）\n\n"
                             "【音色引用】@音频｜赵铁柱（图1）"
-                        )
+                        ),
+                        "params": {
+                            "voiceRefs": [{"nodeId": "audio-1", "label": "音频｜赵铁柱（图1）"}],
+                        },
                     },
                 },
             ],
-            "connections": [{"fromNodeId": "img-1", "toNodeId": "video-1"}],
+            "connections": [
+                {"fromNodeId": "img-1", "toNodeId": "video-1"},
+                {"fromNodeId": "audio-1", "toNodeId": "video-1"},
+            ],
             "episodeImports": [{
                 "id": "EP001",
-                "nodeIds": ["img-1", "video-1"],
+                "nodeIds": ["img-1", "audio-1", "video-1"],
                 "videoNodeIds": ["video-1"],
             }],
         }
@@ -33,6 +40,36 @@ class GateCheckTests(unittest.TestCase):
         self.assertTrue(result["passed"])
         self.assertEqual(result["results"][0]["script"], ["图1"])
         self.assertEqual(result["results"][0]["linked"], ["图1"])
+        self.assertEqual(result["results"][0]["voiceScript"], ["图1"])
+        self.assertEqual(result["results"][0]["voiceRefs"], ["图1"])
+        self.assertEqual(result["results"][0]["voiceLinked"], ["图1"])
+
+    def test_audio_reference_without_edge_fails(self):
+        payload = {
+            "nodes": [
+                {"id": "audio-1", "type": "audio", "title": "音频｜赵铁柱（图1）"},
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段1",
+                    "metadata": {
+                        "prompt": "【音色引用】@音频｜赵铁柱（图1）",
+                        "params": {
+                            "voiceRefs": [{"nodeId": "audio-1", "label": "音频｜赵铁柱（图1）"}],
+                        },
+                    },
+                },
+            ],
+            "connections": [],
+            "episodeImports": [{
+                "id": "EP001",
+                "nodeIds": ["audio-1", "video-1"],
+                "videoNodeIds": ["video-1"],
+            }],
+        }
+        result = gate_check.run_check_json(payload, episode_id="EP001")
+        self.assertFalse(result["passed"])
+        self.assertFalse(result["results"][0]["audioOk"])
 
     def test_episode_filter_ignores_other_episode_failures(self):
         payload = {
@@ -60,6 +97,30 @@ class GateCheckTests(unittest.TestCase):
         result = gate_check.run_check_json(payload, episode_id="EP001")
         self.assertTrue(result["passed"])
         self.assertEqual(len(result["results"]), 1)
+
+    def test_legacy_asset_syntax_uses_shared_contract_parser(self):
+        payload = {
+            "nodes": [
+                {"id": "img-1", "type": "image", "title": "角色｜赵铁柱（图1）"},
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段1",
+                    "metadata": {"prompt": "@//chr/-赵铁柱（图1）"},
+                },
+            ],
+            "connections": [{"fromNodeId": "img-1", "toNodeId": "video-1"}],
+            "episodeImports": [{
+                "id": "EP001",
+                "nodeIds": ["img-1", "video-1"],
+                "videoNodeIds": ["video-1"],
+            }],
+        }
+
+        result = gate_check.run_check_json(payload, episode_id="EP001")
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["results"][0]["script"], ["图1"])
 
 
 if __name__ == "__main__":

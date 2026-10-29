@@ -1,0 +1,33 @@
+{
+  "title": "通用测试 · 第01集",
+  "canvas_contract": {
+    "schema": "drama-canvas-feed/v2",
+    "video_model": "doubao-seedance-2-0",
+    "video_aspect": "9:16"
+  },
+  "asset_prompts": [
+    {
+      "code": "图9",
+      "name": "Lin Xia（角色立绘）",
+      "raw": "Voice Description 完整版: A female voice, clear and restrained."
+    }
+  ],
+  "voice_prompts": [
+    {
+      "code": "图9",
+      "name": "Lin Xia",
+      "format": "audio-prompt-v1",
+      "prompt": "clear restrained female voice. A female voice, clear and restrained. A 27-year-old female, speaking standard Mandarin, short drama dubbing reference clip, 4.5 seconds clean voice, no background noise.",
+      "description": "A female voice, clear and restrained.",
+      "age": "27",
+      "gender": "female",
+      "dialect": "standard"
+    }
+  ],
+  "segments": [
+    {
+      "no": 1,
+      "raw": "【核心人物】@角色｜Lin Xia（图9）\n【音色引用】@音频｜Lin Xia（图9）\n【站位声明】@角色｜Lin Xia（图9）（画面左）\n台词：Lin Xia（calm）：\"Start.\""
+    }
+  ]
+}

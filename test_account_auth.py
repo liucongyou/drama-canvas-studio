@@ -7,9 +7,11 @@ import os
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 
 import server
 import tenant_bootstrap
+import tenant_context
 import tenant_registry
 
 
@@ -38,6 +40,7 @@ class AccountAuthTests(unittest.TestCase):
             b"account-auth-0123456789abcdef01"
         ).decode("ascii")
         tenant = tenant_bootstrap.create_tenant("alpha", name="Alpha")
+        self.tenant = tenant
         beta = tenant_bootstrap.create_tenant("beta", name="Beta")
         tenant_registry.create_account(
             tenant["id"],
@@ -62,7 +65,15 @@ class AccountAuthTests(unittest.TestCase):
                 os.environ[key] = value
         self.temp.cleanup()
 
-    def request(self, method, path, body="", cookie="", origin="https://yj.pduoduo.vip"):
+    def request(
+        self,
+        method,
+        path,
+        body="",
+        cookie="",
+        origin="https://yj.pduoduo.vip",
+        extra_headers=None,
+    ):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         headers = {"Host": "yjapi.pduoduo.vip"}
         if origin:
@@ -71,6 +82,7 @@ class AccountAuthTests(unittest.TestCase):
             headers["Cookie"] = cookie
         if body:
             headers["Content-Type"] = "application/json"
+        headers.update(extra_headers or {})
         connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
         payload = response.read()
@@ -97,6 +109,66 @@ class AccountAuthTests(unittest.TestCase):
         status, _, body = self.request("GET", "/api/projects")
         self.assertEqual(status, 401)
         self.assertIn(b"ACCOUNT_AUTH_REQUIRED", body)
+
+    def test_tenant_media_supports_cors_head_and_video_ranges(self):
+        login_status, login_headers, _ = self.request(
+            "POST",
+            "/api/auth/login",
+            '{"username":"alice","password":"correct-horse"}',
+        )
+        self.assertEqual(login_status, 200)
+        cookie = login_headers.get("Set-Cookie", "").split(";", 1)[0]
+
+        context = tenant_context.make_context(self.tenant["id"], "alpha")
+        upload_dir = Path(context.upload_dir)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        filename = "media-range-test.png"
+        payload = b"\x89PNG\r\n\x1a\n0123456789"
+        (upload_dir / filename).write_bytes(payload)
+
+        status, _, _ = self.request("GET", f"/uploads/{filename}")
+        self.assertEqual(status, 401)
+
+        status, headers, body = self.request(
+            "GET",
+            f"/uploads/{filename}",
+            cookie=cookie,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body, payload)
+        self.assertEqual(headers.get("Accept-Ranges"), "bytes")
+        self.assertEqual(headers.get("Access-Control-Allow-Origin"), "https://yj.pduoduo.vip")
+        etag = headers.get("ETag")
+        self.assertTrue(etag)
+        self.assertTrue(headers.get("Last-Modified"))
+
+        status, headers, body = self.request(
+            "GET",
+            f"/uploads/{filename}",
+            cookie=cookie,
+            extra_headers={"If-None-Match": etag},
+        )
+        self.assertEqual(status, 304)
+        self.assertEqual(body, b"")
+
+        status, headers, body = self.request(
+            "GET",
+            f"/uploads/{filename}",
+            cookie=cookie,
+            extra_headers={"Range": "bytes=8-12", "If-Range": etag},
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(body, payload[8:13])
+        self.assertEqual(headers.get("Content-Range"), f"bytes 8-12/{len(payload)}")
+
+        status, headers, body = self.request(
+            "HEAD",
+            f"/uploads/{filename}",
+            cookie=cookie,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"")
+        self.assertEqual(headers.get("Content-Length"), str(len(payload)))
 
     def test_wrong_password_is_rejected(self):
         status, _, body = self.request(
@@ -152,6 +224,78 @@ class AccountAuthTests(unittest.TestCase):
             json.dumps({"username": "alice", "password": "new-horse-123"}),
         )
         self.assertEqual(status, 200)
+
+    def test_admin_can_reset_password_and_toggle_account_status(self):
+        status, headers, _ = self.request(
+            "POST",
+            "/api/auth/login",
+            json.dumps({"username": "alice", "password": "correct-horse"}),
+        )
+        self.assertEqual(status, 200)
+        admin_cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        bob = tenant_registry.get_account_by_username("bob")
+        self.assertIsNotNone(bob)
+
+        status, _, _ = self.request(
+            "POST",
+            f"/api/admin/accounts/{bob['id']}/reset-password",
+            json.dumps({"password": "bob-new-password"}),
+            cookie=admin_cookie,
+        )
+        self.assertEqual(status, 200)
+        status, _, _ = self.request(
+            "POST",
+            "/api/auth/login",
+            json.dumps({"username": "bob", "password": "bob-new-password"}),
+        )
+        self.assertEqual(status, 200)
+
+        status, _, _ = self.request(
+            "POST",
+            f"/api/admin/accounts/{bob['id']}/status",
+            json.dumps({"status": "disabled"}),
+            cookie=admin_cookie,
+        )
+        self.assertEqual(status, 200)
+        status, _, body = self.request(
+            "POST",
+            "/api/auth/login",
+            json.dumps({"username": "bob", "password": "bob-new-password"}),
+        )
+        self.assertEqual(status, 401)
+        self.assertIn(b"AUTH_INVALID", body)
+
+        status, _, _ = self.request(
+            "POST",
+            f"/api/admin/accounts/{bob['id']}/status",
+            json.dumps({"status": "active"}),
+            cookie=admin_cookie,
+        )
+        self.assertEqual(status, 200)
+        status, _, _ = self.request(
+            "POST",
+            "/api/auth/login",
+            json.dumps({"username": "bob", "password": "bob-new-password"}),
+        )
+        self.assertEqual(status, 200)
+
+    def test_admin_cannot_disable_the_only_active_admin(self):
+        status, headers, _ = self.request(
+            "POST",
+            "/api/auth/login",
+            json.dumps({"username": "alice", "password": "correct-horse"}),
+        )
+        self.assertEqual(status, 200)
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        alice = tenant_registry.get_account_by_username("alice")
+        status, _, body = self.request(
+            "POST",
+            f"/api/admin/accounts/{alice['id']}/status",
+            json.dumps({"status": "disabled"}),
+            cookie=cookie,
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("不能停用当前登录", body.decode("utf-8"))
 
     def test_projects_are_isolated_between_two_accounts(self):
         def login(username: str) -> str:

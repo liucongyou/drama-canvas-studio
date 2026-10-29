@@ -20,6 +20,56 @@ export function apiUrl(path: string): string {
   return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
+/**
+ * Browser-facing media URL. Uploaded and generated assets stay stored as
+ * canonical `/uploads/...` paths, but native <img>/<video>/<audio> requests
+ * must hit the API host where the HttpOnly session cookie was issued.
+ */
+export function mediaSourceUrl(raw: unknown): string {
+  const value = String(raw || '').trim();
+  if (!value || /^(?:data:|blob:)/i.test(value)) return value;
+  if (value.startsWith('/uploads/')) return apiUrl(value);
+  return value;
+}
+
+function mediaStorageUrl(raw: unknown): string {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  if (value.startsWith('/uploads/')) return value;
+  if (!API_BASE) return value;
+  const prefix = `${API_BASE.replace(/\/+$/, '')}/uploads/`;
+  return value.startsWith(prefix) ? value.slice(API_BASE.length) : value;
+}
+
+function normalizeProjectMediaUrls<T>(value: T): T {
+  if (typeof value === 'string') return mediaSourceUrl(value) as T;
+  if (Array.isArray(value)) return value.map((item) => normalizeProjectMediaUrls(item)) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .map(([key, item]) => [key, normalizeProjectMediaUrls(item)]),
+    ) as T;
+  }
+  return value;
+}
+
+function normalizeMediaForStorage<T>(value: T): T {
+  if (typeof value === 'string') return mediaStorageUrl(value) as T;
+  if (Array.isArray(value)) return value.map((item) => normalizeMediaForStorage(item)) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .map(([key, item]) => [key, normalizeMediaForStorage(item)]),
+    ) as T;
+  }
+  return value;
+}
+
+function normalizeParamsForStorage(params?: CanvasMediaParams): CanvasMediaParams | undefined {
+  if (!params) return params;
+  return normalizeMediaForStorage(params);
+}
+
 export const AUTH_REQUIRED_EVENT = 'canvas-auth-required';
 
 export type AgentEvent = {
@@ -134,6 +184,13 @@ export type CanvasVideoVersion = {
   generatedAt?: string;
   actualDuration?: number;
   validationStatus?: string;
+  sourceType?: 'local' | 'generated' | string;
+  fileName?: string;
+  mime?: string;
+  size?: number;
+  sha256?: string;
+  width?: number;
+  height?: number;
 };
 
 // 生成参数（详细属性面板：模型/尺寸/清晰度/比例/推理强度/引用/音色）
@@ -237,6 +294,7 @@ export type ModelSpec = {
     maxAudios?: number;
     maxTextRefs?: number;
     maxPromptChars?: number;
+    maxConcurrency?: number;
   };
   pricing?: ModelPricing;
   builtin?: boolean;
@@ -262,7 +320,7 @@ export type ModelCatalog = {
 
 export type StorageSpec = {
   enabled: boolean;
-  provider: 'tos' | string;
+  provider: 'tos' | 'imgbb' | string;
   bucket: string;
   region: string;
   endpoint: string;
@@ -276,6 +334,14 @@ export type StorageSpec = {
   has_secret_key: boolean;
   secret_key_hint?: string;
   ready: boolean;
+  tos_ready: boolean;
+  imgbb: {
+    enabled: boolean;
+    has_api_key: boolean;
+    api_key_hint?: string;
+    auto_persist_images: boolean;
+    ready: boolean;
+  };
 };
 
 export type GenerationTask = {
@@ -337,6 +403,20 @@ export type CanvasMediaNode = {
     error?: string;
   };
   storageError?: string;
+  source?: {
+    type?: 'local' | 'generated' | string;
+    fileName?: string;
+    mime?: string;
+    size?: number;
+    uploadedAt?: string;
+    sha256?: string;
+    width?: number;
+    height?: number;
+  };
+  /** Transient command flag: allows one explicit local media import to replace content. */
+  _mediaImport?: boolean;
+  /** Transient command flag: allows one explicit switch to a known media version. */
+  _mediaVersionSelection?: boolean;
   assetKey?: string;
   promptStale?: boolean;
   promptStaleReason?: string;
@@ -352,6 +432,7 @@ export type CanvasMediaNode = {
   x: number;
   y: number;
   updatedAt: string;
+  positionUpdatedAt?: string;
   refIds?: string[];
   params?: CanvasMediaParams;
 };
@@ -411,13 +492,17 @@ export function mediaVersionList(node: CanvasMediaNode): CanvasVideoVersion[] {
     || (node.kind === 'video' ? node.params?.videoVersions : [])
     || [];
   const seen = new Set<string>();
-  const versions = source.filter((version) => {
-    const url = String(version?.url || '').trim();
+  const versions = source.map((version) => ({
+    ...version,
+    url: mediaSourceUrl(version?.url),
+  })).filter((version) => {
+    const url = version.url.trim();
     if (!url || seen.has(url)) return false;
     seen.add(url);
     return true;
   });
-  if (node.mediaUrl && !seen.has(node.mediaUrl)) versions.push({url: node.mediaUrl});
+  const currentUrl = mediaSourceUrl(node.mediaUrl);
+  if (currentUrl && !seen.has(currentUrl)) versions.push({url: currentUrl});
   return versions;
 }
 
@@ -504,7 +589,15 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
       window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
     }
     const raw = (payload as {error?: string}).error || `请求失败，HTTP ${response.status}`;
-    throw new Error(friendlyRequestError(response.status, raw));
+    const preserveServerMessage = (
+      code.startsWith('AUTH_')
+      || code.startsWith('ACCOUNT_')
+      || code === 'ADMIN_REQUIRED'
+      || code === 'PASSWORD_TOO_SHORT'
+      || code === 'CURRENT_PASSWORD_INVALID'
+      || code === 'USE_CHANGE_PASSWORD'
+    );
+    throw new Error(preserveServerMessage ? raw : friendlyRequestError(response.status, raw));
   }
   return payload as T;
 }
@@ -542,6 +635,8 @@ export type ManagedAccount = {
   tenantId: string;
   slug: string;
   createdAt: string;
+  lastLoginAt?: string;
+  lockedUntil?: string;
 };
 
 export async function getManagedAccounts(): Promise<ManagedAccount[]> {
@@ -559,6 +654,27 @@ export async function createManagedAccount(username: string, password: string): 
   return request('/api/admin/accounts', {
     method: 'POST',
     body: JSON.stringify({username, password}),
+  });
+}
+
+export async function resetManagedAccountPassword(accountId: string, password: string): Promise<{
+  ok: boolean;
+  accountId: string;
+  username: string;
+}> {
+  return request(`/api/admin/accounts/${encodeURIComponent(accountId)}/reset-password`, {
+    method: 'POST',
+    body: JSON.stringify({password}),
+  });
+}
+
+export async function setManagedAccountStatus(
+  accountId: string,
+  status: 'active' | 'disabled',
+): Promise<{ok: boolean; accountId: string; username: string; status: string}> {
+  return request(`/api/admin/accounts/${encodeURIComponent(accountId)}/status`, {
+    method: 'POST',
+    body: JSON.stringify({status}),
   });
 }
 
@@ -652,8 +768,11 @@ export async function saveStorageConfig(
   return payload.storage;
 }
 
-export async function testStorageConfig(): Promise<{ok: boolean; message: string}> {
-  return request('/api/storage/test', {method: 'POST', body: '{}'});
+export async function testStorageConfig(provider: 'tos' | 'imgbb' = 'tos'): Promise<{ok: boolean; message: string; url?: string}> {
+  return request(provider === 'imgbb' ? '/api/storage/imgbb/test' : '/api/storage/test', {
+    method: 'POST',
+    body: '{}',
+  });
 }
 
 type Payload = {
@@ -679,6 +798,7 @@ type PayloadNode = {
   title?: string;
   position?: {x: number; y: number};
   updatedAt?: string;
+  positionUpdatedAt?: string;
   metadata?: Record<string, unknown> & {
     prompt?: string; content?: string; status?: string;
     refs?: CanvasAssetRef[]; params?: CanvasMediaParams; lastError?: string; shotPatch?: Record<string, unknown>;
@@ -690,8 +810,13 @@ type PayloadNode = {
   };
 };
 
-async function getProject(pid: string): Promise<{id: string; payload: Payload; title?: string}> {
-  return request(`/api/projects/${encodeURIComponent(pid)}`);
+type ProjectResponse = {id: string; payload: Payload; title?: string};
+
+async function getProject(pid: string): Promise<ProjectResponse> {
+  const project = await request<ProjectResponse>(
+    `/api/projects/${encodeURIComponent(pid)}`,
+  );
+  return normalizeProjectMediaUrls(project);
 }
 
 function urlOf(node?: PayloadNode): string {
@@ -703,9 +828,15 @@ function urlOf(node?: PayloadNode): string {
 }
 
 // ---------- getCanvas ----------
-export async function getCanvas(sessionId: string, epId?: string | null): Promise<Canvas | {empty: true}> {
-  const proj = await getProject(sessionId).catch(() => null);
-  if (!proj || !proj.payload || !proj.payload.nodes?.length) return {empty: true};
+export async function getCanvas(
+  sessionId: string,
+  epId?: string | null,
+  projectSnapshot?: ProjectResponse | null,
+): Promise<Canvas | {empty: true}> {
+  const proj = projectSnapshot === undefined
+    ? await getProject(sessionId).catch(() => null)
+    : projectSnapshot;
+  if (!proj || !proj.payload) return {empty: true};
   const payload = proj.payload;
   const nodes = payload.nodes || [];
   const title = proj.title || proj.payload.title || '画布工作流';
@@ -854,6 +985,9 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
       ? m.storage as CanvasMediaNode['storage']
       : undefined,
     storageError: typeof m.storageError === 'string' ? m.storageError : undefined,
+    source: m.source && typeof m.source === 'object'
+      ? m.source as CanvasMediaNode['source']
+      : undefined,
     assetKey: typeof m.assetKey === 'string' ? m.assetKey : undefined,
     promptStale: m.promptStale === true,
     promptStaleReason: typeof m.promptStaleReason === 'string' ? m.promptStaleReason : undefined,
@@ -864,6 +998,7 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
     x: n.position?.x || 0,
     y: n.position?.y || 0,
     updatedAt: n.updatedAt || new Date().toISOString(),
+    positionUpdatedAt: typeof n.positionUpdatedAt === 'string' ? n.positionUpdatedAt : undefined,
     refIds: [...new Set([
       ...(m.refs || []).map((r: CanvasAssetRef) => r.nodeId),
       ...voiceRefs.map((r) => r.nodeId),
@@ -906,8 +1041,14 @@ export function clearRefRemoved(sessionId: string, targetId: string, refNodeId: 
   saveRemovedRefs(sessionId, set);
 }
 
-export async function getCanvasMediaNodes(sessionId: string, epId?: string | null): Promise<CanvasMediaNode[]> {
-  const proj = await getProject(sessionId).catch(() => null);
+export async function getCanvasMediaNodes(
+  sessionId: string,
+  epId?: string | null,
+  projectSnapshot?: ProjectResponse | null,
+): Promise<CanvasMediaNode[]> {
+  const proj = projectSnapshot === undefined
+    ? await getProject(sessionId).catch(() => null)
+    : projectSnapshot;
   if (!proj?.payload?.nodes) return [];
   // 文本节点（type === 'text'）此前被整类过滤掉，导致：① ＋添加里没有文本节点入口，
   // ② 导入生成的剧本头卡等文本资产在画布上根本不显示。现已作为一等公民纳入。
@@ -916,8 +1057,15 @@ export async function getCanvasMediaNodes(sessionId: string, epId?: string | nul
     ? (proj.payload.episodeImports || []).find((group) => group.id === epId)
     : null;
   const allowedIds = episodeGroup ? new Set(episodeGroup.nodeIds || []) : null;
+  const ownedIds = new Set(
+    (proj.payload.episodeImports || []).flatMap((group) => group.nodeIds || []),
+  );
   const nodes = allowedIds
-    ? allNodes.filter((node) => allowedIds.has(node.id))
+    ? allNodes.filter((node) => (
+        allowedIds.has(node.id)
+        || node.metadata?.episodeId === epId
+        || !ownedIds.has(node.id)
+      ))
     : allNodes;
   // 连线数据源：项目 connections（fromNodeId=资产图/音色 → toNodeId=视频/音频消费节点）
   const nodeIds = new Set(nodes.map((node) => node.id));
@@ -1018,7 +1166,11 @@ export async function getCanvasMediaNodes(sessionId: string, epId?: string | nul
   });
 }
 
-export async function saveCanvasMediaNodes(sessionId: string, nodes: CanvasMediaNode[]) {
+export async function saveCanvasMediaNodes(
+  sessionId: string,
+  nodes: CanvasMediaNode[],
+  episodeId?: string | null,
+) {
   // 批量保存：一次性 PUT 全部节点。
   // 旧实现按节点逐个 PUT，而后端每次写库都要重写整个 DB（实测 ~250ms/次），
   // 22 个节点全量保存需 5~6 秒，新建节点排在数组末尾常常还没轮到就被刷新掉 ——
@@ -1047,9 +1199,12 @@ export async function saveCanvasMediaNodes(sessionId: string, nodes: CanvasMedia
       metadata: {
         prompt: n.prompt,
         status: n.status || 'idle',
-        content: n.mediaUrl || '',
+        content: mediaStorageUrl(n.mediaUrl),
         refs: n.params?.refs || [],
-        params: n.params || {},
+        params: normalizeParamsForStorage(n.params) || {},
+        source: n.source,
+        ...(n._mediaImport === true ? {_mediaImport: true} : {}),
+        ...(n._mediaVersionSelection === true ? {_mediaVersionSelection: true} : {}),
         generationStartedAt: n.generationStartedAt,
         generationFinishedAt: n.generationFinishedAt,
         providerTaskStatus: n.providerTaskStatus,
@@ -1064,25 +1219,59 @@ export async function saveCanvasMediaNodes(sessionId: string, nodes: CanvasMedia
       },
     };
   });
-  await request(`/api/projects/${encodeURIComponent(sessionId)}/nodes`, {
-    method: 'PUT', body: JSON.stringify({nodes: payload}),
+  const result = await request<{
+    ok: boolean;
+    nodes: number;
+    created: number;
+    updates: Array<{
+      id: string;
+      updatedAt: string;
+      positionUpdatedAt?: string;
+    }>;
+  }>(`/api/projects/${encodeURIComponent(sessionId)}/nodes`, {
+    method: 'PUT',
+    body: JSON.stringify({nodes: payload, episodeId: episodeId || null}),
   });
-  return {ok: true};
+  return result;
 }
 
-export async function saveCanvasMediaNodePositions(sessionId: string, nodes: CanvasMediaNode[], epId?: string | null) {
-  await request(`/api/projects/${encodeURIComponent(sessionId)}/nodes/positions`, {
+export type CanvasPositionBase = {
+  x: number;
+  y: number;
+  positionUpdatedAt?: string;
+};
+
+export async function saveCanvasMediaNodePositions(
+  sessionId: string,
+  nodes: CanvasMediaNode[],
+  epId?: string | null,
+  bases?: Map<string, CanvasPositionBase>,
+) {
+  return request<{
+    ok: boolean;
+    updated: number;
+    unchanged: string[];
+    missing: string[];
+    updates: Array<{
+      nodeId: string;
+      position: {x: number; y: number};
+      positionUpdatedAt: string;
+      updatedAt: string;
+    }>;
+  }>(`/api/projects/${encodeURIComponent(sessionId)}/nodes/positions`, {
     method: 'PUT',
     body: JSON.stringify({
       episodeId: epId || null,
       positions: nodes.map((node) => ({
         id: node.id,
         position: {x: node.x ?? 0, y: node.y ?? 0},
-        baseUpdatedAt: node.updatedAt,
+        basePosition: bases?.get(node.id),
+        basePositionUpdatedAt: bases?.get(node.id)?.positionUpdatedAt
+          || node.positionUpdatedAt
+          || node.updatedAt,
       })),
     }),
   });
-  return {ok: true};
 }
 
 /**
@@ -1109,9 +1298,12 @@ export async function patchMediaNodesFields(
       metadata: {
         prompt: node.prompt,
         status: node.status || 'idle',
-        content: node.mediaUrl || '',
+        content: mediaStorageUrl(node.mediaUrl),
         refs: node.params?.refs || [],
-        params: node.params || {},
+        params: normalizeParamsForStorage(node.params) || {},
+        source: node.source,
+        ...(node._mediaImport === true ? {_mediaImport: true} : {}),
+        ...(node._mediaVersionSelection === true ? {_mediaVersionSelection: true} : {}),
         generationStartedAt: node.generationStartedAt,
         generationFinishedAt: node.generationFinishedAt,
         providerTaskStatus: node.providerTaskStatus,
@@ -1150,9 +1342,30 @@ export async function deleteCanvasMediaNode(sessionId: string, nodeId: string) {
   return {ok: true};
 }
 
-export async function getCanvasNotes(sessionId: string): Promise<CanvasNote[]> {
-  const proj = await getProject(sessionId).catch(() => null);
+export async function getCanvasNotes(
+  sessionId: string,
+  projectSnapshot?: ProjectResponse | null,
+): Promise<CanvasNote[]> {
+  const proj = projectSnapshot === undefined
+    ? await getProject(sessionId).catch(() => null)
+    : projectSnapshot;
   return proj?.payload?.extras?.notes || [];
+}
+
+export async function getCanvasWorkspace(
+  sessionId: string,
+  epId?: string | null,
+): Promise<{
+  canvas: Canvas | {empty: true};
+  notes: CanvasNote[];
+  mediaNodes: CanvasMediaNode[];
+}> {
+  const project = await getProject(sessionId).catch(() => null);
+  return {
+    canvas: await getCanvas(sessionId, epId, project),
+    notes: await getCanvasNotes(sessionId, project),
+    mediaNodes: await getCanvasMediaNodes(sessionId, epId, project),
+  };
 }
 
 export async function saveCanvasNotes(sessionId: string, notes: CanvasNote[]) {
@@ -1226,7 +1439,11 @@ export async function sendMessage(sessionId: string, text: string): Promise<{rep
  * 单项媒体生成：由用户点击直接触发，不再等待 2.2s 轮询器“发现”节点。
  * 这样二次生成能立刻进入提交态，并在同一个 Promise 返回后立即显示成功/失败。
  */
-export async function generateCanvasNodeNow(sessionId: string, nodeId: string) {
+export async function generateCanvasNodeNow(
+  sessionId: string,
+  nodeId: string,
+  payload?: {prompt?: string; params?: CanvasMediaParams},
+) {
   const key = `${sessionId}::${nodeId}`;
   if (inflight.has(key)) {
     return {deferred: true, reason: '该节点正在提交生成'};
@@ -1236,14 +1453,15 @@ export async function generateCanvasNodeNow(sessionId: string, nodeId: string) {
   try {
     const result = await request(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/generate`, {
       method: 'POST',
-      body: '{}',
-    }) as {url?: string; text?: string};
+      body: JSON.stringify(payload || {}),
+    }) as {url?: string; text?: string; params?: CanvasMediaParams};
     emit({
       type: 'done',
       sessionId,
       nodeId,
       url: result.url,
       text: result.text,
+      params: result.params,
     });
     return {deferred: false, ...result};
   } catch (error) {
@@ -1275,6 +1493,9 @@ export function subscribeToEvents(onEvent: (event: AgentEvent) => void, onConnec
 }
 
 function emit(event: AgentEvent) {
+  if (event.type === 'done' && typeof event.url === 'string') {
+    event = {...event, url: mediaSourceUrl(event.url)};
+  }
   listeners.forEach(fn => { try { fn(event); } catch { /* ignore */ } });
 }
 
@@ -1357,36 +1578,84 @@ function startPolling(sessionId: string) {
 }
 
 // ---------- upload ----------
-// 真上传：base64 → 后端 /api/upload 落盘 → 返回 /uploads/xxx 的稳定 URL。
+// 真上传：原始文件流 → 后端 /api/upload/stream 落盘 → 返回 /uploads/xxx。
 // 旧实现是 `URL.createObjectURL(file)`，造出来的 blob: 地址只在当前页面会话有效，
 // 刷新即 404 → 拖进画布的图全变破图（用户实测反馈过）。
 // 失败时**不**回退到 blob：宁可在画布上提示上传失败，也不要给一个刷新就会坏的地址。
-const MAX_UPLOAD_BYTES = 24 * 1024 * 1024;
+export type UploadFileResult = {
+  url: string;
+  name: string;
+  size: number;
+  mime: string;
+  sha256?: string;
+  kind?: 'image' | 'audio' | 'video';
+};
 
-function readFileAsDataUrl(file: File): Promise<string> {
+export function uploadWorkspaceFileWithProgress(
+  sessionId: string,
+  file: File,
+  options?: {
+    signal?: AbortSignal;
+    onProgress?: (loaded: number, total: number, percent: number) => void;
+  },
+): Promise<UploadFileResult> {
   return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(String(fr.result || ''));
-    fr.onerror = () => reject(new Error('读取文件失败'));
-    fr.readAsDataURL(file);
+    if (options?.signal?.aborted) {
+      reject(new DOMException('上传已取消', 'AbortError'));
+      return;
+    }
+    const xhr = new XMLHttpRequest();
+    const cleanup = () => {
+      options?.signal?.removeEventListener('abort', abort);
+    };
+    const abort = () => xhr.abort();
+    options?.signal?.addEventListener('abort', abort, {once: true});
+    xhr.open('POST', apiUrl('/api/upload/stream'));
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+    xhr.setRequestHeader('X-File-Type', file.type || 'application/octet-stream');
+    xhr.upload.onprogress = (event) => {
+      const total = event.lengthComputable ? event.total : file.size;
+      const percent = total > 0 ? Math.min(100, Math.round((event.loaded / total) * 100)) : 0;
+      options?.onProgress?.(event.loaded, total, percent);
+    };
+    xhr.onerror = () => {
+      cleanup();
+      reject(new Error('上传连接失败，请检查网络后重试'));
+    };
+    xhr.onabort = () => {
+      cleanup();
+      reject(new DOMException('上传已取消', 'AbortError'));
+    };
+    xhr.onload = () => {
+      cleanup();
+      let payload: UploadFileResult & {error?: string} = {
+        url: '',
+        name: file.name,
+        size: file.size,
+        mime: file.type,
+      };
+      try {
+        payload = JSON.parse(xhr.responseText || '{}');
+      } catch {
+        // Keep the generic error below.
+      }
+      if (xhr.status < 200 || xhr.status >= 300 || !payload.url) {
+        reject(new Error(payload.error || `上传失败（HTTP ${xhr.status}）`));
+        return;
+      }
+      resolve({
+        ...payload,
+        url: mediaSourceUrl(payload.url),
+      });
+    };
+    xhr.send(file);
   });
 }
 
 export async function uploadWorkspaceFile(sessionId: string, file: File) {
-  if (file.size > MAX_UPLOAD_BYTES) {
-    throw new Error(`文件过大（${(file.size / 1048576).toFixed(1)}MB > 24MB）`);
-  }
-  const dataUrl = await readFileAsDataUrl(file);
-  if (!dataUrl.startsWith('data:')) throw new Error('读取文件失败');
-  const res = await fetch(apiUrl('/api/upload'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name: file.name, dataUrl}),
-  });
-  const out = (await res.json().catch(() => ({}))) as {url?: string; name?: string; error?: string};
-  if (!res.ok || !out.url) throw new Error(out.error || `上传失败（HTTP ${res.status}）`);
-  return {url: out.url, name: out.name || file.name};
+  return uploadWorkspaceFileWithProgress(sessionId, file);
 }
 
 export default {};

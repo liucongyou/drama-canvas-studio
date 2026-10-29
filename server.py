@@ -18,26 +18,32 @@ API：
   POST /api/projects/{id}/nodes/{nid}/generate {kind?}   按节点 provider/model 路由生成
 """
 import json
+import math
 import os
 import re
 import sys
 import base64
 import binascii
+import hashlib
 import mimetypes
 import secrets
+import shutil
 import subprocess
 import threading
 import time
 import urllib.parse
 from contextlib import nullcontext
 from datetime import datetime, timezone
+from email.utils import formatdate
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, unquote
 
 import canvas_store as store
+import canvas_feed_contract
 import import_feed
 import gate_check
+import imgbb_storage
 import provider_catalog
 import provider_client
 import tos_storage
@@ -67,18 +73,29 @@ GENERATION_QUEUE_CONDITION = threading.Condition()
 GENERATION_QUEUE_ACTIVE_GLOBAL = 0
 GENERATION_QUEUE_ACTIVE_PROVIDERS: dict[str, int] = {}
 GENERATION_QUEUE_ACTIVE_TENANTS: dict[str, int] = {}
+GENERATION_QUEUE_ACTIVE_MODELS: dict[str, int] = {}
+GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL: dict[str, float] = {}
 GENERATION_QUEUE_GLOBAL_LIMIT = max(
-    1, int(os.environ.get("CANVAS_GENERATION_GLOBAL_CONCURRENCY", "2"))
+    1, int(os.environ.get("CANVAS_GENERATION_GLOBAL_CONCURRENCY", "80"))
 )
 GENERATION_QUEUE_PROVIDER_LIMIT = max(
-    1, int(os.environ.get("CANVAS_GENERATION_PROVIDER_CONCURRENCY", "1"))
+    1, int(os.environ.get("CANVAS_GENERATION_PROVIDER_CONCURRENCY", "20"))
 )
 GENERATION_QUEUE_WAIT_TIMEOUT = max(
     60, int(os.environ.get("CANVAS_GENERATION_QUEUE_TIMEOUT", "21600"))
 )
 GENERATION_QUEUE_TENANT_LIMIT = max(
-    1, int(os.environ.get("CANVAS_GENERATION_TENANT_CONCURRENCY", "1"))
+    1, int(os.environ.get("CANVAS_GENERATION_TENANT_CONCURRENCY", "32"))
 )
+GENERATION_QUEUE_PROVIDER_COOLDOWN_SECONDS = max(
+    1, int(os.environ.get("CANVAS_GENERATION_RATE_LIMIT_COOLDOWN", "30"))
+)
+GENERATION_QUEUE_KIND_DEFAULT_LIMITS = {
+    "image": 16,
+    "video": 10,
+    "audio": 8,
+    "text": 8,
+}
 CANVAS_SESSION_COOKIE = os.environ.get("CANVAS_SESSION_COOKIE", "canvas_session")
 CANVAS_SESSION_TTL = max(
     300, int(os.environ.get("CANVAS_SESSION_TTL_SECONDS", str(30 * 24 * 3600)))
@@ -164,17 +181,81 @@ class GenerationQueueCancelled(RuntimeError):
     pass
 
 
-def acquire_generation_slot(task_id, provider_id):
+def generation_model_concurrency(model_id=None, kind=None):
+    fallback = GENERATION_QUEUE_KIND_DEFAULT_LIMITS.get(str(kind or ""), 8)
+    raw_model = str(model_id or "").strip()
+    if not raw_model:
+        return fallback
+    try:
+        catalog = provider_catalog.public_catalog()
+    except Exception:
+        return fallback
+    for model in catalog.get("models") or []:
+        if raw_model not in {
+            str(model.get("id") or ""),
+            str(model.get("remoteModel") or ""),
+        }:
+            continue
+        try:
+            configured = int((model.get("limits") or {}).get("maxConcurrency") or 0)
+        except (TypeError, ValueError):
+            configured = 0
+        return configured if configured > 0 else fallback
+    return fallback
+
+
+def is_provider_rate_limit_error(error) -> bool:
+    status_code = getattr(error, "status_code", None)
+    if status_code == 429:
+        return True
+    text = str(error or "").lower()
+    return "http 429" in text or "http429" in text or "rate limit" in text or "too many requests" in text
+
+
+def provider_retry_after_seconds(error, default=None):
+    fallback = (
+        float(default)
+        if default is not None
+        else float(GENERATION_QUEUE_PROVIDER_COOLDOWN_SECONDS)
+    )
+    headers = getattr(error, "headers", None)
+    try:
+        raw = headers.get("Retry-After") if headers is not None else None
+        value = float(str(raw).strip()) if raw not in (None, "") else fallback
+    except (TypeError, ValueError):
+        value = fallback
+    return max(1.0, min(value, 900.0))
+
+
+def mark_generation_provider_rate_limited(provider_id, retry_after=None):
+    provider_key = str(provider_id or "__default__").strip() or "__default__"
+    tenant_key = tenant_context.current_tenant_id()
+    composite_key = f"{tenant_key}\x1f{provider_key}"
+    until = time.monotonic() + provider_retry_after_seconds(None, retry_after)
+    with GENERATION_QUEUE_CONDITION:
+        GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL[composite_key] = max(
+            GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL.get(composite_key, 0),
+            until,
+        )
+        GENERATION_QUEUE_CONDITION.notify_all()
+
+
+def acquire_generation_slot(task_id, provider_id, model_id=None, kind=None):
     """Reserve one real provider slot and persist the queue state.
 
-    Generation requests stay synchronous, but different nodes are no longer
-    allowed to stampede a provider. The defaults are deliberately conservative:
-    one concurrent request per provider and two globally.
+    Model/type-level concurrency is the primary control. Provider, tenant and
+    global limits are safety ceilings, not the old one-task-per-user throttle.
+    A provider rate-limit response only cools that tenant's provider lane.
     """
     global GENERATION_QUEUE_ACTIVE_GLOBAL
     tenant_key = tenant_context.current_tenant_id()
     provider_key = str(provider_id or "__default__").strip() or "__default__"
     composite_key = f"{tenant_key}\x1f{provider_key}"
+    model_key = (
+        f"{tenant_key}\x1f{provider_key}\x1f"
+        f"{str(model_id or kind or '__default__').strip() or '__default__'}"
+    )
+    model_limit = generation_model_concurrency(model_id, kind)
     started = time.monotonic()
     with GENERATION_QUEUE_CONDITION:
         while True:
@@ -185,25 +266,45 @@ def acquire_generation_slot(task_id, provider_id):
             global_active = GENERATION_QUEUE_ACTIVE_GLOBAL
             provider_active = GENERATION_QUEUE_ACTIVE_PROVIDERS.get(composite_key, 0)
             tenant_active = GENERATION_QUEUE_ACTIVE_TENANTS.get(tenant_key, 0)
+            model_active = GENERATION_QUEUE_ACTIVE_MODELS.get(model_key, 0)
+            cooldown_remaining = max(
+                0.0,
+                GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL.get(composite_key, 0)
+                - time.monotonic(),
+            )
+            if cooldown_remaining > 0:
+                if task_id:
+                    store.update_generation_task(
+                        task_id,
+                        status="queued",
+                        phase=f"供应商限流冷却 {math.ceil(cooldown_remaining)}s",
+                    )
+                GENERATION_QUEUE_CONDITION.wait(timeout=min(5.0, cooldown_remaining))
+                continue
             if (
                 global_active < GENERATION_QUEUE_GLOBAL_LIMIT
                 and provider_active < GENERATION_QUEUE_PROVIDER_LIMIT
                 and tenant_active < GENERATION_QUEUE_TENANT_LIMIT
+                and model_active < model_limit
             ):
                 GENERATION_QUEUE_ACTIVE_GLOBAL += 1
                 GENERATION_QUEUE_ACTIVE_PROVIDERS[composite_key] = provider_active + 1
                 GENERATION_QUEUE_ACTIVE_TENANTS[tenant_key] = tenant_active + 1
+                GENERATION_QUEUE_ACTIVE_MODELS[model_key] = model_active + 1
                 if task_id:
                     store.update_generation_task(
                         task_id,
                         status="submitting",
                         phase="已获得执行槽位",
+                        error="",
+                        finished_at="",
                         started_at=store._now_iso(),
                     )
                 return {
                     "tenant": tenant_key,
                     "provider": provider_key,
                     "composite": composite_key,
+                    "model": model_key,
                 }
             if time.monotonic() - started >= GENERATION_QUEUE_WAIT_TIMEOUT:
                 if task_id:
@@ -222,7 +323,8 @@ def acquire_generation_slot(task_id, provider_id):
                     phase=(
                         f"排队等待（全局 {global_active}/{GENERATION_QUEUE_GLOBAL_LIMIT}，"
                         f"租户 {tenant_active}/{GENERATION_QUEUE_TENANT_LIMIT}，"
-                        f"供应商 {provider_active}/{GENERATION_QUEUE_PROVIDER_LIMIT}）"
+                        f"供应商 {provider_active}/{GENERATION_QUEUE_PROVIDER_LIMIT}，"
+                        f"模型 {model_active}/{model_limit}）"
                     ),
                 )
             GENERATION_QUEUE_CONDITION.wait(timeout=5)
@@ -234,13 +336,16 @@ def release_generation_slot(slot):
         tenant_key = str(slot.get("tenant") or "legacy")
         provider_key = str(slot.get("provider") or "__default__")
         composite_key = str(slot.get("composite") or f"{tenant_key}\x1f{provider_key}")
+        model_key = str(slot.get("model") or "")
     elif isinstance(slot, tuple) and len(slot) == 2:
         tenant_key, provider_key = str(slot[0] or "legacy"), str(slot[1] or "__default__")
         composite_key = f"{tenant_key}\x1f{provider_key}"
+        model_key = ""
     else:
         tenant_key = tenant_context.current_tenant_id()
         provider_key = str(slot or "__default__")
         composite_key = f"{tenant_key}\x1f{provider_key}"
+        model_key = ""
     with GENERATION_QUEUE_CONDITION:
         GENERATION_QUEUE_ACTIVE_GLOBAL = max(0, GENERATION_QUEUE_ACTIVE_GLOBAL - 1)
         active = max(0, GENERATION_QUEUE_ACTIVE_PROVIDERS.get(composite_key, 0) - 1)
@@ -253,6 +358,12 @@ def release_generation_slot(slot):
             GENERATION_QUEUE_ACTIVE_TENANTS[tenant_key] = tenant_active
         else:
             GENERATION_QUEUE_ACTIVE_TENANTS.pop(tenant_key, None)
+        if model_key:
+            model_active = max(0, GENERATION_QUEUE_ACTIVE_MODELS.get(model_key, 0) - 1)
+            if model_active:
+                GENERATION_QUEUE_ACTIVE_MODELS[model_key] = model_active
+            else:
+                GENERATION_QUEUE_ACTIVE_MODELS.pop(model_key, None)
         GENERATION_QUEUE_CONDITION.notify_all()
 
 
@@ -274,7 +385,11 @@ def persist_generated_media(url, fallback_ext):
 def archive_generated_image(generated_url, provider, model, task_id, generated_at):
     """Archive the untouched generated file before a temporary Ark URL expires."""
     storage_cfg = provider_catalog.storage_config()
-    if not storage_cfg.get("enabled") or not storage_cfg.get("auto_persist_images", True):
+    if (
+        not storage_cfg.get("enabled")
+        or str(storage_cfg.get("provider") or "tos") != "tos"
+        or not storage_cfg.get("auto_persist_images", True)
+    ):
         return None
     try:
         return tos_storage.persist_local_url(
@@ -294,6 +409,86 @@ def archive_generated_image(generated_url, provider, model, task_id, generated_a
         return {"status": "failed", "error": str(exc)}
 
 
+def mirror_generated_image_to_imgbb(generated_url, provider, model, task_id, generated_at):
+    """Optionally mirror a locally cached generated image to ImgBB."""
+    if not imgbb_storage.is_ready():
+        return None
+    raw = str(generated_url or "").strip()
+    if not raw.startswith("/uploads/"):
+        return {"status": "failed", "error": "图片尚未形成稳定本地文件，未上传 ImgBB"}
+    filename = raw[len("/uploads/"):]
+    if not filename or "/" in filename or "\\" in filename:
+        return {"status": "failed", "error": "图片缓存路径不合法"}
+    path = os.path.join(_upload_dir(), filename)
+    if not os.path.isfile(path):
+        return {"status": "failed", "error": "图片缓存文件不存在"}
+    mime = mimetypes.guess_type(filename)[0] or "image/png"
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+        return imgbb_storage.upload_bytes(
+            data,
+            mime=mime,
+            name=os.path.splitext(filename)[0],
+            source={
+                "provider": provider.get("id"),
+                "model": model.get("remoteModel") or model.get("id"),
+                "taskId": task_id,
+                "generatedAt": generated_at,
+                "localUrl": generated_url,
+            },
+        )
+    except Exception as exc:
+        print(f"[imgbb] failed to mirror {generated_url}: {exc}", file=sys.stderr)
+        return {"status": "failed", "error": str(exc)}
+
+
+def queue_generated_image_imgbb_mirror(
+    project_id,
+    node_id,
+    generated_url,
+    provider_id,
+    model_id,
+    task_id,
+    generated_at,
+):
+    """Mirror an already-saved local image without delaying the generation response."""
+    if not imgbb_storage.is_ready():
+        return False
+    context = tenant_context.current()
+    tenant_id = context.tenant_id if context else None
+    tenant_slug = context.slug if context else "local"
+
+    def run():
+        try:
+            result = mirror_generated_image_to_imgbb(
+                generated_url,
+                {"id": provider_id},
+                {"id": model_id, "remoteModel": model_id},
+                task_id,
+                generated_at,
+            )
+        except Exception as exc:
+            result = {"status": "failed", "error": str(exc)}
+        image_host_error = (
+            str(result.get("error") or "")
+            if isinstance(result, dict) and result.get("status") == "failed"
+            else ""
+        )
+        commit_node_metadata(project_id, node_id, {
+            "imgbb": result if isinstance(result, dict) else {},
+            "imageHostError": image_host_error,
+        })
+
+    threading.Thread(
+        target=_run_in_tenant,
+        args=(tenant_id, tenant_slug, run),
+        name=f"imgbb-mirror-{node_id}",
+        daemon=True,
+    ).start()
+    return True
+
+
 def validate_generated_video(url, expected_duration=None):
     raw = str(url or "").strip()
     if not raw.startswith("/uploads/"):
@@ -302,26 +497,64 @@ def validate_generated_video(url, expected_duration=None):
     if not os.path.isfile(path):
         return {"status": "invalid", "message": "本地文件不存在"}
     try:
-        proc = subprocess.run(
-            [
-                "ffprobe", "-v", "error",
-                "-show_entries", "format=duration,size,format_name",
-                "-show_entries", "stream=codec_type,codec_name,width,height",
-                "-of", "json", path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError((proc.stderr or "ffprobe 校验失败").strip()[:300])
-        info = json.loads(proc.stdout or "{}")
-        streams = info.get("streams") or []
-        video_stream = next((item for item in streams if item.get("codec_type") == "video"), None)
-        has_audio = any(item.get("codec_type") == "audio" for item in streams)
-        duration = float((info.get("format") or {}).get("duration") or 0)
-        size = int((info.get("format") or {}).get("size") or os.path.getsize(path))
+        size = os.path.getsize(path)
+        ffprobe = shutil.which("ffprobe")
+        if ffprobe:
+            proc = subprocess.run(
+                [
+                    ffprobe, "-v", "error",
+                    "-show_entries", "format=duration,size,format_name",
+                    "-show_entries", "stream=codec_type,codec_name,width,height",
+                    "-of", "json", path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError((proc.stderr or "ffprobe 校验失败").strip()[:300])
+            info = json.loads(proc.stdout or "{}")
+            streams = info.get("streams") or []
+            video_stream = next((item for item in streams if item.get("codec_type") == "video"), None)
+            has_audio = any(item.get("codec_type") == "audio" for item in streams)
+            duration = float((info.get("format") or {}).get("duration") or 0)
+            size = int((info.get("format") or {}).get("size") or size)
+            video_codec = (video_stream or {}).get("codec_name")
+            width = (video_stream or {}).get("width")
+            height = (video_stream or {}).get("height")
+        else:
+            ffmpeg = provider_client._ffmpeg_executable()
+            if not ffmpeg:
+                return {
+                    "status": "unverified",
+                    "message": "未找到 ffprobe 或 ffmpeg，文件已保留",
+                    "size": size,
+                }
+            proc = subprocess.run(
+                [ffmpeg, "-hide_banner", "-i", path, "-map", "0", "-c", "copy", "-f", "null", "-"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            detail = proc.stderr or ""
+            if proc.returncode != 0:
+                raise RuntimeError((detail or "ffmpeg 校验失败").strip()[:300])
+            duration_match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", detail)
+            duration = 0.0
+            if duration_match:
+                hours, minutes, seconds = duration_match.groups()
+                duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+            video_match = re.search(
+                r"Stream #\S+.*?Video:\s*([A-Za-z0-9_]+).*?(\d{2,5})x(\d{2,5})",
+                detail,
+            )
+            video_stream = bool(video_match)
+            has_audio = "Audio:" in detail
+            video_codec = video_match.group(1) if video_match else None
+            width = int(video_match.group(2)) if video_match else None
+            height = int(video_match.group(3)) if video_match else None
         if not video_stream:
             return {"status": "invalid", "message": "文件没有视频轨", "duration": duration, "size": size}
         expected = float(expected_duration or 0)
@@ -336,9 +569,9 @@ def validate_generated_video(url, expected_duration=None):
             "message": message,
             "duration": round(duration, 3),
             "size": size,
-            "width": video_stream.get("width"),
-            "height": video_stream.get("height"),
-            "videoCodec": video_stream.get("codec_name"),
+            "width": width,
+            "height": height,
+            "videoCodec": video_codec,
             "hasAudio": has_audio,
         }
     except Exception as exc:
@@ -410,6 +643,9 @@ GENERATION_OWNED_METADATA_FIELDS = {
     "actualDuration",
     "storage",
     "storageError",
+    "imgbb",
+    "imageHostError",
+    "source",
 }
 
 GENERATION_OWNED_PARAM_FIELDS = {
@@ -418,6 +654,22 @@ GENERATION_OWNED_PARAM_FIELDS = {
     "videoVersions",
     "videoVersionIndex",
     "thumbUrl",
+}
+
+LOCAL_MEDIA_METADATA_FIELDS = {
+    "status",
+    "content",
+    "generatedAt",
+    "actualDuration",
+    "videoValidation",
+    "source",
+}
+
+LOCAL_MEDIA_PARAM_FIELDS = {
+    "mediaVersions",
+    "mediaVersionIndex",
+    "videoVersions",
+    "videoVersionIndex",
 }
 
 
@@ -455,12 +707,168 @@ def _node_save_conflict(incoming, current, include_position=False):
     )
 
 
+def _position_save_conflict(current_node, incoming, current_position):
+    """Detect a real position race without treating metadata timestamps as movement."""
+    if not isinstance(current_node, dict) or not isinstance(current_position, dict):
+        return False
+    incoming_position = incoming.get("position")
+    if not isinstance(incoming_position, dict):
+        return False
+    normalized_current = {
+        "x": float(current_position.get("x") or 0),
+        "y": float(current_position.get("y") or 0),
+    }
+    normalized_incoming = {
+        "x": float(incoming_position.get("x") or 0),
+        "y": float(incoming_position.get("y") or 0),
+    }
+    base_position = incoming.get("basePosition")
+    if isinstance(base_position, dict):
+        normalized_base = {
+            "x": float(base_position.get("x") or 0),
+            "y": float(base_position.get("y") or 0),
+        }
+        return normalized_current != normalized_base
+    base_updated_at = str(
+        incoming.get("basePositionUpdatedAt")
+        or incoming.get("baseUpdatedAt")
+        or ""
+    )
+    current_updated_at = str(
+        current_node.get("positionUpdatedAt")
+        or current_node.get("updatedAt")
+        or ""
+    )
+    return bool(
+        base_updated_at
+        and current_updated_at > base_updated_at
+        and normalized_current != normalized_incoming
+    )
+
+
 def merge_node_metadata(meta, incoming, generation_active=False):
-    """Deep-merge client metadata without letting a stale tab stop a live task."""
+    """Merge editable client fields while generation result fields stay authoritative."""
+    explicit_media_import = bool((incoming or {}).get("_mediaImport"))
+    explicit_media_version_selection = bool(
+        (incoming or {}).get("_mediaVersionSelection")
+    )
+    local_media_import = (
+        explicit_media_import
+        and
+        isinstance((incoming or {}).get("source"), dict)
+        and (incoming or {}).get("source", {}).get("type") == "local"
+    )
+    current_versions = (
+        ((meta.get("params") or {}).get("mediaVersions"))
+        or ((meta.get("params") or {}).get("videoVersions"))
+        or []
+    )
+    current_version_urls = {
+        str(item.get("url") or "")
+        for item in current_versions
+        if isinstance(item, dict) and item.get("url")
+    }
+    requested_content = str((incoming or {}).get("content") or "")
+    media_version_selection = bool(
+        explicit_media_version_selection
+        and
+        isinstance((incoming or {}).get("source"), dict)
+        and requested_content
+        and requested_content in current_version_urls
+    )
     for key, value in (incoming or {}).items():
-        if generation_active and key in GENERATION_OWNED_METADATA_FIELDS:
+        if key in {"_mediaImport", "_mediaVersionSelection"}:
+            continue
+        if key == "params" and isinstance(value, dict):
+            current_params = meta.get("params")
+            params = dict(current_params) if isinstance(current_params, dict) else {}
+            for param_key, param_value in value.items():
+                if (
+                    param_key in GENERATION_OWNED_PARAM_FIELDS
+                    and not (local_media_import and param_key in LOCAL_MEDIA_PARAM_FIELDS)
+                    and not (
+                        media_version_selection
+                        and param_key in {"mediaVersionIndex", "videoVersionIndex"}
+                    )
+                ):
+                    continue
+                params[param_key] = param_value
+            versions = [
+                item for item in (params.get("mediaVersions") or [])
+                if isinstance(item, dict) and str(item.get("url") or "").strip()
+            ]
+            if not versions:
+                versions = [
+                    item for item in (params.get("videoVersions") or [])
+                    if isinstance(item, dict) and str(item.get("url") or "").strip()
+                ]
+            requested_index = (
+                value.get(
+                    "videoVersionIndex"
+                    if versions and params.get("videoVersions")
+                    else "mediaVersionIndex"
+                )
+                if local_media_import or media_version_selection
+                else None
+            )
+            try:
+                requested_index = int(requested_index)
+            except (TypeError, ValueError):
+                requested_index = -1
+            if versions and 0 <= requested_index < len(versions):
+                params["mediaVersionIndex"] = requested_index
+                if params.get("videoVersions"):
+                    params["videoVersionIndex"] = requested_index
+                meta["content"] = str(versions[requested_index].get("url") or "")
+            meta["params"] = params
+            continue
+        if (
+            key in GENERATION_OWNED_METADATA_FIELDS
+            and not (
+                (local_media_import and key in LOCAL_MEDIA_METADATA_FIELDS)
+                or (
+                    media_version_selection
+                    and key in {"content", "status", "generatedAt", "actualDuration", "source"}
+                )
+            )
+        ):
             continue
         meta[key] = value
+
+
+def apply_generation_input(node, body):
+    """Apply the explicit UI snapshot used by one generation action."""
+    meta = node.setdefault("metadata", {})
+    if isinstance((body or {}).get("prompt"), str):
+        meta["prompt"] = body["prompt"]
+    if isinstance((body or {}).get("params"), dict):
+        editable_params = {
+            key: value
+            for key, value in body["params"].items()
+            if key not in GENERATION_OWNED_PARAM_FIELDS
+        }
+        meta["params"] = {
+            **(meta.get("params") or {}),
+            **editable_params,
+        }
+    return meta
+
+
+def is_client_disconnect_error(exc):
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+        return True
+    errno = getattr(exc, "errno", None)
+    return errno in {32, 104, 10053, 10054}
+
+
+def preserve_generation_outcome(task_id, exc):
+    """A dropped browser response must never rewrite a paid generation result."""
+    if is_client_disconnect_error(exc):
+        return True
+    if task_id:
+        task = store.get_generation_task(task_id)
+        return bool(task and task.get("status") == "succeeded")
+    return False
 
 
 MAX_MEDIA_VERSIONS = 20
@@ -493,6 +901,7 @@ def _record_media_version(meta, kind, generated_url, task_id, generated_at, stor
         "taskId": str(task_id or ""),
         "generatedAt": generated_at,
         "kind": kind,
+        "sourceType": "generated",
         "provider": str(production.get("provider") or meta.get("provider") or ""),
         "model": str(production.get("model") or meta.get("model") or ""),
     }
@@ -510,6 +919,95 @@ def _record_media_version(meta, kind, generated_url, task_id, generated_at, stor
 
 def _record_video_version(meta, generated_url, task_id, generated_at):
     return _record_media_version(meta, "video", generated_url, task_id, generated_at)
+
+
+def _backfill_image_host_versions(payload):
+    changed = 0
+    for node in payload.get("nodes") or []:
+        if not isinstance(node, dict) or node.get("type") != "image":
+            continue
+        meta = node.get("metadata") or {}
+        imgbb = meta.get("imgbb") if isinstance(meta.get("imgbb"), dict) else {}
+        hosted_url = str(imgbb.get("url") or "").strip()
+        if imgbb.get("status") != "stored" or not hosted_url:
+            continue
+        source = imgbb.get("source") if isinstance(imgbb.get("source"), dict) else {}
+        local_url = str(source.get("localUrl") or "").strip()
+        local_filename = local_url[len("/uploads/"):] if local_url.startswith("/uploads/") else ""
+        local_available = bool(
+            local_filename
+            and os.path.isfile(os.path.join(_upload_dir(), local_filename))
+        )
+        params = meta.setdefault("params", {})
+        versions = [
+            item for item in (params.get("mediaVersions") or [])
+            if isinstance(item, dict) and str(item.get("url") or "").strip()
+        ]
+        if local_available:
+            local_versions = [
+                item for item in versions
+                if str(item.get("url") or "") != hosted_url
+            ]
+            if not any(str(item.get("url") or "") == local_url for item in local_versions):
+                local_versions.append({
+                    "url": local_url,
+                    "taskId": str(source.get("taskId") or ""),
+                    "generatedAt": str(source.get("generatedAt") or meta.get("generatedAt") or ""),
+                    "kind": "image",
+                    "provider": str(source.get("provider") or meta.get("provider") or ""),
+                    "model": str(source.get("model") or meta.get("model") or ""),
+                })
+            local_versions = local_versions[-MAX_MEDIA_VERSIONS:]
+            local_index = next(
+                index for index, item in enumerate(local_versions)
+                if str(item.get("url") or "") == local_url
+            )
+            if meta.get("content") != local_url:
+                meta["content"] = local_url
+                changed += 1
+            if versions != local_versions:
+                params["mediaVersions"] = local_versions
+                changed += 1
+            if params.get("mediaVersionIndex") != local_index:
+                params["mediaVersionIndex"] = local_index
+                changed += 1
+            meta["params"] = params
+            meta["status"] = "done"
+            continue
+        if not any(str(item.get("url") or "") == hosted_url for item in versions):
+            versions.append({
+                "url": hosted_url,
+                "taskId": str((imgbb.get("source") or {}).get("taskId") or ""),
+                "generatedAt": str(imgbb.get("uploadedAt") or meta.get("generatedAt") or ""),
+                "kind": "image",
+                "provider": str((imgbb.get("source") or {}).get("provider") or meta.get("provider") or ""),
+                "model": str((imgbb.get("source") or {}).get("model") or meta.get("model") or ""),
+            })
+            changed += 1
+        versions = versions[-MAX_MEDIA_VERSIONS:]
+        params["mediaVersions"] = versions
+        params["mediaVersionIndex"] = next(
+            index for index, item in enumerate(versions)
+            if str(item.get("url") or "") == hosted_url
+        )
+        meta["params"] = params
+        meta["content"] = hosted_url
+        meta["status"] = "done"
+    return changed
+
+
+def backfill_image_host_versions():
+    changed = 0
+    for project_row in store.list_projects():
+        project = store.get_project(project_row.get("id"))
+        if not project:
+            continue
+        payload = project["payload"]
+        project_changed = _backfill_image_host_versions(payload)
+        if project_changed:
+            store.update_project(project["id"], payload=payload)
+            changed += project_changed
+    return changed
 
 
 def _provider_task_phase(status, progress=None):
@@ -586,6 +1084,57 @@ def _find_generation_task(project_id, node_id, provider_task_id=""):
             continue
         return item
     return None
+
+
+def reconcile_active_generation_task_for_node(project_id, node_id, node):
+    """Close ghost active rows before another click is rejected as in-progress."""
+    task = _find_generation_task(project_id, node_id)
+    if not task:
+        return None
+    meta = (node or {}).get("metadata") or {}
+    node_status = str(meta.get("status") or "")
+    provider_task_id = str(meta.get("taskId") or "").strip()
+    if node_status == "done":
+        return store.update_generation_task(
+            task["id"],
+            status="succeeded",
+            phase="已完成",
+            progress=100,
+            error="",
+            provider_task_id=provider_task_id or task.get("provider_task_id") or "",
+            finished_at=store._now_iso(),
+        )
+    if node_status == "failed":
+        return store.update_generation_task(
+            task["id"],
+            status="failed",
+            phase=str(meta.get("providerTaskPhase") or "生成失败"),
+            error=str(meta.get("lastError") or "生成失败"),
+            provider_task_id=provider_task_id or task.get("provider_task_id") or "",
+            finished_at=store._now_iso(),
+        )
+    if provider_task_id and not task.get("provider_task_id"):
+        return store.update_generation_task(task["id"], provider_task_id=provider_task_id)
+    key = (str(project_id), str(node_id))
+    with GENERATION_INFLIGHT_LOCK:
+        in_flight = key in GENERATION_INFLIGHT
+    if in_flight:
+        return task
+    updated_raw = str(task.get("updated_at") or task.get("created_at") or "")
+    try:
+        updated_at = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - updated_at).total_seconds()
+    except (TypeError, ValueError):
+        age = 999
+    if not task.get("provider_task_id") and age >= 90:
+        return store.update_generation_task(
+            task["id"],
+            status="interrupted",
+            phase="任务已中断",
+            error="任务在取得供应商任务 ID 前已停止，请重新生成",
+            finished_at=store._now_iso(),
+        )
+    return task
 
 
 def _latest_generation_task(project_id, node_id):
@@ -807,6 +1356,15 @@ def reconcile_generation_task_records():
                 "error": "",
             }
         elif node_status == "failed":
+            provider_status = str(meta.get("providerTaskStatus") or "").strip().lower()
+            if (
+                task.get("provider_task_id")
+                and provider_status in {
+                    "queued", "pending", "created", "submitted",
+                    "running", "processing", "retrying", "in_progress",
+                }
+            ):
+                continue
             fields = {
                 "status": "failed",
                 "phase": str(meta.get("providerTaskPhase") or "生成失败"),
@@ -1032,6 +1590,20 @@ def backfill_episode_shared_asset_links():
     return updated
 
 
+def backfill_project_asset_isolation():
+    updated = 0
+    for project_row in store.list_projects():
+        project_id = str(project_row.get("id") or "")
+        project = store.get_project(project_id)
+        if not project:
+            continue
+        payload = project["payload"]
+        if import_feed.detach_cross_project_reused_assets(payload, project_id):
+            store.update_project(project_id, payload=payload)
+            updated += 1
+    return updated
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stdout.write("[%s] %s\n" % (self.server.server_address, fmt % args))
@@ -1046,7 +1618,8 @@ class Handler(BaseHTTPRequestHandler):
             "Access-Control-Allow-Origin": origin,
             "Access-Control-Allow-Credentials": "true",
             "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type,Authorization",
+            "Access-Control-Allow-Headers": "Content-Type,Authorization,X-File-Name,X-File-Type",
+            "Access-Control-Expose-Headers": "Accept-Ranges,Content-Length,Content-Range,ETag,Last-Modified",
             "Access-Control-Max-Age": "600",
             "Vary": "Origin",
         }
@@ -1067,7 +1640,8 @@ class Handler(BaseHTTPRequestHandler):
         for key, value in response_headers.items():
             self.send_header(str(key), str(value))
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def _read_json(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -1086,6 +1660,86 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {"_raw": text}
 
+    def _send_upload_file(self, fpath: str, name: str):
+        """Serve tenant media with session auth, CORS and single-range support."""
+        stat = os.stat(fpath)
+        size = stat.st_size
+        etag = f'"{size:x}-{stat.st_mtime_ns:x}"'
+        last_modified = formatdate(stat.st_mtime, usegmt=True)
+        cache_headers = {
+            "ETag": etag,
+            "Last-Modified": last_modified,
+            "Cache-Control": "private, max-age=31536000, immutable",
+        }
+        if self.command in {"GET", "HEAD"} and self.headers.get("If-None-Match", "").strip() == etag:
+            self.send_response(304)
+            for key, value in {**cache_headers, **self._cors_headers()}.items():
+                self.send_header(str(key), str(value))
+            self.end_headers()
+            return
+        ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        range_header = str(self.headers.get("Range", "") or "").strip()
+        if_range = str(self.headers.get("If-Range", "") or "").strip()
+        if range_header and if_range and if_range != etag:
+            range_header = ""
+        start = 0
+        end = max(0, size - 1)
+        partial = False
+        if range_header:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header)
+            if not match or size <= 0:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                for key, value in self._cors_headers().items():
+                    self.send_header(str(key), str(value))
+                self.end_headers()
+                return
+            raw_start, raw_end = match.groups()
+            if raw_start:
+                start = int(raw_start)
+                end = int(raw_end) if raw_end else size - 1
+            else:
+                suffix_length = int(raw_end or 0)
+                start = max(0, size - suffix_length)
+                end = size - 1
+            if start >= size or start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                for key, value in self._cors_headers().items():
+                    self.send_header(str(key), str(value))
+                self.end_headers()
+                return
+            end = min(end, size - 1)
+            partial = True
+
+        length = max(0, end - start + 1)
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        for key, value in cache_headers.items():
+            self.send_header(key, value)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cross-Origin-Resource-Policy", "cross-origin")
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        for key, value in self._cors_headers().items():
+            self.send_header(str(key), str(value))
+        self.end_headers()
+        if self.command == "HEAD" or length == 0:
+            return
+        with open(fpath, "rb") as stream:
+            stream.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = stream.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+
     # ---------- 文件上传 ----------
     # 允许的扩展名白名单：只收图片/音频/视频，避免上传目录被塞入可执行文件
     _UPLOAD_EXT = {
@@ -1093,7 +1747,61 @@ class Handler(BaseHTTPRequestHandler):
         ".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac",
         ".mp4", ".webm", ".mov",
     }
+    _IMAGE_UPLOAD_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"}
+    _AUDIO_UPLOAD_EXT = {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}
+    _VIDEO_UPLOAD_EXT = {".mp4", ".webm", ".mov"}
     _MAX_UPLOAD = 24 * 1024 * 1024   # 24MB
+    _MAX_STREAM_UPLOAD_BY_KIND = {
+        "image": 128 * 1024 * 1024,
+        "audio": 256 * 1024 * 1024,
+        "video": 1024 * 1024 * 1024,
+    }
+
+    @classmethod
+    def _upload_kind_for_extension(cls, ext):
+        if ext in cls._IMAGE_UPLOAD_EXT:
+            return "image"
+        if ext in cls._AUDIO_UPLOAD_EXT:
+            return "audio"
+        if ext in cls._VIDEO_UPLOAD_EXT:
+            return "video"
+        return ""
+
+    @staticmethod
+    def _detect_upload_kind(head, ext, declared_mime):
+        ext = str(ext or "").lower()
+        if ext in {".png"} and head.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image"
+        if ext in {".jpg", ".jpeg"} and head.startswith(b"\xff\xd8\xff"):
+            return "image"
+        if ext == ".gif" and head.startswith((b"GIF87a", b"GIF89a")):
+            return "image"
+        if ext == ".bmp" and head.startswith(b"BM"):
+            return "image"
+        if ext == ".webp" and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+            return "image"
+        if ext == ".avif" and head[4:8] == b"ftyp" and head[8:12] in {b"avif", b"avis"}:
+            return "image"
+        if ext == ".wav" and head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+            return "audio"
+        if ext == ".ogg" and head.startswith(b"OggS"):
+            return "audio"
+        if ext == ".flac" and head.startswith(b"fLaC"):
+            return "audio"
+        if ext == ".m4a" and head[4:8] == b"ftyp":
+            return "audio"
+        if ext == ".aac" and len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xF6) == 0xF0:
+            return "audio"
+        if ext == ".mp3" and (
+            head.startswith(b"ID3")
+            or (len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0)
+        ):
+            return "audio"
+        if ext in {".mp4", ".mov"} and head[4:8] == b"ftyp":
+            return "video"
+        if ext == ".webm" and head.startswith(b"\x1aE\xdf\xa3"):
+            return "video"
+        return ""
 
     def _handle_upload(self, body):
         data_url = body.get("dataUrl") or body.get("data_url") or ""
@@ -1134,6 +1842,72 @@ class Handler(BaseHTTPRequestHandler):
             "name": raw_name or fname,
             "size": len(blob),
             "mime": m.group(1).split(";")[0].strip(),
+        })
+
+    def _handle_stream_upload(self):
+        raw_name = urllib.parse.unquote(str(self.headers.get("X-File-Name") or "").strip())
+        declared_mime = str(self.headers.get("X-File-Type") or "").strip().lower()
+        try:
+            content_length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        ext = os.path.splitext(raw_name)[1].lower()
+        kind = self._upload_kind_for_extension(ext)
+        if not kind and declared_mime:
+            guessed_ext = (mimetypes.guess_extension(declared_mime) or "").lower()
+            if guessed_ext in self._UPLOAD_EXT:
+                ext = ".jpg" if guessed_ext == ".jpe" else guessed_ext
+                kind = self._upload_kind_for_extension(ext)
+        if not kind:
+            return self._send(400, {"error": "不支持的文件类型"})
+        max_bytes = self._MAX_STREAM_UPLOAD_BY_KIND[kind]
+        if content_length <= 0:
+            return self._send(400, {"error": "上传文件为空"})
+        if content_length > max_bytes:
+            return self._send(413, {
+                "error": f"{kind} 文件超过上限 {max_bytes // (1024 * 1024)}MB",
+            })
+        if declared_mime and not declared_mime.startswith(f"{kind}/") and declared_mime != "application/octet-stream":
+            return self._send(400, {"error": "文件类型与节点类型不匹配"})
+
+        upload_dir = _upload_dir()
+        os.makedirs(upload_dir, exist_ok=True)
+        fname = secrets.token_hex(12) + ext
+        fpath = os.path.join(upload_dir, fname)
+        part_path = fpath + ".part"
+        digest = hashlib.sha256()
+        remaining = content_length
+        head = b""
+        try:
+            with open(part_path, "wb") as handle:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise RuntimeError("上传连接中断")
+                    if len(head) < 64:
+                        head += chunk[:64 - len(head)]
+                    digest.update(chunk)
+                    handle.write(chunk)
+                    remaining -= len(chunk)
+            detected_kind = self._detect_upload_kind(head, ext, declared_mime)
+            if detected_kind != kind:
+                raise RuntimeError("文件内容与扩展名不匹配")
+            os.replace(part_path, fpath)
+        except Exception as exc:
+            try:
+                if os.path.exists(part_path):
+                    os.remove(part_path)
+            except OSError:
+                pass
+            return self._send(400, {"error": str(exc)})
+        return self._send(200, {
+            "ok": True,
+            "url": "/uploads/" + fname,
+            "name": raw_name or fname,
+            "size": content_length,
+            "mime": declared_mime or mimetypes.guess_type(fname)[0] or "application/octet-stream",
+            "sha256": digest.hexdigest(),
+            "kind": kind,
         })
 
     # ---------- 前端静态产物 ----------
@@ -1352,7 +2126,7 @@ class Handler(BaseHTTPRequestHandler):
         session = self._current_session()
         if not session or session.get("account_role") != "admin":
             self._send(403, {
-                "error": "只有管理员可以创建账号",
+                "error": "只有管理员可以管理账号",
                 "code": "ADMIN_REQUIRED",
             })
             return None
@@ -1379,6 +2153,55 @@ class Handler(BaseHTTPRequestHandler):
             "slug": tenant["slug"],
         })
 
+    def _handle_admin_reset_account_password(self, account_id, body):
+        session = self._admin_session()
+        if session is None:
+            return
+        if str(session.get("account_id") or "") == str(account_id):
+            return self._send(400, {
+                "error": "请通过右上角的“修改密码”修改当前管理员密码",
+                "code": "USE_CHANGE_PASSWORD",
+            })
+        password = str(body.get("password") or "")
+        if len(password) < 8:
+            return self._send(400, {"error": "新密码至少需要 8 位", "code": "PASSWORD_TOO_SHORT"})
+        try:
+            account = tenant_registry.set_account_password(account_id, password)
+        except ValueError as exc:
+            return self._send(404, {"error": str(exc), "code": "ACCOUNT_NOT_FOUND"})
+        return self._send(200, {
+            "ok": True,
+            "accountId": account["id"],
+            "username": account["username"],
+        })
+
+    def _handle_admin_set_account_status(self, account_id, body):
+        session = self._admin_session()
+        if session is None:
+            return
+        status = str(body.get("status") or "").strip().lower()
+        if status not in {"active", "disabled"}:
+            return self._send(400, {"error": "账号状态只能是 active 或 disabled"})
+        account = tenant_registry.get_account_by_id(account_id)
+        if not account:
+            return self._send(404, {"error": "账号不存在", "code": "ACCOUNT_NOT_FOUND"})
+        if status == "disabled" and str(session.get("account_id") or "") == str(account_id):
+            return self._send(400, {"error": "不能停用当前登录的管理员账号"})
+        if status == "disabled" and account.get("role") == "admin":
+            active_admins = [
+                item for item in tenant_registry.list_accounts()
+                if item.get("role") == "admin" and item.get("status") == "active"
+            ]
+            if len(active_admins) <= 1:
+                return self._send(400, {"error": "必须至少保留一个启用的管理员账号"})
+        updated = tenant_registry.set_account_status(account_id, status)
+        return self._send(200, {
+            "ok": True,
+            "accountId": updated["id"],
+            "username": updated["username"],
+            "status": updated["status"],
+        })
+
     def _handle_admin_list_accounts(self):
         if self._admin_session() is None:
             return
@@ -1393,6 +2216,8 @@ class Handler(BaseHTTPRequestHandler):
                 "tenantId": account["tenant_id"],
                 "slug": tenant.get("slug") or "",
                 "createdAt": account["created_at"],
+                "lastLoginAt": account["last_login_at"],
+                "lockedUntil": account["locked_until"],
             })
         return self._send(200, {"accounts": rows})
 
@@ -1474,6 +2299,13 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- routes ----------
     def do_GET(self):
+        scope = self._request_tenant_scope()
+        if scope is None:
+            return
+        with scope:
+            return self._do_get()
+
+    def do_HEAD(self):
         scope = self._request_tenant_scope()
         if scope is None:
             return
@@ -1569,17 +2401,7 @@ class Handler(BaseHTTPRequestHandler):
             fpath = os.path.join(_upload_dir(), name)
             if not os.path.isfile(fpath):
                 return self._send(404, {"error": "文件不存在"})
-            ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
-            with open(fpath, "rb") as f:
-                body = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
-            # 上传文件内容不变，可以长缓存（文件名带 8 位随机串，不会撞名）
-            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
-            self.end_headers()
-            self.wfile.write(body)
-            return
+            return self._send_upload_file(fpath, name)
         # 上传目录诊断（便于排查文件是否真落盘）
         if path == "/api/uploads":
             upload_dir = _upload_dir()
@@ -1603,6 +2425,76 @@ class Handler(BaseHTTPRequestHandler):
             })
         if path in ("/api/model-catalog", "/api/providers"):
             return self._send(200, provider_catalog.public_catalog())
+        m = re.match(r"^/api/projects/([^/]+)/assets/export$", path)
+        if m:
+            pid = unquote(m.group(1))
+            proj = store.get_project(pid)
+            if not proj:
+                return self._send(404, {"error": "项目不存在"})
+            payload = proj["payload"]
+            assets = []
+            for node in payload.get("nodes") or []:
+                if node.get("type") not in {"image", "audio", "video"}:
+                    continue
+                meta = node.get("metadata") or {}
+                params = meta.get("params") or {}
+                code_match = re.search(r"图\s*(\d+)", str(node.get("title") or ""))
+                versions = (
+                    params.get("mediaVersions")
+                    or params.get("videoVersions")
+                    or []
+                )
+                episode_ids = [
+                    str(group.get("id") or "")
+                    for group in payload.get("episodeImports") or []
+                    if node.get("id") in (group.get("nodeIds") or [])
+                ]
+                assets.append({
+                    "id": node.get("id"),
+                    "kind": node.get("type"),
+                    "title": node.get("title") or "",
+                    "code": f"图{code_match.group(1)}" if code_match else "",
+                    "assetKey": meta.get("assetKey") or "",
+                    "assetId": meta.get("assetId") or params.get("assetId") or "",
+                    "seriesId": meta.get("seriesId") or params.get("seriesId") or "",
+                    "variantKey": meta.get("variantKey") or params.get("variantKey") or "default",
+                    "status": meta.get("status") or "idle",
+                    "url": meta.get("content") or "",
+                    "prompt": meta.get("prompt") or "",
+                    "episodeIds": episode_ids,
+                    "versions": versions,
+                    "reusedAsset": meta.get("reusedAsset") or None,
+                    "storage": meta.get("storage") or None,
+                })
+            return self._send(200, {
+                "schema": "drama-canvas-assets/v1",
+                "projectId": pid,
+                "title": proj.get("title") or payload.get("title") or "",
+                "revision": proj.get("revision"),
+                "exportedAt": store._now_iso(),
+                "episodes": [
+                    {
+                        "id": group.get("id") or "",
+                        "title": group.get("title") or "",
+                        **{
+                            key: group.get(key)
+                            for key in (
+                                "sourceFeedName",
+                                "sourceFeedPath",
+                                "feedSha256",
+                                "skillVersion",
+                                "packageRevision",
+                                "schemaVersion",
+                                "importedAt",
+                                "importWarnings",
+                            )
+                            if group.get(key) is not None
+                        },
+                    }
+                    for group in payload.get("episodeImports") or []
+                ],
+                "assets": assets,
+            })
         m = re.match(r"^/api/projects/([^/]+)/catalog$", path)
         if m:
             proj = store.get_project(unquote(m.group(1)))
@@ -1652,11 +2544,25 @@ class Handler(BaseHTTPRequestHandler):
     def _do_post(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        if path == "/api/upload/stream":
+            return self._handle_stream_upload()
         body = self._read_json()
         if path == "/api/auth/login":
             return self._handle_auth_login(body)
         if path == "/api/admin/accounts":
             return self._handle_admin_create_account(body)
+        m = re.match(r"^/api/admin/accounts/([^/]+)/reset-password$", path)
+        if m:
+            return self._handle_admin_reset_account_password(
+                unquote(m.group(1)),
+                body,
+            )
+        m = re.match(r"^/api/admin/accounts/([^/]+)/status$", path)
+        if m:
+            return self._handle_admin_set_account_status(
+                unquote(m.group(1)),
+                body,
+            )
         if path == "/api/auth/logout":
             return self._handle_auth_logout()
         if path == "/api/auth/change-password":
@@ -1688,6 +2594,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, **tos_storage.test_connection()})
             except tos_storage.TosAccountOverdueError as exc:
                 return self._send(402, {"error": str(exc), "code": "TOS_ACCOUNT_OVERDUE"})
+            except Exception as exc:
+                return self._send(400, {"error": str(exc)})
+        if path == "/api/storage/imgbb/test":
+            try:
+                return self._send(200, {"ok": True, **imgbb_storage.test_connection()})
             except Exception as exc:
                 return self._send(400, {"error": str(exc)})
         # 文件上传：{name, dataUrl} → 落盘返回稳定 URL
@@ -1768,9 +2679,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/config/test":
             section = str(body.get("section") or body.get("providerId") or "")
             return self._send(200, provider_catalog.test_provider(section))
-        m = re.match(r"^/api/projects/([^/]+)/import$", path)
+        m = re.match(r"^/api/projects/([^/]+)/import(?:/preview)?$", path)
         if m:
             pid = unquote(m.group(1))
+            preview_only = path.endswith("/import/preview")
             with PROJECT_WRITE_LOCK:
                 proj = store.get_project(pid)
                 if not proj:
@@ -1780,55 +2692,104 @@ class Handler(BaseHTTPRequestHandler):
                 if not feed_json and feed_path:
                     if not os.path.exists(feed_path):
                         return self._send(400, {"error": f"载荷文件不存在：{feed_path}"})
-                    with open(feed_path, encoding="utf-8-sig") as f:
-                        feed_json = json.load(f)
-                if not isinstance(feed_json, dict) or "asset_prompts" not in feed_json:
-                    return self._send(400, {"error": "载荷缺少 asset_prompts 字段"})
-                asset_pool = []
-                for project_row in store.list_projects():
-                    source_project = store.get_project(project_row.get("id"))
-                    if not source_project:
-                        continue
-                    for source_node in source_project["payload"].get("nodes", []):
-                        if source_node.get("type") != "image":
-                            continue
-                        source_meta = source_node.get("metadata") or {}
-                        same_target_project = source_project.get("id") == pid
-                        if not same_target_project and (source_meta.get("status") != "done" or not source_meta.get("content")):
-                            continue
-                        asset_pool.append({
-                            "assetKey": source_meta.get("assetKey", ""),
-                            "id": source_node.get("id", ""),
-                            "projectId": source_project.get("id", ""),
-                            "title": source_node.get("title", ""),
-                            "prompt": source_meta.get("prompt", ""),
-                            "composerContent": source_meta.get("composerContent", ""),
-                            "content": source_meta.get("content", ""),
-                            "status": source_meta.get("status", ""),
-                            "params": source_meta.get("params") or {},
-                            "reusedAsset": source_meta.get("reusedAsset") or {},
-                            "createdAt": source_node.get("createdAt", ""),
-                            "updatedAt": source_node.get("updatedAt", ""),
+                    try:
+                        with open(feed_path, encoding="utf-8-sig") as f:
+                            feed_json = json.load(f)
+                    except (OSError, json.JSONDecodeError) as exc:
+                        return self._send(400, {
+                            "error": f"载荷解析失败：{exc}",
+                            "code": canvas_feed_contract.ErrorCode.FEED_PARSE_ERROR,
+                            "issues": [],
                         })
-                payload = import_feed.build_payload(
+                if not isinstance(feed_json, dict):
+                    return self._send(400, {
+                        "error": "载荷根节点必须是 JSON 对象",
+                        "code": canvas_feed_contract.ErrorCode.FEED_PARSE_ERROR,
+                        "issues": [],
+                    })
+                source_meta = body.get("source") if isinstance(body.get("source"), dict) else {}
+                source_meta = {
+                    **source_meta,
+                    "name": source_meta.get("name") or (os.path.basename(feed_path) if feed_path else ""),
+                    "path": source_meta.get("path") or feed_path,
+                }
+                plan = canvas_feed_contract.prepare_import(
+                    proj["payload"],
                     feed_json,
-                    asset_pool=asset_pool,
-                    target_project_id=pid,
+                    pid,
+                    int(proj.get("revision") or 0),
+                    source=source_meta,
                 )
-                payload = import_feed.merge_payload_by_episode(proj["payload"], payload)
-                title = payload.get("title") or proj["title"]
-                store.update_project(pid, title=title, payload=payload)
-            readiness = import_feed.episode_readiness(
-                payload,
-                payload.get("episodeId") or (payload.get("episodeImports") or [{}])[-1].get("id"),
-            )
-            return self._send(200, {"id": pid, "title": title, "nodes": len(payload["nodes"]),
-                                    "connections": len(payload["connections"]),
-                                    "reusedAssets": int((payload.get("importSummary") or {}).get("assetsReused") or 0),
-                                    "reusedGeneratedAssets": int((payload.get("importSummary") or {}).get("assetsReusedGenerated") or 0),
-                                    "episodes": len(payload.get("episodeImports") or []),
-                                    "readiness": readiness,
-                                    "reimportPolicy": import_feed.REIMPORT_IDENTITY_POLICY})
+                issue_payload = [canvas_feed_contract.issue_dict(item) for item in plan.errors]
+                warning_payload = [canvas_feed_contract.issue_dict(item) for item in plan.warnings]
+                if plan.errors:
+                    return self._send(422, {
+                        "error": "导入校验失败，项目未被修改",
+                        "code": "FEED_VALIDATION_FAILED",
+                        "revision": plan.revision,
+                        "issues": issue_payload,
+                        "warnings": warning_payload,
+                    })
+                if preview_only:
+                    return self._send(200, {
+                        "dryRun": True,
+                        "id": pid,
+                        "revision": plan.revision,
+                        "episodeId": plan.episode_id,
+                        "summary": plan.summary,
+                        "warnings": warning_payload,
+                        "provenance": plan.provenance,
+                    })
+                if_revision = body.get("if_revision")
+                try:
+                    requested_revision = int(if_revision) if if_revision is not None else None
+                except (TypeError, ValueError):
+                    return self._send(400, {"error": "if_revision 必须是整数"})
+                if requested_revision is not None and requested_revision != int(plan.revision):
+                    retry_warning = canvas_feed_contract.ValidationIssue(
+                        code=canvas_feed_contract.WarningCode.WARN_RETRIED_AFTER_REVISION,
+                        message=(
+                            f"预览 revision={requested_revision}，提交时已更新为 "
+                            f"revision={plan.revision}，系统已重新预检一次"
+                        ),
+                        path="revision",
+                    )
+                    warning_payload.append(canvas_feed_contract.issue_dict(retry_warning))
+                    for group in (plan.merged_payload or {}).get("episodeImports") or []:
+                        if str(group.get("id") or "").upper() == str(plan.episode_id).upper():
+                            group["importWarnings"] = warning_payload
+                            break
+                try:
+                    commit_result = canvas_feed_contract.commit_import(
+                        plan,
+                        if_revision=plan.revision,
+                    )
+                except canvas_feed_contract.RevisionConflictError as exc:
+                    return self._send(409, {
+                        "error": str(exc),
+                        "code": canvas_feed_contract.ErrorCode.REVISION_CONFLICT,
+                        "revision": plan.revision,
+                        "warnings": warning_payload,
+                    })
+                payload = plan.merged_payload
+                readiness = import_feed.episode_readiness(payload, plan.episode_id)
+            return self._send(200, {
+                "ok": True,
+                "id": pid,
+                "title": commit_result["title"],
+                "revision": commit_result["revision"],
+                "episodeId": plan.episode_id,
+                "nodes": len(payload["nodes"]),
+                "connections": len(payload["connections"]),
+                "episodes": int(plan.summary.get("episodesAfter") or 0),
+                "reusedAssets": int(plan.summary.get("assetsReused") or 0),
+                "reusedGeneratedAssets": int(plan.summary.get("assetsReusedGenerated") or 0),
+                "summary": plan.summary,
+                "warnings": warning_payload,
+                "provenance": plan.provenance,
+                "readiness": readiness,
+                "reimportPolicy": import_feed.REIMPORT_IDENTITY_POLICY,
+            })
         m = re.match(r"^/api/projects/([^/]+)/gate-check$", path)
         if m:
             pid = unquote(m.group(1))
@@ -1864,7 +2825,7 @@ class Handler(BaseHTTPRequestHandler):
             # 允许按请求体覆盖类型：候选类型包含 text（文本节点也能 AI 生成）
             if body.get("type") in ("text", "image", "audio", "video"):
                 node["type"] = body["type"]
-            meta = node.get("metadata") or {}
+            meta = apply_generation_input(node, body)
             params = meta.get("params") or {}
             blockers = import_feed.node_dependency_blockers(proj["payload"], node)
             if blockers:
@@ -1878,6 +2839,7 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "REFERENCE_NOT_READY",
                     "missing": blockers,
                 })
+            reconcile_active_generation_task_for_node(pid, node["id"], node)
             task = store.create_generation_task(
                 pid, node["id"], title=node.get("title", ""), kind=node.get("type", ""),
                 provider=params.get("provider") or meta.get("provider") or "",
@@ -1901,7 +2863,12 @@ class Handler(BaseHTTPRequestHandler):
                 or "__default__"
             )
             try:
-                slot = acquire_generation_slot(task["id"], provider_key)
+                slot = acquire_generation_slot(
+                    task["id"],
+                    provider_key,
+                    task.get("model") or params.get("model") or meta.get("model"),
+                    task.get("kind") or node.get("type"),
+                )
             except GenerationQueueCancelled as exc:
                 return self._send(409, {
                     "error": str(exc),
@@ -1914,6 +2881,21 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "GENERATION_QUEUE_TIMEOUT",
                     "taskId": task.get("id"),
                 })
+            generation_started_at = store._now_iso()
+            start_updates = {
+                "status": "generating",
+                "lastError": None,
+                "taskId": None,
+                "generationStartedAt": generation_started_at,
+                "generationFinishedAt": None,
+                "providerTaskStatus": "queued",
+                "providerTaskPhase": "准备提交",
+                "providerTaskProgress": 0,
+                "_paramsPatch": params,
+            }
+            if isinstance(body.get("prompt"), str):
+                start_updates["prompt"] = body["prompt"]
+            commit_node_metadata(pid, nid, start_updates)
             try:
                 return self._generate(pid, proj, node, task_id=task["id"])
             finally:
@@ -2000,14 +2982,12 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 node = by_id.get(item["id"])
                 position = item.get("position")
-                base_updated_at = str(item.get("baseUpdatedAt") or "")
-                if (
-                    node
-                    and isinstance(position, dict)
-                    and base_updated_at
-                    and str(node.get("updatedAt") or "") > base_updated_at
-                    and node.get("position") != position
-                ):
+                current_position = (
+                    episode_layout.get(item["id"])
+                    if episode_layout is not None
+                    else (node or {}).get("position")
+                )
+                if _position_save_conflict(node, item, current_position):
                     position_conflicts.append({
                         "nodeId": item["id"],
                         "title": node.get("title") or item["id"],
@@ -2020,27 +3000,56 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "NODE_POSITION_CONFLICT",
                     "conflicts": position_conflicts,
                 })
-            updated = 0
+            updates = []
+            unchanged_ids = []
+            missing_ids = []
             for item in incoming:
                 if not isinstance(item, dict) or not item.get("id"):
                     continue
                 position = item.get("position")
                 node = by_id.get(item["id"])
                 if node is None or not isinstance(position, dict):
+                    if node is None:
+                        missing_ids.append(item["id"])
                     continue
                 position = {
                     "x": float(position.get("x") or 0),
                     "y": float(position.get("y") or 0),
                 }
+                current_position = (
+                    episode_layout.get(item["id"])
+                    if episode_layout is not None
+                    else node.get("position")
+                )
+                if (
+                    isinstance(current_position, dict)
+                    and current_position.get("x") == position["x"]
+                    and current_position.get("y") == position["y"]
+                ):
+                    unchanged_ids.append(item["id"])
+                    continue
+                position_updated_at = store._now_iso()
                 if episode_layout is not None:
                     episode_layout[item["id"]] = position
                 else:
                     node["position"] = position
-                node["updatedAt"] = store._now_iso()
-                updated += 1
-            if updated:
+                node["positionUpdatedAt"] = position_updated_at
+                node["updatedAt"] = position_updated_at
+                updates.append({
+                    "nodeId": item["id"],
+                    "position": position,
+                    "positionUpdatedAt": position_updated_at,
+                    "updatedAt": position_updated_at,
+                })
+            if updates:
                 store.update_project(pid, payload=proj["payload"])
-            return self._send(200, {"ok": True, "updated": updated})
+            return self._send(200, {
+                "ok": True,
+                "updated": len(updates),
+                "updates": updates,
+                "unchanged": unchanged_ids,
+                "missing": missing_ids,
+            })
         # 批量保存：一次写库完成全部节点的 upsert。
         # 旧接口是逐个 PUT，而每次 update_project 都要重写整个 DB（实测 ~250ms/次），
         # 20+ 节点全量保存要 6 秒；新节点排在数组末尾，往往还没轮到就被刷新掉。
@@ -2086,6 +3095,7 @@ class Handler(BaseHTTPRequestHandler):
                     "conflicts": conflicts,
                 })
             created = 0
+            save_updates = []
             for item in incoming:
                 if not isinstance(item, dict):
                     continue
@@ -2094,13 +3104,16 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 node = by_id.get(nid)
                 if node is None:
+                    created_at = store._now_iso()
                     node = {
                         "id": nid,
                         "type": item.get("type") if item.get("type") in ("text", "image", "audio", "video") else "text",
                         "title": item.get("title") or "未命名节点",
                         "position": item.get("position") if isinstance(item.get("position"), dict) else {"x": 0, "y": 0},
                         "metadata": dict(item.get("metadata") or {}),
-                        "createdAt": store._now_iso(),
+                        "createdAt": created_at,
+                        "positionUpdatedAt": created_at,
+                        "updatedAt": created_at,
                     }
                     nodes_list.append(node)
                     by_id[nid] = node
@@ -2116,12 +3129,31 @@ class Handler(BaseHTTPRequestHandler):
                     if "title" in item:
                         node["title"] = item["title"]
                     if isinstance(item.get("position"), dict):
+                        if node.get("position") != item["position"]:
+                            node["positionUpdatedAt"] = store._now_iso()
                         node["position"] = item["position"]
                     if item.get("type") in ("text", "image", "audio", "video"):
                         node["type"] = item["type"]
                     node["updatedAt"] = store._now_iso()
+                save_updates.append({
+                    "id": nid,
+                    "updatedAt": node.get("updatedAt"),
+                    "positionUpdatedAt": node.get("positionUpdatedAt"),
+                })
+            episode_id = str(body.get("episodeId") or "").strip().upper()
+            if episode_id:
+                import_feed.attach_nodes_to_episode(
+                    payload,
+                    episode_id,
+                    [item.get("id") for item in incoming if isinstance(item, dict)],
+                )
             store.update_project(pid, payload=payload)
-            return self._send(200, {"ok": True, "nodes": len(nodes_list), "created": created})
+            return self._send(200, {
+                "ok": True,
+                "nodes": len(nodes_list),
+                "created": created,
+                "updates": save_updates,
+            })
         m = re.match(r"^/api/projects/([^/]+)/nodes/([^/]+)$", path)
         if not m:
             return self._send(404, {"error": "not found"})
@@ -2232,6 +3264,29 @@ class Handler(BaseHTTPRequestHandler):
                 c for c in conns
                 if c.get("fromNodeId") != nid and c.get("toNodeId") != nid
             ]
+            removed_connection_ids = {
+                c.get("id")
+                for c in conns
+                if c.get("id") and (c.get("fromNodeId") == nid or c.get("toNodeId") == nid)
+            }
+            for group in payload.get("episodeImports") or []:
+                if not isinstance(group, dict):
+                    continue
+                group["nodeIds"] = [
+                    node_id for node_id in group.get("nodeIds") or []
+                    if node_id != nid
+                ]
+                group["videoNodeIds"] = [
+                    node_id for node_id in group.get("videoNodeIds") or []
+                    if node_id != nid
+                ]
+                group["connectionIds"] = [
+                    connection_id for connection_id in group.get("connectionIds") or []
+                    if connection_id not in removed_connection_ids
+                ]
+            for layout in (payload.get("episodeLayouts") or {}).values():
+                if isinstance(layout, dict):
+                    layout.pop(nid, None)
             # 其它节点 metadata.refs 里指向已删节点的引用也要摘掉
             deleted_title = str((deleted_node or {}).get("title") or "").strip()
             for other in payload["nodes"]:
@@ -2407,6 +3462,11 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 return self._send(400, {"error": f"不支持生成类型 {ntype}"})
         except RuntimeError as e:
+            if provider and is_provider_rate_limit_error(e):
+                mark_generation_provider_rate_limited(
+                    provider.get("id"),
+                    provider_retry_after_seconds(e),
+                )
             meta["status"] = "error"
             meta["lastError"] = str(e)
             store.update_project(pid, payload=proj["payload"])
@@ -2426,8 +3486,9 @@ class Handler(BaseHTTPRequestHandler):
             if key in GENERATION_INFLIGHT:
                 if task_id:
                     store.update_generation_task(
-                        task_id, status="running", phase="已有任务运行中",
-                        error="该节点正在生成，请勿重复提交",
+                        task_id, status="interrupted", phase="重复提交已忽略",
+                        error="该节点已有任务正在生成，本次重复提交已忽略",
+                        finished_at=store._now_iso(),
                     )
                 return self._send(409, {
                     "error": "该节点正在生成，请勿重复提交（GENERATION_IN_PROGRESS）",
@@ -2439,11 +3500,19 @@ class Handler(BaseHTTPRequestHandler):
         if task_id:
             store.update_generation_task(
                 task_id, status="running", phase="准备提交",
-                progress=10, started_at=store._now_iso(),
+                progress=10, error="", finished_at="",
+                started_at=store._now_iso(),
             )
         try:
             return self._generate_once(pid, proj, node, task_id=task_id)
         except Exception as exc:
+            if preserve_generation_outcome(task_id, exc):
+                print(
+                    f"[generation] client disconnected after result was persisted; "
+                    f"task={task_id or '-'} error={exc}",
+                    file=sys.stderr,
+                )
+                return None
             if task_id:
                 store.update_generation_task(
                     task_id, status="failed", phase="任务异常", error=str(exc),
@@ -2599,6 +3668,7 @@ class Handler(BaseHTTPRequestHandler):
                 store.update_generation_task(
                     task_id, provider=provider.get("id", ""), model=model.get("id", ""),
                     status="running", phase="提交供应商", progress=15,
+                    error="", finished_at="",
                 )
             effective = {**(model.get("defaultParams") or {}), **params}
             for key in ("ratio", "resolution", "duration", "guidance", "size", "system", "temperature", "maxTokens"):
@@ -2620,15 +3690,16 @@ class Handler(BaseHTTPRequestHandler):
                     raise RuntimeError(missing_note(missing))
                 validate_refs(refs)
                 result = provider_client.generate_image(provider, model, prompt, effective, refs)
-                generated_url = persist_generated_media(result["url"], ".png")
+                local_generated_url = persist_generated_media(result["url"], ".png")
                 generated_at = store._now_iso()
                 storage = archive_generated_image(
-                    generated_url,
+                    local_generated_url,
                     provider,
                     model,
                     str(result.get("taskId") or ""),
                     generated_at,
                 )
+                generated_url = local_generated_url
                 _record_media_version(
                     meta,
                     "image",
@@ -2642,6 +3713,12 @@ class Handler(BaseHTTPRequestHandler):
                 meta["generatedAt"] = generated_at
                 meta["storage"] = storage if isinstance(storage, dict) else {}
                 meta["storageError"] = str(storage.get("error") or "") if isinstance(storage, dict) else ""
+                imgbb_pending = imgbb_storage.is_ready()
+                meta["imgbb"] = {
+                    "status": "pending",
+                    "source": {"localUrl": local_generated_url},
+                } if imgbb_pending else {}
+                meta["imageHostError"] = ""
                 meta["lastNote"] = missing_note(missing)
                 meta["promptStale"] = False
                 meta["promptStaleReason"] = ""
@@ -2718,6 +3795,7 @@ class Handler(BaseHTTPRequestHandler):
                         store.update_generation_task(
                             generation_task_id, provider_task_id=provider_task_id,
                             status="running", phase="排队中", progress=20,
+                            error="", finished_at="",
                         )
 
                 def on_task_update(task):
@@ -2738,6 +3816,7 @@ class Handler(BaseHTTPRequestHandler):
                         store.update_generation_task(
                             task_id, status="running", phase=phase,
                             progress=int(progress) if isinstance(progress, (int, float)) else None,
+                            error="", finished_at="",
                         )
 
                 result = provider_client.generate_video(
@@ -2834,6 +3913,12 @@ class Handler(BaseHTTPRequestHandler):
             if ntype in ("image", "audio", "video"):
                 meta["generatedAt"] = meta["production"]["generatedAt"]
                 meta["generationFinishedAt"] = meta["production"]["generatedAt"]
+                meta["source"] = {
+                    "type": "generated",
+                    "provider": str(provider.get("id") or ""),
+                    "model": str(model.get("remoteModel") or model.get("id") or ""),
+                    "generatedAt": meta["production"]["generatedAt"],
+                }
             if result.get("taskId"):
                 meta["production"]["taskId"] = result["taskId"]
             version_list = (meta.get("params") or {}).get("mediaVersions") or []
@@ -2869,13 +3954,16 @@ class Handler(BaseHTTPRequestHandler):
 
         generated_updates = {
             key: meta.get(key) for key in (
-                "status", "content", "prompt", "lastError", "lastNote", "taskId",
+                "status", "content", "lastError", "lastNote", "taskId",
                 "voiceId", "provider", "model", "remoteModel", "production", "generatedAt",
                 "generationStartedAt", "generationFinishedAt", "providerTaskStatus",
                 "providerTaskPhase", "providerTaskProgress",
                 "videoValidation", "actualDuration", "storage", "storageError",
+                "imgbb", "imageHostError", "source",
             )
         }
+        if ntype == "text":
+            generated_updates["prompt"] = meta.get("prompt")
         if ntype in ("image", "audio", "video"):
             generated_updates["_paramsPatch"] = {
                 "mediaVersions": meta.get("params", {}).get("mediaVersions", []),
@@ -2890,6 +3978,16 @@ class Handler(BaseHTTPRequestHandler):
                 ),
             }
         commit_node_metadata(pid, node["id"], generated_updates)
+        if ntype == "image" and str((meta.get("imgbb") or {}).get("status") or "") == "pending":
+            queue_generated_image_imgbb_mirror(
+                pid,
+                node["id"],
+                str(meta.get("content") or ""),
+                str(provider.get("id") or ""),
+                str(model.get("remoteModel") or model.get("id") or ""),
+                str(result.get("taskId") or ""),
+                str(meta.get("generatedAt") or ""),
+            )
         if task_id:
             store.update_generation_task(
                 task_id, status="succeeded", phase="已完成", progress=100,
@@ -2901,6 +3999,19 @@ class Handler(BaseHTTPRequestHandler):
             response["text"] = meta.get("prompt")
         if ntype == "audio":
             response["voiceId"] = meta.get("voiceId", "")
+        if ntype in {"image", "audio", "video"}:
+            response["params"] = {
+                "mediaVersions": meta.get("params", {}).get("mediaVersions", []),
+                "mediaVersionIndex": meta.get("params", {}).get("mediaVersionIndex", 0),
+                **(
+                    {
+                        "videoVersions": meta.get("params", {}).get("videoVersions", []),
+                        "videoVersionIndex": meta.get("params", {}).get("videoVersionIndex", 0),
+                    }
+                    if ntype == "video"
+                    else {}
+                ),
+            }
         return self._send(200, response)
 
 
@@ -2939,6 +4050,12 @@ def main():
     except Exception as exc:
         print(f"[episode-import] 多集恢复失败：{exc}", file=sys.stderr)
     try:
+        isolated_projects = _run_for_active_tenants(backfill_project_asset_isolation)
+        if isolated_projects:
+            print(f"已隔离 {isolated_projects} 个项目的跨项目资产引用")
+    except Exception as exc:
+        print(f"[asset-isolation] 项目资产隔离失败：{exc}", file=sys.stderr)
+    try:
         linked_projects = _run_for_active_tenants(backfill_episode_shared_asset_links)
         if linked_projects:
             print(f"已补齐 {linked_projects} 个项目的跨集资产连线")
@@ -2950,6 +4067,12 @@ def main():
             print(f"已校验 {validated} 个历史视频")
     except Exception as exc:
         print(f"[video-validation] 回填失败：{exc}", file=sys.stderr)
+    try:
+        hosted = _run_for_active_tenants(backfill_image_host_versions)
+        if hosted:
+            print(f"已恢复 {hosted} 个 ImgBB 图片版本")
+    except Exception as exc:
+        print(f"[imgbb] 版本回填失败：{exc}", file=sys.stderr)
     try:
         _run_for_active_tenants(store.interrupt_orphan_generation_tasks)
     except Exception as exc:

@@ -9,6 +9,7 @@ import {
 
 type StorageDraft = {
   enabled: boolean;
+  provider: 'tos' | 'imgbb';
   bucket: string;
   region: string;
   endpoint: string;
@@ -19,10 +20,12 @@ type StorageDraft = {
   require_for_ark_portrait: boolean;
   access_key: string;
   secret_key: string;
+  imgbb_api_key: string;
 };
 
 const DEFAULT_DRAFT: StorageDraft = {
   enabled: false,
+  provider: 'tos',
   bucket: '',
   region: 'cn-beijing',
   endpoint: 'tos-cn-beijing.volces.com',
@@ -33,11 +36,13 @@ const DEFAULT_DRAFT: StorageDraft = {
   require_for_ark_portrait: true,
   access_key: '',
   secret_key: '',
+  imgbb_api_key: '',
 };
 
 function draftFromStorage(storage: StorageSpec): StorageDraft {
   return {
     enabled: storage.enabled,
+    provider: storage.provider === 'imgbb' ? 'imgbb' : 'tos',
     bucket: storage.bucket,
     region: storage.region || 'cn-beijing',
     endpoint: storage.endpoint || 'tos-cn-beijing.volces.com',
@@ -48,6 +53,7 @@ function draftFromStorage(storage: StorageSpec): StorageDraft {
     require_for_ark_portrait: storage.require_for_ark_portrait !== false,
     access_key: '',
     secret_key: '',
+    imgbb_api_key: '',
   };
 }
 
@@ -81,14 +87,16 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState('');
   const [testState, setTestState] = useState<{ok: boolean; message: string} | null>(null);
+  const [clearImgbbKey, setClearImgbbKey] = useState(false);
 
   const apply = (next: StorageSpec) => {
     setStorage(next);
     setDraft(draftFromStorage(next));
+    setClearImgbbKey(false);
   };
 
   const load = async () => {
-    setStatus('正在读取 TOS 配置…');
+    setStatus('正在读取存储配置…');
     try {
       apply(await getStorageConfig());
       setStatus('');
@@ -103,6 +111,7 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
 
   const update = <K extends keyof StorageDraft>(key: K, value: StorageDraft[K]) => {
     setDraft((current) => ({...current, [key]: value}));
+    if (key === 'imgbb_api_key' && String(value || '').trim()) setClearImgbbKey(false);
     setStatus('');
   };
 
@@ -114,10 +123,12 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
     try {
       const next = await saveStorageConfig({
         ...draft,
+        imgbb_api_key_clear: clearImgbbKey,
+        imgbb_api_key: draft.imgbb_api_key,
         url_ttl_seconds: Number(draft.url_ttl_seconds || 3600),
       });
       apply(next);
-      setStatus('TOS 配置已保存');
+      setStatus(`${draft.provider === 'imgbb' ? 'ImgBB' : 'TOS'} 配置已保存`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -130,7 +141,7 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
     setTesting(true);
     setTestState(null);
     try {
-      const result = await testStorageConfig();
+      const result = await testStorageConfig(draft.provider);
       setTestState({ok: result.ok, message: result.message || '连接成功'});
     } catch (error) {
       setTestState({
@@ -152,15 +163,15 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
       >
         <header>
           <div>
-            <strong>对象存储 TOS</strong>
-            <span className="model-settings-subtitle">私有桶保存生成原始字节，Seedance 使用内网预签名读取</span>
+            <strong>图片存储与转存</strong>
+            <span className="model-settings-subtitle">启用 TOS 或 ImgBB 后，生成图片自动转入所选存储</span>
           </div>
           <div className="model-settings-header-actions">
             <span className={`tos-state-pill ${storage?.ready ? 'is-ready' : ''}`}>
               {storage?.ready ? <Check size={12} /> : <CloudUpload size={12} />}
-              {storage?.ready ? '配置完整' : '未启用'}
+              {storage?.ready ? (storage.provider === 'imgbb' ? 'ImgBB 已启用' : 'TOS 已启用') : '未启用'}
             </span>
-            <button type="button" onClick={() => void load()} title="刷新 TOS 配置"><RefreshCw size={14} />刷新</button>
+            <button type="button" onClick={() => void load()} title="刷新存储配置"><RefreshCw size={14} />刷新</button>
             <button type="button" className="canvas-inspector-close" onClick={onClose} aria-label="关闭"><X size={15} /></button>
           </div>
         </header>
@@ -171,17 +182,35 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
           <div className="tos-settings-hero">
             <span className="tos-settings-hero-icon"><ShieldCheck size={20} /></span>
             <div>
-              <strong>原始产物直传</strong>
-              <p>不压缩、不重绘；本地文件与 TOS 对象使用同一份原始字节。</p>
+              <strong>选择自动转存目标</strong>
+              <p>只使用当前选中的一个存储，未选择时不自动上传。</p>
             </div>
-            <Switch
-              checked={draft.enabled}
-              label="启用 TOS 原始产物持久化"
-              onChange={(value) => update('enabled', value)}
-            />
+          </div>
+          <div className="storage-provider-picker">
+            <button
+              type="button"
+              className={!draft.enabled ? 'is-active' : ''}
+              onClick={() => update('enabled', false)}
+            >不转存</button>
+            <button
+              type="button"
+              className={draft.enabled && draft.provider === 'tos' ? 'is-active' : ''}
+              onClick={() => {
+                update('provider', 'tos');
+                update('enabled', true);
+              }}
+            >火山 TOS</button>
+            <button
+              type="button"
+              className={draft.enabled && draft.provider === 'imgbb' ? 'is-active' : ''}
+              onClick={() => {
+                update('provider', 'imgbb');
+                update('enabled', true);
+              }}
+            >ImgBB</button>
           </div>
 
-          <div className="model-settings-form tos-settings-form">
+          {draft.enabled && draft.provider === 'tos' && <div className="model-settings-form tos-settings-form">
             <label>
               <span>Bucket</span>
               <input value={draft.bucket} onChange={(event) => update('bucket', event.target.value)} placeholder="例如 drama-originals" autoComplete="off" />
@@ -220,9 +249,9 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
                 <input type="password" value={draft.secret_key} onChange={(event) => update('secret_key', event.target.value)} placeholder="留空保留现有 Secret Key" autoComplete="new-password" />
               </div>
             </label>
-          </div>
+          </div>}
 
-          <div className="tos-settings-options">
+          {draft.enabled && draft.provider === 'tos' && <div className="tos-settings-options">
             <div>
               <span><strong>图片生成后自动转存</strong><small>新生成的图片立即写入 TOS</small></span>
               <Switch checked={draft.auto_persist_images} label="图片生成后自动转存 TOS" onChange={(value) => update('auto_persist_images', value)} />
@@ -231,7 +260,45 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
               <span><strong>Seedream 角色图强制 TOS</strong><small>进入 Seedance 前没有 TOS 原始对象时阻止提交</small></span>
               <Switch checked={draft.require_for_ark_portrait} label="Seedream 角色图强制使用 TOS" onChange={(value) => update('require_for_ark_portrait', value)} />
             </div>
-          </div>
+          </div>}
+
+          {draft.enabled && draft.provider === 'imgbb' && (
+            <div className="model-settings-form tos-settings-form imgbb-settings-form">
+              <label className="is-wide">
+                <span>
+                  ImgBB API Key
+                  {storage?.imgbb?.has_api_key ? <i>{storage.imgbb.api_key_hint}</i> : null}
+                </span>
+                <div className="tos-secret-input">
+                  <KeyRound size={14} />
+                  <input
+                    type="password"
+                    value={draft.imgbb_api_key}
+                    onChange={(event) => update('imgbb_api_key', event.target.value)}
+                    placeholder={storage?.imgbb?.has_api_key ? '留空保留现有 API Key' : '填写 imgbb.com 的 API Key'}
+                    autoComplete="new-password"
+                  />
+                </div>
+              </label>
+              <div className="imgbb-note is-wide">
+                <strong>配置后自动转存</strong>
+                <p>每张生成图片完成后自动上传 ImgBB，节点使用 ImgBB 返回的公开图片地址；上传失败时保留本地缓存图。</p>
+              </div>
+              {storage?.imgbb?.has_api_key && (
+                <button
+                  type="button"
+                  className="imgbb-clear-key is-wide"
+                  onClick={() => {
+                    update('enabled', false);
+                    update('imgbb_api_key', '');
+                    setClearImgbbKey(true);
+                  }}
+                >
+                  移除 ImgBB API Key（保存后生效）
+                </button>
+              )}
+            </div>
+          )}
 
           {testState && (
             <div className={`tos-test-result ${testState.ok ? 'is-ok' : 'is-error'}`}>
@@ -243,12 +310,12 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
 
         <footer className="model-settings-actions tos-settings-actions">
           <button type="button" className="is-primary" disabled={busy} onClick={() => void save()}>
-            <Save size={13} />{busy ? '保存中…' : '保存 TOS 配置'}
+            <Save size={13} />{busy ? '保存中…' : '保存存储配置'}
           </button>
-          <button type="button" disabled={testing || !storage?.ready} onClick={() => void test()}>
-            {testing ? '测试中…' : '测试连接'}
+          <button type="button" disabled={testing || !storage?.ready || storage.provider !== draft.provider} onClick={() => void test()}>
+            {testing ? '测试中…' : `测试 ${draft.provider === 'imgbb' ? 'ImgBB' : 'TOS'}`}
           </button>
-          <span className="model-settings-hint"><ShieldCheck size={12} />仅从服务端读取密钥，不返回完整 Secret</span>
+          <span className="model-settings-hint"><ShieldCheck size={12} />密钥仅保存在服务端，不返回完整值</span>
         </footer>
       </section>
     </div>

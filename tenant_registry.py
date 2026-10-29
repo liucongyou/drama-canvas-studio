@@ -315,8 +315,14 @@ def set_account_status(account_id: str, status: str) -> dict[str, Any]:
     con = _connect()
     now = _iso()
     con.execute(
-        "UPDATE accounts SET status=?,updated_at=? WHERE id=?",
-        (normalized, now, account_id),
+        "UPDATE accounts SET status=?,updated_at=?,failed_attempts=?,locked_until=? WHERE id=?",
+        (
+            normalized,
+            now,
+            0 if normalized == "active" else account["failed_attempts"],
+            "" if normalized == "active" else account["locked_until"],
+            account_id,
+        ),
     )
     if normalized == "disabled":
         con.execute("UPDATE sessions SET revoked_at=? WHERE account_id=? AND revoked_at=''", (now, account_id))

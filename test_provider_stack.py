@@ -2,7 +2,9 @@
 import base64
 import copy
 import os
+import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -29,6 +31,17 @@ class ProviderCatalogTests(unittest.TestCase):
         self.assertEqual(tts["defaultParams"]["outputFormat"], "mp3")
         seedance = next(model for model in catalog["models"] if model["id"] == "doubao-seedance-2-0")
         self.assertEqual(seedance["pricing"]["video"]["rates"]["1080P"], 2.478)
+
+    def test_audio_trim_uses_bundled_ffmpeg_when_system_binary_is_missing(self):
+        with tempfile.TemporaryDirectory() as root:
+            bundled = os.path.join(root, "ffmpeg")
+            with open(bundled, "wb") as handle:
+                handle.write(b"binary")
+            os.chmod(bundled, 0o755)
+            module = types.SimpleNamespace(get_ffmpeg_exe=lambda: bundled)
+            with patch.object(provider_client.shutil, "which", return_value=None), \
+                    patch.dict(sys.modules, {"imageio_ffmpeg": module}):
+                self.assertEqual(provider_client._ffmpeg_executable(), bundled)
 
     def test_legacy_remote_ids_resolve_without_mutating_nodes(self):
         provider, model, _ = provider_catalog.resolve_model(
@@ -77,12 +90,14 @@ class ProviderCatalogTests(unittest.TestCase):
             "maxVideos": -2,
             "maxAudios": "3",
             "maxTextRefs": "not-a-number",
+            "maxConcurrency": "6",
             "customLimit": "kept",
         })
         self.assertEqual(limits["maxRefs"], 8)
         self.assertEqual(limits["maxImages"], 5)
         self.assertEqual(limits["maxVideos"], 0)
         self.assertEqual(limits["maxAudios"], 3)
+        self.assertEqual(limits["maxConcurrency"], 6)
         self.assertNotIn("maxTextRefs", limits)
         self.assertEqual(limits["customLimit"], "kept")
         recomputed = provider_catalog._normalize_model_limits({

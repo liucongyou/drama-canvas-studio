@@ -65,6 +65,7 @@ def is_ready(config: dict[str, Any] | None = None) -> bool:
     cfg = config or _config()
     return bool(
         cfg.get("enabled")
+        and str(cfg.get("provider") or "tos") == "tos"
         and cfg.get("bucket")
         and cfg.get("region") == "cn-beijing"
         and cfg.get("endpoint")

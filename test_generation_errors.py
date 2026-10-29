@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 import provider_client
-from server import _generation_error_status
+from server import _generation_error_status, is_provider_rate_limit_error
 
 
 class GenerationErrorStatusTests(unittest.TestCase):
@@ -14,6 +14,7 @@ class GenerationErrorStatusTests(unittest.TestCase):
     def test_provider_rate_limit_preserves_429(self):
         error = provider_client.ProviderHTTPError(429, "rate limited")
         self.assertEqual(_generation_error_status(error), 429)
+        self.assertTrue(is_provider_rate_limit_error(error))
 
     def test_upstream_500_becomes_bad_gateway(self):
         error = provider_client.ProviderHTTPError(500, "internal error")

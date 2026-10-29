@@ -54,6 +54,9 @@ def _decrypt_config_secrets(cfg: dict[str, Any]) -> dict[str, Any]:
         for key in ("access_key", "secret_key"):
             if storage.get(key):
                 storage[key] = tenant_security.decrypt_secret(storage[key])
+        imgbb = storage.get("imgbb")
+        if isinstance(imgbb, dict) and imgbb.get("api_key"):
+            imgbb["api_key"] = tenant_security.decrypt_secret(imgbb["api_key"])
     return result
 
 
@@ -81,6 +84,9 @@ def _encrypt_config_secrets(cfg: dict[str, Any]) -> dict[str, Any]:
         for key in ("access_key", "secret_key"):
             if storage.get(key):
                 storage[key] = tenant_security.encrypt_secret(storage[key])
+        imgbb = storage.get("imgbb")
+        if isinstance(imgbb, dict) and imgbb.get("api_key"):
+            imgbb["api_key"] = tenant_security.encrypt_secret(imgbb["api_key"])
     return result
 
 
@@ -389,6 +395,10 @@ DEFAULT_STORAGE = {
     "url_ttl_seconds": 3600,
     "auto_persist_images": True,
     "require_for_ark_portrait": True,
+    "imgbb": {
+        "api_key": "",
+        "auto_persist_images": True,
+    },
 }
 
 
@@ -571,9 +581,13 @@ def _public_provider(provider: dict[str, Any]) -> dict[str, Any]:
 def _public_storage(storage: dict[str, Any]) -> dict[str, Any]:
     access_key = str(storage.get("access_key") or "")
     secret_key = str(storage.get("secret_key") or "")
+    imgbb = storage.get("imgbb") if isinstance(storage.get("imgbb"), dict) else {}
+    imgbb_key = str(imgbb.get("api_key") or "")
     enabled = bool(storage.get("enabled"))
-    ready = bool(
+    provider = str(storage.get("provider") or "tos")
+    tos_ready = bool(
         enabled
+        and provider == "tos"
         and storage.get("bucket")
         and storage.get("region") == "cn-beijing"
         and storage.get("endpoint")
@@ -581,9 +595,11 @@ def _public_storage(storage: dict[str, Any]) -> dict[str, Any]:
         and access_key.strip()
         and secret_key.strip()
     )
+    imgbb_ready = bool(enabled and provider == "imgbb" and imgbb_key.strip())
+    ready = tos_ready or imgbb_ready
     return {
         "enabled": enabled,
-        "provider": "tos",
+        "provider": provider,
         "bucket": str(storage.get("bucket") or ""),
         "region": str(storage.get("region") or "cn-beijing"),
         "endpoint": str(storage.get("endpoint") or ""),
@@ -597,6 +613,14 @@ def _public_storage(storage: dict[str, Any]) -> dict[str, Any]:
         "has_secret_key": bool(secret_key.strip()),
         "secret_key_hint": _hint(secret_key) if secret_key.strip() else "",
         "ready": ready,
+        "tos_ready": tos_ready,
+        "imgbb": {
+            "enabled": bool(enabled and provider == "imgbb"),
+            "has_api_key": bool(imgbb_key.strip()),
+            "api_key_hint": _hint(imgbb_key) if imgbb_key.strip() else "",
+            "auto_persist_images": imgbb.get("auto_persist_images", True) is not False,
+            "ready": imgbb_ready,
+        },
     }
 
 
@@ -621,6 +645,9 @@ def save_storage_config(input_data: dict[str, Any]) -> dict[str, Any]:
     cfg = load_config()
     source = input_data.get("storage") if isinstance(input_data.get("storage"), dict) else input_data
     current = cfg.setdefault("storage", copy.deepcopy(DEFAULT_STORAGE))
+    provider = str(source.get("provider", current.get("provider") or "tos")).strip().lower()
+    if provider not in {"tos", "imgbb"}:
+        raise ValueError("存储类型只能是 TOS 或 ImgBB")
     bucket = str(source.get("bucket", current.get("bucket") or "")).strip()
     region = str(source.get("region", current.get("region") or "cn-beijing")).strip()
     endpoint = _normalize_endpoint(
@@ -642,11 +669,21 @@ def save_storage_config(input_data: dict[str, Any]) -> dict[str, Any]:
     enabled = bool(source.get("enabled", current.get("enabled", False)))
     access_key = str(current.get("access_key") or "")
     secret_key = str(current.get("secret_key") or "")
+    imgbb_current = current.get("imgbb") if isinstance(current.get("imgbb"), dict) else {}
+    imgbb_api_key = str(imgbb_current.get("api_key") or "")
+    if isinstance(source.get("imgbb_api_key"), str) and source["imgbb_api_key"].strip():
+        imgbb_api_key = source["imgbb_api_key"].strip()
+    if source.get("imgbb_api_key_clear") is True:
+        imgbb_api_key = ""
+    imgbb_auto_persist = bool(source.get(
+        "imgbb_auto_persist_images",
+        imgbb_current.get("auto_persist_images", True),
+    ))
     if isinstance(source.get("access_key"), str) and source["access_key"].strip():
         access_key = source["access_key"].strip()
     if isinstance(source.get("secret_key"), str) and source["secret_key"].strip():
         secret_key = source["secret_key"].strip()
-    if enabled:
+    if enabled and provider == "tos":
         missing = [
             label for label, value in (
                 ("Bucket", bucket),
@@ -664,9 +701,11 @@ def save_storage_config(input_data: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("方舟可信产物要求 TOS 使用 cn-beijing，内网 Endpoint 也必须位于该地域")
         if not internal_endpoint.endswith("ivolces.com"):
             raise ValueError("内网 Endpoint 必须使用 TOS 内网域名（通常以 .ivolces.com 结尾）")
+    if enabled and provider == "imgbb" and not imgbb_api_key:
+        raise ValueError("启用 ImgBB 前请填写 API Key")
     current.update({
         "enabled": enabled,
-        "provider": "tos",
+        "provider": provider,
         "bucket": bucket[:128],
         "region": region[:64],
         "endpoint": endpoint[:255],
@@ -683,12 +722,16 @@ def save_storage_config(input_data: dict[str, Any]) -> dict[str, Any]:
             "require_for_ark_portrait",
             current.get("require_for_ark_portrait", True),
         )),
+        "imgbb": {
+            "api_key": imgbb_api_key[:2048],
+            "auto_persist_images": imgbb_auto_persist,
+        },
     })
     context = tenant_context.current()
     if context is not None:
         import tenant_registry
 
-        if enabled:
+        if enabled and provider == "tos":
             tenant_registry.claim_storage_binding(
                 context.tenant_id,
                 bucket=current["bucket"],
@@ -837,6 +880,7 @@ MODEL_LIMIT_KEYS = (
     "maxAudios",
     "maxTextRefs",
     "maxPromptChars",
+    "maxConcurrency",
 )
 
 

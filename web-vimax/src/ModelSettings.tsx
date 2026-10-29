@@ -129,6 +129,7 @@ const MODEL_LIMIT_FIELDS = [
   ['maxAudios', '参考音频 / 音色', '视频音色、参考音频上限'],
   ['maxTextRefs', '文本引用', '文本、脚本、提示补充参考上限'],
   ['maxPromptChars', '提示词字符', '提示词最大字符数'],
+  ['maxConcurrency', '模型并发', '同时提交给该模型的任务数；留空按图片16 / 视频10 / 音频8 / 文本8'],
 ] as const;
 
 type ModelLimitKey = typeof MODEL_LIMIT_FIELDS[number][0];
@@ -660,8 +661,8 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
                   <label className="is-full"><span>描述</span><input value={model.description} onChange={(event) => setModel({...model, description: event.target.value})} /></label>
                   <div className="model-settings-limit-panel">
                     <header>
-                      <strong>参考能力上限</strong>
-                      <span>参考数量留空按 0 计入总数；填写 0 表示该类型不支持；提示词字符留空表示不限制</span>
+                      <strong>模型能力与并发</strong>
+                      <span>参考数量留空按 0 计入总数；模型并发留空使用该任务类型默认值</span>
                     </header>
                     <div className="model-settings-limit-grid">
                       {MODEL_LIMIT_FIELDS.map(([key, label, hint]) => (
@@ -672,7 +673,7 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
                             min={0}
                             step={1}
                             value={limitInputValue(model.limits, key)}
-                            placeholder="不限"
+                            placeholder={key === 'maxConcurrency' ? '默认' : '不限'}
                             readOnly={key === 'maxRefs'}
                             className={key === 'maxRefs' ? 'is-computed' : ''}
                             title={key === 'maxRefs' ? '自动等于图片、视频、音频和文本引用上限之和' : undefined}

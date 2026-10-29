@@ -1,6 +1,7 @@
 import {useEffect, useMemo, useState, type CSSProperties} from 'react';
 import {Clapperboard, Download, Film, Sparkles} from 'lucide-react';
 import {mediaUrl} from './ArtifactViews';
+import {apiUrl} from './api';
 import type {Artifact} from './types';
 
 /**
@@ -26,7 +27,7 @@ function parseEpisode(path: string): {key: string; label: string} {
 
 function posterUrl(artifact: Artifact): string {
   if (!artifact.url) return '';
-  return artifact.url.replace('/api/artifact?', '/api/video-poster?');
+  return apiUrl(artifact.url.replace('/api/artifact?', '/api/video-poster?'));
 }
 
 /** 横竖屏自适应播放器：加载元数据后按真实宽高比设容器尺寸 */

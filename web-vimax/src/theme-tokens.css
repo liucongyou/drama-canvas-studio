@@ -591,6 +591,18 @@ html[data-theme='light'][data-variant='light'] .canvas-node.canvas-media-node .c
 .canvas-task-item-phase span {
   color: var(--v-text-3) !important;
 }
+.canvas-task-item.is-succeeded .canvas-task-item-phase i {
+  background: var(--v-accent) !important;
+  opacity: 0.78;
+}
+.canvas-task-item.is-succeeded .canvas-task-item-phase span {
+  color: #fff !important;
+  font-weight: 650;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.32);
+}
+.canvas-task-item.is-succeeded .canvas-task-item-phase span svg {
+  color: #fff !important;
+}
 .canvas-task-item-actions button {
   color: var(--v-text-3) !important;
   background: var(--v-surface-hover) !important;

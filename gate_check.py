@@ -7,16 +7,9 @@
   - 实侧：video 节点入边来自 image 节点的图号集合（节点 title 含（图N））
 返回 PASS/FAIL 明细。
 """
-import json
-import re
+import canvas_feed_contract
 
-_REF_RE = re.compile(
-    r"@(?:角色|场景|道具)｜[^（(\n]+[（(](?:参考)?图\s*(\d+)[）)]"
-)
-_LEGACY_REF_RE = re.compile(
-    r"@//(?:chr|scn|prp)\s*/\s*-\s*([^（(]+)（(?:参考)?图\s*(\d+)"
-)
-_TITLE_FIG_RE = re.compile(r"（图\s*(\d+)\s*）")
+_TITLE_FIG_RE = canvas_feed_contract.TITLE_CODE_RE
 
 
 def run_check(payload, episode_id=None):
@@ -24,6 +17,7 @@ def run_check(payload, episode_id=None):
     conns = payload.get("connections", [])
     videos = [n for n in nodes if n.get("type") == "video"]
     images = [n for n in nodes if n.get("type") == "image"]
+    audios = [n for n in nodes if n.get("type") == "audio"]
     if episode_id:
         groups = payload.get("episodeImports") or []
         group = next(
@@ -42,6 +36,11 @@ def run_check(payload, episode_id=None):
         m = _TITLE_FIG_RE.search(n.get("title", ""))
         if m:
             fig_of.setdefault(n["id"], "图" + m.group(1))
+    audio_fig_of = {}
+    for n in audios:
+        m = _TITLE_FIG_RE.search(n.get("title", ""))
+        if m:
+            audio_fig_of.setdefault(n["id"], "图" + m.group(1))
 
     in_edges = {}
     for c in conns:
@@ -50,18 +49,41 @@ def run_check(payload, episode_id=None):
     results, errors = [], []
     for v in videos:
         raw = v.get("metadata", {}).get("prompt", "")
-        script_figs = ["图" + n for n in _REF_RE.findall(raw)]
-        script_figs.extend("图" + n for _name, n in _LEGACY_REF_RE.findall(raw))
-        script_set = set(script_figs)
+        params = (v.get("metadata") or {}).get("params") or {}
+        script_set = canvas_feed_contract.asset_ref_codes(raw)
         linked_figs = set()
         for src in in_edges.get(v["id"], []):
             if src in fig_of:
                 linked_figs.add(fig_of[src])
-        ok = script_set == linked_figs
+        audio_script = {
+            code for _role, code in canvas_feed_contract.audio_ref_entries(raw)
+        }
+        voice_refs = params.get("voiceRefs") or (v.get("metadata") or {}).get("voiceRefs") or []
+        if not voice_refs and isinstance(params.get("voiceRef"), dict):
+            voice_refs = [params["voiceRef"]]
+        voice_ref_figs = {
+            audio_fig_of.get(str(ref.get("nodeId") or ""), "")
+            for ref in voice_refs
+            if isinstance(ref, dict)
+        }
+        voice_ref_figs.discard("")
+        linked_audio = {
+            audio_fig_of[src]
+            for src in in_edges.get(v["id"], [])
+            if src in audio_fig_of
+        }
+        image_ok = script_set == linked_figs
+        audio_ok = audio_script == voice_ref_figs == linked_audio
+        ok = image_ok and audio_ok
         results.append({
             "title": v.get("title", ""), "ok": ok,
             "script": sorted(script_set, key=lambda x: int(x[1:])),
             "linked": sorted(linked_figs, key=lambda x: int(x[1:])),
+            "voiceScript": sorted(audio_script, key=lambda x: int(x[1:])),
+            "voiceRefs": sorted(voice_ref_figs, key=lambda x: int(x[1:])),
+            "voiceLinked": sorted(linked_audio, key=lambda x: int(x[1:])),
+            "imageOk": image_ok,
+            "audioOk": audio_ok,
         })
         if not ok:
             errors.append(v.get("title", ""))

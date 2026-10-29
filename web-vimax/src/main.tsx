@@ -1,7 +1,7 @@
 import {useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent} from 'react';
 import {createRoot} from 'react-dom/client';
 import {createPortal} from 'react-dom';
-import {Check, ChevronDown, CloudUpload, Copy, ExternalLink, FolderOpen, FolderPlus, KeyRound, LogOut, MoreHorizontal, Palette, Pencil, Plus, Settings, ShieldCheck, Trash2, Upload, X} from 'lucide-react';
+import {Check, ChevronDown, CloudUpload, Copy, Download, ExternalLink, FolderOpen, FolderPlus, KeyRound, LogOut, MoreHorizontal, Palette, Pencil, Plus, Settings, ShieldCheck, Trash2, Upload, X} from 'lucide-react';
 import {CanvasView} from './CanvasView';
 import {ModelSettingsDialog} from './ModelSettings';
 import {TosSettingsDialog} from './TosSettings';
@@ -10,7 +10,7 @@ import {applyTheme, readStoredTheme, resolveTheme, storeTheme, THEMES, type Them
 // ★ 全局对话框：替换原生 prompt/confirm/alert（2026-10-25）
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
 import {DialogHost, dialog} from './GDialog';
-import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, getAuthSession, getManagedAccounts, loginAccount, logoutAccount, type ManagedAccount} from './api';
+import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, getAuthSession, getManagedAccounts, loginAccount, logoutAccount, resetManagedAccountPassword, setManagedAccountStatus, type ManagedAccount} from './api';
 import './styles.css';
 import './ui-refinements.css';
 import './immersive-theme.css';
@@ -51,6 +51,47 @@ function importResultMessage(result: Record<string, unknown>) {
   return `${base} ${dependencies}，${videos}。${pending > 0 ? `仍有 ${pending} 个引用素材未生成，生成视频前系统会明确拦截。` : '当前集已具备生成条件。'}页面即将刷新。`;
 }
 
+function importIssuesMessage(result: Record<string, unknown>) {
+  const issues = Array.isArray(result.issues) ? result.issues : [];
+  if (issues.length === 0) return String(result.error || '导入校验失败');
+  const lines = issues.slice(0, 12).map((raw, index) => {
+    const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const location = [
+      item.path,
+      item.segment !== null && item.segment !== undefined ? `段${Number(item.segment) + 1}` : '',
+      item.role,
+      item.nodeCode,
+    ].filter(Boolean).join(' · ');
+    return `${index + 1}. [${String(item.code || 'ERROR')}] ${String(item.message || '')}${location ? `（${location}）` : ''}`;
+  });
+  return lines.join('\n');
+}
+
+function importPreviewMessage(preview: Record<string, unknown>) {
+  const summary = preview.summary && typeof preview.summary === 'object'
+    ? preview.summary as Record<string, unknown>
+    : {};
+  const diff = summary.diff && typeof summary.diff === 'object'
+    ? summary.diff as Record<string, unknown>
+    : {};
+  const warnings = Array.isArray(preview.warnings) ? preview.warnings : [];
+  const lines = [
+    `集数：${Number(summary.episodesBefore || 0)} → ${Number(summary.episodesAfter || 0)}`,
+    `节点新增：${Number(diff.nodesAdded || 0)}，更新：${Number(diff.nodesChanged || 0)}，删除：${Number(diff.nodesRemoved || 0)}`,
+    `复用资产：${Number(summary.assetsReused || 0)}，其中已生成 ${Number(summary.assetsReusedGenerated || 0)}`,
+  ];
+  if (warnings.length > 0) {
+    lines.push('', `警告（${warnings.length}）`);
+    warnings.forEach((raw) => {
+      const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+      lines.push(`• [${String(item.code || 'WARN')}] ${String(item.message || '')}`);
+    });
+  } else {
+    lines.push('', '没有警告。');
+  }
+  return lines.join('\n');
+}
+
 // 自研画布工作流入口：项目选择 + 导入载荷 + CanvasView（ViMax 画布内核，对接本地后端）
 function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) {
   const [projects, setProjects] = useState<{
@@ -64,6 +105,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
     latest_task_error_kind?: string;
   }[]>([]);
   const [pid, setPid] = useState<string>('');
+  const [canvasEpoch, setCanvasEpoch] = useState(0);
   const [feedPath, setFeedPath] = useState('');
   const [busy, setBusy] = useState(false);
   const feedFileRef = useRef<HTMLInputElement | null>(null);
@@ -239,11 +281,76 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
     }
   };
 
-  const importFeed = async () => {
+  const runImportPlan = async (body: Record<string, unknown>, sourceName: string) => {
     if (!pid) {
       await dialog.alert({title: '还没有选中项目', message: '先选择或新建一个项目。'});
-      return;
+      return false;
     }
+    setBusy(true);
+    try {
+      const requestBody = {
+        ...body,
+        source: {name: sourceName},
+      };
+      const previewResponse = await fetch(apiUrl(`/api/projects/${pid}/import/preview`), {
+        method: 'POST', credentials: 'include', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(requestBody),
+      });
+      const preview = await previewResponse.json().catch(() => ({}));
+      if (!previewResponse.ok) {
+        throw new Error(importIssuesMessage(preview));
+      }
+      const confirmed = await dialog.confirm({
+        title: '导入预检通过',
+        message: importPreviewMessage(preview),
+        confirmText: '确认导入',
+        cancelText: '取消',
+      });
+      if (!confirmed) return false;
+
+      const commitResponse = await fetch(apiUrl(`/api/projects/${pid}/import`), {
+        method: 'POST', credentials: 'include', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          ...requestBody,
+          if_revision: preview.revision,
+        }),
+      });
+      const result = await commitResponse.json().catch(() => ({}));
+      if (!commitResponse.ok) {
+        throw new Error(importIssuesMessage(result));
+      }
+      setFeedPath(sourceName);
+      const readiness = result.readiness as {readyToGenerate?: boolean} | undefined;
+      const commitWarnings = Array.isArray(result.warnings) ? result.warnings : [];
+      const warningText = commitWarnings.length > 0
+        ? `\n\n导入警告：\n${commitWarnings.map((raw) => {
+            const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+            return `• [${String(item.code || 'WARN')}] ${String(item.message || '')}`;
+          }).join('\n')}`
+        : '';
+      await dialog.alert({
+        title: readiness?.readyToGenerate ? '导入完成 · 已就绪' : '导入完成 · 待准备素材',
+        message: `${importResultMessage(result)}${warningText}`,
+        tone: readiness?.readyToGenerate ? 'success' : 'default',
+      });
+      await loadProjects();
+      setPid(pid);
+      window.location.hash = pid;
+      setCanvasEpoch(value => value + 1);
+      return true;
+    } catch (error) {
+      await dialog.alert({
+        title: '导入失败',
+        message: error instanceof Error ? error.message : String(error),
+        tone: 'danger',
+      });
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importFeed = async () => {
     if (!feedPath.trim()) {
       await dialog.alert({
         title: '还没填路径',
@@ -251,68 +358,55 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
       });
       return;
     }
-    setBusy(true);
-    try {
-      const response = await fetch(apiUrl(`/api/projects/${pid}/import`), {
-        method: 'POST', credentials: 'include', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({feed_path: feedPath.trim()}),
-      });
-      const d = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(d.error || `导入失败，HTTP ${response.status}`);
-      const readiness = d.readiness as {readyToGenerate?: boolean} | undefined;
-      await dialog.alert({
-        title: readiness?.readyToGenerate ? '导入完成 · 已就绪' : '导入完成 · 待准备素材',
-        message: importResultMessage(d),
-        tone: readiness?.readyToGenerate ? 'success' : 'default',
-      });
-      setPid(pid);
-      window.location.hash = pid;
-      window.location.reload();
-    } catch (e) {
-      await dialog.alert({title: '导入失败', message: (e as Error).message, tone: 'danger'});
-    } finally { setBusy(false); }
+    await runImportPlan({feed_path: feedPath.trim()}, feedPath.trim().split(/[\\/]/).pop() || 'feed.json');
   };
 
   const importFeedFile = async (file: File) => {
-    if (!pid) {
-      await dialog.alert({title: '还没有选中项目', message: '先选择或新建一个项目。'});
-      return;
-    }
     if (file.size > 8 * 1024 * 1024) {
       await dialog.alert({title: '文件过大', message: '投喂载荷 JSON 不能超过 8MB。'});
       return;
     }
-    setBusy(true);
     try {
       const text = (await file.text()).replace(/^\uFEFF/, '');
       const feed = JSON.parse(text);
-      if (!feed || typeof feed !== 'object' || !Array.isArray(feed.asset_prompts) || !Array.isArray(feed.segments)) {
-        throw new Error('不是有效投喂载荷：缺少 asset_prompts 或 segments');
+      if (!feed || typeof feed !== 'object') {
+        throw new Error('不是有效 JSON 文件');
       }
-      const response = await fetch(apiUrl(`/api/projects/${pid}/import`), {
-        method: 'POST', credentials: 'include', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({feed_json: feed}),
-      });
-      const d = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(d.error || `导入失败，HTTP ${response.status}`);
-      setFeedPath(file.name);
-      const readiness = d.readiness as {readyToGenerate?: boolean} | undefined;
-      await dialog.alert({
-        title: readiness?.readyToGenerate ? '导入完成 · 已就绪' : '导入完成 · 待准备素材',
-        message: importResultMessage(d),
-        tone: readiness?.readyToGenerate ? 'success' : 'default',
-      });
-      setPid(pid);
-      window.location.hash = pid;
-      window.location.reload();
+      await runImportPlan({feed_json: feed}, file.name);
     } catch (error) {
       await dialog.alert({
         title: '导入失败',
         message: error instanceof Error ? error.message : String(error),
         tone: 'danger',
       });
-    } finally {
-      setBusy(false);
+    }
+  };
+
+  const exportAssetRecord = async () => {
+    if (!pid) {
+      await dialog.alert({title: '还没有选中项目', message: '先选择或新建一个项目。'});
+      return;
+    }
+    try {
+      const response = await fetch(apiUrl(`/api/projects/${pid}/assets/export`), {
+        credentials: 'include',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `导出失败，HTTP ${response.status}`);
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {type: 'application/json;charset=utf-8'});
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      const title = projects.find(item => item.id === pid)?.title || '画布资产';
+      anchor.href = url;
+      anchor.download = `${title.replace(/[\\/:*?"<>|]+/g, '_')}.资产记录.json`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } catch (error) {
+      await dialog.alert({
+        title: '资产记录导出失败',
+        message: error instanceof Error ? error.message : String(error),
+        tone: 'danger',
+      });
     }
   };
 
@@ -587,6 +681,14 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
                     if (file) void importFeedFile(file);
                   }}
                 />
+                <button
+                  type="button"
+                  className="shell-tools-menu-item"
+                  onClick={() => void exportAssetRecord()}
+                >
+                  <Download size={13} strokeWidth={1.9} aria-hidden="true" />
+                  <span>导出资产记录 JSON</span>
+                </button>
               </div>
             </div>
           )}
@@ -614,7 +716,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
         {pid ? (
           // 画布单独一层边界：画布崩了顶栏还在，能直接切项目自救，不用整页重开
           <ErrorBoundary scope="canvas" label="画布" key={pid}>
-            <CanvasView session={pid} />
+            <CanvasView key={`${pid}:${canvasEpoch}`} session={pid} />
           </ErrorBoundary>
         ) : (
           <div className="canvas-empty-state">
@@ -640,6 +742,9 @@ function AdminAccountsDialog({onClose}: {onClose: () => void}) {
   const [accounts, setAccounts] = useState<ManagedAccount[]>([]);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [resetTarget, setResetTarget] = useState<ManagedAccount | null>(null);
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetConfirm, setResetConfirm] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
@@ -675,13 +780,66 @@ function AdminAccountsDialog({onClose}: {onClose: () => void}) {
     }
   };
 
+  const toggleStatus = async (account: ManagedAccount) => {
+    if (busy) return;
+    const nextStatus = account.status === 'active' ? 'disabled' : 'active';
+    if (nextStatus === 'disabled') {
+      const confirmed = await dialog.confirm({
+        title: `停用账号「${account.username}」？`,
+        message: '停用后该账号的现有会话会立即失效，项目与配置数据会保留。',
+        tone: 'danger',
+        confirmText: '停用账号',
+      });
+      if (!confirmed) return;
+    }
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await setManagedAccountStatus(account.id, nextStatus);
+      setNotice(`${account.username} 已${nextStatus === 'active' ? '启用' : '停用'}`);
+      await load();
+    } catch (statusError) {
+      setError(statusError instanceof Error ? statusError.message : '账号状态更新失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitReset = async () => {
+    if (!resetTarget || busy) return;
+    if (resetPassword.length < 8) {
+      setError('新密码至少需要 8 位');
+      return;
+    }
+    if (resetPassword !== resetConfirm) {
+      setError('两次输入的密码不一致');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await resetManagedAccountPassword(resetTarget.id, resetPassword);
+      setNotice(`${resetTarget.username} 的密码已重置，旧会话已失效`);
+      setResetTarget(null);
+      setResetPassword('');
+      setResetConfirm('');
+      await load();
+    } catch (resetError) {
+      setError(resetError instanceof Error ? resetError.message : '密码重置失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="canvas-admin-dialog" role="dialog" aria-modal="true" aria-labelledby="admin-accounts-title">
         <header>
           <div>
-            <h2 id="admin-accounts-title">创建账号</h2>
-            <p>只有管理员可以创建；新账号会自动获得独立租户和独立配置目录。</p>
+            <h2 id="admin-accounts-title">账号管理</h2>
+            <p>创建、重置密码、启用或停用成员账号；每个账号使用独立空间和配置。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭"><X size={16} strokeWidth={2} /></button>
         </header>
@@ -703,13 +861,60 @@ function AdminAccountsDialog({onClose}: {onClose: () => void}) {
         <div className="canvas-admin-accounts">
           {accounts.map((account) => (
             <div key={account.id} className="canvas-admin-account-row">
-              <span>{account.username}</span>
-              <small>{account.slug}</small>
-              <small>{account.status === 'active' ? '正常' : '已停用'}</small>
+              <div className="canvas-admin-account-copy">
+                <strong>
+                  {account.username}
+                  <i className={account.status === 'active' ? 'is-active' : 'is-disabled'}>
+                    {account.status === 'active' ? '已启用' : '已停用'}
+                  </i>
+                </strong>
+                <small>{account.slug} · {account.role === 'admin' ? '管理员' : '成员'} · {account.lastLoginAt ? `最近登录 ${new Date(account.lastLoginAt).toLocaleString()}` : '尚未登录'}</small>
+              </div>
+              <div className="canvas-admin-account-actions">
+                <button type="button" disabled={busy} onClick={() => {
+                  setResetTarget(account);
+                  setResetPassword('');
+                  setResetConfirm('');
+                  setError('');
+                  setNotice('');
+                }}>重置密码</button>
+                <button
+                  type="button"
+                  className={account.status === 'active' ? 'is-danger' : 'is-enable'}
+                  disabled={busy}
+                  onClick={() => void toggleStatus(account)}
+                >
+                  {account.status === 'active' ? '停用' : '启用'}
+                </button>
+              </div>
             </div>
           ))}
           {accounts.length === 0 && <p>暂无账号</p>}
         </div>
+        {resetTarget && (
+          <div className="canvas-admin-reset-panel">
+            <header>
+              <strong>重置「{resetTarget.username}」的密码</strong>
+              <button type="button" onClick={() => setResetTarget(null)} aria-label="取消重置"><X size={13} /></button>
+            </header>
+            <div>
+              <label>
+                <span>新密码</span>
+                <input type="password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} autoComplete="new-password" placeholder="至少 8 位" />
+              </label>
+              <label>
+                <span>确认密码</span>
+                <input type="password" value={resetConfirm} onChange={(event) => setResetConfirm(event.target.value)} autoComplete="new-password" />
+              </label>
+            </div>
+            <footer>
+              <button type="button" onClick={() => setResetTarget(null)}>取消</button>
+              <button type="button" className="primary" disabled={busy || resetPassword.length < 8 || !resetConfirm} onClick={() => void submitReset()}>
+                {busy ? '重置中…' : '确认重置'}
+              </button>
+            </footer>
+          </div>
+        )}
       </section>
     </div>
   );

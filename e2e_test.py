@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """e2e_test.py — 端到端自检（导入 → 画布结构 → 挂接机检）"""
 import json
+import os
 import sys
 import urllib.request
 
-BASE = "http://127.0.0.1:8890"
-FEED = r"C:\Users\liuch\Doubao\chats\2026-10-15\new-chat\铁西硬汉_第01集_投喂载荷.json"
+BASE = os.environ.get("CANVAS_E2E_BASE", "").rstrip("/")
+FEED = os.environ.get("CANVAS_E2E_FEED", "")
 
 
 def api(path, method="GET", body=None):
@@ -17,6 +18,12 @@ def api(path, method="GET", body=None):
 
 
 def main():
+    if not BASE or not FEED:
+        print("[SKIP] 需要设置 CANVAS_E2E_BASE 与 CANVAS_E2E_FEED 后才运行真实服务 E2E")
+        return 0
+    if not os.path.isfile(FEED):
+        print(f"[FAIL] E2E 载荷不存在：{FEED}")
+        return 1
     ok = True
     def check(name, cond, detail=""):
         nonlocal ok
@@ -70,9 +77,11 @@ def main():
     check("配置读取", cfg["seedream_size"] == "1536x1536", str(cfg))
     check("密钥未配置（预期）", cfg["ark_api_key"] is False)
 
+    api(f"/api/projects/{pid}", "DELETE")
+    check("清理测试项目", True, pid)
     print("\n" + ("✅ 全部 PASS" if ok else "❌ 有 FAIL"))
-    sys.exit(0 if ok else 1)
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

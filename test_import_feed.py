@@ -5,6 +5,201 @@ import import_feed
 
 
 class ImportFeedContractTests(unittest.TestCase):
+    def test_dialog_parser_handles_bracket_wrapped_speakers(self):
+        text = "\n".join([
+            '台词：赵铁柱（低沉）："普通格式。"',
+            '台词：【钱万金（急）："整句包裹格式。"】',
+            '台词：【贾富贵】（陪笑）："仅姓名包裹格式。"',
+            '台词：[陈大强]（压声）："方括号格式。"',
+            '台词：无',
+        ])
+
+        self.assertEqual(
+            import_feed._dialog_speaker_names(text),
+            {"赵铁柱", "钱万金", "贾富贵", "陈大强"},
+        )
+
+    def test_bracketed_dialog_generates_character_audio(self):
+        feed = {
+            "title": "括号台词测试 · 第01集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [
+                {
+                    "code": "图1",
+                    "name": "赵铁柱（角色立绘）",
+                    "raw": "一名 40~45 岁 男性。Voice Description 完整版: low steady voice.",
+                },
+                {
+                    "code": "图2",
+                    "name": "钱万金（角色立绘）",
+                    "raw": "一名 48~52 岁 男性。Voice Description 完整版: cold oily voice.",
+                },
+            ],
+            "segments": [{
+                "no": 1,
+                "name": "段1 · 括号台词",
+                "raw": (
+                    "【核心人物】@角色｜赵铁柱（图1）；@角色｜钱万金（图2）\n"
+                    "台词：【赵铁柱（低沉）：\"走。\"】\n"
+                    "台词：【钱万金】（急）：\"站住。\""
+                ),
+            }],
+        }
+
+        payload = import_feed.build_payload(feed)
+        audio_titles = {
+            node["title"]
+            for node in payload["nodes"]
+            if node.get("type") == "audio"
+        }
+
+        self.assertEqual(
+            audio_titles,
+            {"音频｜赵铁柱（图1）", "音频｜钱万金（图2）"},
+        )
+
+    def test_reused_voice_prompt_uses_series_voice_catalog(self):
+        feed = {
+            "title": "复用角色音色测试 · 第03集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [{
+                "code": "图13",
+                "name": "周警官（角色立绘）",
+                "raw": "一名 45~50 岁 男性。Voice Description 完整版: calm official voice.",
+            }],
+            "voice_prompts": [{
+                "code": "图1",
+                "name": "赵铁柱",
+                "title": "角色｜赵铁柱（图1）",
+                "prompt": (
+                    "low, steady, northeastern-accented baritone. A male voice, low and steady "
+                    "with a broad northeastern accent and unhurried rhythm; quiet and deliberate "
+                    "when confronting authority. A male aged 38-42, speaking "
+                    "northeastern-accented Mandarin, short drama dubbing reference clip, "
+                    "4.5 seconds clean voice, no background noise."
+                ),
+                "description": (
+                    "A male voice, low and steady with a broad northeastern accent "
+                    "and unhurried rhythm; quiet and deliberate when confronting authority."
+                ),
+                "label": "low, steady, northeastern-accented baritone",
+                "format": "audio-prompt-v1",
+            }],
+            "segments": [{
+                "no": 1,
+                "name": "段1 · 复用音色",
+                "raw": (
+                    "【核心人物】@角色｜赵铁柱（图1）\n"
+                    "台词：【赵铁柱（低沉）：\"把账本拿来。\"】"
+                ),
+            }],
+        }
+
+        payload = import_feed.build_payload(feed)
+        audio = next(
+            node for node in payload["nodes"]
+            if node.get("type") == "audio" and node.get("title") == "音频｜赵铁柱（图1）"
+        )
+
+        self.assertIn("A male voice, low and steady", audio["metadata"]["prompt"])
+        self.assertIn("northeastern-accented baritone", audio["metadata"]["prompt"])
+        self.assertIn("A male aged 38-42", audio["metadata"]["prompt"])
+        self.assertTrue(
+            audio["metadata"]["prompt"].endswith(
+                "short drama dubbing reference clip, 4.5 seconds clean voice, no background noise."
+            )
+        )
+        self.assertEqual(
+            audio["metadata"]["params"]["voicePrompt"],
+            audio["metadata"]["prompt"],
+        )
+        self.assertFalse(audio["metadata"].get("autoPlaceholder"))
+
+    def test_audio_prompt_uses_grammatical_age_phrases(self):
+        range_prompt = import_feed._compose_audio_prompt(
+            "cold, oily, command tone",
+            "A male voice, cold and measured.",
+            "male",
+            "48~54",
+            "standard",
+        )
+        single_prompt = import_feed._compose_audio_prompt(
+            "low, restrained male voice",
+            "A male voice, low and restrained.",
+            "male",
+            "42",
+            "standard",
+        )
+
+        self.assertIn("A male aged 48-54", range_prompt)
+        self.assertIn("A male aged 42", single_prompt)
+        self.assertNotIn("in his 48", range_prompt)
+        self.assertNotIn("in his 42", single_prompt)
+        self.assertNotIn("42-year-old male", single_prompt)
+
+    def test_voice_catalog_rebuilds_missing_age_identity(self):
+        feed = {
+            "title": "通用音色自愈测试",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [],
+            "voice_prompts": [{
+                "code": "图8",
+                "name": "周野",
+                "format": "audio-prompt-v1",
+                "prompt": (
+                    "A low, restrained male voice with measured pacing. "
+                    "speaking standard Mandarin, short drama dubbing reference clip, "
+                    "4.5 seconds clean voice, no background noise."
+                ),
+                "description": "A low, restrained male voice with measured pacing.",
+                "label": "low restrained male voice",
+                "age": "31",
+                "gender": "male",
+                "dialect": "standard",
+            }],
+            "segments": [{
+                "no": 1,
+                "name": "段1",
+                "raw": (
+                    "【核心人物】@角色｜周野（图8）\n"
+                    "台词：周野（平静）：\"开始。\""
+                ),
+            }],
+        }
+
+        payload = import_feed.build_payload(feed)
+        audio = next(node for node in payload["nodes"] if node.get("type") == "audio")
+        self.assertIn("A male aged 31", audio["metadata"]["prompt"])
+        self.assertNotIn("speaking standard Mandarin", audio["metadata"]["prompt"].split("A male aged 31", 1)[0])
+
+    def test_attach_copied_node_to_current_episode(self):
+        payload = {
+            "episodeId": "EP002",
+            "episodeTitle": "第02集",
+            "episodeImports": [
+                {"id": "EP001", "nodeIds": ["old-video"], "videoNodeIds": ["old-video"]},
+                {"id": "EP002", "nodeIds": ["video-2"], "videoNodeIds": ["video-2"]},
+            ],
+            "episodeLayouts": {"EP001": {}, "EP002": {}},
+            "nodes": [
+                {"id": "old-video", "type": "video", "position": {"x": 0, "y": 0}},
+                {"id": "video-2", "type": "video", "position": {"x": 0, "y": 0}},
+                {"id": "m-copy-1", "type": "video", "position": {"x": 312, "y": 88}},
+            ],
+        }
+
+        added = import_feed.attach_nodes_to_episode(payload, "EP002", ["m-copy-1"])
+
+        self.assertEqual(added, 1)
+        group = next(item for item in payload["episodeImports"] if item["id"] == "EP002")
+        self.assertEqual(group["nodeIds"], ["video-2", "m-copy-1"])
+        self.assertEqual(group["videoNodeIds"], ["video-2", "m-copy-1"])
+        self.assertEqual(
+            payload["episodeLayouts"]["EP002"]["m-copy-1"],
+            {"x": 312.0, "y": 88.0},
+        )
+        self.assertNotIn("m-copy-1", payload["episodeImports"][0]["nodeIds"])
+
     def test_generic_character_names_and_canvas_metadata(self):
         feed = {
             "title": "通用角色兼容测试",
@@ -75,6 +270,11 @@ class ImportFeedContractTests(unittest.TestCase):
         self.assertEqual(len(image_nodes), 3)
         self.assertTrue(all(node["metadata"]["params"]["ratio"] == "16:9" for node in image_nodes))
         self.assertTrue(all(node["metadata"]["params"]["size"] == "1536x864" for node in image_nodes))
+        self.assertTrue(all(node["metadata"]["prompt"].strip() for node in image_nodes))
+        self.assertTrue(all(
+            node["metadata"]["params"]["model"] == "doubao-seedream-5-0-pro"
+            for node in image_nodes
+        ))
         self.assertEqual(len(audio), 1)
         self.assertIn("王五", audio[0]["title"])
         self.assertEqual(audio[0]["metadata"]["content"], "")
@@ -99,6 +299,62 @@ class ImportFeedContractTests(unittest.TestCase):
         })
         video = next(node for node in payload["nodes"] if node["type"] == "video")
         self.assertEqual(video["metadata"]["params"]["model"], "doubao-seedance-2-0")
+
+    def test_placeholder_card_keeps_imported_asset_prompt_and_params(self):
+        payload = {
+            "nodes": [{
+                "id": "video-1",
+                "type": "video",
+                "title": "段1",
+                "metadata": {
+                    "prompt": "画面主体：@道具｜账本（图42）被放在桌上。",
+                    "params": {"model": "doubao-seedance-2-0"},
+                },
+            }],
+            "episodeId": "EP010",
+            "episodeImports": [{
+                "id": "EP010",
+                "nodeIds": ["video-1"],
+                "videoNodeIds": ["video-1"],
+            }],
+        }
+        asset_prompt = "图42 道具设定图：全图四格，旧皮账本，棕黑皮革，边缘磨损，真实材质。"
+        import_feed._ensure_referenced_assets(payload, "EP010", [{
+            "code": "图42",
+            "name": "账本（道具设定图）",
+            "raw": asset_prompt,
+            "canvas": {
+                "kind": "prop",
+                "name": "账本",
+                "model": "doubao-seedream-5-0-pro",
+                "ratio": "16:9",
+                "clarity": "2K",
+                "size": "2048x1152",
+                "guidance": "高",
+                "watermark": False,
+            },
+        }])
+
+        image = next(node for node in payload["nodes"] if node["type"] == "image")
+        self.assertIn("旧皮账本", image["metadata"]["prompt"])
+        self.assertEqual(image["metadata"]["params"]["model"], "doubao-seedream-5-0-pro")
+        self.assertEqual(image["metadata"]["params"]["ratio"], "16:9")
+        self.assertEqual(image["metadata"]["params"]["clarity"], "2K")
+        self.assertEqual(image["metadata"]["params"]["size"], "2048x1152")
+        self.assertEqual(image["metadata"]["params"]["guidance"], "高")
+
+    def test_project_title_uses_episode_title_not_asset_like_top_level_title(self):
+        expected = "铁西硬汉 · 第01集 · 投喂看板源（V7.4.29 · 全新重跑）"
+        payload = import_feed.build_payload({
+            "title": "音频｜工人甲（图5）",
+            "episode_title": expected,
+            "meta": {},
+            "asset_prompts": [],
+            "segments": [],
+        })
+        self.assertEqual(payload["title"], expected)
+        self.assertEqual(payload["episodeTitle"], expected)
+        self.assertEqual(payload["episodeImports"][0]["title"], expected)
 
     def test_connects_canvas_role_scene_prop_and_voice_mentions(self):
         payload = import_feed.build_payload({
@@ -304,7 +560,7 @@ class ImportFeedContractTests(unittest.TestCase):
             {("scene-real", "video-1")},
         )
 
-    def test_reuses_completed_character_from_another_project(self):
+    def test_does_not_reuse_completed_character_from_another_project(self):
         feed = {
             "title": "角色复用测试",
             "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
@@ -333,10 +589,40 @@ class ImportFeedContractTests(unittest.TestCase):
             target_project_id="new-project",
         )
         image = next(node for node in payload["nodes"] if node["type"] == "image")
-        self.assertEqual(image["metadata"]["status"], "done")
-        self.assertEqual(image["metadata"]["content"], "/uploads/zhaotiezhu.jpg")
-        self.assertEqual(image["metadata"]["reusedAsset"]["sourceNodeId"], "old-character-node")
-        self.assertEqual(payload["importSummary"]["assetsReused"], 1)
+        self.assertEqual(image["metadata"]["status"], "idle")
+        self.assertEqual(image["metadata"]["content"], "")
+        self.assertIsNone(image["metadata"].get("reusedAsset"))
+        self.assertEqual(payload["importSummary"]["assetsReused"], 0)
+
+    def test_detaches_legacy_cross_project_image(self):
+        payload = {
+            "nodes": [{
+                "id": "image-1",
+                "type": "image",
+                "title": "角色｜赵铁柱（图1）",
+                "metadata": {
+                    "status": "done",
+                    "content": "/uploads/from-other-project.png",
+                    "reusedAsset": {
+                        "sourceProjectId": "other-project",
+                        "sourceNodeId": "source-node",
+                    },
+                    "params": {
+                        "mediaVersions": [{"url": "/uploads/from-other-project.png"}],
+                        "mediaVersionIndex": 0,
+                    },
+                },
+            }],
+        }
+
+        changed = import_feed.detach_cross_project_reused_assets(payload, "new-project")
+
+        image = payload["nodes"][0]["metadata"]
+        self.assertEqual(changed, 1)
+        self.assertEqual(image["status"], "idle")
+        self.assertEqual(image["content"], "")
+        self.assertNotIn("reusedAsset", image)
+        self.assertNotIn("mediaVersions", image["params"])
 
     def test_same_project_reuses_stable_node_id(self):
         feed = {
@@ -564,33 +850,49 @@ class ImportFeedContractTests(unittest.TestCase):
 
     def test_inlines_audio_references_into_video_prompt(self):
         payload = {
-            "nodes": [{
-                "id": "video-1",
-                "type": "video",
-                "title": "段1 · 围门",
-                "metadata": {
-                    "prompt": (
-                        "【核心人物】@角色｜工人甲（图5）\n\n"
-                        "【站位声明】@角色｜工人甲（图5）\n\n"
-                        "画面主体：工人甲喊话。\n\n【音效】环境音：人群底噪"
-                    ),
-                    "composerContent": (
-                        "【核心人物】@角色｜工人甲（图5）\n\n"
-                        "【站位声明】@角色｜工人甲（图5）\n\n"
-                        "画面主体：工人甲喊话。\n\n【音效】环境音：人群底噪"
-                    ),
-                    "params": {
-                        "refs": [],
-                        "voiceRefs": [
-                            {"nodeId": "audio-1", "label": "音频｜工人甲（图5）"},
-                            {"nodeId": "audio-2", "label": "音频｜陈大强（图4）"},
-                        ],
+            "nodes": [
+                {
+                    "id": "role-a",
+                    "type": "image",
+                    "title": "角色｜工人甲（图5）",
+                    "metadata": {"status": "done", "content": "x"},
+                },
+                {
+                    "id": "role-b",
+                    "type": "image",
+                    "title": "角色｜陈大强（图4）",
+                    "metadata": {"status": "done", "content": "x"},
+                },
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段1 · 围门",
+                    "metadata": {
+                        "prompt": (
+                            "【核心人物】@角色｜工人甲（图5）；@角色｜陈大强（图4）\n\n"
+                            "【站位声明】@角色｜工人甲（图5）；@角色｜陈大强（图4）\n\n"
+                            '台词：工人甲（扬声）："钱呢？"\n'
+                            '台词：陈大强（低沉）："别急。"\n\n【音效】环境音：人群底噪'
+                        ),
+                        "composerContent": (
+                            "【核心人物】@角色｜工人甲（图5）；@角色｜陈大强（图4）\n\n"
+                            "【站位声明】@角色｜工人甲（图5）；@角色｜陈大强（图4）\n\n"
+                            '台词：工人甲（扬声）："钱呢？"\n'
+                            '台词：陈大强（低沉）："别急。"\n\n【音效】环境音：人群底噪'
+                        ),
+                        "params": {
+                            "refs": [],
+                            "voiceRefs": [
+                                {"nodeId": "audio-1", "label": "音频｜工人甲（图5）"},
+                                {"nodeId": "audio-2", "label": "音频｜陈大强（图4）"},
+                            ],
+                        },
                     },
                 },
-            }],
+            ],
         }
         self.assertEqual(import_feed.repair_payload_prompt_mentions(payload), 1)
-        meta = payload["nodes"][0]["metadata"]
+        meta = payload["nodes"][-1]["metadata"]
         expected = "【音色引用】@音频｜工人甲（图5）；@音频｜陈大强（图4）"
         self.assertIn(expected, meta["prompt"])
         self.assertIn(expected, meta["composerContent"])
@@ -1214,10 +1516,10 @@ class ImportFeedContractTests(unittest.TestCase):
             (import_feed.COL_VIDEO, 0),
             (import_feed.COL_VIDEO + 260, 0),
             (import_feed.COL_VIDEO + 520, 0),
-            (import_feed.COL_VIDEO, 380),
-            (import_feed.COL_VIDEO + 260, 380),
-            (import_feed.COL_VIDEO + 520, 380),
-            (import_feed.COL_VIDEO, 760),
+            (import_feed.COL_VIDEO, 440),
+            (import_feed.COL_VIDEO + 260, 440),
+            (import_feed.COL_VIDEO + 520, 440),
+            (import_feed.COL_VIDEO, 880),
         ])
 
     def test_sequence_video_is_not_a_generation_ref_without_prompt_mention(self):
@@ -1370,6 +1672,123 @@ class ImportFeedContractTests(unittest.TestCase):
         )
         self.assertEqual(len(params["voiceRefs"]), 3)
 
+    def test_repair_drops_audio_for_characters_without_nonempty_dialogue(self):
+        payload = {
+            "nodes": [
+                {
+                    "id": "role-a",
+                    "type": "image",
+                    "title": "角色｜钱万金（图2）",
+                    "metadata": {"status": "done", "content": "x"},
+                },
+                {
+                    "id": "role-b",
+                    "type": "image",
+                    "title": "角色｜贾富贵（图3）",
+                    "metadata": {"status": "done", "content": "x"},
+                },
+                {
+                    "id": "audio-a",
+                    "type": "audio",
+                    "title": "音频｜钱万金（图2）",
+                    "metadata": {"status": "done", "content": "x"},
+                },
+                {
+                    "id": "audio-b",
+                    "type": "audio",
+                    "title": "音频｜贾富贵（图3）",
+                    "metadata": {"status": "done", "content": "x"},
+                },
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段5 · 账本在哪",
+                    "metadata": {
+                        "prompt": (
+                            "【核心人物】@角色｜钱万金（图2）；@角色｜贾富贵（图3）\n"
+                            "【音色引用】@音频｜钱万金（图2）；@音频｜贾富贵（图3）\n"
+                            "【时间轴分镜】\n"
+                            '台词：钱万金（高声）："账本拿来。"\n'
+                            "贾富贵猛地抬头。台词：无"
+                        ),
+                        "params": {
+                            "model": "doubao-seedance-2-0",
+                            "refs": [],
+                            "voiceRefs": [
+                                {"nodeId": "audio-a", "label": "音频｜钱万金（图2）"},
+                                {"nodeId": "audio-b", "label": "音频｜贾富贵（图3）"},
+                            ],
+                        },
+                    },
+                },
+            ],
+            "connections": [
+                {"id": "edge-a", "fromNodeId": "audio-a", "toNodeId": "video-1"},
+                {"id": "edge-b", "fromNodeId": "audio-b", "toNodeId": "video-1"},
+            ],
+        }
+
+        import_feed.repair_payload_prompt_mentions(payload)
+        video = payload["nodes"][-1]
+        params = video["metadata"]["params"]
+        self.assertEqual(
+            [ref["label"] for ref in params["voiceRefs"]],
+            ["音频｜钱万金（图2）"],
+        )
+        self.assertIn("【音色引用】@音频｜钱万金（图2）", video["metadata"]["prompt"])
+        self.assertNotIn("贾富贵（图3）\n【站位声明】", video["metadata"]["prompt"])
+        self.assertNotIn("@音频｜贾富贵（图3）", video["metadata"]["prompt"])
+        self.assertEqual(
+            [conn["id"] for conn in payload["connections"]],
+            ["edge-a"],
+        )
+
+    def test_repair_removes_voice_section_when_segment_has_no_dialogue(self):
+        payload = {
+            "nodes": [
+                {
+                    "id": "role-a",
+                    "type": "image",
+                    "title": "角色｜钱万金（图2）",
+                    "metadata": {"status": "done", "content": "x"},
+                },
+                {
+                    "id": "audio-a",
+                    "type": "audio",
+                    "title": "音频｜钱万金（图2）",
+                    "metadata": {"status": "done", "content": "x"},
+                },
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段6 · 无对白",
+                    "metadata": {
+                        "prompt": (
+                            "【核心人物】@角色｜钱万金（图2）\n"
+                            "【音色引用】@音频｜钱万金（图2）\n"
+                            "【时间轴分镜】钱万金环顾四周。台词：无"
+                        ),
+                        "params": {
+                            "model": "doubao-seedance-2-0",
+                            "refs": [],
+                            "voiceRefs": [
+                                {"nodeId": "audio-a", "label": "音频｜钱万金（图2）"},
+                            ],
+                        },
+                    },
+                },
+            ],
+            "connections": [
+                {"id": "edge-a", "fromNodeId": "audio-a", "toNodeId": "video-1"},
+            ],
+        }
+
+        import_feed.repair_payload_prompt_mentions(payload)
+        video = payload["nodes"][-1]
+        self.assertEqual(video["metadata"]["params"]["voiceRefs"], [])
+        self.assertNotIn("【音色引用】", video["metadata"]["prompt"])
+        self.assertEqual(payload["connections"], [])
+
     def test_readiness_reports_unresolved_media_and_voice_dependencies(self):
         payload = {
             "nodes": [
@@ -1441,6 +1860,119 @@ class ImportFeedContractTests(unittest.TestCase):
         self.assertEqual(len(blockers), 1)
         self.assertIn("未绑定", blockers[0]["reason"])
         self.assertFalse(import_feed.episode_readiness(payload, "EP001")["readyToGenerate"])
+
+    def test_repair_generated_audio_prompt_overwritten_by_placeholder(self):
+        detailed = (
+            "cold, oily, command tone. A male voice, cold and oily with a smooth "
+            "command tone and clipped, confident rhythm."
+        )
+        placeholder = (
+            "钱万金，普通话对白参考音色，短剧配音参考，4.5 秒清晰人声，"
+            "无背景噪声。请根据角色补充音色描述后再生成。"
+        )
+        payload = {
+            "nodes": [{
+                "id": "audio-1",
+                "type": "audio",
+                "title": "音频｜钱万金（图2）",
+                "metadata": {
+                    "content": "/uploads/generated.mp3",
+                    "status": "done",
+                    "prompt": placeholder,
+                    "composerContent": placeholder,
+                    "promptStale": True,
+                    "promptStaleReason": "源音色提示词已更新，当前参考音频仍是旧版本",
+                    "sourcePromptUpdatedAt": "2026-10-28T09:02:36.025Z",
+                    "params": {"voicePrompt": detailed},
+                },
+            }],
+        }
+
+        changed = import_feed.repair_reused_asset_prompts(payload)
+
+        audio = payload["nodes"][0]
+        self.assertEqual(changed, 1)
+        self.assertEqual(audio["metadata"]["prompt"], detailed)
+        self.assertIn(detailed, audio["metadata"]["composerContent"])
+        self.assertFalse(audio["metadata"]["promptStale"])
+        self.assertNotIn("sourcePromptUpdatedAt", audio["metadata"])
+
+    def test_later_episode_placeholder_keeps_generated_audio_prompt(self):
+        detailed = "low, steady, northeastern-accented baritone."
+        placeholder = (
+            "钱万金，普通话对白参考音色，短剧配音参考，4.5 秒清晰人声，"
+            "无背景噪声。请根据角色补充音色描述后再生成。"
+        )
+        existing = {
+            "title": "系列画布",
+            "episodeId": "EP001",
+            "episodeImports": [{
+                "id": "EP001",
+                "nodeIds": ["audio-1", "video-1"],
+                "videoNodeIds": ["video-1"],
+            }],
+            "nodes": [
+                {
+                    "id": "audio-1",
+                    "type": "audio",
+                    "title": "音频｜钱万金（图2）",
+                    "metadata": {
+                        "content": "/uploads/generated.mp3",
+                        "status": "done",
+                        "prompt": detailed,
+                        "composerContent": detailed,
+                        "params": {"voicePrompt": detailed},
+                    },
+                },
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段1 · 旧视频",
+                    "metadata": {"prompt": "旧视频"},
+                },
+            ],
+            "connections": [],
+        }
+        incoming = {
+            "title": "系列画布",
+            "episodeId": "EP002",
+            "episodeImports": [{
+                "id": "EP002",
+                "nodeIds": ["audio-2", "video-2"],
+                "videoNodeIds": ["video-2"],
+            }],
+            "nodes": [
+                {
+                    "id": "audio-2",
+                    "type": "audio",
+                    "title": "音频｜钱万金（图2）",
+                    "metadata": {
+                        "content": "",
+                        "status": "idle",
+                        "prompt": placeholder,
+                        "composerContent": placeholder,
+                        "autoPlaceholder": True,
+                        "params": {"voicePrompt": placeholder},
+                    },
+                },
+                {
+                    "id": "video-2",
+                    "type": "video",
+                    "title": "段1 · 新视频",
+                    "metadata": {"prompt": "新视频"},
+                },
+            ],
+            "connections": [],
+        }
+
+        merged = import_feed.merge_payload_by_episode(existing, incoming)
+        audio = next(node for node in merged["nodes"] if node["type"] == "audio")
+
+        self.assertEqual(audio["metadata"]["prompt"], detailed)
+        self.assertEqual(audio["metadata"]["composerContent"], detailed)
+        self.assertFalse(audio["metadata"].get("promptStale"))
+        self.assertFalse(audio["metadata"].get("autoPlaceholder"))
+        self.assertEqual(audio["metadata"]["content"], "/uploads/generated.mp3")
 
     def test_reimport_updates_reused_image_prompt_and_marks_generated_media_stale(self):
         old_feed = {
