@@ -125,6 +125,11 @@ import {useDialogFocusTrap} from './useDialogFocusTrap';
 import {dialog} from './GDialog';
 import {reconcileSucceededNode} from './generationReconcile';
 import {
+  generationDurationLabel,
+  generationPhaseLabel,
+  hasTrustedProviderProgress,
+} from './generationPresentation';
+import {
   inheritedGenerationParams,
   inheritModelParams,
   migrateUnavailableModelParams,
@@ -1473,15 +1478,6 @@ function fallbackModelSpecs(kind: CanvasMediaNodeKind): ModelSpec[] {
   });
 }
 
-function generationElapsedOf(task: GenerationTask): string {
-  const waiting = task.status === 'queued' || !task.started_at;
-  const start = Date.parse(waiting ? (task.created_at || '') : String(task.started_at || task.created_at || ''));
-  if (!Number.isFinite(start)) return '';
-  const end = task.finished_at ? Date.parse(task.finished_at) : Date.now();
-  const seconds = Math.max(0, Math.floor(((Number.isFinite(end) ? end : Date.now()) - start) / 1000));
-  return `${waiting ? '等待' : '运行'} ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
-}
-
 function friendlyTaskError(raw?: string): string {
   const text = String(raw || '').trim();
   const lower = text.toLowerCase();
@@ -2331,18 +2327,15 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
     : 0;
   const generationElapsedLabel = `${Math.floor(generationElapsedSeconds / 60)}:${String(generationElapsedSeconds % 60).padStart(2, '0')}`;
   const providerProgress = Number(node.providerTaskProgress);
-  const hasProviderProgress = (
-    node.providerTaskStatus
-    && !['queued', 'pending', 'created', 'submitted', 'starting'].includes(node.providerTaskStatus)
-    && Number.isFinite(providerProgress)
-    && providerProgress >= 0
-    && providerProgress <= 100
+  const hasProviderProgress = hasTrustedProviderProgress(
+    node.providerTaskStatus,
+    providerProgress,
   );
   const providerTaskPhase = node.providerTaskPhase
     || (node.providerTaskStatus === 'queued' ? '排队中' : '生成中');
   const busyLabel = hasProviderProgress
     ? `${providerTaskPhase} ${Math.round(providerProgress)}%`
-    : providerTaskPhase.replace(/\s*\d+(?:\.\d+)?\s*%\s*$/, '');
+    : generationPhaseLabel(providerTaskPhase);
   const p = node.params || {};
   const mediaVersions = mediaVersionList(node);
   const matchedMediaVersionIndex = node.mediaUrl
@@ -4565,7 +4558,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
             className="jim-gen"
             disabled={busy || !node.prompt.trim() || overPromptLimit || Boolean(referenceEvaluation.issue) || !curModelSpec || missingProviderKey || dependenciesBlocked}
             onClick={generateAndClose}
-            title={!curModelSpec ? '当前类型没有可用模型' : missingProviderKey ? '当前供应商尚未配置 API Key' : overPromptLimit ? `提示词超过当前模型上限（${promptLimit} 字符）` : referenceEvaluation.issue ? referenceEvaluation.message : dependenciesBlocked ? `缺少：${dependencyBlockers.map((item) => `${item.title}（${item.reason}）`).join('；')}` : isTxt ? '按当前内容生成/改写文本 · Ctrl+⏎' : '按当前供应商与参数生成 · Ctrl+⏎'}
+            title={busy ? '当前节点正在生成，请到任务中心查看进度' : !curModelSpec ? '当前类型没有可用模型' : missingProviderKey ? '当前供应商尚未配置 API Key' : overPromptLimit ? `提示词超过当前模型上限（${promptLimit} 字符）` : referenceEvaluation.issue ? referenceEvaluation.message : dependenciesBlocked ? `缺少：${dependencyBlockers.map((item) => `${item.title}（${item.reason}）`).join('；')}` : isTxt ? '按当前内容生成/改写文本 · Ctrl+⏎' : '按当前供应商与参数生成 · Ctrl+⏎'}
           ><ArrowUp size={16} strokeWidth={2.6} aria-hidden="true" /></button>
           </div>
         </div>
@@ -8215,7 +8208,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         .catch(() => {});
     };
     refreshTasks();
-    const interval = taskCenterOpen || activeGenerationTaskCount > 0 ? 1200 : 6000;
+    // Only poll quickly while there is active work. Closed task center with no
+    // active workments still gets a low-frequency reconciliation, not 1.2s churn.
+    const interval = taskCenterOpen && activeGenerationTaskCount > 0
+      ? 1200
+      : activeGenerationTaskCount > 0
+        ? 2500
+        : 6000;
     const timer = window.setInterval(refreshTasks, interval);
     return () => {
       alive = false;
@@ -15115,7 +15114,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                           {task.queue_position && ['queued', 'submitting', 'running'].includes(task.status) && (
                             <span>队列第 {task.queue_position} 位</span>
                           )}
-                          <span>{generationElapsedOf(task)}</span>
+                          <span>{generationDurationLabel(task)}</span>
                         </div>
                         <div className="canvas-task-item-phase">
                           <i style={{width: `${task.status === 'succeeded' ? 100 : Math.max(2, Math.min(100, Number(task.progress || 6)))}%`}} />
@@ -15123,7 +15122,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                             {task.status === 'succeeded' && <Check size={11} strokeWidth={2.5} aria-hidden="true" />}
                             {task.status === 'succeeded'
                               ? '已完成'
-                              : (task.phase || taskError || statusLabel[task.status]).replace(/\s*\d+(?:\.\d+)?\s*%\s*$/, '')}
+                              : generationPhaseLabel(task.phase || taskError || statusLabel[task.status])}
                           </span>
                         </div>
                         {taskError && <p title={taskError}>{taskError}</p>}

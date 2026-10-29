@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.30.3';
+export const APP_VERSION = '2026.10.30.4';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.30.4',
+    date: '2026-10-30',
+    title: '生成任务体验细节打磨',
+    changes: [
+      '已结束任务不再持续按运行中刷新，完成后的耗时显示为“完成于”，等待和运行状态区分更清楚。',
+      '任务中心、画布卡片统一过滤内部阶段伪百分比；只有供应商返回的有效进度才显示比例。',
+      '生成中节点统一提示前往任务中心查看，避免重复点击和状态反馈不一致。',
+    ],
+  },
   {
     version: '2026.10.30.3',
     date: '2026-10-30',
