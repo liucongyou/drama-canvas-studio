@@ -3102,7 +3102,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
 }
 
 /** 媒体节点提示词栏（即梦风：底部居中浮动编辑栏 + 内联参数 pill + 图标下拉面板） */
-function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onDelete, onClose, onRemoveRef, onUploadRef, onPickRef, onBackdropPick, anchor}: {
+function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onDelete, onClose, onRemoveRef, onUploadRef, onPickRef, onBackdropPick, onRevealAt, anchor}: {
   node: CanvasMediaNode | null;
   assets: CanvasMediaNode[];
   edges: Edge[];
@@ -3121,6 +3121,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   // ★ 弹窗开着时点「另一张卡片」→ 直接切到那张卡（即梦行为），而不是先关掉再点一次。
   //   参数是画布 flow 节点 id（media-xxx）。返回 true 表示已接管这次点击。
   onBackdropPick?: (flowNodeId: string) => boolean;
+  onRevealAt?: (requiredBottom: number) => void;
   anchor?: {x: number; y: number; w: number; h: number} | null;
 }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);   // model/ratio/clarity/style/res/dur/tpl/more
@@ -3152,6 +3153,9 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   useDialogFocusTrap(barRef);
   const promptAreaRef = useRef<HTMLDivElement>(null);
   const paramsPanelRef = useRef<HTMLDivElement>(null);
+  const atButtonRef = useRef<HTMLButtonElement>(null);
+  const atPopRef = useRef<HTMLDivElement>(null);
+  const [atPopPos, setAtPopPos] = useState<{left: number; top: number; maxHeight: number} | null>(null);
   const [paramsPanelPos, setParamsPanelPos] = useState<{left: number; top: number} | null>(null);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [canvasPickOpen, setCanvasPickOpen] = useState(false);
@@ -3251,6 +3255,47 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
       window.removeEventListener('resize', placePanel);
     };
   }, [openMenu, node?.id]);
+
+  useLayoutEffect(() => {
+    if (!atOpen) {
+      setAtPopPos(null);
+      return;
+    }
+    const place = () => {
+      const button = atButtonRef.current;
+      const panel = atPopRef.current;
+      if (!button) return;
+      const rect = button.getBoundingClientRect();
+      const width = panel?.offsetWidth || 360;
+      const height = panel?.offsetHeight || 280;
+      const margin = 8;
+      const left = Math.max(
+        margin,
+        Math.min(rect.left, window.innerWidth - width - margin),
+      );
+      const below = rect.bottom + margin;
+      const top = below + height <= window.innerHeight - margin
+        ? below
+        : Math.max(margin, rect.top - height - margin);
+      if (below + height > window.innerHeight - margin && onRevealAt) {
+        onRevealAt(window.innerHeight - below - margin);
+      }
+      setAtPopPos({
+        left,
+        top,
+        maxHeight: Math.max(120, window.innerHeight - top - margin),
+      });
+    };
+    place();
+    const frame = window.requestAnimationFrame(place);
+    window.addEventListener('resize', place);
+    document.addEventListener('scroll', place, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', place);
+      document.removeEventListener('scroll', place, true);
+    };
+  }, [atOpen, atCands.length, onRevealAt]);
 
   // 提示词框高度：**由内容决定**（对齐即梦 —— 用户明确要求"没内容的时候高度和有内容的高度不一样"）。
   //   空态只有一行占位文案 → 框很矮；写下内容后随行数长高，到上限才内部滚动。
@@ -4461,7 +4506,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 )}
               </div>
             )}
-            <button type="button" className={`jim-tool is-at ${atOpen ? 'is-open' : ''}`} data-pop-owner="at" onClick={() => { setOpenMenu(null); setAtOpen((v) => !v); setAtIdx(0); }} title="@ 引用素材"><AtSign size={13} strokeWidth={2.1} aria-hidden="true" /></button>
+            <button ref={atButtonRef} type="button" className={`jim-tool is-at ${atOpen ? 'is-open' : ''}`} data-pop-owner="at" onClick={() => { setOpenMenu(null); setAtOpen((v) => !v); setAtIdx(0); }} title="@ 引用素材"><AtSign size={13} strokeWidth={2.1} aria-hidden="true" /></button>
           </div>
           <div className="jim-toolbar-right">
           {modelOptions.length > 0 && (
@@ -7487,6 +7532,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const saveShotRef = useRef<(shotIdx: number) => void>(() => {});
   const positionRef = useRef<Record<string, {x: number; y: number}>>({});
   const rf = useReactFlow();
+  const revealRef = useRef({key: 0, at: 0});
   // storeApi：编组「按组拖动」需要绕过 React 调度，直接改内部选中位（见 pressGroup）
   const storeApi = useStoreApi();
   const nodesRef = useRef<FlowNode[]>([]);
@@ -15373,6 +15419,28 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           // 弹窗看起来不会跟着新卡片走，选中态和引用补全也会漏掉。
           openMediaModal(nextNode);
           return true;
+        }}
+        onRevealAt={(requiredBottom) => {
+          // 让画布内容为弹层让位，不改节点坐标。正数表示弹层需要下方空间，
+          // 负值表示上方空间不足；换算成屏幕像素后平移 React Flow 视口。
+          if (!requiredBottom) return;
+          const revealKey = Math.round(requiredBottom / 24);
+          const revealStamp = performance.now();
+          if (
+            revealKey === revealRef.current.key
+            && revealStamp - revealRef.current.at < 400
+          ) {
+            return;
+          }
+          revealRef.current = {key: revealKey, at: revealStamp};
+          const current = rf.getViewport();
+          const shift = requiredBottom > 0
+            ? Math.min(requiredBottom, Math.max(0, window.innerHeight - 120))
+            : Math.max(requiredBottom, -Math.max(0, window.innerHeight - 120));
+          rf.setViewport(
+            {...current, y: current.y + shift},
+            {duration: 180},
+          );
         }}
         onClose={(reason) => {
           setEditNodeId(null);
