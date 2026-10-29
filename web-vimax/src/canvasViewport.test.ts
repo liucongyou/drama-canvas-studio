@@ -3,6 +3,7 @@ import {
   filterMediaNodesInBounds,
   focusedNodeVisibleBounds,
   shouldUseLargeCanvasOverview,
+  viewportForCanvasBounds,
   visibleBoundsForViewport,
 } from './canvasViewport';
 
@@ -62,5 +63,28 @@ describe('large canvas viewport', () => {
       x2: 2340,
       y2: 1515,
     });
+  });
+
+  it('keeps an initial focus view at a readable zoom and aligns it to the top', () => {
+    const viewport = viewportForCanvasBounds(
+      {x: 0, y: 100, width: 2400, height: 2400},
+      969,
+      807,
+      {focus: true},
+    );
+    expect(viewport.zoom).toBe(0.5);
+    expect(viewport.y).toBe(80 - 100 * 0.5);
+    expect(viewport.x).toBe(969 / 2 - 1200 * 0.5);
+  });
+
+  it('still fits the complete graph when invoked explicitly', () => {
+    const viewport = viewportForCanvasBounds(
+      {x: 0, y: 0, width: 2400, height: 2400},
+      969,
+      807,
+      {focus: false},
+    );
+    expect(viewport.zoom).toBeLessThan(0.5);
+    expect(viewport.zoom).toBeCloseTo(Math.min(969 * 0.7 / 2400, 807 * 0.7 / 2400), 4);
   });
 });

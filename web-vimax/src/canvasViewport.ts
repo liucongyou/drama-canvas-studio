@@ -1,6 +1,8 @@
 export const LARGE_CANVAS_MEDIA_THRESHOLD = 400;
 export const LARGE_CANVAS_VIEWPORT_MARGIN_PX = 260;
 export const LARGE_CANVAS_OVERVIEW_CHUNK_SIZE = 220;
+export const CANVAS_VIEWPORT_POLICY_VERSION = 2;
+export const CANVAS_FOCUS_MIN_ZOOM = 0.5;
 
 export type CanvasViewport = {
   x: number;
@@ -13,6 +15,13 @@ export type CanvasVisibleBounds = {
   y1: number;
   x2: number;
   y2: number;
+};
+
+export type CanvasBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 type ViewportNodeLike = {
@@ -64,6 +73,43 @@ export function focusedNodeVisibleBounds(
     y1: centerY - halfHeight - margin,
     x2: centerX + halfWidth + margin,
     y2: centerY + halfHeight + margin,
+  };
+}
+
+export function viewportForCanvasBounds(
+  bounds: CanvasBounds,
+  viewportWidth: number,
+  viewportHeight: number,
+  options: {
+    focus?: boolean;
+    padding?: number;
+    minZoom?: number;
+    maxZoom?: number;
+  } = {},
+): CanvasViewport {
+  const width = Math.max(1, viewportWidth);
+  const height = Math.max(1, viewportHeight);
+  const padding = Math.max(0, Math.min(0.35, options.padding ?? 0.15));
+  const availableWidth = Math.max(1, width * (1 - padding * 2));
+  const availableHeight = Math.max(1, height * (1 - padding * 2));
+  const fitZoom = Math.min(
+    availableWidth / Math.max(1, bounds.width),
+    availableHeight / Math.max(1, bounds.height),
+  );
+  const minZoom = options.focus
+    ? Math.max(CANVAS_FOCUS_MIN_ZOOM, options.minZoom ?? 0)
+    : Math.max(0.05, options.minZoom ?? 0.05);
+  const maxZoom = Math.max(minZoom, options.maxZoom ?? (options.focus ? 0.9 : 1));
+  const zoom = Math.max(minZoom, Math.min(maxZoom, fitZoom));
+  const centerX = bounds.x + bounds.width / 2;
+  const x = width / 2 - centerX * zoom;
+  const y = options.focus
+    ? Math.max(42, Math.min(80, height * 0.1)) - bounds.y * zoom
+    : height / 2 - (bounds.y + bounds.height / 2) * zoom;
+  return {
+    x: Math.round(x * 1000) / 1000,
+    y: Math.round(y * 1000) / 1000,
+    zoom: Math.round(zoom * 10000) / 10000,
   };
 }
 

@@ -129,10 +129,12 @@ import {
 } from './batchGeneration';
 import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, segShotIdxsOf, solveAlignSnap, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
 import {
+  CANVAS_VIEWPORT_POLICY_VERSION,
   filterMediaNodesInBounds,
   focusedNodeVisibleBounds,
   LARGE_CANVAS_OVERVIEW_CHUNK_SIZE,
   shouldUseLargeCanvasOverview,
+  viewportForCanvasBounds,
   visibleBoundsForViewport,
   type CanvasViewport,
   type CanvasVisibleBounds,
@@ -7464,6 +7466,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         deletedAuto?: string[];
         groups?: {id: string; name: string; members: string[]}[];
         viewport?: {x: number; y: number; zoom: number};
+        viewportPolicyVersion?: number;
       };
       return parsed;
     } catch {
@@ -7483,6 +7486,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       localStorage.setItem(layoutKey, JSON.stringify({
         positions: stablePositions, userEdges: edges, deletedAuto: [...deleted],
         viewport: viewportRef.current,
+        viewportPolicyVersion: CANVAS_VIEWPORT_POLICY_VERSION,
         // 编组也随布局一起存：换集/刷新后组关系不能丢（用户编的组是他的工作成果）
         groups: groupsRef.current,
       }));
@@ -7497,7 +7501,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       try {
         const raw = localStorage.getItem(layoutKey);
         const saved = raw ? JSON.parse(raw) : {};
-        localStorage.setItem(layoutKey, JSON.stringify({...saved, viewport}));
+        localStorage.setItem(layoutKey, JSON.stringify({
+          ...saved,
+          viewport,
+          viewportPolicyVersion: CANVAS_VIEWPORT_POLICY_VERSION,
+        }));
       } catch {
         // View persistence is best-effort and must not affect canvas interaction.
       }
@@ -12370,7 +12378,18 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     // canvas was zooming itself after the user had already entered the project.
     // Explicit bounds make later node measurement unnecessary, and ResizeObserver
     // updates on the edges/nodes do not require another viewport fit.
-    rf.fitBounds(bounds, {padding: 0.15, duration: options?.animate ? 220 : 0});
+    const host = document.querySelector('.react-flow') as HTMLElement | null;
+    const viewport = viewportForCanvasBounds(
+      bounds,
+      host?.clientWidth || window.innerWidth,
+      host?.clientHeight || window.innerHeight,
+      {
+        focus: options?.focus,
+        padding: 0.15,
+        maxZoom: 1,
+      },
+    );
+    rf.setViewport(viewport, {duration: options?.animate ? 220 : 0});
   }, [canvas, effectiveSegments, notes, rf, assetRatios, mediaNodes]);
 
   const fitView = useCallback(() => {
@@ -12520,6 +12539,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       const saved = loadPersistedLayoutRef.current();
       if (saved) {
         savedViewport = saved.viewport || null;
+        if (
+          savedViewport
+          && Number(saved.viewportPolicyVersion || 1) < CANVAS_VIEWPORT_POLICY_VERSION
+          && savedViewport.zoom < 0.5
+        ) {
+          savedViewport = null;
+        }
         if (saved.positions) positionRef.current = {...positionRef.current, ...saved.positions};
         if (Array.isArray(saved.userEdges) && saved.userEdges.length > 0) setUserEdges(saved.userEdges.map(hydrateUserEdge));
         if (Array.isArray(saved.deletedAuto) && saved.deletedAuto.length > 0) setDeletedAutoEdgeIds(new Set(saved.deletedAuto));
