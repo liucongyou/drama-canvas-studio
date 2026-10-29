@@ -114,21 +114,27 @@ export function VideoParamsPanel({
 
       <section className="video-params-group">
         <div className="video-params-label">选择生成数量</div>
-        <div
-          className="video-params-choice-row is-count"
-          style={{gridTemplateColumns: `repeat(${Math.max(1, countOptions.length)}, minmax(0, 1fr))`}}
-        >
-          {countOptions.map((count) => (
-            <button
-              key={count}
-              type="button"
-              className={String(countLabel) === String(count) ? 'is-active' : ''}
-              onClick={() => onPatch('count', count)}
-            >
-              {count}
-            </button>
-          ))}
-        </div>
+        {countOptions.length > 1 ? (
+          <div
+            className="video-params-choice-row is-count"
+            style={{gridTemplateColumns: `repeat(${Math.max(1, countOptions.length)}, minmax(0, 1fr))`}}
+          >
+            {countOptions.map((count) => (
+              <button
+                key={count}
+                type="button"
+                className={String(countLabel) === String(count) ? 'is-active' : ''}
+                onClick={() => onPatch('count', count)}
+              >
+                {count}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="video-params-choice-row is-fixed-count">
+            <span>单次生成 {countOptions[0] ?? 1} 个结果</span>
+          </div>
+        )}
       </section>
 
       {params.generateAudio !== undefined && (
