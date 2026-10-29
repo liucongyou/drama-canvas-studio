@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.14';
+export const APP_VERSION = '2026.10.29.15';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.15',
+    date: '2026-10-29',
+    title: '根治节点拖动撤销回弹',
+    changes: [
+      '修复媒体节点位置真源未随撤销恢复，导致节点闪一下又回到拖动后位置的问题。',
+      '普通节点保存只允许新建节点读取初始坐标，已有节点不能再通过通用保存写入位置。',
+      '旧缓存或旧标签页即使仍发送位置字段，服务端也只接受位置专用接口的写入。',
+    ],
+  },
   {
     version: '2026.10.29.14',
     date: '2026-10-29',

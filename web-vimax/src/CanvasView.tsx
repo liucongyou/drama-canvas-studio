@@ -11546,8 +11546,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         || JSON.stringify({...current, x: 0, y: 0, positionUpdatedAt: '', updatedAt: ''})
           !== JSON.stringify({...item, x: 0, y: 0, positionUpdatedAt: '', updatedAt: ''});
     });
+    // A position-only undo must update the media source of truth as well.
+    // `changedNodes` deliberately ignores x/y when deciding whether to send a
+    // metadata save, so using it alone here left mediaNodes at the dragged
+    // coordinates: setNodes painted the old position for one frame, then the
+    // flowNodes rebuild read mediaNodes and snapped the card back.
     setMediaNodes(
-      changedNodes.length > 0 || removedMedia.length > 0
+      changedNodes.length > 0 || removedMedia.length > 0 || snapshot.positions
         ? merged
         : prevMedia,
     );

@@ -3729,7 +3729,7 @@ class Handler(BaseHTTPRequestHandler):
                 if current and _node_save_conflict(
                     item,
                     current,
-                    include_position=isinstance(item.get("position"), dict),
+                    include_position=False,
                 ):
                     conflicts.append({
                         "nodeId": item["id"],
@@ -3779,13 +3779,6 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     if "title" in item:
                         node["title"] = item["title"]
-                    if (
-                        isinstance(item.get("position"), dict)
-                        and item.get("positionWrite") is True
-                    ):
-                        if node.get("position") != item["position"]:
-                            node["positionUpdatedAt"] = store._now_iso()
-                        node["position"] = item["position"]
                     if item.get("type") in ("text", "image", "audio", "video"):
                         node["type"] = item["type"]
                     node["updatedAt"] = store._now_iso()
@@ -3842,7 +3835,7 @@ class Handler(BaseHTTPRequestHandler):
         if _node_save_conflict(
             incoming_node,
             node,
-            include_position=isinstance(body.get("position"), dict),
+            include_position=False,
         ):
             return self._send(409, {
                 "error": "另一个标签页已更新此节点，已拒绝覆盖。请刷新后再编辑。",
@@ -3865,8 +3858,6 @@ class Handler(BaseHTTPRequestHandler):
             )
         if "title" in body:
             node["title"] = body["title"]
-        if "position" in body and isinstance(body["position"], dict):
-            node["position"] = body["position"]
         node["updatedAt"] = store._now_iso()
         store.update_project(pid, payload=proj["payload"])
         return self._send(200, {"ok": True, "nodeId": nid})

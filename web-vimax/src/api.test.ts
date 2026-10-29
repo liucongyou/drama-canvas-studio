@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, createCanvasEpisode, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, loginAccount, mediaVersionList, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, createCanvasEpisode, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, loginAccount, mediaVersionList, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -254,6 +254,34 @@ describe('api request recovery', () => {
     });
     expect(body.positions[0].basePosition).toBeUndefined();
     expect(body.positions[0].basePositionUpdatedAt).toBeUndefined();
+  });
+
+  it('marks generic media-node position as creation-only, not a position write', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      nodes: 1,
+      created: 0,
+      updates: [],
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await saveCanvasMediaNodes('project-1', [{
+      id: 'role-1',
+      kind: 'image',
+      title: '角色｜赵铁柱（图1）',
+      prompt: '角色定妆',
+      status: 'idle',
+      x: 320,
+      y: 240,
+      updatedAt: '2026-10-28T14:00:00Z',
+    }], 'EP002');
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.nodes[0].position).toEqual({x: 320, y: 240});
+    expect(body.nodes[0].positionWrite).toBeUndefined();
   });
 
   it('does not show a sequence video as a generation ref unless the prompt names it', async () => {

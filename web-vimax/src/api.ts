@@ -1325,8 +1325,9 @@ export async function saveCanvasMediaNodes(
       type: n.kind,
       title: n.title,
       baseUpdatedAt: n.updatedAt,
-      // New nodes need their initial coordinates. Existing nodes ignore this
-      // field on the server unless the position-only path explicitly writes it.
+      // Used only when the backend creates a node. The server ignores this
+      // field for existing nodes; drag/undo persistence uses the dedicated
+      // /nodes/positions endpoint instead.
       position: {x: n.x ?? 0, y: n.y ?? 0},
       metadata: {
         prompt: n.prompt,

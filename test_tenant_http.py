@@ -376,6 +376,64 @@ class TenantHttpTests(unittest.TestCase):
         )
         self.assertEqual(final_node["position"], {"x": 200.0, "y": 200.0})
 
+    def test_bulk_node_save_ignores_position_for_existing_nodes(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        _, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "普通保存位置隔离测试"},
+        )
+        pid = json.loads(body)["id"]
+        node = {
+            "id": "position-isolated-node",
+            "type": "image",
+            "title": "拖拽测试",
+            "position": {"x": 10, "y": 20},
+            "metadata": {"prompt": "原始提示词"},
+        }
+        self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes",
+            "alpha.example.com",
+            cookie,
+            {"nodes": [node]},
+        )
+        # A legacy or cached client may still send position in the generic bulk
+        # payload. Existing nodes must ignore it; only /nodes/positions writes.
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes",
+            "alpha.example.com",
+            cookie,
+            {"nodes": [{
+                **node,
+                "position": {"x": 999, "y": 888},
+                "metadata": {"prompt": "更新提示词"},
+            }]},
+        )
+        self.assertEqual(status, 200)
+        _, _, project_body = self.request(
+            "GET",
+            f"/api/projects/{pid}",
+            "alpha.example.com",
+            cookie,
+        )
+        final_node = next(
+            item for item in json.loads(project_body)["payload"]["nodes"]
+            if item["id"] == node["id"]
+        )
+        self.assertEqual(final_node["position"], {"x": 10.0, "y": 20.0})
+        self.assertEqual(final_node["metadata"]["prompt"], "更新提示词")
+
     def test_manual_connections_persist_without_overwriting_automatic_edges(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
