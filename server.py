@@ -782,16 +782,45 @@ def queue_generated_video_finalize(
     tenant_slug = context.slug if context else "local"
 
     def run():
+        updates = {
+            "storage": {},
+            "storageError": "",
+            "finalizePending": False,
+        }
         try:
             local_url = persist_generated_media(provider_url, ".mp4")
             validation = validate_generated_video(local_url)
-            updates = {
+            updates.update({
                 "content": local_url,
                 "videoValidation": validation,
                 "actualDuration": validation.get("duration"),
-                "storageError": "",
-                "finalizePending": False,
-            }
+            })
+            storage_cfg = provider_catalog.storage_config()
+            if (
+                storage_cfg.get("enabled")
+                and str(storage_cfg.get("provider") or "tos") == "tos"
+                and storage_cfg.get("auto_persist_videos", True)
+            ):
+                try:
+                    storage = tos_storage.persist_local_url(
+                        local_url,
+                        kind="video",
+                        fallback_ext=".mp4",
+                        source={
+                            "provider": provider.get("id"),
+                            "model": model.get("remoteModel") or model.get("id"),
+                            "taskId": task_id,
+                            "generatedAt": generated_at,
+                            "url": provider_url,
+                        },
+                    )
+                    updates["storage"] = storage
+                except Exception as exc:
+                    updates["storageError"] = str(exc)
+                    print(
+                        f"[tos] failed to archive generated video {provider_url[:120]}: {exc}",
+                        file=sys.stderr,
+                    )
             commit_node_metadata(project_id, node_id, updates)
         except Exception as exc:
             commit_node_metadata(project_id, node_id, {

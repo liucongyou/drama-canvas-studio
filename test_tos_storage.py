@@ -63,6 +63,8 @@ class StorageConfigTests(unittest.TestCase):
                 self.assertFalse(storage["has_secret_key"] is False)
                 self.assertNotIn("AK-test-value", json.dumps(storage))
                 self.assertNotIn("SK-test-value", json.dumps(storage))
+                self.assertTrue(storage["auto_persist_images"])
+                self.assertTrue(storage["auto_persist_videos"])
 
                 storage = provider_catalog.save_storage_config({
                     "bucket": "drama-originals",

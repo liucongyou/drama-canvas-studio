@@ -373,6 +373,7 @@ export type StorageSpec = {
   prefix: string;
   url_ttl_seconds: number;
   auto_persist_images: boolean;
+  auto_persist_videos: boolean;
   require_for_ark_portrait: boolean;
   has_access_key: boolean;
   access_key_hint?: string;

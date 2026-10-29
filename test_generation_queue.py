@@ -1035,6 +1035,136 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(node["metadata"]["content"], "https://provider.example/video.mp4")
         self.assertEqual(queued[0][2], "https://provider.example/video.mp4")
 
+    def test_video_finalize_stores_tos_original_bytes(self):
+        run = []
+        commit = []
+        storage = {
+            "status": "stored",
+            "provider": "tos",
+            "bucket": "drama-originals",
+            "key": "drama-canvas/video/result.mp4",
+            "originalBytes": True,
+        }
+        with (
+            patch.object(server, "_run_in_tenant", side_effect=lambda _tenant, _slug, fn: fn()),
+            patch.object(server, "persist_generated_media", return_value="/uploads/video.mp4"),
+            patch.object(server, "validate_generated_video", return_value={"duration": 5}),
+            patch.object(
+                server.provider_catalog,
+                "storage_config",
+                return_value={
+                    "enabled": True,
+                    "provider": "tos",
+                    "auto_persist_videos": True,
+                },
+            ),
+            patch.object(server.tos_storage, "persist_local_url", return_value=storage) as persist,
+            patch.object(server, "commit_node_metadata", side_effect=lambda *args: commit.append(args)),
+            patch.object(
+                server.threading,
+                "Thread",
+                side_effect=lambda **kw: type(
+                    "T", (), {"start": lambda self: kw["target"](*kw.get("args", ()))}
+                )(),
+            ),
+        ):
+            server.queue_generated_video_finalize(
+                "project-1",
+                "node-1",
+                "https://provider.example/video.mp4",
+                {"id": "agnes-ai"},
+                {"id": "video-model", "remoteModel": "video-remote"},
+                "task-1",
+                "2026-10-30T00:00:00Z",
+            )
+
+        persist.assert_called_once()
+        self.assertEqual(persist.call_args.kwargs["kind"], "video")
+        updates = commit[-1][2]
+        self.assertEqual(updates["content"], "/uploads/video.mp4")
+        self.assertEqual(updates["storage"], storage)
+        self.assertFalse(updates["finalizePending"])
+
+    def test_video_finalize_tos_failure_keeps_video_successful(self):
+        commit = []
+        with (
+            patch.object(server, "_run_in_tenant", side_effect=lambda _tenant, _slug, fn: fn()),
+            patch.object(server, "persist_generated_media", return_value="/uploads/video.mp4"),
+            patch.object(server, "validate_generated_video", return_value={"duration": 5}),
+            patch.object(
+                server.provider_catalog,
+                "storage_config",
+                return_value={
+                    "enabled": True,
+                    "provider": "tos",
+                    "auto_persist_videos": True,
+                },
+            ),
+            patch.object(
+                server.tos_storage,
+                "persist_local_url",
+                side_effect=RuntimeError("TOS 欠费"),
+            ),
+            patch.object(server, "commit_node_metadata", side_effect=lambda *args: commit.append(args)),
+            patch.object(
+                server.threading,
+                "Thread",
+                side_effect=lambda **kw: type(
+                    "T", (), {"start": lambda self: kw["target"](*kw.get("args", ()))}
+                )(),
+            ),
+        ):
+            server.queue_generated_video_finalize(
+                "project-1",
+                "node-1",
+                "https://provider.example/video.mp4",
+                {"id": "agnes-ai"},
+                {"id": "video-model", "remoteModel": "video-remote"},
+                "task-1",
+                "2026-10-30T00:00:00Z",
+            )
+
+        updates = commit[-1][2]
+        self.assertEqual(updates["content"], "/uploads/video.mp4")
+        self.assertEqual(updates["storageError"], "TOS 欠费")
+        self.assertFalse(updates["finalizePending"])
+
+    def test_video_finalize_skips_tos_when_video_switch_is_off(self):
+        with (
+            patch.object(server, "_run_in_tenant", side_effect=lambda _tenant, _slug, fn: fn()),
+            patch.object(server, "persist_generated_media", return_value="/uploads/video.mp4"),
+            patch.object(server, "validate_generated_video", return_value={"duration": 5}),
+            patch.object(
+                server.provider_catalog,
+                "storage_config",
+                return_value={
+                    "enabled": True,
+                    "provider": "tos",
+                    "auto_persist_videos": False,
+                },
+            ),
+            patch.object(server.tos_storage, "persist_local_url") as persist,
+            patch.object(server, "commit_node_metadata"),
+            patch.object(
+                server.threading,
+                "Thread",
+                side_effect=lambda **kw: type(
+                    "T", (), {"start": lambda self: kw["target"](*kw.get("args", ()))}
+                )(),
+            ),
+        ):
+            server.queue_generated_video_finalize(
+                "project-1",
+                "node-1",
+                "https://provider.example/video.mp4",
+                {"id": "agnes-ai"},
+                {"id": "video-model", "remoteModel": "video-remote"},
+                "task-1",
+                "2026-10-30T00:00:00Z",
+            )
+
+        persist.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

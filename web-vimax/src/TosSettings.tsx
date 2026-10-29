@@ -17,6 +17,7 @@ type StorageDraft = {
   prefix: string;
   url_ttl_seconds: string;
   auto_persist_images: boolean;
+  auto_persist_videos: boolean;
   require_for_ark_portrait: boolean;
   access_key: string;
   secret_key: string;
@@ -33,6 +34,7 @@ const DEFAULT_DRAFT: StorageDraft = {
   prefix: 'drama-canvas/',
   url_ttl_seconds: '3600',
   auto_persist_images: true,
+  auto_persist_videos: true,
   require_for_ark_portrait: true,
   access_key: '',
   secret_key: '',
@@ -50,6 +52,7 @@ function draftFromStorage(storage: StorageSpec): StorageDraft {
     prefix: storage.prefix || 'drama-canvas/',
     url_ttl_seconds: String(storage.url_ttl_seconds || 3600),
     auto_persist_images: storage.auto_persist_images !== false,
+    auto_persist_videos: storage.auto_persist_videos !== false,
     require_for_ark_portrait: storage.require_for_ark_portrait !== false,
     access_key: '',
     secret_key: '',
@@ -163,8 +166,8 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
       >
         <header>
           <div>
-            <strong>图片存储与转存</strong>
-            <span className="model-settings-subtitle">启用 TOS 或 ImgBB 后，生成图片自动转入所选存储</span>
+            <strong>素材存储与转存</strong>
+            <span className="model-settings-subtitle">生成图片、视频后自动转入所选存储；存储失败不影响已生成的素材</span>
           </div>
           <div className="model-settings-header-actions">
             <span className={`tos-state-pill ${storage?.ready ? 'is-ready' : ''}`}>
@@ -255,6 +258,10 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
             <div>
               <span><strong>图片生成后自动转存</strong><small>新生成的图片立即写入 TOS</small></span>
               <Switch checked={draft.auto_persist_images} label="图片生成后自动转存 TOS" onChange={(value) => update('auto_persist_images', value)} />
+            </div>
+            <div>
+              <span><strong>视频生成后自动转存</strong><small>视频先显示，再在后台缓存并写入 TOS</small></span>
+              <Switch checked={draft.auto_persist_videos} label="视频生成后自动转存 TOS" onChange={(value) => update('auto_persist_videos', value)} />
             </div>
             <div>
               <span><strong>Seedream 角色图强制 TOS</strong><small>进入 Seedance 前没有 TOS 原始对象时阻止提交</small></span>

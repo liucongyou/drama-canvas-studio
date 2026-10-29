@@ -395,6 +395,7 @@ DEFAULT_STORAGE = {
     "secret_key": "",
     "url_ttl_seconds": 3600,
     "auto_persist_images": True,
+    "auto_persist_videos": True,
     "require_for_ark_portrait": True,
     "imgbb": {
         "api_key": "",
@@ -829,6 +830,7 @@ def _public_storage(storage: dict[str, Any]) -> dict[str, Any]:
         "prefix": str(storage.get("prefix") or ""),
         "url_ttl_seconds": int(storage.get("url_ttl_seconds") or 3600),
         "auto_persist_images": storage.get("auto_persist_images", True) is not False,
+        "auto_persist_videos": storage.get("auto_persist_videos", True) is not False,
         "require_for_ark_portrait": storage.get("require_for_ark_portrait", True) is not False,
         "has_access_key": bool(access_key.strip()),
         "access_key_hint": _hint(access_key) if access_key.strip() else "",
@@ -975,6 +977,10 @@ def save_storage_config(input_data: dict[str, Any]) -> dict[str, Any]:
         "auto_persist_images": bool(source.get(
             "auto_persist_images",
             current.get("auto_persist_images", True),
+        )),
+        "auto_persist_videos": bool(source.get(
+            "auto_persist_videos",
+            current.get("auto_persist_videos", True),
         )),
         "require_for_ark_portrait": bool(source.get(
             "require_for_ark_portrait",
