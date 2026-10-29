@@ -125,6 +125,11 @@ import {useDialogFocusTrap} from './useDialogFocusTrap';
 import {dialog} from './GDialog';
 import {reconcileSucceededNode} from './generationReconcile';
 import {
+  inheritedGenerationParams,
+  inheritModelParams,
+  migrateUnavailableModelParams,
+} from './modelParamInheritance';
+import {
   evaluateBatchGeneration,
   evaluateReferenceLimits,
   modelMaxRefs,
@@ -136,6 +141,7 @@ import {
   filterMediaNodesInBounds,
   focusedNodeVisibleBounds,
   LARGE_CANVAS_OVERVIEW_CHUNK_SIZE,
+  popupRevealShift,
   shouldUseLargeCanvasOverview,
   viewportForCanvasBounds,
   visibleBoundsForViewport,
@@ -2324,8 +2330,19 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
     ? Math.max(0, Math.floor((busyClock - generationStartedMs) / 1000))
     : 0;
   const generationElapsedLabel = `${Math.floor(generationElapsedSeconds / 60)}:${String(generationElapsedSeconds % 60).padStart(2, '0')}`;
+  const providerProgress = Number(node.providerTaskProgress);
+  const hasProviderProgress = (
+    node.providerTaskStatus
+    && !['queued', 'pending', 'created', 'submitted', 'starting'].includes(node.providerTaskStatus)
+    && Number.isFinite(providerProgress)
+    && providerProgress >= 0
+    && providerProgress <= 100
+  );
   const providerTaskPhase = node.providerTaskPhase
     || (node.providerTaskStatus === 'queued' ? '排队中' : '生成中');
+  const busyLabel = hasProviderProgress
+    ? `${providerTaskPhase} ${Math.round(providerProgress)}%`
+    : providerTaskPhase.replace(/\s*\d+(?:\.\d+)?\s*%\s*$/, '');
   const p = node.params || {};
   const mediaVersions = mediaVersionList(node);
   const matchedMediaVersionIndex = node.mediaUrl
@@ -2983,7 +3000,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
         {busy && (
           <div className="canvas-media-busy-mask">
             <span className="canvas-media-spin is-lg" />
-            <span>{providerTaskPhase}</span>
+            <span>{busyLabel}</span>
             {generationElapsedSeconds > 0 && (
               <small>已等待 {generationElapsedLabel}</small>
             )}
@@ -3160,6 +3177,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const atButtonRef = useRef<HTMLButtonElement>(null);
   const atPopRef = useRef<HTMLDivElement>(null);
   const [atPopPos, setAtPopPos] = useState<{left: number; top: number; maxHeight: number} | null>(null);
+  const atViewportShiftedRef = useRef(0);
   const atRevealDoneRef = useRef(false);
   const [paramsPanelPos, setParamsPanelPos] = useState<{left: number; top: number} | null>(null);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -3282,17 +3300,17 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
       const top = below + height <= window.innerHeight - margin
         ? below
         : Math.max(margin, rect.top - height - margin);
-      const fitsBelow = below + height <= window.innerHeight - margin;
-      const fitsAbove = rect.top - height - margin >= margin;
-      if (
-        !fitsBelow
-        && !fitsAbove
-        && onRevealAt
-        && !atRevealDoneRef.current
-      ) {
-        atRevealDoneRef.current = true;
-        onRevealAt(window.innerHeight - below - margin);
-        return;
+      const shift = popupRevealShift(
+        {top, bottom: top + height},
+        window.innerHeight,
+        {topInset: 12, bottomInset: 12},
+      );
+      if (onRevealAt && shift !== 0) {
+        const delta = shift - atViewportShiftedRef.current;
+        if (Math.abs(delta) >= 1) {
+          onRevealAt(delta);
+          atViewportShiftedRef.current = shift;
+        }
       }
       setAtPopPos({
         left,
@@ -3304,14 +3322,26 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     const frame = window.requestAnimationFrame(place);
     window.addEventListener('resize', place);
     document.addEventListener('scroll', place, true);
+    window.addEventListener('scroll', place, true);
+    const observer = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(place)
+      : null;
+    const popup = atPopRef.current;
+    if (popup) observer?.observe(popup);
+    observer?.observe(document.body);
     return () => {
       window.cancelAnimationFrame(frame);
       window.removeEventListener('resize', place);
       document.removeEventListener('scroll', place, true);
+      window.removeEventListener('scroll', place, true);
+      observer?.disconnect();
     };
   }, [atOpen, atCands.length, onRevealAt]);
   useEffect(() => {
-    if (!atOpen) atRevealDoneRef.current = false;
+    if (!atOpen) {
+      atRevealDoneRef.current = false;
+      atViewportShiftedRef.current = 0;
+    }
   }, [atOpen]);
 
   // 提示词框高度：**由内容决定**（对齐即梦 —— 用户明确要求"没内容的时候高度和有内容的高度不一样"）。
@@ -3468,43 +3498,8 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     onChange(node.id, {params: next} as Partial<CanvasMediaNode>);
   };
   const selectModel = (spec: ModelSpec) => {
+    const next = inheritModelParams(paramsRef.current, spec);
     const defaults = spec.defaultParams || {};
-    const preservedKeys = new Set([
-      'refs', 'voiceRef', 'voiceRefs', 'mediaVersions', 'mediaVersionIndex',
-      'videoVersions', 'videoVersionIndex',
-    ]);
-    const preserved = Object.fromEntries(
-      Object.entries(paramsRef.current).filter(([key]) => preservedKeys.has(key)),
-    ) as CanvasMediaParams;
-    const next: CanvasMediaParams = {
-      ...defaults,
-      ...preserved,
-      provider: spec.providerId,
-      model: spec.id,
-    };
-    for (const key of ['ratio', 'resolution', 'clarity', 'guidance'] as const) {
-      const values = spec.params?.[key]?.options;
-      const current = next[key];
-      if (Array.isArray(values) && values.length && !values.includes(current as never)) {
-        next[key] = String(defaults[key] ?? values[0]) as never;
-      }
-    }
-    const durationSpec = spec.params?.duration;
-    if (durationSpec) {
-      const min = Number(durationSpec.min ?? 1);
-      const max = Number(durationSpec.max ?? Number.MAX_SAFE_INTEGER);
-      next.duration = Math.max(min, Math.min(max, Number(next.duration ?? defaults.duration ?? min)));
-    }
-    const countSpec = spec.params?.count;
-    if (Array.isArray(countSpec?.options) && countSpec.options.length) {
-      const allowed = countSpec.options.map(Number);
-      const current = Number(next.count ?? defaults.count ?? allowed[0]);
-      next.count = allowed.includes(current) ? current : Number(defaults.count ?? allowed[0]);
-    }
-    if (spec.capability === 'audio') {
-      next.ttsModel = spec.remoteModel;
-      if (!next.ttsMode) next.ttsMode = 'design';
-    }
     if (spec.capability === 'image' && defaults.size) {
       next.size = CLARITY_SIZES[String(next.clarity || defaults.clarity || '1.5K')]
         ?.[String(next.ratio || defaults.ratio || '1:1')]
@@ -8265,32 +8260,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       if (stored && !exactStored) {
         fallbackNotices.push(`${node.title}：${current.model || current.ttsModel || stored} → ${spec.label || spec.id}`);
       }
-      const defaults = spec.defaultParams || {};
-      const merged: CanvasMediaParams = {
-        ...defaults,
-        ...current,
-        provider: spec.providerId,
-        model: spec.id,
-        ...(node.kind === 'audio' ? {ttsModel: spec.remoteModel} : {}),
-      };
-      for (const key of ['ratio', 'resolution', 'clarity', 'guidance'] as const) {
-        const options = spec.params?.[key]?.options;
-        if (Array.isArray(options) && options.length && !options.includes(merged[key] as never)) {
-          merged[key] = (defaults[key] ?? options[0]) as never;
-        }
-      }
-      const durationSpec = spec.params?.duration;
-      if (durationSpec) {
-        const min = Number(durationSpec.min ?? 4);
-        const max = Number(durationSpec.max ?? 15);
-        const value = Number(merged.duration ?? defaults.duration ?? min);
-        merged.duration = Math.max(min, Math.min(max, value));
-      }
-      if (node.kind === 'image' && !merged.size) {
-        const clarity = String(merged.clarity || defaults.clarity || '1.5K');
-        const ratio = String(merged.ratio || defaults.ratio || '1:1');
-        merged.size = CLARITY_SIZES[clarity]?.[ratio] || defaults.size;
-      }
+      if (exactStored) return node;
+      const merged = migrateUnavailableModelParams(current, spec, node.kind);
       if (JSON.stringify(merged) === JSON.stringify(current)) return node;
       const updated = {...node, params: merged};
       changed.push(updated);
@@ -12469,38 +12440,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       setToast(`提示词超过当前模型上限（${promptLimit} 字符）`);
       return false;
     }
-    const preservedKeys = new Set([
-      'refs', 'voiceRef', 'voiceRefs', 'mediaVersions', 'mediaVersionIndex',
-      'videoVersions', 'videoVersionIndex',
-    ]);
-    let params: CanvasMediaParams = activeModel ? {
-      ...(activeModel.defaultParams || {}),
-      ...Object.fromEntries(
-        Object.entries(node.params || {}).filter(([key]) => preservedKeys.has(key)),
-      ),
-      provider: activeModel.providerId,
-      model: activeModel.id,
-      ...(node.kind === 'audio' ? {ttsModel: activeModel.remoteModel} : {}),
-    } as CanvasMediaParams : {...(node.params || {})};
+    let params: CanvasMediaParams = activeModel
+      ? inheritedGenerationParams(node.params || {}, activeModel)
+      : {...(node.params || {})};
     if (activeModel) {
-      for (const key of ['ratio', 'resolution', 'clarity', 'guidance'] as const) {
-        const options = activeModel.params?.[key]?.options;
-        if (Array.isArray(options) && options.length && !options.includes(params[key] as never)) {
-          params[key] = (activeModel.defaultParams?.[key] ?? options[0]) as never;
-        }
-      }
-      const durationSpec = activeModel.params?.duration;
-      if (durationSpec) {
-        const min = Number(durationSpec.min ?? 4);
-        const max = Number(durationSpec.max ?? 15);
-        params.duration = Math.max(min, Math.min(max, Number(params.duration ?? min)));
-      }
-      const countOptions = activeModel.params?.count?.options;
-      if (Array.isArray(countOptions) && countOptions.length) {
-        const allowed = countOptions.map(Number);
-        const current = Number(params.count ?? activeModel.defaultParams?.count ?? allowed[0]);
-        params.count = allowed.includes(current) ? current : Number(activeModel.defaultParams?.count ?? allowed[0]);
-      }
       if (node.kind === 'image' && !params.size) {
         params.size = CLARITY_SIZES[String(params.clarity || '1.5K')]?.[String(params.ratio || '1:1')]
           || activeModel.defaultParams?.size;
@@ -15175,10 +15118,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                           <span>{generationElapsedOf(task)}</span>
                         </div>
                         <div className="canvas-task-item-phase">
-                          <i style={{width: `${Math.max(2, Math.min(100, Number(task.progress || (task.status === 'succeeded' ? 100 : 6))))}%`}} />
+                          <i style={{width: `${task.status === 'succeeded' ? 100 : Math.max(2, Math.min(100, Number(task.progress || 6)))}%`}} />
                           <span>
                             {task.status === 'succeeded' && <Check size={11} strokeWidth={2.5} aria-hidden="true" />}
-                            {task.status === 'succeeded' ? '已完成' : (task.phase || taskError || statusLabel[task.status])}
+                            {task.status === 'succeeded'
+                              ? '已完成'
+                              : (task.phase || taskError || statusLabel[task.status]).replace(/\s*\d+(?:\.\d+)?\s*%\s*$/, '')}
                           </span>
                         </div>
                         {taskError && <p title={taskError}>{taskError}</p>}
@@ -15438,15 +15383,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           return true;
         }}
         onRevealAt={(requiredBottom) => {
-          // 让画布内容为弹层让位，不改节点坐标。正数表示弹层需要下方空间，
-          // 负值表示上方空间不足；换算成屏幕像素后平移 React Flow 视口。
+          // 正数 = 弹层底部越界，抬高画布内容；负数 = 顶部越界，压低内容。
           if (!requiredBottom) return;
-          if (revealRef.current.key === 1) return;
-          revealRef.current = {key: 1, at: performance.now()};
+          const now = performance.now();
+          if (now - revealRef.current.at < 120) return;
+          revealRef.current = {at: now, key: 1};
           const current = rf.getViewport();
-          const shift = requiredBottom > 0
-            ? Math.min(requiredBottom, Math.max(0, window.innerHeight - 120))
-            : Math.max(requiredBottom, -Math.max(0, window.innerHeight - 120));
+          const limit = Math.max(0, window.innerHeight - 120);
+          const shift = Math.max(-limit, Math.min(limit, requiredBottom));
           rf.setViewport(
             {...current, y: current.y + shift},
             {duration: 180},

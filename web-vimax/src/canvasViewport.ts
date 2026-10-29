@@ -113,6 +113,31 @@ export function viewportForCanvasBounds(
   };
 }
 
+/**
+ * Screen-space shift needed to keep a popup inside the canvas viewport.
+ * Positive means moving canvas content up (increase viewport y).
+ */
+export function popupRevealShift(
+  popupRect: {top: number; bottom: number},
+  viewportHeight: number,
+  options: {
+    topInset?: number;
+    bottomInset?: number;
+  } = {},
+): number {
+  const topInset = Math.max(0, options.topInset ?? 12);
+  const bottomInset = Math.max(0, options.bottomInset ?? 12);
+  const safeTop = topInset;
+  const safeBottom = Math.max(safeTop + 1, viewportHeight - bottomInset);
+  if (popupRect.bottom > safeBottom) {
+    return popupRect.bottom - safeBottom;
+  }
+  if (popupRect.top < safeTop) {
+    return popupRect.top - safeTop;
+  }
+  return 0;
+}
+
 export function filterMediaNodesInBounds<T extends ViewportNodeLike>(
   nodes: T[],
   bounds: CanvasVisibleBounds,

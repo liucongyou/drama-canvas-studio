@@ -1,11 +1,38 @@
 import {describe, expect, it} from 'vitest';
 import {
+  popupRevealShift,
   filterMediaNodesInBounds,
   focusedNodeVisibleBounds,
   shouldUseLargeCanvasOverview,
   viewportForCanvasBounds,
   visibleBoundsForViewport,
 } from './canvasViewport';
+
+describe('popupRevealShift', () => {
+  it('moves canvas up only by the amount clipped at the bottom', () => {
+    expect(popupRevealShift(
+      {top: 120, bottom: 540},
+      500,
+      {topInset: 14, bottomInset: 14},
+    )).toBe(54);
+  });
+
+  it('moves canvas down when a popup is clipped at the top', () => {
+    expect(popupRevealShift(
+      {top: 4, bottom: 260},
+      500,
+      {topInset: 14, bottomInset: 14},
+    )).toBe(-10);
+  });
+
+  it('does not move when the popup is already visible', () => {
+    expect(popupRevealShift(
+      {top: 100, bottom: 400},
+      500,
+      {topInset: 14, bottomInset: 14},
+    )).toBe(0);
+  });
+});
 
 describe('large canvas viewport', () => {
   it('only enables the overview for a large non-text workspace', () => {

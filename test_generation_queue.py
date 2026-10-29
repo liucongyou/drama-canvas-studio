@@ -76,6 +76,13 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertTrue(second["created_new"])
         self.assertEqual(second["attempt"], 2)
 
+    def test_provider_phase_hides_non_progress_values(self):
+        self.assertEqual(server._provider_task_phase("running", 0), "生成中")
+        self.assertEqual(server._provider_task_phase("running", 10), "生成中 10%")
+        self.assertEqual(server._provider_task_phase("running", 58), "生成中 58%")
+        self.assertEqual(server._provider_task_phase("running", 100), "生成中")
+        self.assertEqual(server._provider_task_phase("running", None), "生成中")
+
     def test_stale_node_edit_is_detected_as_conflict(self):
         current = {
             "id": "node-1",

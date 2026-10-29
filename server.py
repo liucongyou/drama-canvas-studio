@@ -1444,7 +1444,9 @@ def _provider_task_phase(status, progress=None):
         numeric = int(progress)
     except (TypeError, ValueError):
         numeric = None
-    return f"生成中 {numeric}%" if numeric is not None else "生成中"
+    if numeric is None or numeric <= 0 or numeric >= 100:
+        return "生成中"
+    return f"生成中 {numeric}%"
 
 
 def _generation_error_status(exc):
@@ -4638,7 +4640,7 @@ class Handler(BaseHTTPRequestHandler):
         if task_id:
             store.update_generation_task(
                 task_id, status="running", phase="正在连接供应商",
-                progress=10, error="", finished_at="",
+                progress=0, error="", finished_at="",
                 started_at=store._now_iso(),
             )
         try:
