@@ -122,6 +122,23 @@ def _connect():
             "ON generation_tasks(project_id, node_id) "
             "WHERE status IN ('queued','submitting','running')"
             )
+            con.execute(
+            """CREATE TABLE IF NOT EXISTS audit_events(
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT,
+                actor TEXT,
+                action TEXT NOT NULL,
+                target_type TEXT,
+                target_id TEXT,
+                status TEXT,
+                details_json TEXT,
+                created_at TEXT
+            )"""
+            )
+            con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_events_created "
+            "ON audit_events(created_at DESC)"
+            )
             task_columns = {
                 row[1] for row in con.execute("PRAGMA table_info(generation_tasks)")
             }
@@ -416,6 +433,125 @@ def generation_cost_total(since_iso):
         "currencies": [
             item for item in str(row[2] or "").split(",") if item
         ],
+    }
+
+
+_AUDIT_SECRET_KEYS = {
+    "api_key",
+    "apikey",
+    "secret",
+    "secret_key",
+    "access_key",
+    "token",
+    "password",
+    "authorization",
+    "cookie",
+}
+
+
+def _redact_audit_value(value):
+    if isinstance(value, dict):
+        return {
+            key: "***" if str(key).lower() in _AUDIT_SECRET_KEYS else _redact_audit_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_audit_value(item) for item in value]
+    return value
+
+
+def record_audit_event(
+    action,
+    *,
+    actor="",
+    target_type="",
+    target_id="",
+    status="success",
+    details=None,
+):
+    event_id = _rid(22)
+    con = None
+    try:
+        con = _connect()
+        con.execute(
+            "INSERT INTO audit_events("
+            "id,tenant_id,actor,action,target_type,target_id,status,details_json,created_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                event_id,
+                tenant_context.current_tenant_id(),
+                str(actor or ""),
+                str(action or "")[:120],
+                str(target_type or "")[:80],
+                str(target_id or "")[:180],
+                str(status or "")[:32],
+                json.dumps(_redact_audit_value(details or {}), ensure_ascii=False)[:12000],
+                _now_iso(),
+            ),
+        )
+        con.commit()
+        return event_id
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return ""
+    finally:
+        if con is not None:
+            con.close()
+
+
+def list_audit_events(limit=200):
+    con = _connect()
+    rows = con.execute(
+        "SELECT id,tenant_id,actor,action,target_type,target_id,status,details_json,created_at "
+        "FROM audit_events ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        (max(1, min(int(limit or 200), 1000)),),
+    ).fetchall()
+    con.close()
+    events = []
+    for row in rows:
+        try:
+            details = json.loads(row[7] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            details = {}
+        events.append({
+            "id": row[0],
+            "tenantId": row[1],
+            "actor": row[2],
+            "action": row[3],
+            "targetType": row[4],
+            "targetId": row[5],
+            "status": row[6],
+            "details": details,
+            "createdAt": row[8],
+        })
+    return events
+
+
+def runtime_metrics():
+    con = _connect()
+    project_count = int(con.execute("SELECT COUNT(*) FROM canvas_projects").fetchone()[0] or 0)
+    snapshot_count = int(con.execute("SELECT COUNT(*) FROM canvas_snapshots").fetchone()[0] or 0)
+    snapshot_bytes = int(con.execute(
+        "SELECT COALESCE(SUM(LENGTH(payload_json)),0) FROM canvas_snapshots"
+    ).fetchone()[0] or 0)
+    audit_count = int(con.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] or 0)
+    task_rows = con.execute(
+        "SELECT status,COUNT(*) FROM generation_tasks GROUP BY status"
+    ).fetchall()
+    oldest_active = con.execute(
+        "SELECT MIN(created_at) FROM generation_tasks "
+        "WHERE status IN ('queued','submitting','running')"
+    ).fetchone()[0]
+    con.close()
+    tasks = {str(row[0] or ""): int(row[1] or 0) for row in task_rows}
+    return {
+        "projects": project_count,
+        "snapshots": snapshot_count,
+        "snapshotBytes": snapshot_bytes,
+        "auditEvents": audit_count,
+        "tasks": tasks,
+        "activeTasks": sum(tasks.get(status, 0) for status in ("queued", "submitting", "running")),
+        "oldestActiveTaskAt": oldest_active or "",
+        "databaseBytes": os.path.getsize(_db_path()) if os.path.exists(_db_path()) else 0,
     }
 
 

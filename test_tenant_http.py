@@ -109,6 +109,54 @@ class TenantHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b'"slug": "alpha"', body)
 
+    def test_audit_and_metrics_are_tenant_scoped(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        status, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "Audit Probe"},
+        )
+        self.assertEqual(status, 200)
+        project_id = json.loads(body)["id"]
+
+        status, _, body = self.request(
+            "GET",
+            "/api/audit?limit=20",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 200)
+        events = json.loads(body)["events"]
+        self.assertTrue(any(
+            event["action"] == "project.create"
+            and event["targetId"] == project_id
+            for event in events
+        ))
+
+        status, _, body = self.request(
+            "GET",
+            "/api/metrics",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 200)
+        metrics = json.loads(body)
+        self.assertEqual(metrics["projects"], 1)
+        self.assertEqual(metrics["queue"]["tenantActive"], 0)
+        self.assertTrue(all(
+            "\x1f" not in provider_id
+            for provider_id in metrics["queue"]["providerActive"]
+        ))
+
     def test_stream_upload_accepts_real_media_bytes_and_rejects_fake_image(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)

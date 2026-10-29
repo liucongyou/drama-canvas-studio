@@ -68,6 +68,7 @@ WEBAPP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web-vimax
 # 刷新、换浏览器都能继续显示。
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "uploads")
 PORT = 8890
+SERVER_STARTED_AT = time.monotonic()
 PROJECT_WRITE_LOCK = threading.RLock()
 PROJECT_LOCKS = canvas_repository.PROJECT_LOCKS
 PROJECT_LOCKS_GUARD = canvas_repository.PROJECT_LOCKS_GUARD
@@ -2383,6 +2384,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": str(exc), "code": "ACCOUNT_CREATE_INVALID"})
         account = created["account"]
         tenant = created["tenant"]
+        store.record_audit_event(
+            "account.create",
+            actor=(self._current_session() or {}).get("account_username", ""),
+            target_type="account",
+            target_id=account["id"],
+            details={"username": account["username"], "tenantId": tenant["id"]},
+        )
         return self._send(200, {
             "ok": True,
             "accountId": account["id"],
@@ -2407,6 +2415,13 @@ class Handler(BaseHTTPRequestHandler):
             account = tenant_registry.set_account_password(account_id, password)
         except ValueError as exc:
             return self._send(404, {"error": str(exc), "code": "ACCOUNT_NOT_FOUND"})
+        store.record_audit_event(
+            "account.password_reset",
+            actor=session.get("account_username") or "",
+            target_type="account",
+            target_id=account["id"],
+            details={"username": account["username"]},
+        )
         return self._send(200, {
             "ok": True,
             "accountId": account["id"],
@@ -2433,6 +2448,13 @@ class Handler(BaseHTTPRequestHandler):
             if len(active_admins) <= 1:
                 return self._send(400, {"error": "必须至少保留一个启用的管理员账号"})
         updated = tenant_registry.set_account_status(account_id, status)
+        store.record_audit_event(
+            "account.status",
+            actor=session.get("account_username") or "",
+            target_type="account",
+            target_id=updated["id"],
+            details={"username": updated["username"], "status": status},
+        )
         return self._send(200, {
             "ok": True,
             "accountId": updated["id"],
@@ -2653,6 +2675,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"dir": upload_dir, "exists": True, "files": files})
         if path == "/api/config":
             return self._send(200, provider_catalog.config_status())
+        if path == "/api/audit":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = int((query.get("limit") or ["200"])[0])
+            except (TypeError, ValueError):
+                return self._send(400, {"error": "limit 必须是整数"})
+            return self._send(200, {"events": store.list_audit_events(limit)})
+        if path == "/api/metrics":
+            tenant_key = tenant_context.current_tenant_id()
+            return self._send(200, {
+                **store.runtime_metrics(),
+                "uptimeSeconds": round(time.monotonic() - SERVER_STARTED_AT, 3),
+                "queue": {
+                    "tenantActive": GENERATION_QUEUE_ACTIVE_TENANTS.get(tenant_key, 0),
+                    "tenantLimit": GENERATION_QUEUE_TENANT_LIMIT,
+                    "providerActive": {
+                        key.split("\x1f", 1)[1]: count
+                        for key, count in GENERATION_QUEUE_ACTIVE_PROVIDERS.items()
+                        if key.startswith(f"{tenant_key}\x1f")
+                    },
+                },
+            })
         if path == "/api/budget":
             return self._send(200, generation_budget_status())
         if path == "/api/tenant/session":
@@ -2865,12 +2909,24 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/storage":
             try:
                 storage = provider_catalog.save_storage_config(body)
+                store.record_audit_event(
+                    "storage.update",
+                    actor=(self._current_session() or {}).get("account_username", ""),
+                    target_type="storage",
+                    details={"provider": storage.get("provider"), "enabled": storage.get("enabled")},
+                )
                 return self._send(200, {"ok": True, "storage": storage})
             except ValueError as exc:
                 return self._send(400, {"error": str(exc)})
         if path == "/api/budget":
             try:
                 provider_catalog.save_budget_config(body)
+                store.record_audit_event(
+                    "budget.update",
+                    actor=(self._current_session() or {}).get("account_username", ""),
+                    target_type="budget",
+                    details={"budget": provider_catalog.budget_config()},
+                )
                 return self._send(200, {"ok": True, **generation_budget_status()})
             except (TypeError, ValueError) as exc:
                 return self._send(400, {"error": str(exc)})
@@ -2895,6 +2951,13 @@ class Handler(BaseHTTPRequestHandler):
             title = body.get("title") or "未命名画布"
             with PROJECT_WRITE_LOCK:
                 pid = canvas_repository.repository.create_project(title)
+            store.record_audit_event(
+                "project.create",
+                actor=(self._current_session() or {}).get("account_username", ""),
+                target_type="project",
+                target_id=pid,
+                details={"title": title},
+            )
             return self._send(200, {"id": pid, "title": title})
         m = re.match(r"^/api/projects/([^/]+)/versions/([^/]+)/restore$", path)
         if m:
@@ -2996,10 +3059,23 @@ class Handler(BaseHTTPRequestHandler):
                             return self._send(400, {"error": str(exc)})
             if not catalog_changed:
                 provider_catalog.save_config(cfg)
+            store.record_audit_event(
+                "config.update",
+                actor=(self._current_session() or {}).get("account_username", ""),
+                target_type="config",
+                details={"catalogChanged": catalog_changed},
+            )
             return self._send(200, provider_catalog.config_status())
         if path == "/api/providers":
             try:
-                return self._send(200, provider_catalog.upsert_provider(body))
+                result = provider_catalog.upsert_provider(body)
+                store.record_audit_event(
+                    "provider.update",
+                    actor=(self._current_session() or {}).get("account_username", ""),
+                    target_type="provider",
+                    target_id=str(body.get("id") or (body.get("provider") or {}).get("id") or ""),
+                )
+                return self._send(200, result)
             except ValueError as exc:
                 return self._send(400, {"error": str(exc)})
         if path == "/api/providers/test":
@@ -3007,7 +3083,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, provider_catalog.test_provider(provider_id))
         if path == "/api/models":
             try:
-                return self._send(200, provider_catalog.upsert_model(body))
+                result = provider_catalog.upsert_model(body)
+                store.record_audit_event(
+                    "model.update",
+                    actor=(self._current_session() or {}).get("account_username", ""),
+                    target_type="model",
+                    target_id=str(body.get("id") or (body.get("model") or {}).get("id") or ""),
+                )
+                return self._send(200, result)
             except ValueError as exc:
                 return self._send(400, {"error": str(exc)})
         if path == "/api/config/test":
@@ -3075,6 +3158,18 @@ class Handler(BaseHTTPRequestHandler):
                 issue_payload = [canvas_feed_contract.issue_dict(item) for item in plan.errors]
                 warning_payload = [canvas_feed_contract.issue_dict(item) for item in plan.warnings]
                 if plan.errors:
+                    store.record_audit_event(
+                        "import.validate",
+                        actor=(self._current_session() or {}).get("account_username", ""),
+                        target_type="project",
+                        target_id=pid,
+                        status="failed",
+                        details={
+                            "preview": preview_only,
+                            "episodeId": plan.episode_id,
+                            "errors": len(plan.errors),
+                        },
+                    )
                     return self._send(422, {
                         "error": "导入校验失败，项目未被修改",
                         "code": "FEED_VALIDATION_FAILED",
@@ -3125,6 +3220,19 @@ class Handler(BaseHTTPRequestHandler):
                     })
                 payload = plan.merged_payload
                 readiness = import_feed.episode_readiness(payload, plan.episode_id)
+                store.record_audit_event(
+                    "import.commit",
+                    actor=(self._current_session() or {}).get("account_username", ""),
+                    target_type="project",
+                    target_id=pid,
+                    details={
+                        "episodeId": plan.episode_id,
+                        "revision": commit_result["revision"],
+                        "nodes": len(payload["nodes"]),
+                        "connections": len(payload["connections"]),
+                        "warnings": len(warning_payload),
+                    },
+                )
             return self._send(200, {
                 "ok": True,
                 "id": pid,
@@ -3224,6 +3332,21 @@ class Handler(BaseHTTPRequestHandler):
                         "taskId": task.get("id"),
                         "providerTaskId": task.get("provider_task_id"),
                     })
+                store.record_audit_event(
+                    "generation.submit",
+                    actor=(self._current_session() or {}).get("account_username", ""),
+                    target_type="generation_task",
+                    target_id=str(task.get("id") or ""),
+                    details={
+                        "projectId": pid,
+                        "nodeId": node["id"],
+                        "kind": node.get("type"),
+                        "provider": task.get("provider"),
+                        "model": task.get("model"),
+                        "estimatedCost": task.get("estimated_cost"),
+                        "currency": task.get("cost_currency"),
+                    },
+                )
             provider_key = str(
                 task.get("provider")
                 or params.get("provider")
@@ -3705,7 +3828,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "nodeId": nid, "nodes": len(remain)})
         m = re.match(r"^/api/projects/([^/]+)$", path)
         if m:
-            store.delete_project(unquote(m.group(1)))
+            deleted_id = unquote(m.group(1))
+            store.delete_project(deleted_id)
+            store.record_audit_event(
+                "project.delete",
+                actor=(self._current_session() or {}).get("account_username", ""),
+                target_type="project",
+                target_id=deleted_id,
+            )
             return self._send(200, {"ok": True})
         return self._send(404, {"error": "not found"})
 
@@ -4332,6 +4462,19 @@ class Handler(BaseHTTPRequestHandler):
                     finished_at=store._now_iso(),
                 )
             status = _generation_error_status(exc)
+            store.record_audit_event(
+                "generation.complete",
+                target_type="generation_task",
+                target_id=str(task_id or node["id"]),
+                status="failed",
+                details={
+                    "projectId": pid,
+                    "nodeId": node["id"],
+                    "kind": ntype,
+                    "httpStatus": status,
+                    "error": str(exc)[:500],
+                },
+            )
             return self._send(status, {
                 "error": str(exc),
                 "code": "GENERATION_INPUT_INVALID" if status == 400 else "GENERATION_PROVIDER_ERROR",
@@ -4379,6 +4522,19 @@ class Handler(BaseHTTPRequestHandler):
                 error="", provider_task_id=str(result.get("taskId") or ""),
                 finished_at=store._now_iso(),
             )
+        store.record_audit_event(
+            "generation.complete",
+            target_type="generation_task",
+            target_id=str(task_id or node["id"]),
+            status="success",
+            details={
+                "projectId": pid,
+                "nodeId": node["id"],
+                "kind": ntype,
+                "provider": provider.get("id"),
+                "model": model.get("id"),
+            },
+        )
         response = {"nodeId": node["id"], "url": meta.get("content"), "status": "done"}
         if ntype == "text":
             response["text"] = meta.get("prompt")
