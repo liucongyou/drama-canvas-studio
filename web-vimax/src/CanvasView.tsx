@@ -7614,6 +7614,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const groupsRef = useRef<CanvasGroup[]>([]);
   groupsRef.current = groups;   // persistLayout 里要读最新值（不能挂 deps，会连锁重建回调）
   const viewportRef = useRef({x: 0, y: 0, zoom: 1});
+  const overviewReturnViewportRef = useRef<CanvasViewport | null>(null);
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadPersistedLayout = useCallback(() => {
@@ -12891,6 +12892,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
 
   const fitView = useCallback(() => {
     if (shouldUseLargeCanvasOverview(mediaNodes)) {
+      overviewReturnViewportRef.current = viewportRef.current;
       setLargeCanvasOverview(true);
       return;
     }
@@ -12898,8 +12900,47 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [fitCanvas, mediaNodes]);
   const focusWorkspace = useCallback(() => {
     setLargeCanvasOverview(false);
-    window.requestAnimationFrame(() => fitCanvas({animate: true, focus: true}));
-  }, [fitCanvas]);
+    window.requestAnimationFrame(() => {
+      const flowNodes = rf.getNodes();
+      if (flowNodes.length === 0) {
+        rf.zoomTo(0.5, {duration: 220});
+        return;
+      }
+      const host = document.querySelector('.react-flow') as HTMLElement | null;
+      const center = rf.screenToFlowPosition({
+        x: (host?.clientWidth || window.innerWidth) / 2,
+        y: (host?.clientHeight || window.innerHeight) / 2,
+      });
+      const selected = flowNodes.filter((node) => node.selected);
+      const candidates = selected.length > 0 ? selected : flowNodes;
+      const target = candidates.reduce((best, node) => {
+        const absolute = absolutePositionOf(node.id, flowNodes) ?? node.position;
+        const width = node.measured?.width ?? node.width ?? 0;
+        const height = node.measured?.height ?? node.height ?? 0;
+        const distance = Math.hypot(
+          absolute.x + width / 2 - center.x,
+          absolute.y + height / 2 - center.y,
+        );
+        return !best || distance < best.distance ? {node, absolute, distance} : best;
+      }, null as {node: (typeof flowNodes)[number]; absolute: {x: number; y: number}; distance: number} | null);
+      if (!target) return;
+      const width = target.node.measured?.width ?? target.node.width ?? 0;
+      const height = target.node.measured?.height ?? target.node.height ?? 0;
+      rf.setCenter(
+        target.absolute.x + width / 2,
+        target.absolute.y + height / 2,
+        {zoom: 0.5, duration: 280},
+      );
+    });
+  }, [rf]);
+  const returnFromOverview = useCallback(() => {
+    const viewport = overviewReturnViewportRef.current;
+    setLargeCanvasOverview(false);
+    window.requestAnimationFrame(() => {
+      if (viewport) rf.setViewport(viewport, {duration: 180});
+      else fitCanvas({animate: true, focus: true});
+    });
+  }, [fitCanvas, rf]);
   const focusOverviewNode = useCallback((node: CanvasMediaNode) => {
     const zoom = 0.8;
     setLargeCanvasOverview(false);
@@ -13684,7 +13725,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               nodes={mediaNodes}
               edges={edges}
               onFocus={focusOverviewNode}
-              onClose={focusWorkspace}
+              onClose={returnFromOverview}
             />
           )}
           <div className="canvas-bg-switch" title="画布底纹">
