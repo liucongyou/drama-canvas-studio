@@ -1226,6 +1226,30 @@ def provider_key(provider: dict[str, Any]) -> str:
     return str(provider.get("api_key") or "").strip()
 
 
+def classify_provider_failure(status: int, detail: str) -> str:
+    """Return the shared contract failure kind for any provider response."""
+    text = str(detail or "")
+    lowered = text.lower()
+    balance_markers = ("overdue", "balance", "insufficient", "quota", "欠费", "余额", "额度")
+    auth_markers = ("invalid api key", "invalid token", "unauthorized", "无效的令牌", "鉴权", "令牌")
+    if status == 402:
+        return "balance"
+    if status == 401:
+        return "auth"
+    if status == 403:
+        if any(marker in lowered or marker in text for marker in balance_markers):
+            return "balance"
+        if any(marker in lowered or marker in text for marker in auth_markers):
+            return "auth"
+    if status == 429:
+        return "rate_limit"
+    if status in (404, 405):
+        return "probe_missing"
+    if status >= 500:
+        return "upstream"
+    return "unknown"
+
+
 class ProviderRequestTimeoutError(RuntimeError):
     """Raised when a provider request exceeds the configured probe timeout."""
 
@@ -1325,7 +1349,30 @@ def test_provider(provider_id: str) -> dict[str, Any]:
         ) or ""
     except Exception:
         detail = text[:240]
-    if status in (404, 405) and protocol in {"ark", "dashscope"}:
+    failure_kind = classify_provider_failure(status, detail)
+    if failure_kind == "balance":
+        reason = detail or "账户余额或额度不足"
+        return {
+            "ok": False,
+            "message": (
+                f"账户余额或额度不足（HTTP {status}）：{reason}。"
+                "请先核对供应商账户余额与 Key 权限，再重新生成。"
+            ),
+            "elapsedMs": elapsed,
+            "balanceFailed": True,
+        }
+    if failure_kind == "auth":
+        reason = detail or "无效的令牌"
+        return {
+            "ok": False,
+            "message": (
+                f"鉴权失败（HTTP {status}）：{reason}。"
+                "请在「模型接口」中更新该供应商的 API Key 后重新测试。"
+            ),
+            "elapsedMs": elapsed,
+            "authFailed": True,
+        }
+    if failure_kind == "probe_missing" and protocol in {"ark", "dashscope"}:
         return {
             "ok": False,
             "message": (

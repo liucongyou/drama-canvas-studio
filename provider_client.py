@@ -78,6 +78,7 @@ _SEEDREAM_SAFE_SIZES = {
     "3:4": "1152x1536",
     "21:9": "1536x658",
 }
+SUBMIT_TIMEOUT_SECONDS = 45
 
 
 def _safe_seedream_size(size: Any, ratio: Any) -> str:
@@ -1021,7 +1022,7 @@ def _agnes_image(
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
         body,
-        timeout=360,
+        timeout=SUBMIT_TIMEOUT_SECONDS,
     )
     return _parse_image_result(response, provider)
 
@@ -1142,7 +1143,7 @@ def _agnes_video(
         _join_url(provider["base_url"], "/videos"),
         key,
         body,
-        timeout=180,
+        timeout=SUBMIT_TIMEOUT_SECONDS,
     )
     video_id = str(response.get("video_id") or _task_id(response)).strip()
     if not video_id:

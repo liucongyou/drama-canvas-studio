@@ -582,6 +582,9 @@ function friendlyRequestError(status: number, raw: string): string {
   if (lower.includes('insufficient') || lower.includes('balance') || lower.includes('quota') || text.includes('余额') || text.includes('额度') || text.includes('欠费')) {
     return '供应商账户余额或额度不足。请先检查对应供应商账户与 API Key，再重新生成。';
   }
+  if (lower.includes('read operation timed out') || lower.includes('timed out')) {
+    return '供应商提交接口超时，未取得任务 ID。系统已结束本次提交，请先更新对应供应商 API Key 并测试连接，再重新生成。';
+  }
   if (lower.includes('auth') || lower.includes('invalid api key') || status === 401 || status === 403) {
     return '供应商鉴权失败。请在「模型接口」中检查 API Key、工作空间和模型权限。';
   }

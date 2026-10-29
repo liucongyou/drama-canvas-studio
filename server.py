@@ -75,6 +75,8 @@ PROJECT_LOCKS_GUARD = canvas_repository.PROJECT_LOCKS_GUARD
 GENERATION_BUDGET_LOCK = threading.RLock()
 GENERATION_INFLIGHT: set[tuple[str, str]] = set()
 GENERATION_INFLIGHT_LOCK = threading.Lock()
+_PROVIDER_AUTH_CACHE: dict[tuple[str, str, str], tuple[float, str]] = {}
+_PROVIDER_AUTH_CACHE_LOCK = threading.Lock()
 RESUMED_VIDEO_TASKS: set[tuple[str, str]] = set()
 RESUMED_VIDEO_TASKS_LOCK = threading.Lock()
 GENERATION_QUEUE_CONDITION = threading.Condition()
@@ -1197,6 +1199,75 @@ def _generation_error_status(exc):
     return 500
 
 
+def ensure_provider_auth(provider):
+    """Run a non-billing auth probe before a paid provider submission.
+
+    A generation request must never spend time waiting for a task id when the
+    configured key is already known to be invalid. The probe uses the same
+    /models endpoint as the settings test and is cached per tenant/provider for
+    a short window so batch generation does not hammer the provider.
+    """
+    provider_id = str((provider or {}).get("id") or "").strip()
+    if not provider_id:
+        return
+    key = provider_catalog.provider_key(provider)
+    if not key:
+        raise RuntimeError(
+            f"供应商 {provider_id} 尚未配置 API Key。"
+            "请在「模型接口」中填写并测试连接后再生成。"
+        )
+    tenant_id = tenant_context.current_tenant_id()
+    cache_key = (
+        str(tenant_id or "legacy"),
+        provider_id,
+        str((provider or {}).get("base_url") or ""),
+        key[-8:],
+    )
+    now = time.time()
+    with _PROVIDER_AUTH_CACHE_LOCK:
+        cached = _PROVIDER_AUTH_CACHE.get(cache_key)
+        if cached and cached[0] > now:
+            if cached[1] == "auth_failed":
+                raise RuntimeError(
+                    f"供应商 {provider_id} 鉴权失败。"
+                    "请在「模型接口」中更新 API Key 后重新测试。"
+                )
+            if cached[1] == "balance_failed":
+                raise RuntimeError(
+                    f"供应商 {provider_id} 账户余额或额度不足。"
+                    "请先充值或调整额度后再生成。"
+                )
+            return
+    result = provider_catalog.test_provider(provider_id)
+    failed = bool(result.get("authFailed"))
+    balance_failed = bool(result.get("balanceFailed"))
+    probe_missing = bool(result.get("probeMissing"))
+    message = str(result.get("message") or "")
+    if not result.get("ok") and ("HTTP 401" in message or "HTTP 403" in message):
+        failed = True
+    ttl = 15 if (failed or balance_failed) else 60
+    with _PROVIDER_AUTH_CACHE_LOCK:
+        _PROVIDER_AUTH_CACHE[cache_key] = (
+            now + ttl,
+            "auth_failed" if failed else ("balance_failed" if balance_failed else "ok"),
+        )
+    # A missing probes endpoint is not an auth failure. Ark/DashScope and some
+    # relays intentionally expose no /models route; the real generation call
+    # must still run and report its own provider error.
+    if probe_missing:
+        return
+    if balance_failed:
+        raise RuntimeError(
+            f"供应商 {provider_id} 账户余额或额度不足：{message or '请检查供应商账户余额'}。"
+            "充值或调整额度后重试。"
+        )
+    if failed:
+        raise RuntimeError(
+            f"供应商 {provider_id} 鉴权失败：{message or 'API Key 无效'}。"
+            "请在「模型接口」中更新 API Key 后重试。"
+        )
+
+
 LOCAL_VALIDATION_MARKERS = (
     "参考素材未就绪",
     "参考素材缺失",
@@ -1482,6 +1553,37 @@ def reconcile_generation_task_records():
         node = nodes.get((task.get("project_id"), task.get("node_id")))
         meta = (node or {}).get("metadata") or {}
         node_status = str(meta.get("status") or "")
+        if (
+            node_status == "generating"
+            and not str(task.get("provider_task_id") or "").strip()
+            and str(task.get("phase") or "") in {"准备提交", "提交供应商"}
+        ):
+            # A submit request that never produced a provider task id is not a
+            # durable worker: process restarts, hung sockets, or a killed
+            # request leave it looking "running" forever. Submit timeouts are
+            # short; after that grace period it is safe to release the node for
+            # an explicit retry instead of showing a ghost task.
+            updated_raw = str(task.get("updated_at") or task.get("started_at") or task.get("created_at") or "")
+            try:
+                updated_at = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - updated_at).total_seconds()
+            except (TypeError, ValueError):
+                age = 999
+            if age >= max(90, provider_client.SUBMIT_TIMEOUT_SECONDS + 30):
+                error = "提交供应商超时，未取得供应商任务 ID。请检查网络/供应商状态后重试。"
+                store.update_generation_task(
+                    task["id"], status="interrupted", phase="提交超时",
+                    error=error, finished_at=store._now_iso(),
+                )
+                commit_node_metadata(task["project_id"], task["node_id"], {
+                    "status": "failed",
+                    "lastError": error,
+                    "providerTaskStatus": "interrupted",
+                    "providerTaskPhase": "提交超时",
+                    "generationFinishedAt": store._now_iso(),
+                })
+                reconciled += 1
+                continue
         fields = None
         if not node:
             fields = {
@@ -4378,6 +4480,7 @@ class Handler(BaseHTTPRequestHandler):
                     status="running", phase="提交供应商", progress=15,
                     error="", finished_at="",
                 )
+            ensure_provider_auth(provider)
             effective = {**(model.get("defaultParams") or {}), **params}
             for key in ("ratio", "resolution", "duration", "guidance", "size", "system", "temperature", "maxTokens"):
                 if effective.get(key) in (None, "") and meta.get(key) not in (None, ""):

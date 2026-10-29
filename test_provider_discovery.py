@@ -42,6 +42,23 @@ class ProviderDiscoveryTests(unittest.TestCase):
             "models": [],
         }
 
+    def test_provider_failure_classification_is_shared_across_providers(self):
+        cases = [
+            (401, "invalid token", "auth"),
+            (403, "invalid api key", "auth"),
+            (403, "account overdue balance", "balance"),
+            (402, "quota exhausted", "balance"),
+            (429, "rate limited", "rate_limit"),
+            (503, "upstream unavailable", "upstream"),
+            (405, "probe missing", "probe_missing"),
+        ]
+        for status, detail, expected in cases:
+            with self.subTest(status=status, detail=detail):
+                self.assertEqual(
+                    provider_catalog.classify_provider_failure(status, detail),
+                    expected,
+                )
+
     def discover(self, payload: str):
         with (
             tenant_context.use_tenant("alpha", "alpha"),
@@ -105,6 +122,37 @@ class ProviderDiscoveryTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(result["timeout"])
         self.assertIn("响应超时", result["message"])
+
+    def test_provider_auth_failure_is_actionable(self):
+        with (
+            tenant_context.use_tenant("alpha", "alpha"),
+            patch.object(provider_catalog, "load_config", return_value=self.config),
+            patch.object(
+                provider_catalog,
+                "_request_status",
+                return_value=(401, '{"error":{"message":"无效的令牌"}}'),
+            ),
+        ):
+            result = provider_catalog.test_provider("demo")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["authFailed"])
+        self.assertIn("鉴权失败", result["message"])
+        self.assertIn("更新", result["message"])
+
+    def test_provider_balance_failure_is_actionable(self):
+        with (
+            tenant_context.use_tenant("alpha", "alpha"),
+            patch.object(provider_catalog, "load_config", return_value=self.config),
+            patch.object(
+                provider_catalog,
+                "_request_status",
+                return_value=(403, '{"error":{"message":"account overdue balance"}}'),
+            ),
+        ):
+            result = provider_catalog.test_provider("demo")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["balanceFailed"])
+        self.assertIn("余额", result["message"])
 
     def test_request_status_uses_bounded_read_when_requested(self):
         response = _FakeResponse()

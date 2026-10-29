@@ -13,6 +13,9 @@ import provider_client
 
 
 class ProviderCatalogTests(unittest.TestCase):
+    def test_provider_submit_timeout_is_short_enough_for_interactive_retry(self):
+        self.assertLessEqual(provider_client.SUBMIT_TIMEOUT_SECONDS, 60)
+
     def test_required_models_are_registered(self):
         catalog = provider_catalog.public_catalog()
         ids = {model["id"] for model in catalog["models"]}

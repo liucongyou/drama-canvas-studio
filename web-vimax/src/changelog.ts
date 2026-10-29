@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.15';
+export const APP_VERSION = '2026.10.29.16';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.16',
+    date: '2026-10-29',
+    title: '生成前鉴权预检与提交超时收口',
+    changes: [
+      '生成前先对当前供应商做非计费鉴权预检，API Key 无效或余额不足时直接拦截，不再进入付费提交。',
+      '供应商提交阶段超时缩短到 45 秒；未取得任务 ID 的任务会自动结束并释放节点，避免一直显示生产中。',
+      '鉴权失败、余额不足和提交超时分别给出中文可执行提示，任务中心不再用英文超时文案。',
+    ],
+  },
   {
     version: '2026.10.29.15',
     date: '2026-10-29',

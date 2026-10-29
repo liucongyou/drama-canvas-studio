@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -155,6 +156,97 @@ class GenerationQueueTests(unittest.TestCase):
             self.assertTrue(server.preserve_generation_outcome("task-1", RuntimeError("response write failed")))
         with patch.object(server.store, "get_generation_task", return_value={"status": "failed"}):
             self.assertFalse(server.preserve_generation_outcome("task-1", RuntimeError("provider failed")))
+
+    def test_submit_timeout_releases_ghost_task_without_provider_id(self):
+        project_id = "project-ghost"
+        node_id = "node-ghost"
+        node = {
+            "id": node_id,
+            "type": "image",
+            "title": "道具｜告示（图15）",
+            "metadata": {
+                "status": "generating",
+                "provider": "agnes-ai",
+                "model": "agnes-image-2.5-flash",
+                "providerTaskStatus": "submitting",
+                "providerTaskPhase": "提交供应商",
+            },
+        }
+        stale = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat().replace("+00:00", "Z")
+        task = {
+            "id": "task-ghost",
+            "project_id": project_id,
+            "node_id": node_id,
+            "status": "running",
+            "phase": "提交供应商",
+            "provider_task_id": "",
+            "created_at": stale,
+            "started_at": stale,
+            "updated_at": stale,
+        }
+        update_task = unittest.mock.Mock()
+        commit = unittest.mock.Mock()
+        with patch.object(server.store, "list_projects", return_value=[{"id": project_id}]), \
+                patch.object(server.store, "get_project", return_value={"id": project_id, "payload": {"nodes": [node]}}), \
+                patch.object(server.store, "list_generation_tasks", return_value=[task]), \
+                patch.object(server.store, "update_generation_task", update_task), \
+                patch.object(server, "commit_node_metadata", commit):
+            reconciled = server.reconcile_generation_task_records()
+        self.assertEqual(reconciled, 1)
+        update_task.assert_called_once()
+        self.assertEqual(update_task.call_args.kwargs["status"], "interrupted")
+        self.assertEqual(update_task.call_args.kwargs["phase"], "提交超时")
+        commit.assert_called_once()
+        self.assertEqual(commit.call_args.args[2]["status"], "failed")
+        self.assertEqual(commit.call_args.args[2]["providerTaskPhase"], "提交超时")
+
+    def test_generation_preflight_blocks_invalid_provider_key(self):
+        server._PROVIDER_AUTH_CACHE.clear()
+        provider = {
+            "id": "agnes-ai",
+            "base_url": "https://api.agnes-ai.cn/v1",
+            "api_key": "invalid-test-key",
+        }
+        with patch.object(
+            server.provider_catalog,
+            "test_provider",
+            return_value={
+                "ok": False,
+                "authFailed": True,
+                "message": "鉴权失败（HTTP 401）：无效的令牌",
+            },
+        ):
+            with self.assertRaisesRegex(RuntimeError, "鉴权失败"):
+                server.ensure_provider_auth(provider)
+            # The failed result is cached, so batch retries fail immediately
+            # without probing the provider again.
+            with self.assertRaisesRegex(RuntimeError, "鉴权失败"):
+                server.ensure_provider_auth(provider)
+
+    def test_generation_preflight_blocks_missing_provider_key(self):
+        server._PROVIDER_AUTH_CACHE.clear()
+        with self.assertRaisesRegex(RuntimeError, "尚未配置 API Key"):
+            server.ensure_provider_auth({"id": "agnes-ai", "base_url": "https://api.agnes-ai.cn/v1"})
+
+    def test_generation_preflight_cache_is_scoped_to_key(self):
+        server._PROVIDER_AUTH_CACHE.clear()
+        calls = []
+
+        def test_provider(provider_id):
+            calls.append(provider_id)
+            return {"ok": True, "message": "连接成功"}
+
+        with patch.object(server, "tenant_context") as tenant_context_mock, \
+                patch.object(server.provider_catalog, "provider_key", return_value="key-old"), \
+                patch.object(server.provider_catalog, "test_provider", side_effect=test_provider):
+            tenant_context_mock.current_tenant_id.return_value = "tenant-1"
+            server.ensure_provider_auth({"id": "agnes-ai", "base_url": "https://api.agnes-ai.cn/v1"})
+        with patch.object(server, "tenant_context") as tenant_context_mock, \
+                patch.object(server.provider_catalog, "provider_key", return_value="key-new"), \
+                patch.object(server.provider_catalog, "test_provider", side_effect=test_provider):
+            tenant_context_mock.current_tenant_id.return_value = "tenant-1"
+            server.ensure_provider_auth({"id": "agnes-ai", "base_url": "https://api.agnes-ai.cn/v1"})
+        self.assertEqual(calls, ["agnes-ai", "agnes-ai"])
 
     def test_local_validation_and_provider_failures_are_classified_separately(self):
         self.assertTrue(server.is_local_validation_error("参考素材未就绪 2 项：角色未生成"))
@@ -559,7 +651,7 @@ class GenerationQueueTests(unittest.TestCase):
             },
         }
         project = {"payload": {"nodes": [node]}}
-        provider = {"id": "ark"}
+        provider = {"id": "ark", "api_key": "test-key", "base_url": "https://ark.example/api/v3"}
         model = {
             "id": "seedream",
             "remoteModel": "doubao-seedream",
@@ -574,6 +666,15 @@ class GenerationQueueTests(unittest.TestCase):
 
         with (
             patch.object(server.provider_catalog, "resolve_model", return_value=(provider, model, {})),
+            patch.object(
+                server.provider_catalog,
+                "test_provider",
+                return_value={
+                    "ok": False,
+                    "probeMissing": True,
+                    "message": "接口可达但无 /models 探针",
+                },
+            ),
             patch.object(server.provider_client, "generate_image", return_value={"url": "https://provider/result.png"}),
             patch.object(server, "persist_generated_media", return_value="/uploads/generated.png"),
             patch.object(server, "archive_generated_image", return_value=None),

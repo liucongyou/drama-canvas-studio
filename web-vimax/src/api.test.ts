@@ -110,6 +110,20 @@ describe('api request recovery', () => {
     expect(message).not.toContain('参考素材不符合');
   });
 
+  it('maps provider submit timeouts to an actionable retry message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: '供应商接口连接失败：The read operation timed out',
+    }), {
+      status: 504,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    const message = await getModelCatalog().catch((error) => String(error));
+    expect(message).toContain('未取得任务 ID');
+    expect(message).toContain('测试连接');
+    expect(message).not.toContain('The read operation timed out');
+  });
+
   it('keeps account login errors separate from provider auth failures', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       error: '账号或密码错误',
