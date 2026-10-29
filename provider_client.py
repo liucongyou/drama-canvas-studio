@@ -1340,7 +1340,7 @@ def _agnes_video(
         _join_url(provider["base_url"], "/videos"),
         key,
         body,
-        timeout=SUBMIT_TIMEOUT_SECONDS,
+        timeout=120,
         on_task_update=on_task_update,
     )
     video_id = str(response.get("video_id") or _task_id(response)).strip()
