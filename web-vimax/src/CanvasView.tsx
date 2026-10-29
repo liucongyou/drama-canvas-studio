@@ -4510,40 +4510,42 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
               <input
                 value={modelSearch}
                 onChange={(event) => setModelSearch(event.target.value)}
-                placeholder="搜索模型或供应商"
+                placeholder={`搜索模型或供应商（${visibleModelOptions.length}/${modelOptions.length}）`}
                 aria-label="搜索模型"
                 autoFocus
               />
               {modelSearch && <button type="button" onClick={() => setModelSearch('')} aria-label="清空模型搜索"><X size={10} /></button>}
             </div>
-            {visibleModelOptions.map((m) => {
-              const favorite = favoriteModelIds.includes(m.id);
-              return (
-                <div key={m.id} className="jim-model-row">
-                  <button type="button" className={`jim-model-item ${curModel === m.id ? 'is-active' : ''}`} onClick={() => selectModel(m)}>
-                    <span className="jim-model-name">
-                      {favorite && <Star size={10} fill="currentColor" aria-hidden="true" />}
-                      {m.label || MODEL_META[m.id]?.label || m.id}
-                      <i className="jim-model-badge">{m.badge || MODEL_META[m.id]?.badge || 'M'}</i>
-                    </span>
-                    <span className="jim-model-desc">{m.description || MODEL_META[m.id]?.desc || m.remoteModel}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`jim-model-favorite ${favorite ? 'is-active' : ''}`}
-                    title={favorite ? '取消收藏' : '收藏模型'}
-                    aria-label={favorite ? '取消收藏模型' : '收藏模型'}
-                    onClick={() => {
-                      const next = favorite ? favoriteModelIds.filter((id) => id !== m.id) : [m.id, ...favoriteModelIds];
-                      setFavoriteModelIds(next);
-                      writeStoredStringArray(MODEL_FAVORITES_KEY, next);
-                    }}
-                  >
-                    <Star size={11} fill={favorite ? 'currentColor' : 'none'} strokeWidth={1.8} aria-hidden="true" />
-                  </button>
-                </div>
-              );
-            })}
+            <div className="jim-model-list">
+              {visibleModelOptions.map((m) => {
+                const favorite = favoriteModelIds.includes(m.id);
+                return (
+                  <div key={m.id} className="jim-model-row">
+                    <button type="button" className={`jim-model-item ${curModel === m.id ? 'is-active' : ''}`} onClick={() => selectModel(m)}>
+                      <span className="jim-model-name">
+                        {favorite && <Star size={10} fill="currentColor" aria-hidden="true" />}
+                        {m.label || MODEL_META[m.id]?.label || m.id}
+                        <i className="jim-model-badge">{m.badge || MODEL_META[m.id]?.badge || 'M'}</i>
+                      </span>
+                      <span className="jim-model-desc">{m.description || MODEL_META[m.id]?.desc || m.remoteModel}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`jim-model-favorite ${favorite ? 'is-active' : ''}`}
+                      title={favorite ? '取消收藏' : '收藏模型'}
+                      aria-label={favorite ? '取消收藏模型' : '收藏模型'}
+                      onClick={() => {
+                        const next = favorite ? favoriteModelIds.filter((id) => id !== m.id) : [m.id, ...favoriteModelIds];
+                        setFavoriteModelIds(next);
+                        writeStoredStringArray(MODEL_FAVORITES_KEY, next);
+                      }}
+                    >
+                      <Star size={11} fill={favorite ? 'currentColor' : 'none'} strokeWidth={1.8} aria-hidden="true" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
             {visibleModelOptions.length === 0 && <div className="jim-model-empty">没有匹配模型</div>}
           </div>
         )}

@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.12';
+export const APP_VERSION = '2026.10.29.13';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.13',
+    date: '2026-10-29',
+    title: '模型下拉显示数量与滚动',
+    changes: [
+      '模型下拉固定最大高度并启用内部滚动，图片模型的 23 个选项不再被弹层裁掉。',
+      '搜索框显示当前类型筛选数量，例如 23/176，和历史使用、收藏一起排序。',
+      '模型列表与搜索、收藏状态保持同一数据源，不再出现只看到少量模型的错觉。',
+    ],
+  },
   {
     version: '2026.10.29.12',
     date: '2026-10-29',
