@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.6';
+export const APP_VERSION = '2026.10.29.7';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.7',
+    date: '2026-10-29',
+    title: '模型发现搜索与筛选导入',
+    changes: [
+      '拉取模型后可按名称、模型 ID、能力和适配器即时搜索。',
+      '导入按钮显示当前筛选结果中可添加的数量，只导入筛出的模型。',
+      '无匹配结果时给出空状态，不再需要在长列表中手动滚动查找。',
+    ],
+  },
   {
     version: '2026.10.29.6',
     date: '2026-10-29',
