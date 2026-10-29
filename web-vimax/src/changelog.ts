@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.17';
+export const APP_VERSION = '2026.10.29.18';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.18',
+    date: '2026-10-29',
+    title: '历史英文错误也统一中文化',
+    changes: [
+      '数据进入画布前统一转换历史任务里的英文错误，旧任务也不会再显示 The read/write operation timed out。',
+      '提交超时统一说明为“未创建供应商任务（没有任务 ID）”，并给出测试连接后重试的处理方式。',
+      '鉴权失败、余额不足、限流、模型无通道继续使用同一套中文错误映射。',
+    ],
+  },
   {
     version: '2026.10.29.17',
     date: '2026-10-29',

@@ -475,6 +475,28 @@ export type CanvasMediaNode = {
   params?: CanvasMediaParams;
 };
 
+export function friendlyMediaError(raw?: string): string {
+  const text = String(raw || '').trim();
+  const lower = text.toLowerCase();
+  if (!text) return '';
+  if (lower.includes('read operation timed out') || lower.includes('write operation timed out') || lower.includes('timed out')) {
+    return '提交阶段失败：未创建供应商任务（没有任务 ID）。请先测试供应商连接；确认可用后再重新生成。';
+  }
+  if (lower.includes('overdue') || lower.includes('insufficient') || lower.includes('balance') || lower.includes('quota') || text.includes('余额') || text.includes('欠费') || text.includes('额度')) {
+    return '供应商账户余额或额度不足。请先充值或更换供应商，再重新生成。';
+  }
+  if (lower.includes('invalid api key') || lower.includes('unauthorized') || lower.includes('forbidden') || text.includes('鉴权失败')) {
+    return '供应商鉴权失败。请检查 API Key、工作空间和模型权限。';
+  }
+  if (lower.includes('http 429') || lower.includes('rate limit') || lower.includes('too many') || text.includes('过于频繁')) {
+    return '供应商限流。请等待 30–60 秒后再试，不要连续重复提交。';
+  }
+  if (lower.includes('model_not_found') || lower.includes('no available channel') || text.includes('无可用通道')) {
+    return '供应商没有该模型的可用通道，请检查模型是否启用或分组路由是否正确。';
+  }
+  return text;
+}
+
 /**
  * 统一读取节点的「音色引用列表」。
  *
@@ -1104,7 +1126,7 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
     prompt: m.prompt || '',
     mediaUrl: previewUrl || undefined,
     status: ((m.status as string) || 'idle') as CanvasMediaNode['status'],
-    lastError: typeof m.lastError === 'string' ? m.lastError : undefined,
+    lastError: typeof m.lastError === 'string' ? (friendlyMediaError(m.lastError) || undefined) : undefined,
     generationStartedAt: typeof m.generationStartedAt === 'string' ? m.generationStartedAt : undefined,
     generationFinishedAt: typeof m.generationFinishedAt === 'string' ? m.generationFinishedAt : undefined,
     providerTaskStatus: typeof m.providerTaskStatus === 'string' ? m.providerTaskStatus : undefined,
