@@ -32,7 +32,7 @@ import subprocess
 import threading
 import time
 import urllib.parse
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from email.utils import formatdate
 from http.cookies import SimpleCookie
@@ -67,6 +67,8 @@ WEBAPP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web-vimax
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "uploads")
 PORT = 8890
 PROJECT_WRITE_LOCK = threading.RLock()
+PROJECT_LOCKS: dict[str, threading.RLock] = {}
+PROJECT_LOCKS_GUARD = threading.Lock()
 GENERATION_INFLIGHT: set[tuple[str, str]] = set()
 GENERATION_INFLIGHT_LOCK = threading.Lock()
 RESUMED_VIDEO_TASKS: set[tuple[str, str]] = set()
@@ -117,6 +119,22 @@ class RequestBoundaryError(ValueError):
         super().__init__(message)
         self.status = status
         self.code = code
+
+
+@contextmanager
+def project_write_lock(project_id: str):
+    key = str(project_id or "").strip()
+    if not key:
+        raise ValueError("project_id is required for project_write_lock")
+    with PROJECT_LOCKS_GUARD:
+        lock = PROJECT_LOCKS.setdefault(key, threading.RLock())
+    with lock:
+        yield
+
+
+def project_id_for_path(path: str) -> str:
+    match = re.match(r"^/api/projects/([^/]+)", str(path or ""))
+    return unquote(match.group(1)) if match else ""
 
 
 def _json_depth(value: Any, depth: int = 0) -> int:
@@ -696,7 +714,7 @@ def backfill_generated_video_validation():
     return updated
 def commit_node_metadata(project_id, node_id, updates):
     """Merge generated fields into the current node without overwriting peers."""
-    with PROJECT_WRITE_LOCK:
+    with project_write_lock(project_id):
         current = store.get_project(project_id)
         if not current:
             return False
@@ -2777,7 +2795,7 @@ class Handler(BaseHTTPRequestHandler):
             source = store.get_project(source_id)
             if not source:
                 return self._send(404, {"error": "项目不存在"})
-            with PROJECT_WRITE_LOCK:
+            with project_write_lock(source_id):
                 duplicated = json.loads(json.dumps(source["payload"], ensure_ascii=False))
                 title = str(body.get("title") or f"{source['title']} · 副本").strip()
                 new_id = store.create_project(title, duplicated)
@@ -2843,7 +2861,7 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             pid = unquote(m.group(1))
             preview_only = path.endswith("/import/preview")
-            with PROJECT_WRITE_LOCK:
+            with project_write_lock(pid):
                 proj = store.get_project(pid)
                 if not proj:
                     return self._send(404, {"error": "项目不存在"})
@@ -2982,7 +3000,7 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/projects/([^/]+)/notes$", path)
         if m:
             pid = unquote(m.group(1))
-            with PROJECT_WRITE_LOCK:
+            with project_write_lock(pid):
                 proj = store.get_project(pid)
                 if not proj:
                     return self._send(404, {"error": "项目不存在"})
@@ -3124,6 +3142,11 @@ class Handler(BaseHTTPRequestHandler):
             })
 
     def _do_put(self):
+        path = urlparse(self.path).path
+        project_id = project_id_for_path(path)
+        if project_id:
+            with project_write_lock(project_id):
+                return self._do_put_locked()
         with PROJECT_WRITE_LOCK:
             return self._do_put_locked()
 
@@ -3410,6 +3433,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._do_delete()
 
     def _do_delete(self):
+        path = urlparse(self.path).path
+        project_id = project_id_for_path(path)
+        if project_id:
+            with project_write_lock(project_id):
+                return self._do_delete_locked()
         with PROJECT_WRITE_LOCK:
             return self._do_delete_locked()
 

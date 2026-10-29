@@ -26,6 +26,7 @@ def _now_iso():
 _SCHEMA_READY = False
 _SCHEMA_READY_PATHS: set[str] = set()
 _SCHEMA_LOCK = __import__("threading").RLock()
+_WAL_READY_PATHS: set[str] = set()
 
 
 def _db_path() -> str:
@@ -48,6 +49,13 @@ def _connect():
     os.makedirs(os.path.dirname(path), exist_ok=True)
     con = sqlite3.connect(path, timeout=30)
     con.execute("PRAGMA busy_timeout=30000")
+    con.execute("PRAGMA foreign_keys=ON")
+    if path not in _WAL_READY_PATHS:
+        with _SCHEMA_LOCK:
+            if path not in _WAL_READY_PATHS:
+                con.execute("PRAGMA journal_mode=WAL")
+                con.execute("PRAGMA synchronous=NORMAL")
+                _WAL_READY_PATHS.add(path)
     if not _SCHEMA_READY or path not in _SCHEMA_READY_PATHS:
         with _SCHEMA_LOCK:
             con.execute(
