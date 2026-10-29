@@ -4,10 +4,12 @@ import {Braces, Check, ChevronDown, Plus, RefreshCw, Save, Trash2, X} from 'luci
 import {
   deleteModelConfig,
   deleteProviderConfig,
+  discoverProviderModels,
   getModelCatalog,
   saveModelConfig,
   saveProviderConfig,
   testProviderConfig,
+  type DiscoveredModelSpec,
   type ModelCatalog,
   type ModelParamSpec,
   type ModelPricing,
@@ -492,6 +494,9 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
   const [modelBusy, setModelBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [testState, setTestState] = useState<{ok: boolean; message: string} | null>(null);
+  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModelSpec[] | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoverMessage, setDiscoverMessage] = useState('');
   // 4 个自绘下拉共用一份"当前打开的是哪个"，保证同一时刻只开一个
   const [openSelect, setOpenSelect] = useState<'' | 'protocol' | 'providerId' | 'capability' | 'adapter'>('');
   const [detailKind, setDetailKind] = useState<'provider' | 'model'>('provider');
@@ -629,6 +634,8 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
     try {
       applyCatalog(await saveProviderConfig(provider));
       setProvider((current) => ({...current, api_key: ''}));
+      setDiscoveredModels(null);
+      setDiscoverMessage('');
       setDetailKind('provider');
       setStatus('供应商已保存');
       window.dispatchEvent(new CustomEvent('canvas-model-catalog-changed'));
@@ -674,6 +681,46 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
       setTestState(result);
     } catch (error) {
       setTestState({ok: false, message: error instanceof Error ? error.message : String(error)});
+    }
+  };
+
+  const loadProviderModels = async () => {
+    if (!provider.id) {
+      setDiscoverMessage('先保存供应商，再拉取模型');
+      return;
+    }
+    setDiscovering(true);
+    setDiscoverMessage('');
+    setDiscoveredModels(null);
+    try {
+      const result = await discoverProviderModels(provider.id);
+      setDiscoveredModels(result.models);
+      setDiscoverMessage(`发现 ${result.count} 个模型，请确认后导入`);
+    } catch (error) {
+      setDiscoverMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDiscovering(false);
+    }
+  };
+
+  const importDiscoveredModels = async () => {
+    if (!discoveredModels?.length || modelBusy) return;
+    setModelBusy(true);
+    setStatus('');
+    try {
+      let next = catalog;
+      for (const item of discoveredModels.filter((model) => !model.alreadyConfigured)) {
+        next = await saveModelConfig(item as unknown as Record<string, unknown>);
+      }
+      if (next) applyCatalog(next);
+      setStatus(`已导入 ${discoveredModels.filter((model) => !model.alreadyConfigured).length} 个模型`);
+      setDiscoveredModels(null);
+      setDiscoverMessage('');
+      window.dispatchEvent(new CustomEvent('canvas-model-catalog-changed'));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setModelBusy(false);
     }
   };
 
@@ -1041,10 +1088,14 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
                 <>
                   <button type="button" className="is-primary" onClick={() => void saveProvider()} disabled={providerBusy}><Save size={13} />{providerBusy ? '保存中…' : '保存供应商'}</button>
                   <button type="button" onClick={() => void testProvider()}>测试连接</button>
+                  <button type="button" onClick={() => void loadProviderModels()} disabled={discovering || providerBusy}>
+                    <RefreshCw size={13} />{discovering ? '拉取中…' : '拉取模型'}
+                  </button>
                   {provider.id && !catalog?.providers.find((item) => item.id === provider.id)?.builtin && (
                     <button type="button" className="is-danger" onClick={() => void removeProvider()}><Trash2 size={13} />删除</button>
                   )}
                   {testState && <span className={testState.ok ? 'is-ok' : 'is-error'}>{testState.message}</span>}
+                  {discoverMessage && <span className={discoveredModels ? 'is-ok' : 'is-error'}>{discoverMessage}</span>}
                 </>
               ) : (
                 <>
@@ -1058,6 +1109,30 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
             </div>
           </section>
         </div>
+        {discoveredModels && (
+          <div className="model-discover-panel">
+            <header>
+              <strong>发现 {discoveredModels.length} 个模型</strong>
+              <button type="button" onClick={() => setDiscoveredModels(null)} aria-label="关闭模型发现结果"><X size={13} /></button>
+            </header>
+            <div className="model-discover-list">
+              {discoveredModels.map((item) => (
+                <div key={`${item.providerId}:${item.remoteModel}`}>
+                  <span className={`model-settings-kind is-${item.capability}`}>{item.capability}</span>
+                  <span><strong>{item.label}</strong><small>{item.remoteModel} · {item.adapter}</small></span>
+                  <em>{item.alreadyConfigured ? '已配置' : '待导入'}</em>
+                </div>
+              ))}
+            </div>
+            <footer>
+              <span>导入后仍可在模型详情中编辑参数。</span>
+              <button type="button" onClick={() => setDiscoveredModels(null)}>取消</button>
+              <button type="button" className="is-primary" disabled={modelBusy || discoveredModels.every((item) => item.alreadyConfigured)} onClick={() => void importDiscoveredModels()}>
+                {modelBusy ? '导入中…' : '导入可添加的模型'}
+              </button>
+            </footer>
+          </div>
+        )}
       </section>
     </div>
   );

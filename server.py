@@ -3130,6 +3130,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, result)
             except ValueError as exc:
                 return self._send(400, {"error": str(exc)})
+        m = re.match(r"^/api/providers/([^/]+)/models$", path)
+        if m and self.command == "POST":
+            provider_id = unquote(m.group(1))
+            try:
+                return self._send(200, provider_catalog.discover_provider_models(provider_id))
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc), "code": "PROVIDER_MODELS_INVALID"})
+            except RuntimeError as exc:
+                return self._send(502, {"error": str(exc), "code": "PROVIDER_MODELS_FETCH_FAILED"})
         if path == "/api/providers/test":
             provider_id = str(body.get("providerId") or body.get("id") or "")
             return self._send(200, provider_catalog.test_provider(provider_id))

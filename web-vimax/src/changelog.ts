@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.3';
+export const APP_VERSION = '2026.10.29.4';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.4',
+    date: '2026-10-29',
+    title: '供应商模型自动发现',
+    changes: [
+      '供应商设置新增“拉取模型”，配置 API Key 后可直接读取远程模型列表。',
+      '自动推断模型能力、适配器和基础参数，并标记已配置模型，确认后才写入本地目录。',
+      '模型参数与计费规则继续支持可视化编辑，原始 JSON 保留在高级模式。',
+    ],
+  },
   {
     version: '2026.10.29.3',
     date: '2026-10-29',

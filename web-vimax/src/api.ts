@@ -300,6 +300,23 @@ export type ModelSpec = {
   builtin?: boolean;
 };
 
+export type DiscoveredModelSpec = {
+  id: string;
+  providerId: string;
+  capability: 'image' | 'video' | 'audio' | 'text';
+  adapter: string;
+  remoteModel: string;
+  label: string;
+  description: string;
+  badge: string;
+  enabled: boolean;
+  defaultParams: CanvasMediaParams;
+  params: Record<string, ModelParamSpec>;
+  limits: Record<string, unknown>;
+  pricing: Record<string, unknown>;
+  alreadyConfigured?: boolean;
+};
+
 export type ProviderSpec = {
   id: string;
   name: string;
@@ -834,6 +851,18 @@ export async function testProviderConfig(providerId: string): Promise<{ok: boole
   return request('/api/providers/test', {
     method: 'POST',
     body: JSON.stringify({providerId}),
+  });
+}
+
+export async function discoverProviderModels(providerId: string): Promise<{
+  ok: boolean;
+  providerId: string;
+  models: DiscoveredModelSpec[];
+  count: number;
+}> {
+  return request(`/api/providers/${encodeURIComponent(providerId)}/models`, {
+    method: 'POST',
+    body: '{}',
   });
 }
 

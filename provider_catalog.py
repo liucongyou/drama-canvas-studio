@@ -1185,3 +1185,154 @@ def test_provider(provider_id: str) -> dict[str, Any]:
             "probeMissing": True,
         }
     return {"ok": False, "message": f"连接失败 HTTP {status}{('：' + detail) if detail else ''}"}
+
+
+def _model_ids_from_response(payload: Any) -> list[str]:
+    if isinstance(payload, list):
+        raw_items = payload
+    elif isinstance(payload, dict):
+        candidates = (
+            payload.get("data")
+            or payload.get("models")
+            or payload.get("result")
+            or payload.get("items")
+        )
+        raw_items = candidates if isinstance(candidates, list) else []
+    else:
+        raw_items = []
+    ids: list[str] = []
+    for item in raw_items:
+        value = item.get("id") if isinstance(item, dict) else item
+        text = str(value or "").strip()
+        if text:
+            ids.append(text)
+    return list(dict.fromkeys(ids))
+
+
+def _infer_discovered_model(
+    provider: dict[str, Any],
+    remote_model: str,
+    index: int,
+) -> dict[str, Any]:
+    """Create a conservative editable draft from a provider /models row."""
+    name = remote_model.lower()
+    marker = " ".join([
+        name,
+        str(provider.get("name") or "").lower(),
+        str(provider.get("id") or "").lower(),
+    ])
+    if any(word in marker for word in (
+        "seedance", "seedream", "kling", "wan", "video", "veo", "sora",
+        "hailuo", "pika", "runway", "minimax", "cogvideo", "luma",
+    )):
+        capability = "video"
+    elif any(word in marker for word in (
+        "tts", "speech", "voice", "audio", "sound", "cosyvoice",
+    )):
+        capability = "audio"
+    elif any(word in marker for word in (
+        "embedding", "embed", "rerank",
+    )):
+        capability = "text"
+    elif any(word in marker for word in (
+        "chat", "text", "deepseek", "qwen", "gpt", "claude", "glm",
+        "moonshot", "doubao", "llama", "mistral",
+    )):
+        capability = "text"
+    else:
+        capability = "image"
+    adapter = {
+        "video": "ark_video" if provider.get("protocol") == "ark" else "agnes_video",
+        "image": "ark_image" if provider.get("protocol") == "ark" else "openai_image",
+        "audio": "dashscope_tts" if provider.get("protocol") == "dashscope" else "dashscope_tts",
+        "text": "openai_chat",
+    }[capability]
+    label = remote_model
+    model_id = normalize_model_id(remote_model)
+    if capability == "video":
+        default_params = {"ratio": "9:16", "resolution": "480P", "duration": 5}
+        params = {
+            "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"]),
+            "resolution": _select(["480P", "720P", "1080P"]),
+            "duration": {"type": "range", "min": 1, "max": 30, "step": 1, "options": [4, 5, 10, 15, 20, 30]},
+        }
+    elif capability == "image":
+        default_params = {"ratio": "1:1", "size": "1024x1024"}
+        params = {
+            "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"]),
+            "size": {"type": "text"},
+        }
+    elif capability == "audio":
+        default_params = {"format": "mp3", "duration": 4.5}
+        params = {
+            "format": _select(["mp3", "wav"]),
+            "duration": {"type": "range", "min": 0.5, "max": 30, "step": 0.5},
+        }
+    else:
+        default_params = {"temperature": 0.7}
+        params = {
+            "temperature": {"type": "range", "min": 0, "max": 2, "step": 0.1},
+        }
+    return {
+        "id": model_id,
+        "providerId": provider.get("id"),
+        "capability": capability,
+        "adapter": adapter,
+        "remoteModel": remote_model,
+        "label": label,
+        "description": f"从 {provider.get('name') or provider.get('id')} 模型列表自动发现",
+        "badge": str(index + 1),
+        "enabled": True,
+        "defaultParams": default_params,
+        "params": params,
+        "limits": {},
+        "pricing": {},
+        "discovered": True,
+    }
+
+
+def discover_provider_models(provider_id: str) -> dict[str, Any]:
+    """Fetch a provider's model list and return drafts without persisting them."""
+    cfg = load_config()
+    provider = next(
+        (p for p in cfg.get("providers", []) if p.get("id") == provider_id),
+        None,
+    )
+    if not provider:
+        raise ValueError("供应商不存在")
+    key = provider_key(provider)
+    if not key:
+        raise ValueError("尚未配置 API Key")
+    base = str(provider.get("base_url") or "").rstrip("/")
+    protocol = str(provider.get("protocol") or "openai")
+    test_path = str(provider.get("test_path") or "/models").strip()
+    if not test_path.startswith("/"):
+        test_path = f"/{test_path}"
+    status, text = _request_status(f"{base}{test_path}", key)
+    if status != 200:
+        detail = text[:240]
+        raise RuntimeError(f"模型列表拉取失败 HTTP {status}{('：' + detail) if detail else ''}")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("供应商返回的模型列表不是 JSON") from exc
+    ids = _model_ids_from_response(payload)
+    if not ids:
+        raise RuntimeError("供应商返回成功，但没有识别到模型 id 字段")
+    existing = {
+        str(model.get("remoteModel") or model.get("id") or "")
+        for model in cfg.get("models", [])
+        if isinstance(model, dict) and model.get("providerId") == provider_id
+    }
+    drafts = [
+        _infer_discovered_model(provider, remote_model, index)
+        for index, remote_model in enumerate(ids)
+    ]
+    for draft in drafts:
+        draft["alreadyConfigured"] = draft["remoteModel"] in existing or draft["id"] in existing
+    return {
+        "ok": True,
+        "providerId": provider_id,
+        "models": drafts,
+        "count": len(drafts),
+    }
