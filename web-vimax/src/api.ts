@@ -1377,6 +1377,21 @@ export async function saveCanvasConnections(
   );
 }
 
+export async function createCanvasEpisode(
+  sessionId: string,
+  input?: {episodeId?: string; title?: string},
+): Promise<{
+  ok: boolean;
+  episode: {id: string; title: string};
+  episodes: string[];
+  revision: number | null;
+}> {
+  return request(`/api/projects/${encodeURIComponent(sessionId)}/episodes`, {
+    method: 'POST',
+    body: JSON.stringify(input || {}),
+  });
+}
+
 /**
  * 单节点局部保存：只提交这一个节点的**非位置**字段。
  *

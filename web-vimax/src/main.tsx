@@ -1,7 +1,7 @@
 import {useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent} from 'react';
 import {createRoot} from 'react-dom/client';
 import {createPortal} from 'react-dom';
-import {Check, ChevronDown, CloudUpload, Copy, Download, ExternalLink, FolderOpen, FolderPlus, KeyRound, LogOut, MoreHorizontal, Palette, Pencil, Plus, Settings, ShieldCheck, Trash2, Upload, X} from 'lucide-react';
+import {Check, ChevronDown, CloudUpload, Copy, Download, ExternalLink, FolderOpen, FolderPlus, History, KeyRound, LogOut, MoreHorizontal, Palette, Pencil, Plus, Settings, ShieldCheck, Trash2, Upload, X} from 'lucide-react';
 import {CanvasView} from './CanvasView';
 import {ModelSettingsDialog} from './ModelSettings';
 import {TosSettingsDialog} from './TosSettings';
@@ -11,6 +11,7 @@ import {applyTheme, readStoredTheme, resolveTheme, storeTheme, THEMES, type Them
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
 import {DialogHost, dialog} from './GDialog';
 import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, getAuthSession, getManagedAccounts, loginAccount, logoutAccount, resetManagedAccountPassword, setManagedAccountStatus, type ManagedAccount} from './api';
+import {APP_VERSION, CHANGELOG, RELEASE_SEEN_KEY, type ChangelogEntry} from './changelog';
 import './styles.css';
 import './ui-refinements.css';
 import './immersive-theme.css';
@@ -121,6 +122,14 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
   const [tosSettingsOpen, setTosSettingsOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [adminAccountsOpen, setAdminAccountsOpen] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
+  const [releaseSeen, setReleaseSeen] = useState(() => {
+    try {
+      return window.localStorage.getItem(RELEASE_SEEN_KEY) === APP_VERSION;
+    } catch {
+      return false;
+    }
+  });
   const [theme, setTheme] = useState<Theme>(bootTheme);
   const settingsWrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -128,6 +137,17 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
     applyTheme(theme);
     storeTheme(theme);
   }, [theme]);
+
+  const openChangelog = () => {
+    setSettingsOpen(false);
+    setChangelogOpen(true);
+    setReleaseSeen(true);
+    try {
+      window.localStorage.setItem(RELEASE_SEEN_KEY, APP_VERSION);
+    } catch {
+      // 无持久化环境只影响“新版本”标记，不影响更新记录本身。
+    }
+  };
 
   const loadProjects = async () => {
     try {
@@ -563,13 +583,14 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
         <div className="canvas-menu-wrap" ref={settingsWrapRef}>
           <button
             type="button"
-            className={`shell-topbar-btn ${settingsOpen ? 'is-open' : ''}`}
+            className={`shell-topbar-btn ${settingsOpen ? 'is-open' : ''} ${releaseSeen ? '' : 'has-release'}`}
             onClick={() => setSettingsOpen((value) => !value)}
             title="主题、模型接口与项目设置"
             aria-expanded={settingsOpen}
           >
             <Settings size={13} strokeWidth={1.9} aria-hidden="true" />
             设置<ChevronDown size={12} strokeWidth={2.4} aria-hidden="true" />
+            {!releaseSeen && <i className="shell-release-dot" aria-label="有新版本" />}
           </button>
           {settingsOpen && (
             <div className="shell-settings-menu" role="menu">
@@ -592,6 +613,20 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
                     </button>
                   ))}
                 </div>
+              </div>
+
+              <div className="shell-settings-section">
+                <div className="shell-tools-menu-head">版本</div>
+                <button
+                  type="button"
+                  className="shell-tools-menu-item shell-release-entry"
+                  onClick={openChangelog}
+                >
+                  <History size={13} strokeWidth={1.9} aria-hidden="true" />
+                  <span>更新记录</span>
+                  <em>v{APP_VERSION}</em>
+                  {!releaseSeen && <b>新</b>}
+                </button>
               </div>
 
               <div className="shell-settings-section">
@@ -734,6 +769,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
       {tosSettingsOpen && <TosSettingsDialog onClose={() => setTosSettingsOpen(false)} />}
       {passwordOpen && <ChangePasswordDialog onClose={() => setPasswordOpen(false)} />}
       {isAdmin && adminAccountsOpen && <AdminAccountsDialog onClose={() => setAdminAccountsOpen(false)} />}
+      {changelogOpen && <ChangelogDialog entries={CHANGELOG} onClose={() => setChangelogOpen(false)} />}
     </div>
   );
 }
@@ -915,6 +951,44 @@ function AdminAccountsDialog({onClose}: {onClose: () => void}) {
             </footer>
           </div>
         )}
+      </section>
+    </div>
+  );
+}
+
+function ChangelogDialog({entries, onClose}: {entries: ChangelogEntry[]; onClose: () => void}) {
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="canvas-changelog-dialog" role="dialog" aria-modal="true" aria-labelledby="changelog-title">
+        <header>
+          <div className="canvas-changelog-heading">
+            <span><History size={17} strokeWidth={1.9} aria-hidden="true" /></span>
+            <div>
+              <h2 id="changelog-title">更新记录</h2>
+              <p>当前版本 v{APP_VERSION} · 最近更新 {entries[0]?.date || '-'}</p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭更新记录"><X size={16} strokeWidth={2} /></button>
+        </header>
+        <div className="canvas-changelog-list">
+          {entries.map((entry, index) => (
+            <article key={entry.version} className={index === 0 ? 'is-current' : ''}>
+              <div className="canvas-changelog-version">
+                <strong>v{entry.version}</strong>
+                <time dateTime={entry.date}>{entry.date}</time>
+                {index === 0 && <em>当前版本</em>}
+              </div>
+              <h3>{entry.title}</h3>
+              <ul>
+                {entry.changes.map((change) => <li key={change}>{change}</li>)}
+              </ul>
+            </article>
+          ))}
+        </div>
+        <footer>
+          <span>版本记录与前端代码同仓维护</span>
+          <button type="button" onClick={onClose}>知道了</button>
+        </footer>
       </section>
     </div>
   );

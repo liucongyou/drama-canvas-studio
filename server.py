@@ -2938,6 +2938,79 @@ class Handler(BaseHTTPRequestHandler):
                 details={"title": title},
             )
             return self._send(200, {"id": pid, "title": title})
+        m = re.match(r"^/api/projects/([^/]+)/episodes$", path)
+        if m:
+            pid = unquote(m.group(1))
+            with project_write_lock(pid):
+                project = store.get_project(pid)
+                if not project:
+                    return self._send(404, {"error": "项目不存在"})
+                payload = project["payload"]
+                groups = import_feed._ensure_episode_imports(payload)
+                existing_ids = {
+                    str(group.get("id") or "").strip().upper()
+                    for group in groups
+                    if isinstance(group, dict)
+                }
+                existing_numbers = {
+                    int(found.group(1))
+                    for episode_id in existing_ids
+                    if (found := re.fullmatch(r"EP0*(\d{1,4})", episode_id))
+                }
+                raw_episode_id = str(
+                    body.get("episodeId") or body.get("id") or ""
+                ).strip()
+                if raw_episode_id:
+                    match = re.fullmatch(r"(?:EP)?0*(\d{1,4})", raw_episode_id, re.I)
+                    if not match or int(match.group(1)) < 1:
+                        return self._send(400, {
+                            "error": "集编号必须是 1-9999，或 EP001 这种格式",
+                            "code": "EPISODE_ID_INVALID",
+                        })
+                    episode_number = int(match.group(1))
+                else:
+                    episode_number = max(existing_numbers, default=0) + 1
+                if episode_number > 9999:
+                    return self._send(400, {
+                        "error": "集编号不能超过 9999",
+                        "code": "EPISODE_ID_INVALID",
+                    })
+                episode_id = f"EP{episode_number:03d}"
+                if episode_number in existing_numbers:
+                    return self._send(409, {
+                        "error": f"{episode_id} 已存在",
+                        "code": "EPISODE_EXISTS",
+                    })
+                title = str(body.get("title") or "").strip() or f"第{episode_number:02d}集"
+                now = store._now_iso()
+                groups.append({
+                    "id": episode_id,
+                    "title": title,
+                    "nodeIds": [],
+                    "videoNodeIds": [],
+                    "connectionIds": [],
+                    "importedAt": now,
+                })
+                groups.sort(key=lambda item: (
+                    int(found.group(1))
+                    if (found := re.fullmatch(r"EP0*(\d{1,4})", str(item.get("id") or "")))
+                    else 99999,
+                    str(item.get("id") or ""),
+                ))
+                payload["episodeImports"] = groups
+                payload.setdefault("episodeLayouts", {}).setdefault(episode_id, {})
+                store.update_project(pid, payload=payload)
+                updated = store.get_project(pid)
+                return self._send(200, {
+                    "ok": True,
+                    "episode": {"id": episode_id, "title": title},
+                    "episodes": [
+                        str(group.get("id") or "")
+                        for group in groups
+                        if isinstance(group, dict)
+                    ],
+                    "revision": updated["revision"] if updated else None,
+                })
         m = re.match(r"^/api/projects/([^/]+)/versions/([^/]+)/restore$", path)
         if m:
             pid, version_id = unquote(m.group(1)), unquote(m.group(2))

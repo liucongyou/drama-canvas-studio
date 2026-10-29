@@ -539,6 +539,87 @@ class TenantHttpTests(unittest.TestCase):
             for item in project["payload"]["connections"]
         ))
 
+    def test_manual_episode_creation_persists_and_owns_new_nodes(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        _, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "手动集数测试"},
+        )
+        pid = json.loads(body)["id"]
+        status, _, body = self.request(
+            "POST",
+            f"/api/projects/{pid}/episodes",
+            "alpha.example.com",
+            cookie,
+            {},
+        )
+        self.assertEqual(status, 200)
+        created = json.loads(body)
+        self.assertEqual(created["episode"]["id"], "EP002")
+        self.assertEqual(created["episodes"], ["EP001", "EP002"])
+
+        status, _, body = self.request(
+            "POST",
+            f"/api/projects/{pid}/episodes",
+            "alpha.example.com",
+            cookie,
+            {"episodeId": "2"},
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body)["code"], "EPISODE_EXISTS")
+
+        status, _, body = self.request(
+            "POST",
+            f"/api/projects/{pid}/episodes",
+            "alpha.example.com",
+            cookie,
+            {"episodeId": "3", "title": "第三集 · 新场"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["episode"]["id"], "EP003")
+
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes",
+            "alpha.example.com",
+            cookie,
+            {
+                "episodeId": "EP002",
+                "nodes": [{
+                    "id": "manual-ep-video",
+                    "type": "video",
+                    "title": "第二集视频",
+                    "position": {"x": 100, "y": 100},
+                    "metadata": {"prompt": "手动集数中的新视频"},
+                }],
+            },
+        )
+        self.assertEqual(status, 200)
+        status, _, body = self.request(
+            "GET",
+            f"/api/projects/{pid}",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 200)
+        groups = json.loads(body)["payload"]["episodeImports"]
+        second = next(group for group in groups if group["id"] == "EP002")
+        third = next(group for group in groups if group["id"] == "EP003")
+        self.assertIn("manual-ep-video", second["nodeIds"])
+        self.assertIn("manual-ep-video", second["videoNodeIds"])
+        self.assertEqual(third["title"], "第三集 · 新场")
+        self.assertEqual(third["nodeIds"], [])
+
     def test_import_preview_and_commit_share_validation_and_revision(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)

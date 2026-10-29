@@ -7341,6 +7341,22 @@ html[data-theme='dark'] .dialog-actions button.primary:hover:not(:disabled) {
   color: var(--ink);
   font-size: 13px;
 }
+.canvas-ep-list-add {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  cursor: pointer;
+}
+.canvas-ep-list-add:hover {
+  color: var(--ink);
+  border-color: var(--acc);
+}
 .canvas-ep-list-close {
   margin-left: 4px;
   width: 22px;
@@ -7401,6 +7417,79 @@ html[data-theme='dark'] .dialog-actions button.primary:hover:not(:disabled) {
   background: var(--surface-soft);
   border-radius: 999px;
   padding: 1px 8px;
+}
+.canvas-ep-create {
+  margin: 2px 8px 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft);
+  box-shadow: var(--shadow-sm);
+}
+.canvas-ep-create-fields {
+  display: grid;
+  gap: 7px;
+}
+.canvas-ep-create label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.canvas-ep-create label span {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+.canvas-ep-create label i {
+  color: var(--faint);
+  font-style: normal;
+}
+.canvas-ep-create input {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: none;
+  color: var(--ink);
+  background: var(--surface);
+  font-size: 11.5px;
+}
+.canvas-ep-create input:focus {
+  border-color: var(--acc);
+}
+.canvas-ep-create p {
+  margin: 7px 0 0;
+  color: var(--red);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.canvas-ep-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+.canvas-ep-create-actions button {
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+.canvas-ep-create-actions button.primary {
+  border-color: var(--acc);
+  color: var(--acc-ink, #fff);
+  background: var(--acc);
+}
+.canvas-ep-create-actions button:disabled {
+  opacity: .5;
+  cursor: default;
 }
 .canvas-ep-list-body {
   flex: 1;
@@ -9129,6 +9218,7 @@ html[data-theme='dark'] .dialog-actions button.primary:hover:not(:disabled) {
 .shell-topbar-meta { color: var(--faint, #8a8a8f); }
 .shell-topbar-right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 .shell-topbar-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -9144,6 +9234,16 @@ html[data-theme='dark'] .dialog-actions button.primary:hover:not(:disabled) {
 }
 .shell-topbar-btn:hover { color: var(--ink); border-color: var(--line-strong, #3a3a3a); }
 .shell-topbar-btn.is-open { color: var(--ink); border-color: var(--acc); background: color-mix(in srgb, var(--acc) 14%, transparent); }
+.shell-release-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--acc);
+  box-shadow: 0 0 0 2px var(--surface-raised, #202020);
+}
 /* ===== 顶栏「项目设置」弹出菜单（2026-10-25 重做）=====
    ★ 独立类名，**不再复用 .canvas-header-menu**。
      原因（用户实测截图）：`.canvas-header-menu button{width:100%}` 会连带命中
@@ -9234,6 +9334,22 @@ html[data-theme='dark'] .dialog-actions button.primary:hover:not(:disabled) {
   flex: none;
   color: var(--faint, #7e7e83);
   transition: color 120ms ease;
+}
+.shell-release-entry > span {
+  flex: 1;
+}
+.shell-release-entry > em {
+  color: var(--faint);
+  font-size: 10.5px;
+  font-style: normal;
+}
+.shell-release-entry > b {
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: var(--acc-ink, #fff);
+  background: var(--acc);
+  font-size: 9px;
+  font-weight: 600;
 }
 
 .shell-tools-menu-item:hover {
@@ -14209,5 +14325,172 @@ button:disabled, [role="button"]:disabled { transition: none; }
 @media (max-width: 560px) {
   .canvas-admin-dialog form {
     grid-template-columns: 1fr;
+  }
+}
+
+.canvas-changelog-dialog {
+  width: min(620px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 48px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 20px;
+  box-sizing: border-box;
+  border: 1px solid var(--v-border);
+  border-radius: 10px;
+  color: var(--v-text);
+  background: var(--v-panel);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, .28);
+}
+
+.canvas-changelog-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.canvas-changelog-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.canvas-changelog-heading > span {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: 9px;
+  color: var(--v-accent);
+  background: color-mix(in srgb, var(--v-accent) 12%, transparent);
+}
+
+.canvas-changelog-heading h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.canvas-changelog-heading p {
+  margin: 4px 0 0;
+  color: var(--v-text-muted);
+  font-size: 11px;
+}
+
+.canvas-changelog-dialog > header > button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--v-text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.canvas-changelog-dialog > header > button:hover {
+  color: var(--v-text);
+  background: var(--surface-soft);
+}
+
+.canvas-changelog-list {
+  overflow-y: auto;
+  display: grid;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.canvas-changelog-list article {
+  padding: 14px 15px;
+  border: 1px solid var(--v-border);
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+
+.canvas-changelog-list article.is-current {
+  border-color: color-mix(in srgb, var(--v-accent) 50%, var(--v-border));
+}
+
+.canvas-changelog-version {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.canvas-changelog-version strong {
+  color: var(--v-text);
+  font-size: 13px;
+}
+
+.canvas-changelog-version time {
+  color: var(--v-text-muted);
+  font-size: 10.5px;
+}
+
+.canvas-changelog-version em {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--v-accent);
+  background: color-mix(in srgb, var(--v-accent) 12%, transparent);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.canvas-changelog-list h3 {
+  margin: 9px 0 7px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.canvas-changelog-list ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--v-text-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.canvas-changelog-dialog > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 2px;
+  border-top: 1px solid var(--v-border);
+}
+
+.canvas-changelog-dialog > footer span {
+  color: var(--v-text-muted);
+  font-size: 10.5px;
+}
+
+.canvas-changelog-dialog > footer button {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--v-accent);
+  border-radius: 7px;
+  color: var(--v-accent-ink, #fff);
+  background: var(--v-accent);
+  cursor: pointer;
+}
+
+@media (max-width: 560px) {
+  .canvas-changelog-dialog {
+    max-height: calc(100vh - 24px);
+    padding: 16px;
+  }
+
+  .canvas-changelog-dialog > footer span {
+    display: none;
+  }
+
+  .canvas-changelog-dialog > footer {
+    justify-content: flex-end;
   }
 }

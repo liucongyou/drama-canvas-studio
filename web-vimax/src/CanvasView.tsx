@@ -1,4 +1,4 @@
-import {startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject, type SyntheticEvent} from 'react';
+import {startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode, type RefObject, type SyntheticEvent} from 'react';
 import * as ReactDOM from 'react-dom';
 import {toPng} from 'html-to-image';
 import {
@@ -106,7 +106,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasConnections, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasConnections, createCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -7225,6 +7225,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [epListOpen, setEpListOpen] = useState(false);
   // 左侧托盘页签：剧集列表 / 资产库（角色·场景·道具·音色）
   const [railTab, setRailTab] = useState<'eps' | 'assets'>('eps');
+  const [episodeCreateOpen, setEpisodeCreateOpen] = useState(false);
+  const [episodeDraftId, setEpisodeDraftId] = useState('');
+  const [episodeDraftTitle, setEpisodeDraftTitle] = useState('');
+  const [episodeCreating, setEpisodeCreating] = useState(false);
+  const [episodeCreateError, setEpisodeCreateError] = useState('');
   // 画布底纹（复刻 BeefTV appearance）：dots 点阵 / lines 细线网格 / blank 空白
   const [bgMode, setBgMode] = useState<'dots' | 'lines' | 'blank'>('dots');
   // ＋添加节点菜单开关
@@ -7314,6 +7319,45 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const m = /^ep(\d+)$/i.exec(epId);
     return m ? `第${String(Number(m[1])).padStart(2, '0')}集` : epId;
   }, []);
+
+  const beginEpisodeCreate = useCallback(() => {
+    const used = (canvas?.meta.episodes || []).map((episode) => {
+      const found = /^EP0*(\d+)$/i.exec(episode.ep_id);
+      return found ? Number(found[1]) : 0;
+    });
+    const next = Math.max(0, ...used) + 1;
+    setRailTab('eps');
+    setEpisodeDraftId(`EP${String(next).padStart(3, '0')}`);
+    setEpisodeDraftTitle('');
+    setEpisodeCreateError('');
+    setEpisodeCreateOpen(true);
+  }, [canvas]);
+
+  const submitEpisodeCreate = useCallback(async (event: FormEvent) => {
+    event.preventDefault();
+    if (episodeCreating) return;
+    const episodeId = episodeDraftId.trim();
+    if (!/^(?:EP)?0*[1-9]\d{0,3}$/i.test(episodeId)) {
+      setEpisodeCreateError('请输入 1-9999，或 EP001 这种格式');
+      return;
+    }
+    setEpisodeCreating(true);
+    setEpisodeCreateError('');
+    try {
+      const result = await createCanvasEpisode(session, {
+        episodeId,
+        title: episodeDraftTitle.trim(),
+      });
+      setEpisodeCreateOpen(false);
+      setEpisodeDraftTitle('');
+      setToast(`${fmtEp(result.episode.id)}已创建`);
+      setCurrentEp(result.episode.id);
+    } catch (error) {
+      setEpisodeCreateError(error instanceof Error ? error.message : '创建集数失败');
+    } finally {
+      setEpisodeCreating(false);
+    }
+  }, [episodeCreating, episodeDraftId, episodeDraftTitle, fmtEp, session, setToast]);
 
   // LibTV 风格交互状态
   const [mouseMode, setMouseMode] = useState<MouseMode>('select');
@@ -13427,6 +13471,15 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             <header className="canvas-ep-list-header">
               <strong>{railTab === 'eps' ? '画布列表' : '资产托盘'}</strong>
               <span className="canvas-ep-list-count">{railTab === 'eps' ? (canvas.meta.episodes.length || 1) : (canvas.characters.length + canvas.scenes.length + canvas.props.length + canvas.voices.length)}</span>
+              {railTab === 'eps' && (
+                <button
+                  type="button"
+                  className="canvas-ep-list-add"
+                  onClick={beginEpisodeCreate}
+                  aria-label="新建集数"
+                  title="新建集数"
+                ><Plus size={12} strokeWidth={2.2} aria-hidden="true" /></button>
+              )}
               <button type="button" className="canvas-ep-list-close" onClick={() => setEpListOpen(false)} aria-label="收起" title="收起"><X size={13} strokeWidth={2.2} aria-hidden="true" /></button>
             </header>
             {/* 剧集 / 资产切换
@@ -13459,9 +13512,51 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                 <em>{canvas.characters.length + canvas.scenes.length + canvas.props.length + canvas.voices.length}</em>
               </button>
             </div>
+            {railTab === 'eps' && episodeCreateOpen && (
+              <form className="canvas-ep-create" onSubmit={submitEpisodeCreate}>
+                <div className="canvas-ep-create-fields">
+                  <label>
+                    <span>集数</span>
+                    <input
+                      value={episodeDraftId}
+                      onChange={(event) => {
+                        setEpisodeDraftId(event.target.value.toUpperCase());
+                        setEpisodeCreateError('');
+                      }}
+                      placeholder="EP002"
+                      maxLength={6}
+                      aria-label="集编号"
+                    />
+                  </label>
+                  <label>
+                    <span>标题 <i>可选</i></span>
+                    <input
+                      value={episodeDraftTitle}
+                      onChange={(event) => setEpisodeDraftTitle(event.target.value)}
+                      placeholder="留空自动命名"
+                      maxLength={40}
+                      aria-label="集标题"
+                    />
+                  </label>
+                </div>
+                {episodeCreateError && <p role="alert">{episodeCreateError}</p>}
+                <div className="canvas-ep-create-actions">
+                  <button type="button" onClick={() => setEpisodeCreateOpen(false)} disabled={episodeCreating}>取消</button>
+                  <button type="submit" className="primary" disabled={episodeCreating || !episodeDraftId.trim()}>
+                    {episodeCreating ? '创建中…' : '创建'}
+                  </button>
+                </div>
+              </form>
+            )}
             {railTab === 'eps' ? (
               <div className="canvas-ep-list-body">
                 {canvas.meta.episodes.map((ep) => {
+                  const baseEpisodeLabel = fmtEp(ep.ep_id);
+                  const episodeLabel = ep.title
+                    && ep.title !== ep.ep_id
+                    && ep.title !== baseEpisodeLabel
+                    ? `${baseEpisodeLabel} · ${ep.title}`
+                    : baseEpisodeLabel;
                   // 计划镜数（storyboard.json）与落地镜数（shot_description.json）不一致时
                   // 显示"5/32"：只报计划数会让人以为分镜做完了，进渲染才发现门禁拒。
                   const planned = ep.shot_count ?? null;
@@ -13483,9 +13578,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                       type="button"
                       className={currentEp === ep.ep_id ? 'is-active' : ''}
                       onClick={() => setCurrentEp(ep.ep_id)}
-                      title={`${fmtEp(ep.ep_id)} · ${badge}${partial ? '（分镜未完成，续跑后自动补齐）' : ''}${ep.partial_render ? '（成片残缺，续跑补全缺失段后再拼成片）' : ''}${ep.final_ready ? ' · 已成片' : ''}`}
+                      title={`${episodeLabel} · ${badge}${partial ? '（分镜未完成，续跑后自动补齐）' : ''}${ep.partial_render ? '（成片残缺，续跑补全缺失段后再拼成片）' : ''}${ep.final_ready ? ' · 已成片' : ''}`}
                     >
-                      <span className="ep-name">{fmtEp(ep.ep_id)}</span>
+                      <span className="ep-name">{episodeLabel}</span>
                       <span className={`ep-badge ${ep.final_ready ? 'is-done' : ''} ${ep.partial_render ? 'is-partial' : partial ? 'is-partial' : ''}`}>
                         {ep.final_ready && <Check size={10} strokeWidth={2.6} aria-hidden="true" />}
                         {badge}

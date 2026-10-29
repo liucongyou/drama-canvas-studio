@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, generateCanvasNodeNow, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, loginAccount, mediaVersionList, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, createCanvasEpisode, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, loginAccount, mediaVersionList, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -7,6 +7,64 @@ afterEach(() => {
 });
 
 describe('api request recovery', () => {
+  it('creates a manual canvas episode through the project endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      episode: {id: 'EP002', title: '第二集'},
+      episodes: ['EP001', 'EP002'],
+      revision: 9,
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createCanvasEpisode('project-1', {
+      episodeId: '2',
+      title: '第二集',
+    })).resolves.toMatchObject({
+      episode: {id: 'EP002'},
+      revision: 9,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/projects/project-1/episodes'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({episodeId: '2', title: '第二集'}),
+      }),
+    );
+  });
+
+  it('lists a manually created empty episode before it has video nodes', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'project-1',
+      title: '手动集数项目',
+      payload: {
+        nodes: [],
+        connections: [],
+        episodeImports: [
+          {id: 'EP001', title: '第01集', nodeIds: [], videoNodeIds: []},
+          {id: 'EP002', title: '第02集 · 待制作', nodeIds: [], videoNodeIds: []},
+        ],
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    const canvas = await getCanvas('project-1', 'EP002');
+    expect('empty' in canvas).toBe(false);
+    if ('empty' in canvas) return;
+    expect(canvas.meta.current_ep).toBe('EP002');
+    expect(canvas.meta.episodes.map((episode) => episode.ep_id)).toEqual(['EP001', 'EP002']);
+    expect(canvas.meta.episodes[1]).toMatchObject({
+      ep_id: 'EP002',
+      title: '第02集 · 待制作',
+      status: 'empty',
+      shot_count: 0,
+    });
+  });
+
   it('retries transient read failures', async () => {
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new TypeError('Failed to fetch'))
