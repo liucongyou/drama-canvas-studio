@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -139,6 +142,35 @@ class ProviderDiscoveryTests(unittest.TestCase):
         result = self.discover('{"data":[{"id":"demo-seedance-video"}]}')
         self.assertEqual(result["models"][0]["capability"], "video")
         self.assertEqual(result["models"][0]["adapter"], "newapi_video")
+
+    def test_relay_image_migration_repairs_legacy_parameters(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+            os.environ,
+            {"CANVAS_TENANT_DATA_ROOT": root, "CANVAS_MULTI_TENANT": "1"},
+        ):
+            path = os.path.join(root, "tenants", "alpha", "config.local.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(self.config | {
+                    "models": [{
+                        "id": "relay-gpt-image-test",
+                        "providerId": "demo",
+                        "remoteModel": "relay-gpt-image-test",
+                        "capability": "image",
+                        "adapter": "openai_image",
+                        "defaultParams": {"temperature": 0.7},
+                        "params": {"temperature": {"type": "range"}},
+                    }],
+                }, handle, ensure_ascii=False)
+            with tenant_context.use_tenant("alpha", "alpha"):
+                model = next(
+                    item
+                    for item in provider_catalog.load_config()["models"]
+                    if item["id"] == "relay-gpt-image-test"
+                )
+        self.assertEqual(model["defaultParams"], {"ratio": "1:1", "size": "1024x1024"})
+        self.assertIn("ratio", model["params"])
+        self.assertNotIn("temperature", model["params"])
 
     def test_discovery_parses_truncated_model_payload(self):
         with (

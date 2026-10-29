@@ -601,20 +601,29 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
         }:
             model["adapter"] = "newapi_video"
     for model in models:
-        if not isinstance(model, dict) or model.get("capability") != "text":
+        if not isinstance(model, dict):
             continue
         provider = provider_by_id.get(model.get("providerId"))
-        if not provider or not _is_openai_video_relay(provider):
+        if not provider:
             continue
         model_ref = " ".join(
             str(model.get(key) or "")
             for key in ("id", "label", "remoteModel")
         )
-        if _looks_like_image_model(model_ref):
+        if (
+            provider.get("protocol") == "openai"
+            and _looks_like_image_model(model_ref)
+            and model.get("capability") == "text"
+        ):
             model["capability"] = "image"
             model["adapter"] = "openai_image"
+        if (
+            provider.get("protocol") == "openai"
+            and model.get("capability") == "image"
+            and _looks_like_image_model(model_ref)
+        ):
             params = model.setdefault("params", {})
-            if set(params) <= {"temperature"}:
+            if "temperature" in params:
                 model["defaultParams"] = {"ratio": "1:1", "size": "1024x1024"}
                 model["params"] = {
                     "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"]),
