@@ -843,13 +843,13 @@ def _newapi_image(
                     image_urls, base=base, key=key,
                 ):
                     fields.append(("image[]", (filename, mime, payload)))
-            response = _submit_multipart(
+            response = _request_multipart(
                 "POST", f"{base}{route}/edits", key, fields,
-                timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
+                timeout=360,
             )
         else:
-            response = _submit_json(
-                "POST", f"{base}{route}/generations", key, body, timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
+            response = _request_json(
+                "POST", f"{base}{route}/generations", key, body, timeout=360,
             )
     elif route == "/kr/gemini/v1/images":
         parts: list[dict[str, Any]] = [{"text": text}]
@@ -867,8 +867,8 @@ def _newapi_image(
             },
         }
         _apply_declared_params(body, model, params)
-        response = _submit_json(
-            "POST", f"{base}{route}/generations", key, body, timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
+        response = _request_json(
+            "POST", f"{base}{route}/generations", key, body, timeout=360,
         )
     elif route == "/hc/v1/images":
         if len(text) > 8000:
@@ -887,8 +887,8 @@ def _newapi_image(
                 if quality:
                     body["quality"] = quality
                 _apply_declared_params(body, model, params)
-                response = _submit_json(
-                    "POST", f"{base}{route}/edits", key, body, timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
+                response = _request_json(
+                    "POST", f"{base}{route}/edits", key, body, timeout=360,
                 )
             else:
                 fields = [
@@ -904,9 +904,9 @@ def _newapi_image(
                     image_urls, base=base, key=key,
                 ):
                     fields.append(("image", (filename, mime, payload)))
-                response = _submit_multipart(
+                response = _request_multipart(
                     "POST", f"{base}{route}/edits/upload", key, fields,
-                    timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
+                    timeout=360,
                 )
         else:
             body = {
@@ -919,8 +919,8 @@ def _newapi_image(
             if quality:
                 body["quality"] = quality
             _apply_declared_params(body, model, params)
-            response = _submit_json(
-                "POST", f"{base}{route}/generations", key, body, timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
+            response = _request_json(
+                "POST", f"{base}{route}/generations", key, body, timeout=360,
             )
     elif route == "/aistars/v1/images":
         if len(text) > 5000:
@@ -947,8 +947,8 @@ def _newapi_image(
         else:
             action = "generations"
         _apply_declared_params(body, model, params)
-        response = _submit_json(
-            "POST", f"{base}{route}/{action}", key, body, timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
+        response = _request_json(
+            "POST", f"{base}{route}/{action}", key, body, timeout=360,
         )
     else:
         raise RuntimeError(f"New API 图片线路未实现：{route}")
@@ -1031,12 +1031,12 @@ def _ark_image(
             "max_images": _safe_int(params["sequentialMaxImages"], 1, 1, 15)
         }
     _apply_declared_params(body, model, params)
-    response = _submit_json(
+    response = _request_json(
         "POST",
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
         body,
-        timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
+        timeout=120,
     )
     return _parse_image_result(response, provider)
 
@@ -1059,12 +1059,12 @@ def _openai_image(
     if params.get("style"):
         body["style"] = params["style"]
     _apply_declared_params(body, model, params)
-    response = _submit_json(
+    response = _request_json(
         "POST",
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
         body,
-        timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
+        timeout=120,
     )
     return _parse_image_result(response, provider)
 
@@ -1119,12 +1119,12 @@ def _agnes_image(
     if response_format == "b64_json":
         body["return_base64"] = True
     _apply_declared_params(body, model, params)
-    response = _submit_json(
+    response = _request_json(
         "POST",
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
         body,
-        timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
+        timeout=120,
     )
     return _parse_image_result(response, provider)
 

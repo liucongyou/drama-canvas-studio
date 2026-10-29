@@ -1710,20 +1710,12 @@ def reconcile_generation_task_records():
         with GENERATION_INFLIGHT_LOCK:
             worker_alive = inflight_key in GENERATION_INFLIGHT
         if (
-            node_status == "generating"
+            str(task.get("kind") or "") == "video"
             and not worker_alive
+            and node_status == "generating"
             and not str(task.get("provider_task_id") or "").strip()
             and str(task.get("phase") or "") in {"准备提交", "提交供应商"}
-            # Async video tasks must acquire a provider task id. Synchronous
-            # image/audio requests never do, so applying this rule to them
-            # mislabels a completed paid generation as a submit timeout.
-            and str(task.get("kind") or "") == "video"
         ):
-            # A submit request that never produced a provider task id is not a
-            # durable worker: process restarts, hung sockets, or a killed
-            # request leave it looking "running" forever. Submit timeouts are
-            # short; after that grace period it is safe to release the node for
-            # an explicit retry instead of showing a ghost task.
             updated_raw = str(task.get("updated_at") or task.get("started_at") or task.get("created_at") or "")
             try:
                 updated_at = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
