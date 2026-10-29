@@ -9908,6 +9908,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // 若此时整批替换节点对象，React Flow 会重新采纳被拖节点（positionAbsolute 重算），
   // 出现"拖到一半跳一下"。拖动结束后再补一次同步。
   const draggingRef = useRef(false);
+  const dragPointerIdRef = useRef<number | null>(null);
   const pendingFlowSyncRef = useRef(false);
   const [flowSyncTick, setFlowSyncTick] = useState(0);
   useEffect(() => {
@@ -10780,6 +10781,47 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     syncGroupFrames();
     requestAnimationFrame(() => syncGroupFrames());
   }, [commitNotePositions, persistLayout, setNodes, updateMediaNode, updateAlignGuides, syncSelBar, syncGroupFrames]);
+
+  const clearStuckDrag = useCallback(() => {
+    // Run after React Flow's own pointer handlers. A normal drag has already
+    // called onNodeDragStop; this only clears state if pointerup was lost.
+    requestAnimationFrame(() => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      dragPointerIdRef.current = null;
+      setDraggingNode(false);
+      livePosRef.current.clear();
+      snappedPosRef.current.clear();
+      updateAlignGuides([]);
+      syncGroupFrames();
+    });
+  }, [syncGroupFrames, updateAlignGuides]);
+
+  const onCanvasPointerDownCapture = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (!target?.closest('.react-flow__node')) return;
+    const surface = event.currentTarget;
+    try {
+      surface.setPointerCapture(event.pointerId);
+      dragPointerIdRef.current = event.pointerId;
+    } catch {
+      dragPointerIdRef.current = null;
+    }
+  }, []);
+
+  const onCanvasPointerRelease = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const surface = event.currentTarget;
+    if (dragPointerIdRef.current === event.pointerId && surface.hasPointerCapture(event.pointerId)) {
+      try {
+        surface.releasePointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture may already have been released by the browser.
+      }
+    }
+    dragPointerIdRef.current = null;
+    clearStuckDrag();
+  }, [clearStuckDrag]);
 
   // 框选结束后把整集框从选中里摘掉：它包住整列段卡，而框选是"碰到即选"，
   // 被捎上之后一拖就把整集内容全带走了——"框选几段批量摆放"因此失效。
@@ -13377,6 +13419,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             edgeTypes={CANVAS_EDGE_TYPES}
             onNodesChange={handleNodesChange}
             onEdgesChange={onEdgesChange}
+            onPointerDownCapture={onCanvasPointerDownCapture}
+            onPointerUpCapture={onCanvasPointerRelease}
+            onPointerCancelCapture={onCanvasPointerRelease}
+            onLostPointerCapture={() => {
+              dragPointerIdRef.current = null;
+              clearStuckDrag();
+            }}
             /* 注意：不要在这里加 onEdgesDelete —— 本项目的 edges 是由 flowEdges 全程派生的
                （见下方 setEdges 的 useEffect），React Flow 内部删除不会走 onEdgesDelete。
                Del/Backspace 删线的实际入口是 onBeforeDelete，那里已同步清理 refs。 */

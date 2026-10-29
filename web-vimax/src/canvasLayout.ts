@@ -240,24 +240,63 @@ function anchorOffsetY(idx: 0 | 1 | 2, h: number) {
   return idx === 0 ? 0 : idx === 1 ? h / 2 : h;
 }
 
-/** 在候选里找偏差最小的对齐 */
+type AlignCandidate = {
+  delta: number;
+  target: number;
+  anchorIdx: 0 | 1 | 2;
+  otherId: string;
+  from: number;
+  to: number;
+};
+
+function axisGap(a0: number, a1: number, b0: number, b1: number): number {
+  if (a1 < b0) return b0 - a1;
+  if (b1 < a0) return a0 - b1;
+  return 0;
+}
+
+/** 优先选择空间距离最近的可对齐节点，而不是全局偏差最小的远端节点。 */
 function findBestCandidate(
-  movingAnchor: (idx: 0 | 1 | 2) => number,
+  moving: AlignBox,
   others: AlignBox[],
   axis: 'v' | 'h',
   threshold: number,
-): {delta: number; target: number; anchorIdx: 0 | 1 | 2; otherId: string} | null {
-  let best: {delta: number; target: number; anchorIdx: 0 | 1 | 2; otherId: string} | null = null;
+): AlignCandidate | null {
+  let best: (AlignCandidate & {distance: number}) | null = null;
+  const movingAnchors = axis === 'v'
+    ? [moving.x, moving.x + moving.w / 2, moving.x + moving.w]
+    : [moving.y, moving.y + moving.h / 2, moving.y + moving.h];
   for (const o of others) {
     const oAnchors = axis === 'v'
       ? [o.x, o.x + o.w / 2, o.x + o.w]
       : [o.y, o.y + o.h / 2, o.y + o.h];
+    const lateralGap = axis === 'v'
+      ? axisGap(moving.y, moving.y + moving.h, o.y, o.y + o.h)
+      : axisGap(moving.x, moving.x + moving.w, o.x, o.x + o.w);
     for (let ai: 0 | 1 | 2 = 0; ai < 3; ai += 1) {
       for (let oi = 0; oi < 3; oi += 1) {
-        const delta = oAnchors[oi] - movingAnchor(ai as 0 | 1 | 2);
-        if (Math.abs(delta) > threshold) continue;
-        if (!best || Math.abs(delta) < Math.abs(best.delta)) {
-          best = {delta, target: oAnchors[oi], anchorIdx: ai as 0 | 1 | 2, otherId: o.id};
+        const delta = oAnchors[oi] - movingAnchors[ai];
+        const absDelta = Math.abs(delta);
+        if (absDelta > threshold) continue;
+        const distance = Math.hypot(absDelta, lateralGap);
+        if (
+          !best
+          || distance < best.distance
+          || (distance === best.distance && absDelta < Math.abs(best.delta))
+        ) {
+          best = {
+            delta,
+            target: oAnchors[oi],
+            anchorIdx: ai as 0 | 1 | 2,
+            otherId: o.id,
+            from: axis === 'v'
+              ? Math.min(moving.y, o.y)
+              : Math.min(moving.x, o.x),
+            to: axis === 'v'
+              ? Math.max(moving.y + moving.h, o.y + o.h)
+              : Math.max(moving.x + moving.w, o.x + o.w),
+            distance,
+          };
         }
       }
     }
@@ -316,8 +355,8 @@ export function solveAlignSnap(
       return {lock: null, correction: 0};
     }
 
-    // 无锁定：在吸附阈值内找一条对齐线
-    const cand = findBestCandidate(anchorOf, others, axis, enter);
+    // 无锁定：在吸附阈值内优先选择离当前拖动位置最近的对齐节点
+    const cand = findBestCandidate(raw, others, axis, enter);
     if (!cand) return {lock: null, correction: 0};
     const lock: AlignLock = {
       axis,
@@ -376,13 +415,6 @@ export function solveAlignSnap(
   return {dx, dy, guides, state: next};
 }
 
-function anchorValues(b: {x: number; y: number; w: number; h: number}) {
-  return {
-    x: [b.x, b.x + b.w / 2, b.x + b.w],
-    y: [b.y, b.y + b.h / 2, b.y + b.h],
-  };
-}
-
 /**
  * 计算拖动节点相对其它节点的对齐吸附。
  *
@@ -396,47 +428,20 @@ export function computeAlignSnap(
   threshold: number = ALIGN_SNAP_THRESHOLD,
 ): AlignSnapResult {
   if (others.length === 0) return {dx: 0, dy: 0, guides: []};
-  const ma = anchorValues(moving);
-
-  // 每个方向找偏差最小的一组对齐
-  let bestX: {delta: number; pos: number; from: number; to: number} | null = null;
-  let bestY: {delta: number; pos: number; from: number; to: number} | null = null;
-
-  for (const o of others) {
-    const oa = anchorValues(o);
-    for (const mx of ma.x) {
-      for (const ox of oa.x) {
-        const delta = ox - mx;
-        const abs = Math.abs(delta);
-        if (abs > threshold) continue;
-        if (!bestX || abs < Math.abs(bestX.delta)) {
-          bestX = {delta, pos: ox, from: Math.min(moving.y, o.y), to: Math.max(moving.y + moving.h, o.y + o.h)};
-        }
-      }
-    }
-    for (const my of ma.y) {
-      for (const oy of oa.y) {
-        const delta = oy - my;
-        const abs = Math.abs(delta);
-        if (abs > threshold) continue;
-        if (!bestY || abs < Math.abs(bestY.delta)) {
-          bestY = {delta, pos: oy, from: Math.min(moving.x, o.x), to: Math.max(moving.x + moving.w, o.x + o.w)};
-        }
-      }
-    }
-  }
+  const bestX = findBestCandidate(moving, others, 'v', threshold);
+  const bestY = findBestCandidate(moving, others, 'h', threshold);
 
   const guides: AlignGuide[] = [];
   if (bestX) guides.push({
     axis: 'v',
-    pos: bestX.pos,
+    pos: bestX.target,
     from: bestX.from,
     to: bestX.to,
     delta: Math.round(bestX.delta * 10) / 10,
   });
   if (bestY) guides.push({
     axis: 'h',
-    pos: bestY.pos,
+    pos: bestY.target,
     from: bestY.from,
     to: bestY.to,
     delta: Math.round(bestY.delta * 10) / 10,

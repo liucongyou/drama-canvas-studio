@@ -233,6 +233,19 @@ describe('computeAlignSnap', () => {
     expect(r.guides.length).toBe(1);
   });
 
+  it('候选偏差接近时优先选择空间上最近的节点', () => {
+    const r = computeAlignSnap(
+      {id: 'moving', x: 103, y: 200, w: 100, h: 60},
+      [
+        {id: 'far', x: 101, y: 900, w: 100, h: 60},
+        {id: 'near', x: 104, y: 205, w: 100, h: 60},
+      ],
+      20,
+    );
+    expect(r.dx).toBe(1);
+    expect(r.guides.find((guide) => guide.axis === 'v')?.pos).toBe(104);
+  });
+
   it('参考线覆盖区间取两节点并集', () => {
     const r = computeAlignSnap(moving, [{id: 'a', x: 100, y: 500, w: 100, h: 60}]);
     expect(r.guides[0].from).toBe(200);
