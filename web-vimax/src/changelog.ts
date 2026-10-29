@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.18';
+export const APP_VERSION = '2026.10.29.19';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.19',
+    date: '2026-10-29',
+    title: '统一供应商提交运行时与工具栏聚焦修复',
+    changes: [
+      '图片、视频、音色等任务型供应商提交统一使用同一套超时与重试机制；429、队列繁忙和 5xx 会按退避策略自动重试，结果不明确的超时不会重复提交。',
+      '供应商繁忙重试期间任务中心会显示明确阶段，不再只停留在“生成中”；单个供应商打补丁的做法收口为统一运行时。',
+      '底部“聚焦”改为真正回到可读工作区，选中节点后的“适应所选”使用独立图标，不再出现两个相同按钮图标。',
+    ],
+  },
   {
     version: '2026.10.29.18',
     date: '2026-10-29',

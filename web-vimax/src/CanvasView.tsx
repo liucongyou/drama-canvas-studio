@@ -55,7 +55,6 @@ import {
   Clapperboard,
   ClipboardList,
   Copy,
-  Crosshair,
   Download,
   Eraser,
   Eye,
@@ -86,6 +85,7 @@ import {
   Rows3,
   Ruler,
   Repeat2,
+  ScanSearch,
   Scissors,
   Search,
   SendToBack,
@@ -14332,7 +14332,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   <span className="canvas-tool-ico"><Maximize2 size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">适应</span>
                 </button>
                 <button type="button" onClick={focusWorkspace} title="聚焦当前工作区" aria-label="聚焦工作区">
-                  <span className="canvas-tool-ico"><Crosshair size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">聚焦</span>
+                  <span className="canvas-tool-ico"><ScanSearch size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">聚焦</span>
                 </button>
                 <button type="button" onClick={zoomOut} title="缩小" aria-label="缩小"><Minus size={14} strokeWidth={2.2} aria-hidden="true" /></button>
                 <button type="button" className="canvas-toolbar-zoom" onClick={() => rf.zoomTo(1, {duration: 200})} title="重置为 100%（Ctrl+0）">{zoomPct}%</button>
