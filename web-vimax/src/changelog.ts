@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.10';
+export const APP_VERSION = '2026.10.29.11';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.11',
+    date: '2026-10-29',
+    title: '修复拖动撤销后回弹',
+    changes: [
+      '撤销拖动时先取消尚未发送的位置保存，避免拖动结束后的排队写入把卡片推回原点。',
+      '撤销后只提交恢复后的坐标，保证最后一次落库结果与画布显示一致。',
+      '连续拖动、批量选择拖动和多节点位置保存继续共用同一套位置序列。',
+    ],
+  },
   {
     version: '2026.10.29.10',
     date: '2026-10-29',
