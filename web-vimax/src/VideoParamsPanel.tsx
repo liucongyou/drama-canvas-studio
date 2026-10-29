@@ -12,16 +12,52 @@ type VideoParamsPanelProps = {
 };
 
 function RatioGlyph({ratio}: {ratio: string}) {
+  if (ratio === 'adaptive') {
+    return (
+      <svg
+        className="video-param-ratio-svg"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+      >
+        <rect
+          x="4.25"
+          y="4.25"
+          width="15.5"
+          height="15.5"
+          rx="2.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeDasharray="2.5 2.5"
+        />
+      </svg>
+    );
+  }
   const match = /^(\d+)\s*:\s*(\d+)$/.exec(ratio);
-  const raw = match ? Number(match[1]) / Number(match[2]) : 1;
-  const width = raw >= 1 ? 18 : Math.max(8, Math.round(18 * raw));
-  const height = raw >= 1 ? Math.max(8, Math.round(18 / raw)) : 18;
+  const widthRatio = match ? Number(match[1]) : 1;
+  const heightRatio = match ? Number(match[2]) : 1;
+  const scale = Math.min(16 / widthRatio, 16 / heightRatio);
+  const width = Math.max(6, widthRatio * scale);
+  const height = Math.max(6, heightRatio * scale);
+  const x = (24 - width) / 2;
+  const y = (24 - height) / 2;
   return (
-    <span
-      className="video-param-ratio-glyph"
-      style={{width, height}}
+    <svg
+      className="video-param-ratio-svg"
+      viewBox="0 0 24 24"
       aria-hidden="true"
-    />
+    >
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        rx="2.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+    </svg>
   );
 }
 
