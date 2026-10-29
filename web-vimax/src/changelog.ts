@@ -7,10 +7,19 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.24';
+export const APP_VERSION = '2026.10.29.25';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.25',
+    date: '2026-10-29',
+    title: '生成任务改为后台持久化执行',
+    changes: [
+      '提交生成后立即返回任务 ID，供应商调用、下载与落库由后台任务继续执行，浏览器断开不再影响结果。',
+      '修复长任务在代理超时后误报“提交阶段失败”的问题；任务中心直接显示真实进度与最终状态。',
+    ],
+  },
   {
     version: '2026.10.29.24',
     date: '2026-10-29',

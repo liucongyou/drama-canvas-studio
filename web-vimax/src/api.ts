@@ -1645,8 +1645,8 @@ export async function sendMessage(sessionId: string, text: string): Promise<{rep
 }
 
 /**
- * 单项媒体生成：由用户点击直接触发，不再等待 2.2s 轮询器“发现”节点。
- * 这样二次生成能立刻进入提交态，并在同一个 Promise 返回后立即显示成功/失败。
+ * 单项媒体生成：后端只负责创建持久化任务并返回 taskId，真实生成在后台线程
+ * 继续执行。即使浏览器连接被 Nginx 504 切断，任务也不会丢失或重复扣费。
  */
 export async function generateCanvasNodeNow(
   sessionId: string,
@@ -1663,7 +1663,12 @@ export async function generateCanvasNodeNow(
     const result = await request(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/generate`, {
       method: 'POST',
       body: JSON.stringify(payload || {}),
-    }) as {url?: string; text?: string; params?: CanvasMediaParams};
+    }) as {accepted?: boolean; taskId?: string; url?: string; text?: string; params?: CanvasMediaParams};
+    if (result.accepted) {
+      startPolling(sessionId);
+      return {deferred: true, accepted: true, taskId: result.taskId, reason: '后台生成中'};
+    }
+    // Compatibility with old servers that still return a completed payload.
     emit({
       type: 'done',
       sessionId,

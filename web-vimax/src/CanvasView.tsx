@@ -12347,7 +12347,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           .then((tasks) => setGenerationTasks(tasks))
           .catch(() => {});
         if (result.deferred) {
-          setToast(`已有生成任务运行中：${result.reason || '正在等待供应商返回'}`);
+          setToast(result.accepted
+            ? `${kindLabel[node.kind]}已提交，后台生成中，任务中心会实时更新`
+            : `已有生成任务运行中：${result.reason || '正在等待供应商返回'}`);
         } else {
           if (node.kind === 'image' || node.kind === 'audio') {
             updateMediaNode(node.id, {
