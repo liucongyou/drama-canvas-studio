@@ -79,6 +79,7 @@ const CAPABILITIES = [
 const ADAPTERS = [
   ['ark_image', '火山方舟图片 / Ark 兼容图片'],
   ['ark_video', '火山方舟视频 / Ark 兼容异步视频'],
+  ['newapi_image', 'OpenAI 兼容图片 / 中转图片'],
   ['newapi_video', 'OpenAI 兼容视频 / /v1/videos'],
   ['agnes_image', 'Agnes Images'],
   ['agnes_video', 'Agnes Videos'],
@@ -86,6 +87,28 @@ const ADAPTERS = [
   ['openai_image', 'OpenAI 兼容 Images'],
   ['dashscope_tts', '阿里云百炼 TTS'],
 ] as const;
+
+const ADAPTER_CAPABILITIES: Record<string, string> = {
+  ark_image: 'image',
+  ark_video: 'video',
+  newapi_image: 'image',
+  newapi_video: 'video',
+  agnes_image: 'image',
+  agnes_video: 'video',
+  openai_chat: 'text',
+  openai_image: 'image',
+  dashscope_tts: 'audio',
+};
+
+export function adaptersForCapability(capability: string): {value: string; label: string}[] {
+  return ADAPTERS
+    .filter(([value]) => ADAPTER_CAPABILITIES[value] === capability)
+    .map(([value, label]) => ({value, label}));
+}
+
+export function defaultAdapterForCapability(capability: string): string {
+  return adaptersForCapability(capability)[0]?.value || 'openai_image';
+}
 
 function providerDraft(provider?: ProviderSpec): ProviderDraft {
   return provider ? {
@@ -746,6 +769,10 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
     setModelBusy(true);
     setStatus('');
     try {
+      const adapterCapability = ADAPTER_CAPABILITIES[model.adapter];
+      if (adapterCapability !== model.capability) {
+        throw new Error('适配器与模型能力不匹配，请重新选择适配器');
+      }
       const visualParams = rowsToParamsJson(parameterRows);
       const visualPricing = pricingJsonFromRows(model.capability, pricingRows);
       const payload = {
@@ -953,14 +980,22 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
                       options={CAPABILITIES.map(([value, label]) => ({value, label}))}
                       open={openSelect === 'capability'}
                       onToggle={() => setOpenSelect((v) => (v === 'capability' ? '' : 'capability'))}
-                      onChange={(v) => { setModel({...model, capability: v}); setOpenSelect(''); }}
+                      onChange={(v) => {
+                        const currentAdapterMatches = ADAPTER_CAPABILITIES[model.adapter] === v;
+                        setModel({
+                          ...model,
+                          capability: v,
+                          adapter: currentAdapterMatches ? model.adapter : defaultAdapterForCapability(v),
+                        });
+                        setOpenSelect('');
+                      }}
                     />
                   </label>
                   <label><span>适配器</span>
                     <ModelSelect
                       ariaLabel="适配器"
                       value={model.adapter}
-                      options={ADAPTERS.map(([value, label]) => ({value, label}))}
+                      options={adaptersForCapability(model.capability)}
                       open={openSelect === 'adapter'}
                       onToggle={() => setOpenSelect((v) => (v === 'adapter' ? '' : 'adapter'))}
                       onChange={(v) => { setModel({...model, adapter: v}); setOpenSelect(''); }}

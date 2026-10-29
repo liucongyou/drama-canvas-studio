@@ -1,5 +1,13 @@
 import {describe, expect, it} from 'vitest';
-import {modelDraft, parameterRowsFromDraft, pricingRowsFromDraft, rowsToParamsJson, pricingJsonFromRows} from './ModelSettings';
+import {
+  adaptersForCapability,
+  defaultAdapterForCapability,
+  modelDraft,
+  parameterRowsFromDraft,
+  pricingRowsFromDraft,
+  rowsToParamsJson,
+  pricingJsonFromRows,
+} from './ModelSettings';
 
 describe('model settings visual editors', () => {
   it('keeps hidden custom schema fields while editing visual parameter rows', () => {
@@ -43,5 +51,21 @@ describe('model settings visual editors', () => {
     const output = JSON.parse(pricingJsonFromRows('video', rows));
     expect(output.video.rates['720P']).toBe(0.994);
     expect(output.video.ratesWithVideo['480P']).toBe(0.506);
+  });
+
+  it('keeps adapter choices compatible with the selected capability', () => {
+    expect(adaptersForCapability('image').map((item) => item.value)).toEqual([
+      'ark_image',
+      'newapi_image',
+      'agnes_image',
+      'openai_image',
+    ]);
+    expect(adaptersForCapability('video').map((item) => item.value)).toEqual([
+      'ark_video',
+      'newapi_video',
+      'agnes_video',
+    ]);
+    expect(defaultAdapterForCapability('image')).toBe('ark_image');
+    expect(adaptersForCapability('image').some((item) => item.value === 'newapi_video')).toBe(false);
   });
 });
