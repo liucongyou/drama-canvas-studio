@@ -7,10 +7,30 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.8';
+export const APP_VERSION = '2026.10.29.10';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.10',
+    date: '2026-10-29',
+    title: '修复拖动节点后的撤销',
+    changes: [
+      '拖动媒体卡片开始时改为记录位置快照，Ctrl+Z 现在能真正恢复到拖动前的坐标。',
+      '位置快照继续使用独立的写入序列，撤销结果不会再被拖动结束时的落库覆盖。',
+      '排序、对齐、方向键微调和普通拖动共用同一套可撤销位置历史。',
+    ],
+  },
+  {
+    version: '2026.10.29.9',
+    date: '2026-10-29',
+    title: '修复提示词编辑后的 Ctrl+Z',
+    changes: [
+      '提示词输入框关闭后仍保留焦点时，Ctrl+Z 不再被输入态快捷键让位规则吞掉。',
+      '空的可编辑提示词区域里，Ctrl+Z / Ctrl+Shift+Z 交回画布撤销与重做。',
+      '输入框里已有文本编辑时仍优先使用浏览器原生撤销，避免破坏输入法。',
+    ],
+  },
   {
     version: '2026.10.29.8',
     date: '2026-10-29',

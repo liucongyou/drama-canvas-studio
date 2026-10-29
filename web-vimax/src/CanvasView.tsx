@@ -10973,7 +10973,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     snappedPosRef.current.clear();
     // 媒体卡片拖动前先入栈历史，使移动可撤销（撤销会恢复到拖动前的位置）
     if (node.id.startsWith('media-')) {
-      pushHistory(userEdgesRef.current, notesRef.current);
+      // Drag is a position mutation: snapshot coordinates as well, otherwise
+      // undo keeps the current x/y and the card appears not to move back.
+      pushHistory(userEdgesRef.current, notesRef.current, {positions: true});
     }
     // 分段卡：允许自由拖拽，不走"拖子卡=移父框"逻辑
     if (node.type === 'segment') {
@@ -11653,7 +11655,23 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       }
       const target = event.target as HTMLElement | null;
       // 其余快捷键在输入态让位给浏览器（Ctrl+A 选中文本、Ctrl+C/V 复制粘贴文本等）
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        // The prompt editor is contenteditable and can keep focus after its
+        // modal closes. Let the browser handle undo only when the editable
+        // element actually has a text edit to restore; otherwise Ctrl+Z must
+        // still reach the canvas history.
+        if (mod && key === 'z' && target.isContentEditable) {
+          const editable = target.closest<HTMLElement>('[contenteditable="true"]') || target;
+          const text = (editable.textContent || '').trim();
+          const hasNativeUndo = text.length > 0;
+          if (!hasNativeUndo) {
+            event.preventDefault();
+            if (event.shiftKey) redo();
+            else undo();
+          }
+        }
+        return;
+      }
       if (mod) {
         if (key === 'z' && !event.shiftKey) { event.preventDefault(); undo(); return; }
         if (key === 'z' && event.shiftKey) { event.preventDefault(); redo(); return; }
