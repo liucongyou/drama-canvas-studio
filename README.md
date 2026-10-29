@@ -40,6 +40,8 @@ npm --prefix web-vimax run dev         # 画布前端 8891（ViMax 画布内核 
 | `web-vimax/` | **v2 画布前端（正式）**：ViMax 画布内核复制 + 自研适配层 `api.ts` + 卡片式媒体节点 + 详细生成参数面板；vite dev 8891，proxy `/api` → 8890 |
 | `e2e_test.py` | 端到端自检（`python e2e_test.py`） |
 
+正式前端入口固定为 `web-vimax/src/main.tsx`。`App.tsx`、`ArtifactViews.tsx`、`BudgetView.tsx`、`LedgerView.tsx`、`CreationWizard.tsx`、`ResultsView.tsx`、`StylePicker.tsx` 属于旧 ViMax Agent 壳，不再进入正式构建和严格类型检查。产品入口只保留项目管理、自由画布、模型接口、账号管理、预算保护、版本历史和任务中心。
+
 ## v2 卡片式节点（图片 / 音色 / 视频）
 
 - 媒体节点 = **卡片式节点**：标题 + 预览坑位（虚线框，未生成时显示类型图标 + 「点击编辑」）

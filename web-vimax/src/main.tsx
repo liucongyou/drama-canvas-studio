@@ -323,7 +323,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
       const readiness = result.readiness as {readyToGenerate?: boolean} | undefined;
       const commitWarnings = Array.isArray(result.warnings) ? result.warnings : [];
       const warningText = commitWarnings.length > 0
-        ? `\n\n导入警告：\n${commitWarnings.map((raw) => {
+        ? `\n\n导入警告：\n${commitWarnings.map((raw: unknown) => {
             const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
             return `• [${String(item.code || 'WARN')}] ${String(item.message || '')}`;
           }).join('\n')}`
