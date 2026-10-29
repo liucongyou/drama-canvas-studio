@@ -1360,6 +1360,23 @@ export async function saveCanvasMediaNodePositions(
   });
 }
 
+export async function saveCanvasConnections(
+  sessionId: string,
+  connections: Array<{id: string; fromNodeId: string; toNodeId: string}>,
+  episodeId?: string | null,
+) {
+  return request<{ok: boolean; total: number; manual: number; removed: number}>(
+    `/api/projects/${encodeURIComponent(sessionId)}/connections`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        episodeId: episodeId || null,
+        connections,
+      }),
+    },
+  );
+}
+
 /**
  * 单节点局部保存：只提交这一个节点的**非位置**字段。
  *
@@ -1445,12 +1462,21 @@ export async function getCanvasWorkspace(
   canvas: Canvas | {empty: true};
   notes: CanvasNote[];
   mediaNodes: CanvasMediaNode[];
+  connections: Array<{
+    id?: string;
+    fromNodeId: string;
+    toNodeId: string;
+    source?: string;
+  }>;
 }> {
   const project = await getProject(sessionId).catch(() => null);
   return {
     canvas: await getCanvas(sessionId, epId, project),
     notes: await getCanvasNotes(sessionId, project),
     mediaNodes: await getCanvasMediaNodes(sessionId, epId, project),
+    connections: Array.isArray(project?.payload?.connections)
+      ? project.payload.connections
+      : [],
   };
 }
 

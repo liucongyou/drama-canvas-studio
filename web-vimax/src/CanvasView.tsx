@@ -106,7 +106,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasConnections, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -332,6 +332,19 @@ function hydrateUserEdge(edge: Edge): Edge {
     // 下次 hydrate 会重新补上，真正干活的是模块级注册表。
     data: {...(raw.data as Record<string, unknown> | undefined), onDelete: (id: string) => EDGE_DELETE_REG.current?.(id)},
   };
+}
+function userEdgeFromConnection(connection: {
+  id?: string;
+  fromNodeId: string;
+  toNodeId: string;
+}): Edge {
+  return hydrateUserEdge({
+    id: connection.id || nextUserEdgeId(),
+    source: `media-${connection.fromNodeId}`,
+    target: `media-${connection.toNodeId}`,
+    type: 'deletable',
+    className: 'canvas-edge-user',
+  } as Edge);
 }
 // 用户边 id 生成器：自增序列（模块级，跨组件实例保持唯一），替代 Date.now()+length 防同毫秒碰撞
 const nextUserEdgeId = createUserEdgeIdFactory('e-user');
@@ -7309,6 +7322,19 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [budgetOpen, setBudgetOpen] = useState(false);
   const toolsTriggerRef = useRef<HTMLButtonElement>(null);
   const [userEdges, setUserEdges] = useState<Edge[]>([]);
+  const projectConnectionsRef = useRef<Array<{
+    id?: string;
+    fromNodeId: string;
+    toNodeId: string;
+    source?: string;
+  }>>([]);
+  const connectionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectionSaveInFlightRef = useRef(false);
+  const pendingConnectionsRef = useRef<Array<{
+    id: string;
+    fromNodeId: string;
+    toNodeId: string;
+  }> | null>(null);
   const [deletedAutoEdgeIds, setDeletedAutoEdgeIds] = useState<Set<string>>(new Set());
   const [panning, setPanning] = useState(false);
   const noteSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -7467,6 +7493,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         groups?: {id: string; name: string; members: string[]}[];
         viewport?: {x: number; y: number; zoom: number};
         viewportPolicyVersion?: number;
+        connectionPersistenceVersion?: number;
       };
       return parsed;
     } catch {
@@ -7474,7 +7501,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     }
   }, [layoutKey]);
 
-  const persistLayout = useCallback((positions: Record<string, {x: number; y: number}>, edges: Edge[], deleted: Set<string>) => {
+  const persistLayout = useCallback((
+    positions: Record<string, {x: number; y: number}>,
+    edges: Edge[],
+    deleted: Set<string>,
+    options?: {connectionSynced?: boolean},
+  ) => {
     try {
       // 资产卡子节点位置跟随分组框整体拖动，不单独持久化（索引可能因资产增删变化）；
       // 媒体卡片位置由载荷 node.position 管理（拖动同步回 mn 并写回后端），也不再进 localStorage——
@@ -7483,17 +7515,19 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       Object.entries(positions).forEach(([id, pos]) => {
         if (!id.startsWith('asset-') && !id.startsWith('media-')) stablePositions[id] = pos;
       });
+      const previousVersion = Number(loadPersistedLayout()?.connectionPersistenceVersion || 0);
       localStorage.setItem(layoutKey, JSON.stringify({
         positions: stablePositions, userEdges: edges, deletedAuto: [...deleted],
         viewport: viewportRef.current,
         viewportPolicyVersion: CANVAS_VIEWPORT_POLICY_VERSION,
+        connectionPersistenceVersion: options?.connectionSynced ? 1 : previousVersion,
         // 编组也随布局一起存：换集/刷新后组关系不能丢（用户编的组是他的工作成果）
         groups: groupsRef.current,
       }));
     } catch {
       /* localStorage 不可用时静默 */
     }
-  }, [layoutKey]);
+  }, [layoutKey, loadPersistedLayout]);
   const rememberViewport = useCallback((viewport: {x: number; y: number; zoom: number}) => {
     viewportRef.current = viewport;
     if (viewportSaveTimer.current) clearTimeout(viewportSaveTimer.current);
@@ -7697,6 +7731,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [generationTasks, generationBusyIds]);
   const mediaSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaBatchSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mediaBatchSaveInFlightRef = useRef<Promise<void> | null>(null);
   const mediaPositionSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingMediaPatchesRef = useRef<Map<string, CanvasMediaNode>>(new Map());
   const pendingMediaNodeSavesRef = useRef<Map<string, CanvasMediaNode>>(new Map());
@@ -7712,40 +7747,69 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       at: Date.now(),
     });
   }, [session]);
+  const flushMediaNodeSaves = useCallback(() => {
+    if (mediaBatchSaveInFlightRef.current) return;
+    const snapshots = [...pendingMediaNodeSavesRef.current.values()];
+    pendingMediaNodeSavesRef.current.clear();
+    if (snapshots.length === 0) return;
+    beginSave();
+    let task: Promise<void>;
+    task = saveCanvasMediaNodes(session, snapshots, currentEp)
+      .then((result) => {
+        const updates = new Map((result.updates || []).map((item) => [item.id, item]));
+        if (updates.size > 0) {
+          setMediaNodes((prev) => prev.map((node) => {
+            const update = updates.get(node.id);
+            return update
+              ? {
+                  ...node,
+                  updatedAt: update.updatedAt || node.updatedAt,
+                  positionUpdatedAt: update.positionUpdatedAt || node.positionUpdatedAt,
+                }
+              : node;
+          }));
+        }
+        finishSave(true);
+        broadcastMediaChange(snapshots.map((node) => node.id));
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        finishSave(false);
+        setSaveError(message);
+        if (message.includes('另一个标签页')) setToast(message);
+      })
+      .finally(() => {
+        if (mediaBatchSaveInFlightRef.current === task) {
+          mediaBatchSaveInFlightRef.current = null;
+        }
+        if (pendingMediaNodeSavesRef.current.size > 0) {
+          if (mediaBatchSaveTimer.current) clearTimeout(mediaBatchSaveTimer.current);
+          mediaBatchSaveTimer.current = setTimeout(flushMediaNodeSaves, 80);
+        }
+      });
+    mediaBatchSaveInFlightRef.current = task;
+  }, [beginSave, broadcastMediaChange, currentEp, finishSave, session, setToast]);
+
+  const deleteMediaNodePersistently = useCallback(async (id: string) => {
+    pendingMediaNodeSavesRef.current.delete(id);
+    if (mediaBatchSaveTimer.current) {
+      clearTimeout(mediaBatchSaveTimer.current);
+      mediaBatchSaveTimer.current = null;
+      if (pendingMediaNodeSavesRef.current.size > 0) {
+        mediaBatchSaveTimer.current = setTimeout(flushMediaNodeSaves, 600);
+      }
+    }
+    const inFlight = mediaBatchSaveInFlightRef.current;
+    if (inFlight) await inFlight.catch(() => undefined);
+    pendingMediaNodeSavesRef.current.delete(id);
+    await deleteCanvasMediaNode(session, id);
+  }, [flushMediaNodeSaves, session]);
+
   const persistMediaNodes = useCallback((next: CanvasMediaNode[], nodesToSave: CanvasMediaNode[] = next) => {
     for (const node of nodesToSave) pendingMediaNodeSavesRef.current.set(node.id, node);
     if (mediaBatchSaveTimer.current) clearTimeout(mediaBatchSaveTimer.current);
-    mediaBatchSaveTimer.current = setTimeout(() => {
-      const snapshots = [...pendingMediaNodeSavesRef.current.values()];
-      pendingMediaNodeSavesRef.current.clear();
-      if (snapshots.length === 0) return;
-      beginSave();
-      void saveCanvasMediaNodes(session, snapshots, currentEp)
-        .then((result) => {
-          const updates = new Map((result.updates || []).map((item) => [item.id, item]));
-          if (updates.size > 0) {
-            setMediaNodes((prev) => prev.map((node) => {
-              const update = updates.get(node.id);
-              return update
-                ? {
-                    ...node,
-                    updatedAt: update.updatedAt || node.updatedAt,
-                    positionUpdatedAt: update.positionUpdatedAt || node.positionUpdatedAt,
-                  }
-                : node;
-            }));
-          }
-          finishSave(true);
-          broadcastMediaChange(snapshots.map((node) => node.id));
-        })
-        .catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          finishSave(false);
-          setSaveError(message);
-          if (message.includes('另一个标签页')) setToast(message);
-        });
-    }, 600);
-  }, [beginSave, broadcastMediaChange, currentEp, finishSave, session, setToast]);
+    mediaBatchSaveTimer.current = setTimeout(flushMediaNodeSaves, 600);
+  }, [flushMediaNodeSaves]);
   const persistMediaPositions = useCallback((_next: CanvasMediaNode[]) => {
     if (mediaPositionSaveTimer.current) clearTimeout(mediaPositionSaveTimer.current);
     mediaPositionSaveTimer.current = setTimeout(() => {
@@ -7805,7 +7869,27 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     syncChannelRef.current = channel;
     channel.onmessage = (event) => {
       const message = event.data as {type?: string; sourceId?: string; nodeIds?: string[]};
-      if (message.type !== 'canvas-nodes-updated' || message.sourceId === syncInstanceIdRef.current) return;
+      if (message.sourceId === syncInstanceIdRef.current) return;
+      if (message.type === 'canvas-connections-updated') {
+        if (pendingConnectionsRef.current || connectionSaveInFlightRef.current) return;
+        void getCanvasWorkspace(session, currentEp)
+          .then(({connections}) => {
+            projectConnectionsRef.current = connections;
+            const remoteEdges = connections
+              .filter((connection) => connection.source === 'user')
+              .map(userEdgeFromConnection);
+            setUserEdges((prev) => {
+              const signature = (edges: Edge[]) => edges
+                .map((edge) => `${edge.id}:${edge.source}:${edge.target}`)
+                .sort()
+                .join('|');
+              return signature(prev) === signature(remoteEdges) ? prev : remoteEdges;
+            });
+          })
+          .catch(() => {});
+        return;
+      }
+      if (message.type !== 'canvas-nodes-updated') return;
       const requested = new Set(message.nodeIds || []);
       void getCanvasMediaNodes(session, currentEp)
         .then((remoteNodes) => {
@@ -8055,8 +8139,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     setSaveError('');
     didInitialLayoutRef.current = false; // 切集后允许重新恢复该集自己的布局
     getCanvasWorkspace(session, currentEp)
-      .then(({canvas: data, notes: noteList, mediaNodes: mediaList}) => {
+      .then(({
+        canvas: data,
+        notes: noteList,
+        mediaNodes: mediaList,
+        connections: projectConnections,
+      }) => {
         if (!alive) return;
+        projectConnectionsRef.current = projectConnections;
         startTransition(() => {
           if ('empty' in data) {
             setCanvas(null);
@@ -8837,14 +8927,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     });
     // 落库删除：不调用后端 DELETE 的话，节点只是从本地 state 里摘掉，
     // 后端 payload.nodes 仍保留该节点 → 刷新后"复活"。
-    void deleteCanvasMediaNode(session, id).catch((err: unknown) => {
+    void deleteMediaNodePersistently(id).catch((err: unknown) => {
       setToast(err instanceof Error ? err.message : '节点删除失败');
     });
     // 顺带清掉指向它的手动连线，避免残留悬空线（线还在但端点节点已不存在）
     setUserEdges((prev) => prev.filter((edge) => edge.source !== mediaFlowId && edge.target !== mediaFlowId));
     // 删除是可撤销操作，明确告诉用户，避免误删后以为找不回来
     setToast('已删除节点，Ctrl+Z 可撤销');
-  }, [dropRefsForPairs, pushHistory, session, setToast]);
+  }, [deleteMediaNodePersistently, dropRefsForPairs, pushHistory, setToast]);
   // 卡片上的删除入口（✕ / ⋯菜单）同样先弹确认框，与 Del 键行为一致
   const requestDeleteMediaNode = useCallback((id: string) => {
     setDeleteTargets([{id: `${MEDIA_PREFIX}${id}`, type: 'media'}]);
@@ -9074,8 +9164,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const tId = (connection.target || '').replace(/^media-/, '');
     const src = mediaNodesRef.current.find((n) => n.id === sId);
     const tgt = mediaNodesRef.current.find((n) => n.id === tId);
-    if (src && tgt && src.kind !== 'text' && tgt.kind !== 'text') linkRef(tgt.id, src);
-  }, [pushHistory, deleteEdgeById, linkRef, setToast]);
+    if (src && tgt && src.kind !== 'text' && tgt.kind !== 'text') {
+      clearRefRemoved(session, tgt.id, src.id);
+      linkRef(tgt.id, src);
+    }
+  }, [pushHistory, deleteEdgeById, linkRef, session, setToast]);
 
   // 改写连线：把已有连线的端点拖到另一个节点上（不必删掉重连）。
   // 只处理手动线（e-user-）：自动线是由素材引用关系派生出来的，改接它没意义且下次重建会被覆盖。
@@ -9090,6 +9183,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       (e.source === newConnection.target && e.target === newConnection.source)));
     if (dup) { setToast('这两个节点之间已有连线'); return; }
     pushHistory(userEdgesRef.current, notesRef.current);
+    const oldSourceId = oldEdge.source.startsWith(MEDIA_PREFIX) ? oldEdge.source.slice(MEDIA_PREFIX.length) : '';
+    const oldTargetId = oldEdge.target.startsWith(MEDIA_PREFIX) ? oldEdge.target.slice(MEDIA_PREFIX.length) : '';
+    if (oldSourceId && oldTargetId) {
+      dropRefsForPairs([{src: oldSourceId, tgt: oldTargetId}]);
+    }
     setUserEdges((prev) => prev.map((e) => (e.id === id
       ? {
         ...e,
@@ -9099,7 +9197,15 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         targetHandle: newConnection.targetHandle ?? e.targetHandle,
       }
       : e)));
-  }, [pushHistory, setToast]);
+    const newSourceId = newConnection.source.slice(MEDIA_PREFIX.length);
+    const newTargetId = newConnection.target.slice(MEDIA_PREFIX.length);
+    const newSource = mediaNodesRef.current.find((node) => node.id === newSourceId);
+    const newTarget = mediaNodesRef.current.find((node) => node.id === newTargetId);
+    if (newSource && newTarget && newSource.kind !== 'text' && newTarget.kind !== 'text') {
+      clearRefRemoved(session, newTarget.id, newSource.id);
+      linkRef(newTarget.id, newSource);
+    }
+  }, [dropRefsForPairs, linkRef, pushHistory, session, setToast]);
 
   // 批量删除选中：一次入栈，媒体节点逐个走落库删除（避免刷新后复活）
   const deleteSelectedNodes = useCallback(() => {
@@ -9123,7 +9229,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         return prev.filter((n) => !drop.has(n.id));
       });
       mediaIds.forEach((id) => {
-        void deleteCanvasMediaNode(session, id).catch(() => {});
+        void deleteMediaNodePersistently(id).catch(() => {});
         const mediaId = MEDIA_PREFIX + id;
         setUserEdges((prev) => prev.filter((edge) => edge.source !== mediaId && edge.target !== mediaId));
       });
@@ -9133,7 +9239,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       (edge) => !deletedFlowIds.has(edge.source) && !deletedFlowIds.has(edge.target),
     ));
     return total;
-  }, [rf, pushHistory, persistNotes, persistMediaNodes, session]);
+  }, [deleteMediaNodePersistently, rf, pushHistory, persistNotes, persistMediaNodes]);
 
   const addNote = useCallback((x: number, y: number, text = '') => {
     const note: CanvasNote = {id: `n-${Date.now()}`, text, x, y, updatedAt: new Date().toISOString()};
@@ -9156,6 +9262,61 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     if (!didInitialLayoutRef.current) return;
     persistLayout(positionRef.current, userEdges, deletedAutoEdgeIds);
   }, [userEdges, deletedAutoEdgeIds, persistLayout]);
+
+  const flushConnectionSave = useCallback(() => {
+    if (connectionSaveInFlightRef.current) return;
+    const connections = pendingConnectionsRef.current;
+    if (!connections) return;
+    pendingConnectionsRef.current = null;
+    connectionSaveInFlightRef.current = true;
+    beginSave();
+    void saveCanvasConnections(session, connections, currentEp)
+      .then(() => {
+        finishSave(true);
+        persistLayout(
+          positionRef.current,
+          userEdgesRef.current,
+          deletedAutoRef.current,
+          {connectionSynced: true},
+        );
+        syncChannelRef.current?.postMessage({
+          type: 'canvas-connections-updated',
+          sessionId: session,
+          sourceId: syncInstanceIdRef.current,
+          at: Date.now(),
+        });
+      })
+      .catch((error) => {
+        finishSave(false);
+        setSaveError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        connectionSaveInFlightRef.current = false;
+        if (pendingConnectionsRef.current) {
+          connectionSaveTimerRef.current = setTimeout(flushConnectionSave, 80);
+        }
+      });
+  }, [beginSave, currentEp, finishSave, persistLayout, session]);
+
+  useEffect(() => {
+    if (!didInitialLayoutRef.current) return;
+    if (connectionSaveTimerRef.current) clearTimeout(connectionSaveTimerRef.current);
+    pendingConnectionsRef.current = userEdges.flatMap((edge) => {
+      if (!edge.source.startsWith(MEDIA_PREFIX) || !edge.target.startsWith(MEDIA_PREFIX)) return [];
+      return [{
+        id: edge.id,
+        fromNodeId: edge.source.slice(MEDIA_PREFIX.length),
+        toNodeId: edge.target.slice(MEDIA_PREFIX.length),
+      }];
+    });
+    connectionSaveTimerRef.current = setTimeout(() => {
+      connectionSaveTimerRef.current = null;
+      flushConnectionSave();
+    }, 260);
+    return () => {
+      if (connectionSaveTimerRef.current) clearTimeout(connectionSaveTimerRef.current);
+    };
+  }, [flushConnectionSave, userEdges]);
 
   const updateNoteText = useCallback((id: string, text: string) => {
     setNotes((prev) => prev.map((note) => (note.id === id ? {...note, text, updatedAt: new Date().toISOString()} : note)));
@@ -9810,13 +9971,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         return prev.filter((n) => !drop.has(n.id));
       });
       mediaIds.forEach((id) => {
-        void deleteCanvasMediaNode(session, id).catch(() => {});
+        void deleteMediaNodePersistently(id).catch(() => {});
         const mediaId = MEDIA_PREFIX + id;
         setUserEdges((prev) => prev.filter((edge) => edge.source !== mediaId && edge.target !== mediaId));
       });
     }
     return total;
-  }, [pushHistory, persistNotes, dropRefsForPairs, session]);
+  }, [deleteMediaNodePersistently, pushHistory, persistNotes, dropRefsForPairs]);
 
   const cutSelectedNodes = useCallback(() => {
     const copied = copySelectedNodes();
@@ -11227,11 +11388,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     persistNotes(snapshot.notes);
     if (changedNodes.length > 0) persistMediaNodes(merged, changedNodes);
     for (const removed of removedMedia) {
-      void deleteCanvasMediaNode(session, removed.id).catch((error: unknown) => {
+      void deleteMediaNodePersistently(removed.id).catch((error: unknown) => {
         setToast(error instanceof Error ? error.message : '撤销新增节点失败');
       });
     }
-  }, [deleteCanvasMediaNode, persistNotes, persistMediaNodes, session, setToast]);
+  }, [deleteMediaNodePersistently, persistNotes, persistMediaNodes, setToast]);
 
   const applyMetadataSnapshot = useCallback((node: CanvasMediaNode) => {
     const next = mediaNodesRef.current.map((item) => item.id === node.id ? node : item);
@@ -12575,6 +12736,19 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     if (!didInitialLayoutRef.current) {
       didInitialLayoutRef.current = true;
       const saved = loadPersistedLayoutRef.current();
+      const remoteUserEdges = projectConnectionsRef.current
+        .filter((connection) => connection.source === 'user')
+        .map(userEdgeFromConnection);
+      const legacyUserEdges = saved && Array.isArray(saved.userEdges)
+        ? saved.userEdges.map(hydrateUserEdge)
+        : [];
+      const useRemoteConnections = Number(saved?.connectionPersistenceVersion || 0) >= 1;
+      const mergedUserEdges = useRemoteConnections
+        ? remoteUserEdges
+        : [...legacyUserEdges, ...remoteUserEdges];
+      const uniqueUserEdges = [...new Map(
+        mergedUserEdges.map((edge) => [`${edge.source}->${edge.target}`, edge]),
+      ).values()];
       if (saved) {
         savedViewport = saved.viewport || null;
         if (
@@ -12585,7 +12759,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           savedViewport = null;
         }
         if (saved.positions) positionRef.current = {...positionRef.current, ...saved.positions};
-        if (Array.isArray(saved.userEdges) && saved.userEdges.length > 0) setUserEdges(saved.userEdges.map(hydrateUserEdge));
         if (Array.isArray(saved.deletedAuto) && saved.deletedAuto.length > 0) setDeletedAutoEdgeIds(new Set(saved.deletedAuto));
         // 编组关系随布局恢复（换集/刷新后组不能丢）
         if (Array.isArray(saved.groups) && saved.groups.length > 0) {
@@ -12595,6 +12768,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       } else {
         autoLayoutRef.current();
       }
+      setUserEdges(uniqueUserEdges);
     }
     // 画布适配必须等节点 DOM 挂载后再执行：React Flow 对未测量节点保持
     // visibility:hidden（hasDimensions 为 false），首次 fitBounds 若在节点挂载前

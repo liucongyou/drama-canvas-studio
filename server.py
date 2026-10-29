@@ -3440,6 +3440,99 @@ class Handler(BaseHTTPRequestHandler):
                 store.update_project(pid, title=new_title, payload=proj["payload"])
                 return self._send(200, {"ok": True, "title": proj["payload"]["title"]})
             return self._send(400, {"error": "title 字段缺失或为空"})
+        # Manual graph connections are editable data, not localStorage-only UI
+        # state. Replace only user edges while preserving imported/derived links.
+        m = re.match(r"^/api/projects/([^/]+)/connections$", path)
+        if m:
+            pid = unquote(m.group(1))
+            incoming = body.get("connections")
+            if not isinstance(incoming, list):
+                return self._send(400, {"error": "connections 字段缺失或不是数组"})
+            # Whole-payload writes from a connection edit can overwrite a newer
+            # prompt/media save. Re-read and retry with an optimistic revision so
+            # only the connections field changes against the latest project.
+            for _ in range(3):
+                proj = store.get_project(pid)
+                if not proj:
+                    return self._send(404, {"error": "项目不存在"})
+                nodes = proj["payload"].get("nodes", [])
+                node_ids = {
+                    str(node.get("id") or "")
+                    for node in nodes
+                    if isinstance(node, dict) and node.get("id")
+                }
+                existing = [
+                    connection
+                    for connection in (proj["payload"].get("connections") or [])
+                    if isinstance(connection, dict)
+                ]
+                automatic = [
+                    connection for connection in existing
+                    if connection.get("source") != "user"
+                    and not str(connection.get("id") or "").startswith("e-user-")
+                ]
+                automatic_pairs = {
+                    (str(item.get("fromNodeId") or ""), str(item.get("toNodeId") or ""))
+                    for item in automatic
+                }
+                manual = []
+                manual_pairs = set()
+                invalid = []
+                for item in incoming:
+                    if not isinstance(item, dict):
+                        continue
+                    from_id = str(item.get("fromNodeId") or "").strip()
+                    to_id = str(item.get("toNodeId") or "").strip()
+                    if not from_id or not to_id or from_id == to_id:
+                        continue
+                    if from_id not in node_ids or to_id not in node_ids:
+                        invalid.append({"fromNodeId": from_id, "toNodeId": to_id})
+                        continue
+                    pair = (from_id, to_id)
+                    if pair in automatic_pairs or pair in manual_pairs:
+                        continue
+                    manual_pairs.add(pair)
+                    manual.append({
+                        "id": str(item.get("id") or f"e-user-{len(manual) + 1}"),
+                        "fromNodeId": from_id,
+                        "toNodeId": to_id,
+                        "source": "user",
+                    })
+                if invalid:
+                    return self._send(400, {
+                        "error": f"连线引用不存在节点：{len(invalid)} 条",
+                        "code": "CONNECTION_NODE_MISSING",
+                        "invalid": invalid[:20],
+                    })
+                old_manual_count = len(existing) - len(automatic)
+                next_connections = [*automatic, *manual]
+                if next_connections == existing:
+                    return self._send(200, {
+                        "ok": True,
+                        "total": len(next_connections),
+                        "manual": len(manual),
+                        "removed": max(0, old_manual_count - len(manual)),
+                    })
+                payload = proj["payload"]
+                payload["connections"] = next_connections
+                try:
+                    store.update_project(
+                        pid,
+                        payload=payload,
+                        if_revision=proj["revision"],
+                    )
+                except store.RevisionConflictError:
+                    continue
+                return self._send(200, {
+                    "ok": True,
+                    "total": len(next_connections),
+                    "manual": len(manual),
+                    "removed": max(0, old_manual_count - len(manual)),
+                })
+            return self._send(409, {
+                "error": "项目正在被其他操作更新，请稍后重试连线保存",
+                "code": "CONNECTION_REVISION_CONFLICT",
+            })
         # Position-only save: dragging/layout code must never write stale metadata
         # (status/content/refs) back over another tab's newer generation state.
         m = re.match(r"^/api/projects/([^/]+)/nodes/positions$", path)

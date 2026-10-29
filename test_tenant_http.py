@@ -308,6 +308,237 @@ class TenantHttpTests(unittest.TestCase):
         self.assertEqual(final_node["position"], {"x": 320.0, "y": 260.0})
         self.assertEqual(final_node["metadata"]["prompt"], "second")
 
+    def test_manual_connections_persist_without_overwriting_automatic_edges(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        _, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "手动连线测试"},
+        )
+        pid = json.loads(body)["id"]
+        nodes = [
+            {
+                "id": "manual-image",
+                "type": "image",
+                "title": "角色图",
+                "position": {"x": 0, "y": 0},
+                "metadata": {"prompt": "角色"},
+            },
+            {
+                "id": "manual-video",
+                "type": "video",
+                "title": "视频",
+                "position": {"x": 500, "y": 0},
+                "metadata": {"prompt": "视频"},
+            },
+            {
+                "id": "manual-text",
+                "type": "text",
+                "title": "补充说明",
+                "position": {"x": 500, "y": 300},
+                "metadata": {"prompt": "镜头补充说明"},
+            },
+        ]
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes",
+            "alpha.example.com",
+            cookie,
+            {"nodes": nodes},
+        )
+        self.assertEqual(status, 200)
+        with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+            project = server.store.get_project(pid)
+            project["payload"]["connections"] = [{
+                "id": "e-media-auto",
+                "fromNodeId": "manual-image",
+                "toNodeId": "manual-video",
+                "source": "import",
+            }]
+            server.store.update_project(pid, payload=project["payload"])
+        status, _, body = self.request(
+            "GET",
+            f"/api/projects/{pid}",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            [item["id"] for item in json.loads(body)["payload"]["connections"]],
+            ["e-media-auto"],
+        )
+        status, _, body = self.request(
+            "PUT",
+            f"/api/projects/{pid}/connections",
+            "alpha.example.com",
+            cookie,
+            {
+                "connections": [{
+                    "id": "e-user-manual-1",
+                    "fromNodeId": "manual-text",
+                    "toNodeId": "manual-video",
+                }],
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["manual"], 1)
+        status, _, body = self.request(
+            "GET",
+            f"/api/projects/{pid}",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 200)
+        connections = json.loads(body)["payload"]["connections"]
+        self.assertEqual(len(connections), 2, connections)
+        self.assertTrue(any(item["id"] == "e-media-auto" for item in connections))
+        manual = next(item for item in connections if item["source"] == "user")
+        self.assertEqual(manual["fromNodeId"], "manual-text")
+        self.assertEqual(manual["toNodeId"], "manual-video")
+
+        status, _, body = self.request(
+            "PUT",
+            f"/api/projects/{pid}/connections",
+            "alpha.example.com",
+            cookie,
+            {"connections": []},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["manual"], 0)
+        status, _, body = self.request(
+            "GET",
+            f"/api/projects/{pid}",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 200)
+        connections = json.loads(body)["payload"]["connections"]
+        self.assertEqual([item["id"] for item in connections], ["e-media-auto"])
+
+    def test_connection_save_does_not_overwrite_concurrent_node_fields(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        _, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "连线并发测试"},
+        )
+        pid = json.loads(body)["id"]
+        nodes = [
+            {
+                "id": "concurrent-image",
+                "type": "image",
+                "title": "角色图",
+                "position": {"x": 0, "y": 0},
+                "metadata": {"prompt": "角色", "status": "idle"},
+            },
+            {
+                "id": "concurrent-video",
+                "type": "video",
+                "title": "视频",
+                "position": {"x": 500, "y": 0},
+                "metadata": {
+                    "prompt": "旧提示词",
+                    "status": "idle",
+                    "params": {"refs": []},
+                },
+            },
+        ]
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes",
+            "alpha.example.com",
+            cookie,
+            {"nodes": nodes},
+        )
+        self.assertEqual(status, 200)
+
+        barrier = threading.Barrier(2)
+        results = []
+
+        def save_connections():
+            barrier.wait()
+            results.append(self.request(
+                "PUT",
+                f"/api/projects/{pid}/connections",
+                "alpha.example.com",
+                cookie,
+                {
+                    "connections": [{
+                        "id": "e-user-concurrent",
+                        "fromNodeId": "concurrent-image",
+                        "toNodeId": "concurrent-video",
+                    }],
+                },
+            ))
+
+        def save_prompt():
+            barrier.wait()
+            results.append(self.request(
+                "PUT",
+                f"/api/projects/{pid}/nodes/concurrent-video",
+                "alpha.example.com",
+                cookie,
+                {
+                    "metadata": {
+                        "prompt": "并发后的新提示词",
+                        "params": {"refs": [{
+                            "nodeId": "concurrent-image",
+                            "label": "角色图",
+                        }]},
+                    },
+                },
+            ))
+
+        threads = [
+            threading.Thread(target=save_connections),
+            threading.Thread(target=save_prompt),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertEqual([result[0] for result in results], [200, 200])
+
+        status, _, body = self.request(
+            "GET",
+            f"/api/projects/{pid}",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 200)
+        project = json.loads(body)
+        video = next(
+            node for node in project["payload"]["nodes"]
+            if node["id"] == "concurrent-video"
+        )
+        self.assertEqual(video["metadata"]["prompt"], "并发后的新提示词")
+        self.assertEqual(
+            video["metadata"]["params"]["refs"][0]["nodeId"],
+            "concurrent-image",
+        )
+        self.assertTrue(any(
+            item["id"] == "e-user-concurrent"
+            for item in project["payload"]["connections"]
+        ))
+
     def test_import_preview_and_commit_share_validation_and_revision(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
