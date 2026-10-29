@@ -3156,6 +3156,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const atButtonRef = useRef<HTMLButtonElement>(null);
   const atPopRef = useRef<HTMLDivElement>(null);
   const [atPopPos, setAtPopPos] = useState<{left: number; top: number; maxHeight: number} | null>(null);
+  const atRevealDoneRef = useRef(false);
   const [paramsPanelPos, setParamsPanelPos] = useState<{left: number; top: number} | null>(null);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [canvasPickOpen, setCanvasPickOpen] = useState(false);
@@ -3277,8 +3278,17 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
       const top = below + height <= window.innerHeight - margin
         ? below
         : Math.max(margin, rect.top - height - margin);
-      if (below + height > window.innerHeight - margin && onRevealAt) {
+      const fitsBelow = below + height <= window.innerHeight - margin;
+      const fitsAbove = rect.top - height - margin >= margin;
+      if (
+        !fitsBelow
+        && !fitsAbove
+        && onRevealAt
+        && !atRevealDoneRef.current
+      ) {
+        atRevealDoneRef.current = true;
         onRevealAt(window.innerHeight - below - margin);
+        return;
       }
       setAtPopPos({
         left,
@@ -3296,6 +3306,9 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
       document.removeEventListener('scroll', place, true);
     };
   }, [atOpen, atCands.length, onRevealAt]);
+  useEffect(() => {
+    if (!atOpen) atRevealDoneRef.current = false;
+  }, [atOpen]);
 
   // 提示词框高度：**由内容决定**（对齐即梦 —— 用户明确要求"没内容的时候高度和有内容的高度不一样"）。
   //   空态只有一行占位文案 → 框很矮；写下内容后随行数长高，到上限才内部滚动。
@@ -15424,15 +15437,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           // 让画布内容为弹层让位，不改节点坐标。正数表示弹层需要下方空间，
           // 负值表示上方空间不足；换算成屏幕像素后平移 React Flow 视口。
           if (!requiredBottom) return;
-          const revealKey = Math.round(requiredBottom / 24);
-          const revealStamp = performance.now();
-          if (
-            revealKey === revealRef.current.key
-            && revealStamp - revealRef.current.at < 400
-          ) {
-            return;
-          }
-          revealRef.current = {key: revealKey, at: revealStamp};
+          if (revealRef.current.key === 1) return;
+          revealRef.current = {key: 1, at: performance.now()};
           const current = rf.getViewport();
           const shift = requiredBottom > 0
             ? Math.min(requiredBottom, Math.max(0, window.innerHeight - 120))
@@ -15443,6 +15449,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           );
         }}
         onClose={(reason) => {
+          revealRef.current = {key: 0, at: 0};
           setEditNodeId(null);
           setModalAnchor(null);
           if (reason !== 'clear') return;
