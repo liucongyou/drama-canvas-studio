@@ -3859,6 +3859,57 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_delete_locked(self):
         path = urlparse(self.path).path
+        m = re.match(r"^/api/projects/([^/]+)/episodes/([^/]+)$", path)
+        if m:
+            pid, episode_id = unquote(m.group(1)), unquote(m.group(2))
+            project = store.get_project(pid)
+            if not project:
+                return self._send(404, {"error": "项目不存在"})
+            payload = project["payload"]
+            groups = [
+                group for group in payload.get("episodeImports") or []
+                if isinstance(group, dict)
+            ]
+            target = next(
+                (
+                    group for group in groups
+                    if str(group.get("id") or "").strip().upper()
+                    == episode_id.strip().upper()
+                ),
+                None,
+            )
+            if target is None:
+                return self._send(404, {
+                    "error": f"{episode_id.upper()} 不存在",
+                    "code": "EPISODE_NOT_FOUND",
+                })
+            node_ids = [
+                str(node_id)
+                for node_id in target.get("nodeIds") or []
+                if node_id
+            ]
+            if node_ids:
+                return self._send(409, {
+                    "error": f"{target['id']} 还有 {len(node_ids)} 个节点，请先移除或迁移后再删除集数",
+                    "code": "EPISODE_NOT_EMPTY",
+                    "nodes": len(node_ids),
+                })
+            payload["episodeImports"] = [
+                group for group in groups if group is not target
+            ]
+            payload.setdefault("episodeLayouts", {}).pop(target["id"], None)
+            store.update_project(pid, payload=payload)
+            updated = store.get_project(pid)
+            return self._send(200, {
+                "ok": True,
+                "removed": target["id"],
+                "episodes": [
+                    str(group.get("id") or "")
+                    for group in payload["episodeImports"]
+                    if isinstance(group, dict)
+                ],
+                "revision": updated["revision"] if updated else None,
+            })
         m = re.match(r"^/api/providers/([^/]+)$", path)
         if m:
             try:

@@ -1392,6 +1392,20 @@ export async function createCanvasEpisode(
   });
 }
 
+export async function deleteCanvasEpisode(
+  sessionId: string,
+  episodeId: string,
+): Promise<{
+  ok: boolean;
+  removed: string;
+  episodes: string[];
+  revision: number | null;
+}> {
+  return request(`/api/projects/${encodeURIComponent(sessionId)}/episodes/${encodeURIComponent(episodeId)}`, {
+    method: 'DELETE',
+  });
+}
+
 /**
  * 单节点局部保存：只提交这一个节点的**非位置**字段。
  *

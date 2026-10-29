@@ -1,6 +1,6 @@
 import {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {dialog} from './GDialog';
-import {Check, ChevronDown, Plus, RefreshCw, Save, Trash2, X} from 'lucide-react';
+import {Braces, Check, ChevronDown, Plus, RefreshCw, Save, Trash2, X} from 'lucide-react';
 import {
   deleteModelConfig,
   deleteProviderConfig,
@@ -9,6 +9,8 @@ import {
   saveProviderConfig,
   testProviderConfig,
   type ModelCatalog,
+  type ModelParamSpec,
+  type ModelPricing,
   type ModelSpec,
   type ProviderSpec,
 } from './api';
@@ -94,7 +96,7 @@ function providerDraft(provider?: ProviderSpec): ProviderDraft {
   } : {...EMPTY_PROVIDER};
 }
 
-function modelDraft(model?: ModelSpec): ModelDraft {
+export function modelDraft(model?: ModelSpec): ModelDraft {
   return model ? {
     id: model.id,
     providerId: model.providerId,
@@ -194,6 +196,193 @@ function updateLimitJson(text: string, key: ModelLimitKey, raw: string): string 
     if (Number.isFinite(value)) limits[key] = Math.max(0, Math.floor(value));
   }
   return JSON.stringify(withComputedReferenceLimit(limits), null, 2);
+}
+
+type ParameterDraftRow = {
+  key: string;
+  type: 'select' | 'range' | 'text' | 'boolean';
+  defaultValue: string;
+  optionsText: string;
+  min: string;
+  max: string;
+  step: string;
+  multiple: boolean;
+  api: string;
+  raw?: unknown;
+};
+
+const PARAM_TYPES: {value: ParameterDraftRow['type']; label: string}[] = [
+  {value: 'select', label: '单选'},
+  {value: 'range', label: '数字范围'},
+  {value: 'text', label: '文本'},
+  {value: 'boolean', label: '开关'},
+];
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseJsonObjectOrEmpty(text: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(text || '{}');
+    return isPlainRecord(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function formatDefaultValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return value === undefined ? '' : JSON.stringify(value);
+}
+
+function coerceParameterValue(value: string, type: ParameterDraftRow['type']): unknown {
+  const trimmed = value.trim();
+  if (type === 'boolean') return trimmed === 'true';
+  if (type === 'range' && trimmed !== '' && Number.isFinite(Number(trimmed))) return Number(trimmed);
+  return trimmed;
+}
+
+function parameterRowsFromModel(model: ModelDraft): ParameterDraftRow[] {
+  const defaults = parseJsonObjectOrEmpty(model.defaultParams);
+  const schemas = parseJsonObjectOrEmpty(model.params);
+  const keys = [...new Set([...Object.keys(defaults), ...Object.keys(schemas)])];
+  return keys.map((key) => {
+    const raw = schemas[key];
+    const spec: ModelParamSpec = isPlainRecord(raw)
+      ? raw as ModelParamSpec
+      : {type: typeof raw === 'string' ? raw : 'text'};
+    const type = spec.type === 'select' || spec.type === 'range' || spec.type === 'boolean'
+      ? spec.type
+      : 'text';
+    return {
+      key,
+      type,
+      defaultValue: formatDefaultValue(defaults[key] ?? spec.default),
+      optionsText: (spec.options || []).map(String).join(', '),
+      min: spec.min === undefined ? '' : String(spec.min),
+      max: spec.max === undefined ? '' : String(spec.max),
+      step: spec.step === undefined ? '' : String(spec.step),
+      multiple: spec.multiple === true,
+      api: spec.api || '',
+      raw,
+    };
+  });
+}
+
+export function parameterRowsFromDraft(model: ModelDraft): ParameterDraftRow[] {
+  return parameterRowsFromModel(model);
+}
+
+export function rowsToParamsJson(rows: ParameterDraftRow[]): {defaultParams: string; params: string} {
+  const defaults: Record<string, unknown> = {};
+  const schemas: Record<string, unknown> = {};
+  for (const row of rows) {
+    const key = row.key.trim();
+    if (!key) continue;
+    const hasDefault = row.defaultValue !== '';
+    if (hasDefault) defaults[key] = coerceParameterValue(row.defaultValue, row.type);
+    const spec: Record<string, unknown> = {
+      ...(isPlainRecord(row.raw) ? row.raw : {}),
+      type: row.type,
+    };
+    if (row.type === 'select') {
+      spec.options = row.optionsText.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
+    } else {
+      delete spec.options;
+    }
+    if (row.type === 'range') {
+      if (row.min !== '') spec.min = Number(row.min);
+      if (row.max !== '') spec.max = Number(row.max);
+      if (row.step !== '') spec.step = Number(row.step);
+    } else {
+      delete spec.min;
+      delete spec.max;
+      delete spec.step;
+    }
+    if (row.multiple) spec.multiple = true; else delete spec.multiple;
+    if (row.api.trim()) spec.api = row.api.trim(); else delete spec.api;
+    schemas[key] = spec;
+  }
+  return {
+    defaultParams: JSON.stringify(defaults, null, 2),
+    params: JSON.stringify(schemas, null, 2),
+  };
+}
+
+type PricingTierRow = {id: string; label: string; rate: string; rateWithVideo: string};
+
+function pricingRowsFromJson(text: string): {
+  currency: string;
+  unit: string;
+  fixed: string;
+  tiers: PricingTierRow[];
+  note: string;
+  noteWithVideo: string;
+} {
+  const root = parseJsonObjectOrEmpty(text);
+  const capability = root.image || root.video || root.audio || root.text;
+  const rule = isPlainRecord(capability) ? capability : {};
+  const rates = isPlainRecord(rule.rates) ? rule.rates : {};
+  const ratesWithVideo = isPlainRecord(rule.ratesWithVideo) ? rule.ratesWithVideo : {};
+  const labels = [...new Set([...Object.keys(rates), ...Object.keys(ratesWithVideo)])];
+  return {
+    currency: String(root.currency || 'CNY'),
+    unit: String(rule.unit || 'second'),
+    fixed: rule.fixed === undefined ? '' : String(rule.fixed),
+    tiers: labels.length
+      ? labels.map((label, index) => ({
+          id: `${index}-${label}`,
+          label,
+          rate: String(rates[label] ?? ''),
+          rateWithVideo: String(ratesWithVideo[label] ?? ''),
+        }))
+      : [{id: '0-default', label: '默认', rate: '', rateWithVideo: ''}],
+    note: String(rule.note || ''),
+    noteWithVideo: String(rule.noteWithVideo || ''),
+  };
+}
+
+export function pricingRowsFromDraft(pricing: unknown): ReturnType<typeof pricingRowsFromJson> {
+  return pricingRowsFromJson(JSON.stringify(pricing || {}));
+}
+
+export function pricingJsonFromRows(
+  capability: string,
+  rows: {
+    currency: string;
+    unit: string;
+    fixed: string;
+    tiers: PricingTierRow[];
+    note: string;
+    noteWithVideo: string;
+  },
+): string {
+  const rule: Record<string, unknown> = {unit: rows.unit};
+  if (rows.fixed !== '' && Number.isFinite(Number(rows.fixed))) rule.fixed = Number(rows.fixed);
+  const rates: Record<string, number> = {};
+  const ratesWithVideo: Record<string, number> = {};
+  for (const tier of rows.tiers) {
+    const label = tier.label.trim();
+    if (!label) continue;
+    if (tier.rate !== '' && Number.isFinite(Number(tier.rate))) rates[label] = Number(tier.rate);
+    if (tier.rateWithVideo !== '' && Number.isFinite(Number(tier.rateWithVideo))) {
+      ratesWithVideo[label] = Number(tier.rateWithVideo);
+    }
+  }
+  if (Object.keys(rates).length > 0) rule.rates = rates;
+  if (Object.keys(ratesWithVideo).length > 0) rule.ratesWithVideo = ratesWithVideo;
+  if (rows.note.trim()) rule.note = rows.note.trim();
+  if (rows.noteWithVideo.trim()) rule.noteWithVideo = rows.noteWithVideo.trim();
+  const normalizedCapability = ['image', 'video', 'audio', 'text'].includes(capability)
+    ? capability
+    : 'image';
+  const pricing: ModelPricing = {
+    currency: rows.currency.trim() || 'CNY',
+    [normalizedCapability]: rule,
+  };
+  return JSON.stringify(pricing, null, 2);
 }
 
 /**
@@ -306,6 +495,13 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
   // 4 个自绘下拉共用一份"当前打开的是哪个"，保证同一时刻只开一个
   const [openSelect, setOpenSelect] = useState<'' | 'protocol' | 'providerId' | 'capability' | 'adapter'>('');
   const [detailKind, setDetailKind] = useState<'provider' | 'model'>('provider');
+  const [advancedOpen, setAdvancedOpen] = useState({
+    defaultParams: false,
+    params: false,
+    pricing: false,
+  });
+  const [parameterRows, setParameterRows] = useState<ParameterDraftRow[]>([]);
+  const [pricingRows, setPricingRows] = useState(() => pricingRowsFromJson('{}'));
 
   const providerModels = (catalog?.models || []).filter(
     (item) => Boolean(provider.id) && item.providerId === provider.id,
@@ -326,14 +522,33 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
   };
 
   const selectModel = (item: ModelSpec) => {
-    setModel(modelDraft(item));
+    const next = modelDraft(item);
+    setModel(next);
+    setParameterRows(parameterRowsFromModel(next));
+    setPricingRows(pricingRowsFromJson(next.pricing));
     setDetailKind('model');
   };
 
   const beginNewModel = () => {
     const providerId = provider.id || catalog?.providers[0]?.id || '';
-    setModel({...EMPTY_MODEL, providerId});
+    const next = {...EMPTY_MODEL, providerId};
+    setModel(next);
+    setParameterRows([]);
+    setPricingRows(pricingRowsFromJson('{}'));
     setDetailKind('model');
+  };
+
+  const updateParameterRows = (next: ParameterDraftRow[]) => {
+    setParameterRows(next);
+    setModel((current) => ({...current, ...rowsToParamsJson(next)}));
+  };
+
+  const updatePricingRows = (next: ReturnType<typeof pricingRowsFromJson>) => {
+    setPricingRows(next);
+    setModel((current) => ({
+      ...current,
+      pricing: pricingJsonFromRows(current.capability, next),
+    }));
   };
 
   const applyCatalog = (next: ModelCatalog) => {
@@ -341,9 +556,18 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
     setProvider((current) => current.id || !next.providers.length
       ? current
       : providerDraft(next.providers[0]));
-    setModel((current) => current.providerId || !next.providers.length
-      ? current
-      : {...current, providerId: next.providers[0].id});
+    setModel((current) => {
+      if (current.id) {
+        const selected = next.models.find((item) => item.id === current.id);
+        return selected ? modelDraft(selected) : current;
+      }
+      const first = next.models[0];
+      if (first) return modelDraft(first);
+      return !next.providers.length
+        ? current
+        : {...current, providerId: next.providers[0].id};
+    });
+    setDetailKind((current) => next.models.length > 0 ? 'model' : current);
   };
 
   const reload = async () => {
@@ -357,6 +581,32 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
   };
 
   useEffect(() => { void reload(); }, []);
+
+  useEffect(() => {
+    if (detailKind !== 'model') return;
+    setParameterRows(parameterRowsFromModel(model));
+    setPricingRows(pricingRowsFromJson(model.pricing));
+    // Refresh the visual editor only when switching models. Advanced JSON edits
+    // should not be overwritten by an effect on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailKind, model.id]);
+
+  useEffect(() => {
+    if (detailKind !== 'model' || !model.id) return;
+    setProvider((current) => (
+      current.id === model.providerId
+        ? current
+        : providerDraft(catalog?.providers.find((item) => item.id === model.providerId))
+    ));
+  }, [catalog, detailKind, model.id, model.providerId]);
+
+  useEffect(() => {
+    if (detailKind !== 'model') return;
+    setModel((current) => ({
+      ...current,
+      pricing: pricingJsonFromRows(current.capability, pricingRows),
+    }));
+  }, [detailKind, model.capability]);
 
   // 点下拉以外的任何地方都收起（含弹窗内的输入框、另一侧面板）。
   // ★ 用 pointerdown 捕获阶段：这样点输入框时会先收起下拉，再正常聚焦输入框，
@@ -432,12 +682,20 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
     setModelBusy(true);
     setStatus('');
     try {
+      const visualParams = rowsToParamsJson(parameterRows);
+      const visualPricing = pricingJsonFromRows(model.capability, pricingRows);
       const payload = {
         ...model,
-        defaultParams: parseJson(model.defaultParams, '默认参数'),
-        params: parseJson(model.params, '参数 Schema'),
+        defaultParams: advancedOpen.defaultParams
+          ? parseJson(model.defaultParams, '默认参数')
+          : parseJson(visualParams.defaultParams, '默认参数'),
+        params: advancedOpen.params
+          ? parseJson(model.params, '参数 Schema')
+          : parseJson(visualParams.params, '参数 Schema'),
         limits: withComputedReferenceLimit(parseJson(model.limits, '限制')),
-        pricing: parseJson(model.pricing, '计费规则'),
+        pricing: advancedOpen.pricing
+          ? parseJson(model.pricing, '计费规则')
+          : parseJson(visualPricing, '计费规则'),
       };
       const next = await saveModelConfig(payload);
       applyCatalog(next);
@@ -451,7 +709,12 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
         ? next.providers.find((item) => item.id === saved.providerId)
         : undefined;
       if (savedProvider) setProvider(providerDraft(savedProvider));
-      if (saved) setModel(modelDraft(saved));
+      if (saved) {
+        const nextDraft = modelDraft(saved);
+        setModel(nextDraft);
+        setParameterRows(parameterRowsFromModel(nextDraft));
+        setPricingRows(pricingRowsFromJson(nextDraft.pricing));
+      }
       setDetailKind('model');
       setStatus('模型已保存');
       window.dispatchEvent(new CustomEvent('canvas-model-catalog-changed'));
@@ -688,9 +951,87 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
                       ))}
                     </div>
                   </div>
-                  <label className="is-full"><span>默认参数 JSON</span><textarea value={model.defaultParams} onChange={(event) => setModel({...model, defaultParams: event.target.value})} rows={4} /></label>
-                  <label className="is-full"><span>参数 Schema JSON</span><textarea value={model.params} onChange={(event) => setModel({...model, params: event.target.value})} rows={7} /></label>
-                  <label className="is-full"><span>计费规则 JSON</span><textarea value={model.pricing} onChange={(event) => setModel({...model, pricing: event.target.value})} rows={6} placeholder={'{"currency":"CNY","video":{"unit":"second","rates":{"480P":0.462,"720P":0.994,"1080P":2.478}}}'} /></label>
+                  <section className="model-param-editor is-full">
+                    <header>
+                      <div>
+                        <strong>生成参数</strong>
+                        <span>直接添加参数、选择控件类型和默认值；生成时按这里渲染参数控件。</span>
+                      </div>
+                      <button type="button" onClick={() => updateParameterRows([
+                        ...parameterRows,
+                        {key: '', type: 'text', defaultValue: '', optionsText: '', min: '', max: '', step: '', multiple: false, api: ''},
+                      ])}><Plus size={12} />添加参数</button>
+                    </header>
+                    <div className="model-param-list">
+                      {parameterRows.map((row, index) => (
+                        <div className="model-param-row" key={`${row.key}-${index}`}>
+                          <label>
+                            <span>参数名</span>
+                            <input value={row.key} placeholder="ratio" onChange={(event) => updateParameterRows(parameterRows.map((item, i) => i === index ? {...item, key: event.target.value} : item))} />
+                          </label>
+                          <label>
+                            <span>控件</span>
+                            <select value={row.type} onChange={(event) => updateParameterRows(parameterRows.map((item, i) => i === index ? {...item, type: event.target.value as ParameterDraftRow['type']} : item))}>
+                              {PARAM_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                            </select>
+                          </label>
+                          <label>
+                            <span>默认值</span>
+                            <input value={row.defaultValue} placeholder={row.type === 'boolean' ? 'true / false' : row.type === 'range' ? '5' : '默认值'} onChange={(event) => updateParameterRows(parameterRows.map((item, i) => i === index ? {...item, defaultValue: event.target.value} : item))} />
+                          </label>
+                          {row.type === 'select' && (
+                            <label className="is-param-wide">
+                              <span>可选项（逗号分隔）</span>
+                              <input value={row.optionsText} placeholder="1:1, 16:9, 9:16" onChange={(event) => updateParameterRows(parameterRows.map((item, i) => i === index ? {...item, optionsText: event.target.value} : item))} />
+                            </label>
+                          )}
+                          {row.type === 'range' && (
+                            <>
+                              <label><span>最小</span><input type="number" value={row.min} onChange={(event) => updateParameterRows(parameterRows.map((item, i) => i === index ? {...item, min: event.target.value} : item))} /></label>
+                              <label><span>最大</span><input type="number" value={row.max} onChange={(event) => updateParameterRows(parameterRows.map((item, i) => i === index ? {...item, max: event.target.value} : item))} /></label>
+                              <label><span>步长</span><input type="number" value={row.step} onChange={(event) => updateParameterRows(parameterRows.map((item, i) => i === index ? {...item, step: event.target.value} : item))} /></label>
+                            </>
+                          )}
+                          <button type="button" className="model-param-remove" title="删除参数" aria-label="删除参数" onClick={() => updateParameterRows(parameterRows.filter((_, i) => i !== index))}><Trash2 size={12} /></button>
+                        </div>
+                      ))}
+                      {parameterRows.length === 0 && <p className="model-param-empty">还没有参数；点“添加参数”开始配置。</p>}
+                    </div>
+                    <button type="button" className="model-json-toggle" onClick={() => setAdvancedOpen((current) => ({...current, defaultParams: !current.defaultParams, params: !current.params}))}>
+                      <Braces size={12} />{advancedOpen.defaultParams ? '收起默认参数 / 参数 Schema 原始 JSON' : '高级：编辑默认参数 / 参数 Schema JSON'}
+                    </button>
+                    {advancedOpen.defaultParams && (
+                      <div className="model-json-advanced">
+                        <label><span>默认参数 JSON</span><textarea value={model.defaultParams} onChange={(event) => setModel({...model, defaultParams: event.target.value})} rows={4} /></label>
+                        <label><span>参数 Schema JSON</span><textarea value={model.params} onChange={(event) => setModel({...model, params: event.target.value})} rows={6} /></label>
+                      </div>
+                    )}
+                  </section>
+                  <section className="model-param-editor is-full">
+                    <header>
+                      <div><strong>计费规则</strong><span>按档位填写单价；有视频参考时可单独填写一组单价。</span></div>
+                    </header>
+                    <div className="model-pricing-row">
+                      <label><span>币种</span><select value={pricingRows.currency} onChange={(event) => updatePricingRows({...pricingRows, currency: event.target.value})}><option value="CNY">人民币 CNY</option><option value="USD">美元 USD</option></select></label>
+                      <label><span>单位</span><select value={pricingRows.unit} onChange={(event) => updatePricingRows({...pricingRows, unit: event.target.value})}><option value="second">每秒</option><option value="image">每张</option><option value="video">每个视频</option><option value="request">每次请求</option></select></label>
+                      <label><span>固定费用</span><input type="number" min={0} step="0.001" value={pricingRows.fixed} placeholder="可选" onChange={(event) => updatePricingRows({...pricingRows, fixed: event.target.value})} /></label>
+                    </div>
+                    <div className="model-pricing-tiers">
+                      {pricingRows.tiers.map((tier, index) => (
+                        <div key={tier.id}>
+                          <label><span>档位</span><input value={tier.label} placeholder="如 480P / 1.5K" onChange={(event) => updatePricingRows({...pricingRows, tiers: pricingRows.tiers.map((item, i) => i === index ? {...item, label: event.target.value} : item)})} /></label>
+                          <label><span>单价</span><input type="number" min={0} step="0.001" value={tier.rate} placeholder="0.462" onChange={(event) => updatePricingRows({...pricingRows, tiers: pricingRows.tiers.map((item, i) => i === index ? {...item, rate: event.target.value} : item)})} /></label>
+                          <label><span>含视频输入</span><input type="number" min={0} step="0.001" value={tier.rateWithVideo} placeholder="可选" onChange={(event) => updatePricingRows({...pricingRows, tiers: pricingRows.tiers.map((item, i) => i === index ? {...item, rateWithVideo: event.target.value} : item)})} /></label>
+                          <button type="button" title="删除档位" aria-label="删除档位" onClick={() => updatePricingRows({...pricingRows, tiers: pricingRows.tiers.filter((_, i) => i !== index)})}><Trash2 size={12} /></button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => updatePricingRows({...pricingRows, tiers: [...pricingRows.tiers, {id: `${Date.now()}-`, label: '', rate: '', rateWithVideo: ''}]})}><Plus size={12} />添加档位</button>
+                    </div>
+                    <button type="button" className="model-json-toggle" onClick={() => setAdvancedOpen((current) => ({...current, pricing: !current.pricing}))}>
+                      <Braces size={12} />{advancedOpen.pricing ? '收起计费规则原始 JSON' : '高级：编辑计费规则 JSON'}
+                    </button>
+                    {advancedOpen.pricing && <textarea className="model-pricing-json" value={model.pricing} onChange={(event) => setModel({...model, pricing: event.target.value})} rows={6} />}
+                  </section>
                 </div>
               )}
             </div>

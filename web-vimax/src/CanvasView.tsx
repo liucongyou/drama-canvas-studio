@@ -1,5 +1,6 @@
 import {startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode, type RefObject, type SyntheticEvent} from 'react';
 import * as ReactDOM from 'react-dom';
+import {createPortal} from 'react-dom';
 import {toPng} from 'html-to-image';
 import {
   BaseEdge,
@@ -106,7 +107,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasConnections, createCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -121,6 +122,7 @@ import {
   type ProjectVersionPreview,
 } from './api';
 import {useDialogFocusTrap} from './useDialogFocusTrap';
+import {dialog} from './GDialog';
 import {
   evaluateBatchGeneration,
   evaluateReferenceLimits,
@@ -432,6 +434,10 @@ type HistorySnapshot = {
   notes: CanvasNote[];
   deletedAuto: string[];
   media: CanvasMediaNode[];
+  /** Flow-layer snapshot so note/child-card coordinates can also be undone. */
+  flowNodes?: FlowNode[];
+  /** Position-only undo must restore coordinates instead of preserving current ones. */
+  positions?: boolean;
   /** Node-creation undo removes nodes that did not exist in the pre-action snapshot. */
   removeAddedMedia?: boolean;
 };
@@ -7230,6 +7236,24 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [episodeDraftTitle, setEpisodeDraftTitle] = useState('');
   const [episodeCreating, setEpisodeCreating] = useState(false);
   const [episodeCreateError, setEpisodeCreateError] = useState('');
+  const [episodeDeleting, setEpisodeDeleting] = useState(false);
+  const [episodeMenu, setEpisodeMenu] = useState<{
+    epId: string;
+    title: string;
+    left: number;
+    top: number;
+  } | null>(null);
+  useEffect(() => {
+    if (!episodeMenu) return;
+    const close = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (!target?.closest('.canvas-ep-action-menu') && !target?.closest('.canvas-ep-more')) {
+        setEpisodeMenu(null);
+      }
+    };
+    document.addEventListener('pointerdown', close, true);
+    return () => document.removeEventListener('pointerdown', close, true);
+  }, [episodeMenu]);
   // 画布底纹（复刻 BeefTV appearance）：dots 点阵 / lines 细线网格 / blank 空白
   const [bgMode, setBgMode] = useState<'dots' | 'lines' | 'blank'>('dots');
   // ＋添加节点菜单开关
@@ -7359,6 +7383,40 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     }
   }, [episodeCreating, episodeDraftId, episodeDraftTitle, fmtEp, session, setToast]);
 
+  const removeEpisode = useCallback(async (episodeId: string, episodeTitle: string) => {
+    if (episodeDeleting) return;
+    const confirmed = await dialog.confirm({
+      title: `删除「${episodeTitle}」？`,
+      message: '只删除画布列表中的这一集；如果本集仍有节点，系统会提示先移除或迁移，避免误删素材。',
+      tone: 'danger',
+      confirmText: '删除本集',
+    });
+    if (!confirmed) return;
+    setEpisodeDeleting(true);
+    try {
+      await deleteCanvasEpisode(session, episodeId);
+      setToast(`${fmtEp(episodeId)}已删除`);
+      const remaining = canvas?.meta.episodes.filter((episode) => episode.ep_id !== episodeId) || [];
+      if (currentEp === episodeId) {
+        setCurrentEp(remaining[0]?.ep_id || null);
+      }
+      setCanvas((prev) => prev ? {
+        ...prev,
+        meta: {
+          ...prev.meta,
+          episodes: prev.meta.episodes.filter((episode) => episode.ep_id !== episodeId),
+          current_ep: currentEp === episodeId ? (remaining[0]?.ep_id || '') : prev.meta.current_ep,
+        },
+        segments: prev.segments.filter((segment) => segment.ep_id !== episodeId),
+        shots: prev.shots.filter((shot) => shot.ep_id !== episodeId),
+      } : prev);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : '删除集数失败');
+    } finally {
+      setEpisodeDeleting(false);
+    }
+  }, [canvas, currentEp, episodeDeleting, fmtEp, session, setToast]);
+
   // LibTV 风格交互状态
   const [mouseMode, setMouseMode] = useState<MouseMode>('select');
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -7389,7 +7447,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const rf = useReactFlow();
   // storeApi：编组「按组拖动」需要绕过 React 调度，直接改内部选中位（见 pressGroup）
   const storeApi = useStoreApi();
-  const nodesRef = useRef<{id: string; type?: string}[]>([]);
+  const nodesRef = useRef<FlowNode[]>([]);
 
   // ===== 画布增强：布局持久化 / 资产搜索 / 导出 PNG / 复制粘贴 / 段卡右键菜单 =====
   const [assetQuery, setAssetQuery] = useState('');
@@ -7677,7 +7735,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const pushHistory = useCallback((
     edgesSnapshot: Edge[],
     notesSnapshot: CanvasNote[],
-    options?: {removeAddedMedia?: boolean},
+    options?: {removeAddedMedia?: boolean; positions?: boolean},
   ) => {
     metadataPastRef.current = [];
     metadataFutureRef.current = [];
@@ -7688,9 +7746,22 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         notes: notesSnapshot,
         deletedAuto: [...deletedAutoRef.current],
         media: mediaNodesRef.current,
+        flowNodes: options?.positions ? nodesRef.current : undefined,
         removeAddedMedia: options?.removeAddedMedia === true,
+        positions: options?.positions === true,
       },
     ];
+    // Position snapshots must copy coordinates now. Refs point to live arrays; a
+    // later sort would otherwise mutate the history entry itself.
+    if (options?.positions) {
+      const snapshot = pastRef.current[pastRef.current.length - 1];
+      snapshot.media = snapshot.media.map((node) => ({...node}));
+      snapshot.notes = snapshot.notes.map((note) => ({...note}));
+      snapshot.flowNodes = snapshot.flowNodes?.map((node) => ({
+        ...node,
+        position: {...node.position},
+      }));
+    }
     futureRef.current = [];
     setUndoTick((t) => t + 1);
   }, []);
@@ -7776,6 +7847,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const mediaSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaBatchSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaBatchSaveInFlightRef = useRef<Promise<void> | null>(null);
+  const pendingMediaDeleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingMediaDeleteIdsRef = useRef<Set<string>>(new Set());
   const mediaPositionSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingMediaPatchesRef = useRef<Map<string, CanvasMediaNode>>(new Map());
   const pendingMediaNodeSavesRef = useRef<Map<string, CanvasMediaNode>>(new Map());
@@ -7848,6 +7921,29 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     pendingMediaNodeSavesRef.current.delete(id);
     await deleteCanvasMediaNode(session, id);
   }, [flushMediaNodeSaves, session]);
+
+  const cancelPendingMediaDeletes = useCallback(() => {
+    if (pendingMediaDeleteTimerRef.current) {
+      clearTimeout(pendingMediaDeleteTimerRef.current);
+      pendingMediaDeleteTimerRef.current = null;
+    }
+    pendingMediaDeleteIdsRef.current.clear();
+  }, []);
+
+  const flushPendingMediaDeletes = useCallback(() => {
+    const ids = [...pendingMediaDeleteIdsRef.current];
+    pendingMediaDeleteIdsRef.current.clear();
+    pendingMediaDeleteTimerRef.current = null;
+    for (const id of ids) {
+      void deleteMediaNodePersistently(id).catch(() => {});
+    }
+  }, [deleteMediaNodePersistently]);
+
+  const queueMediaDelete = useCallback((id: string) => {
+    pendingMediaDeleteIdsRef.current.add(id);
+    if (pendingMediaDeleteTimerRef.current) clearTimeout(pendingMediaDeleteTimerRef.current);
+    pendingMediaDeleteTimerRef.current = setTimeout(flushPendingMediaDeletes, 3000);
+  }, [flushPendingMediaDeletes]);
 
   const persistMediaNodes = useCallback((next: CanvasMediaNode[], nodesToSave: CanvasMediaNode[] = next) => {
     for (const node of nodesToSave) pendingMediaNodeSavesRef.current.set(node.id, node);
@@ -9300,6 +9396,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   useEffect(() => {
     userEdgesRef.current = userEdges;
   }, [userEdges]);
+  useEffect(() => () => {
+    flushPendingMediaDeletes();
+  }, [flushPendingMediaDeletes]);
 
   // 用户连线 / 删除的自动连线变化 → 写入持久化布局（首次布局恢复完成前禁止写回，避免空状态覆盖历史布局）
   useEffect(() => {
@@ -9979,7 +10078,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       });
     }
     if (patch.size === 0) return 0;
-    pushHistory(userEdgesRef.current, notesRef.current);
+    pushHistory(userEdgesRef.current, notesRef.current, {positions: true});
     applyPositionPatch(patch);
     return patch.size;
   }, [rf, selectedFlowNodes, pushHistory, applyPositionPatch]);
@@ -9991,6 +10090,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const total = noteIds.length + mediaIds.length;
     if (total === 0) return 0;
     pushHistory(userEdgesRef.current, notesRef.current);
+    // Deleted media must be removable from the server but restorable locally by
+    // Ctrl+Z. Defer the backend deletion until the next gesture commits; the
+    // snapshot itself retains the complete node card.
+    cancelPendingMediaDeletes();
     if (noteIds.length > 0) {
       const drop = new Set(noteIds);
       setNotes((prev) => {
@@ -10015,7 +10118,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         return prev.filter((n) => !drop.has(n.id));
       });
       mediaIds.forEach((id) => {
-        void deleteMediaNodePersistently(id).catch(() => {});
+        queueMediaDelete(id);
         const mediaId = MEDIA_PREFIX + id;
         setUserEdges((prev) => prev.filter((edge) => edge.source !== mediaId && edge.target !== mediaId));
       });
@@ -10077,7 +10180,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       patch.set(n.id, {x: Math.round(originX + col * CELL_W), y: Math.round(originY + row * CELL_H)});
     });
     if (patch.size === 0) return 0;
-    pushHistory(userEdgesRef.current, notesRef.current);
+    pushHistory(userEdgesRef.current, notesRef.current, {positions: true});
     applyPositionPatch(patch);
     return patch.size;
   }, [rf, pushHistory, applyPositionPatch]);
@@ -10088,9 +10191,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     if (sel.length === 0) return 0;
     const patch = new Map<string, {x: number; y: number}>();
     sel.forEach((n) => patch.set(n.id, {x: Math.round(n.position.x + dx), y: Math.round(n.position.y + dy)}));
+    pushHistory(userEdgesRef.current, notesRef.current, {positions: true});
     applyPositionPatch(patch);
     return patch.size;
-  }, [selectedFlowNodes, applyPositionPatch]);
+  }, [selectedFlowNodes, pushHistory, applyPositionPatch]);
 
   const commitNotePositions = useCallback((dirty: {id: string; position: {x: number; y: number}}[]) => {
     setNotes((prev) => {
@@ -11378,6 +11482,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     // 节点删除统一走「删除确认弹窗」（可勾选要删哪些），不在 Del 键上直接删：
     // 多选时手滑一下就会整批丢失。这里取消掉 React Flow 的默认删除，由弹窗确认后再执行。
     if (keepNodes.length > 0) {
+      // React Flow's built-in delete path runs outside our DOM keyboard listener;
+      // record here so deleting nodes still has a real Ctrl+Z snapshot.
+      if (delEdges.length === 0) pushHistory(userEdgesRef.current, notesRef.current);
       setDeleteTargets(keepNodes.map((node) => ({id: node.id, type: node.type ?? 'media'})));
     }
     return {nodes: [], edges: []};
@@ -11394,19 +11501,26 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     setUserEdges(snapshot.edges);
     setNotes(snapshot.notes);
     setDeletedAutoEdgeIds(new Set(snapshot.deletedAuto));
-    // 内容恢复快照，坐标始终保留当前值，避免连线操作连坐拖动位置。
+    // 连线/内容撤销保留当前坐标；位置型操作（排序、对齐、方向键）必须恢复旧坐标。
     const curById = new Map(prevMedia.map((m) => [m.id, m]));
     const merged = snapshot.media.map((m) => {
       const cur = curById.get(m.id);
-      return cur
+      const mergedNode = cur
         ? {
             ...m,
-            x: cur.x,
-            y: cur.y,
-            positionUpdatedAt: cur.positionUpdatedAt,
+            x: snapshot.positions ? m.x : cur.x,
+            y: snapshot.positions ? m.y : cur.y,
+            positionUpdatedAt: snapshot.positions ? m.positionUpdatedAt : cur.positionUpdatedAt,
             updatedAt: cur.updatedAt,
           }
         : m;
+      // Tag restored positions with the current sequence so a queued position save
+      // from the action being undone cannot land after the restore.
+      if (snapshot.positions && cur) {
+        const seq = ++positionMutationSeqRef.current;
+        pendingPositionSavesRef.current.set(cur.id, {x: mergedNode.x, y: mergedNode.y, seq});
+      }
+      return mergedNode;
     });
     const snapIds = new Set(snapshot.media.map((m) => m.id));
     const removedMedia = snapshot.removeAddedMedia
@@ -11429,14 +11543,30 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         ? merged
         : prevMedia,
     );
+    if (snapshot.positions && snapshot.flowNodes) {
+    const beforeById = new Map(prevMedia.map((node) => [`${MEDIA_PREFIX}${node.id}`, node]));
+      setNodes((prev) => prev.map((node) => {
+        const target = snapshot.flowNodes?.find((item) => item.id === node.id);
+        const restoredMedia = beforeById.get(node.id);
+        if (target && !target.id.startsWith(MEDIA_PREFIX)) {
+          return {...node, position: target.position};
+        }
+        if (restoredMedia) {
+          const restored = merged.find((item) => item.id === restoredMedia.id);
+          if (restored) return {...node, position: {x: restored.x, y: restored.y}};
+        }
+        return node;
+      }));
+    }
     persistNotes(snapshot.notes);
     if (changedNodes.length > 0) persistMediaNodes(merged, changedNodes);
+    if (snapshot.positions) persistMediaPositions(merged);
     for (const removed of removedMedia) {
       void deleteMediaNodePersistently(removed.id).catch((error: unknown) => {
         setToast(error instanceof Error ? error.message : '撤销新增节点失败');
       });
     }
-  }, [deleteMediaNodePersistently, persistNotes, persistMediaNodes, setToast]);
+  }, [deleteMediaNodePersistently, persistNotes, persistMediaNodes, persistMediaPositions, setNodes, setToast]);
 
   const applyMetadataSnapshot = useCallback((node: CanvasMediaNode) => {
     const next = mediaNodesRef.current.map((item) => item.id === node.id ? node : item);
@@ -11455,6 +11585,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [beginSave, broadcastMediaChange, finishSave, session]);
 
   const undo = useCallback(() => {
+    cancelPendingMediaDeletes();
     const metadataEntry = metadataPastRef.current.pop();
     if (metadataEntry) {
       metadataFutureRef.current.push(metadataEntry);
@@ -11465,11 +11596,19 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     if (past.length === 0) return;
     const snapshot = past[past.length - 1];
     pastRef.current = past.slice(0, -1);
-    futureRef.current = [...futureRef.current, {edges: userEdgesRef.current, notes: notesRef.current, deletedAuto: [...deletedAutoRef.current], media: mediaNodesRef.current}];
+    futureRef.current = [...futureRef.current, {
+      edges: userEdgesRef.current,
+      notes: notesRef.current,
+      deletedAuto: [...deletedAutoRef.current],
+      media: mediaNodesRef.current,
+      flowNodes: snapshot.positions ? nodesRef.current : undefined,
+      positions: snapshot.positions,
+    }];
     restoreSnapshot(snapshot, mediaNodesRef.current);
-  }, [applyMetadataSnapshot, restoreSnapshot]);
+  }, [applyMetadataSnapshot, cancelPendingMediaDeletes, restoreSnapshot]);
 
   const redo = useCallback(() => {
+    flushPendingMediaDeletes();
     const metadataEntry = metadataFutureRef.current.pop();
     if (metadataEntry) {
       metadataPastRef.current.push(metadataEntry);
@@ -11480,14 +11619,26 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     if (future.length === 0) return;
     const snapshot = future[future.length - 1];
     futureRef.current = future.slice(0, -1);
-    pastRef.current = [...pastRef.current, {edges: userEdgesRef.current, notes: notesRef.current, deletedAuto: [...deletedAutoRef.current], media: mediaNodesRef.current}];
+    pastRef.current = [...pastRef.current, {
+      edges: userEdgesRef.current,
+      notes: notesRef.current,
+      deletedAuto: [...deletedAutoRef.current],
+      media: mediaNodesRef.current,
+      flowNodes: snapshot.positions ? nodesRef.current : undefined,
+      positions: snapshot.positions,
+    }];
     restoreSnapshot(snapshot, mediaNodesRef.current);
-  }, [applyMetadataSnapshot, restoreSnapshot]);
+  }, [applyMetadataSnapshot, flushPendingMediaDeletes, restoreSnapshot]);
 
   // 快捷键：组合键必须**先于裸键**判断——旧实现把 `key === 'c'` 放在最前，
   // 导致 Ctrl+C / Ctrl+V 被"切换鼠标模式"截走，复制粘贴从未真正生效。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (episodeMenu && event.key === 'Escape') {
+        setEpisodeMenu(null);
+        event.preventDefault();
+        return;
+      }
       const key = event.key.toLowerCase();
       const mod = event.ctrlKey || event.metaKey;
       // Ctrl+D（复制选中节点）在文本编辑态也保留：点中备注往往会自动聚焦其 textarea，
@@ -11546,8 +11697,27 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           event.preventDefault();
           return;
         }
+        if (key === 'f') {
+          event.preventDefault();
+          const sel = rf.getNodes().filter((node) => node.selected);
+          if (sel.length > 0) {
+            rf.fitView({nodes: sel.map((node) => ({id: node.id})), padding: 0.3, duration: 300});
+          } else {
+            setToast('先选中节点，再按 Ctrl+F 聚焦所选');
+          }
+          return;
+        }
         if (key === '0') { event.preventDefault(); rf.zoomTo(1, {duration: 200}); return; }
         if (key === '1') { event.preventDefault(); rf.fitView({padding: 0.2, duration: 300}); return; }
+        if (key === 's') { event.preventDefault(); setToast('画布自动保存已开启，无需手动保存'); return; }
+        return;
+      }
+      if (key === 'delete' || key === 'backspace') {
+        const sel = rf.getNodes().filter((node) => node.selected && (node.type === 'media' || node.type === 'note'));
+        if (sel.length > 0) {
+          setDeleteTargets(sel.map((node) => ({id: node.id, type: node.type ?? 'media'})));
+          event.preventDefault();
+        }
         return;
       }
       // —— 以下为裸键 ——
@@ -11564,6 +11734,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         rf.fitView({nodes: sel.map((n) => ({id: n.id})), padding: 0.3, duration: 300});
       }
       else if (key === 'f') { event.preventDefault(); rf.fitView({padding: 0.2}); }
+      else if (key === '?') { event.preventDefault(); setHelpOpen(true); }
       else if (event.code === 'Space') { event.preventDefault(); setPanning(true); }
       else if (key === 'arrowup' || key === 'arrowdown' || key === 'arrowleft' || key === 'arrowright') {
         const step = event.shiftKey ? 10 : 1;
@@ -11577,12 +11748,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('pointerdown', flushPendingMediaDeletes, true);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('pointerdown', flushPendingMediaDeletes, true);
     };
-  }, [undo, redo, cutSelectedNodes, copySelectedNodes, pasteNodeClipboard, clipboard, addNote, notes, selectedId,
-      duplicateSelectedNodes, nudgeSelected, setNodes, rf, setToast, toggleEdgesHidden]);
+  }, [undo, redo, cutSelectedNodes, copySelectedNodes, pasteNodeClipboard, clipboard, addNote, notes, selectedId, episodeMenu,
+      duplicateSelectedNodes, nudgeSelected, setNodes, rf, setToast, toggleEdgesHidden, flushPendingMediaDeletes]);
 
   // 有效段列表：有 segments.json 用真实分段；无分段时兜底分组。
   // 编号体系必须与镜头自带 segment_id 对齐（时间线/搜索/定位都按 segment_id 反查段卡节点 id）：
@@ -13136,7 +13309,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [contextMenu, undoTick]);
 
   useEffect(() => {
-    nodesRef.current = nodes.map((node) => ({id: node.id, type: node.type}));
+    nodesRef.current = nodes;
   }, [nodes]);
 
   const contextMenuNote = useMemo(() => {
@@ -13573,19 +13746,38 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                           ? `${planned}镜`
                           : '待处理';
                   return (
-                    <button
-                      key={ep.ep_id}
-                      type="button"
-                      className={currentEp === ep.ep_id ? 'is-active' : ''}
-                      onClick={() => setCurrentEp(ep.ep_id)}
-                      title={`${episodeLabel} · ${badge}${partial ? '（分镜未完成，续跑后自动补齐）' : ''}${ep.partial_render ? '（成片残缺，续跑补全缺失段后再拼成片）' : ''}${ep.final_ready ? ' · 已成片' : ''}`}
-                    >
-                      <span className="ep-name">{episodeLabel}</span>
-                      <span className={`ep-badge ${ep.final_ready ? 'is-done' : ''} ${ep.partial_render ? 'is-partial' : partial ? 'is-partial' : ''}`}>
-                        {ep.final_ready && <Check size={10} strokeWidth={2.6} aria-hidden="true" />}
-                        {badge}
-                      </span>
-                    </button>
+                    <div key={ep.ep_id} className={`canvas-ep-row ${currentEp === ep.ep_id ? 'is-active' : ''}`}>
+                      <button
+                        type="button"
+                        className="canvas-ep-select"
+                        onClick={() => setCurrentEp(ep.ep_id)}
+                        title={`${episodeLabel} · ${badge}${partial ? '（分镜未完成，续跑后自动补齐）' : ''}${ep.partial_render ? '（成片残缺，续跑补全缺失段后再拼成片）' : ''}${ep.final_ready ? ' · 已成片' : ''}`}
+                      >
+                        <span className="ep-name">{episodeLabel}</span>
+                        <span className={`ep-badge ${ep.final_ready ? 'is-done' : ''} ${ep.partial_render ? 'is-partial' : partial ? 'is-partial' : ''}`}>
+                          {ep.final_ready && <Check size={10} strokeWidth={2.6} aria-hidden="true" />}
+                          {badge}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="canvas-ep-more"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (currentEp !== ep.ep_id) setCurrentEp(ep.ep_id);
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          setEpisodeMenu({
+                            epId: ep.ep_id,
+                            title: episodeLabel,
+                            left: rect.right - 8,
+                            top: rect.bottom + 4,
+                          });
+                        }}
+                        disabled={episodeDeleting}
+                        aria-label={`${episodeLabel}操作`}
+                        title="集数操作"
+                      ><MoreHorizontal size={13} strokeWidth={2} aria-hidden="true" /></button>
+                    </div>
                   );
                 })}
                 {canvas.meta.episodes.length === 0 && (
@@ -13669,6 +13861,29 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               </div>
             )}
           </aside>
+          {episodeMenu && createPortal(
+            <div
+              className="canvas-ep-action-menu"
+              role="menu"
+              style={{left: episodeMenu.left, top: episodeMenu.top}}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                type="button"
+                className="is-danger"
+                disabled={episodeDeleting}
+                onClick={() => {
+                  const target = episodeMenu;
+                  setEpisodeMenu(null);
+                  void removeEpisode(target.epId, target.title);
+                }}
+              >
+                <Trash2 size={13} strokeWidth={1.9} aria-hidden="true" />
+                删除集数
+              </button>
+            </div>,
+            document.body,
+          )}
 
           {!epListOpen && (
             <button type="button" className="canvas-ep-list-rail" onClick={() => setEpListOpen(true)} title="展开画布列表">
@@ -14759,9 +14974,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                     <div className="canvas-help-row"><span>选择模式</span><kbd>V</kbd></div>
                     <div className="canvas-help-row"><span>抓手模式</span><kbd>H</kbd></div>
                     <div className="canvas-help-row"><span>连续模式</span><kbd>C</kbd></div>
+                    <div className="canvas-help-row"><span>删除选中</span><kbd>Del</kbd><kbd>Backspace</kbd></div>
                     <div className="canvas-help-row"><span>临时平移</span><kbd>Space</kbd></div>
                     <div className="canvas-help-row"><span>隐藏 / 显示连线</span><kbd>L</kbd></div>
                     <div className="canvas-help-row"><span>适应画布</span><kbd>F</kbd></div>
+                    <div className="canvas-help-row"><span>聚焦选中</span><kbd>Shift+F</kbd><kbd>Ctrl+F</kbd></div>
+                    <div className="canvas-help-row"><span>打开快捷键</span><kbd>?</kbd></div>
                     <div className="canvas-help-row"><span>重置 100%</span><kbd>Ctrl</kbd><kbd>0</kbd></div>
                   </section>
                   <section>
@@ -14779,6 +14997,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                     <h4>其他</h4>
                     <div className="canvas-help-row"><span>撤销</span><kbd>Ctrl+Z</kbd></div>
                     <div className="canvas-help-row"><span>重做</span><kbd>Ctrl+Shift+Z</kbd></div>
+                    <div className="canvas-help-row"><span>剪切节点</span><kbd>Ctrl+X</kbd></div>
                     <div className="canvas-help-row"><span>段卡右键</span><span>段契约 / 复制提示词</span></div>
                     <div className="canvas-help-row"><span>布局自动保存</span><span>刷新后还原</span></div>
                   </section>

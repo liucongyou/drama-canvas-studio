@@ -620,6 +620,25 @@ class TenantHttpTests(unittest.TestCase):
         self.assertEqual(third["title"], "第三集 · 新场")
         self.assertEqual(third["nodeIds"], [])
 
+        status, _, body = self.request(
+            "DELETE",
+            f"/api/projects/{pid}/episodes/EP002",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body)["code"], "EPISODE_NOT_EMPTY")
+
+        status, _, body = self.request(
+            "DELETE",
+            f"/api/projects/{pid}/episodes/EP003",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["removed"], "EP003")
+        self.assertEqual(json.loads(body)["episodes"], ["EP001", "EP002"])
+
     def test_import_preview_and_commit_share_validation_and_revision(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
