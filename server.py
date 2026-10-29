@@ -2332,6 +2332,17 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _handle_auth_session(self):
+        if _auth_mode() != "accounts":
+            context = tenant_context.current()
+            return self._send(200, {
+                "authenticated": True,
+                "username": "local",
+                "tenantId": context.tenant_id if context else "legacy",
+                "slug": context.slug if context else "local",
+                "role": "admin",
+                "isAdmin": True,
+                "local": True,
+            })
         cookie = SimpleCookie()
         try:
             cookie.load(self.headers.get("Cookie", ""))
