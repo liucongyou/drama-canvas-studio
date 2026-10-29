@@ -8135,7 +8135,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 @media (max-width:720px){
   .jim-toolbar .jim-tool.is-model,
   .jim-toolbar .jim-tool.is-params{max-width:170px}
-  .jim-params-panel{width:calc(100vw - 24px);max-height:64vh}
+  .jim-params-panel{width:calc(100vw - 24px);max-height:min(320px,64vh)}
 }
 
 /* 工具栏：全部控件从左侧顺序排列，桌面端锁定单行并使用稳定间距。 */
@@ -8725,7 +8725,7 @@ body,
 @media (max-width:720px){
   .jim-pop.jim-params-panel{
     width:calc(100vw - 24px);
-    max-height:64vh;
+    max-height:min(320px,64vh);
   }
 }
 
