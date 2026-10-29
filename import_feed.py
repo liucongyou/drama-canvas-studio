@@ -128,6 +128,12 @@ def _asset_pool(records, allow_idle_project_id=""):
 def build_asset_pool_from_payload(payload, project_id):
     """Build an isolated image asset pool from a project payload copy."""
     pool = []
+    episode_ids_by_node = {}
+    for group in payload.get("episodeImports") or []:
+        for node_id in group.get("nodeIds") or []:
+            episode_ids_by_node.setdefault(str(node_id), set()).add(
+                str(group.get("id") or "").upper()
+            )
     for source_node in (payload or {}).get("nodes") or []:
         if not isinstance(source_node, dict) or source_node.get("type") != "image":
             continue
@@ -143,6 +149,7 @@ def build_asset_pool_from_payload(payload, project_id):
             "status": source_meta.get("status", ""),
             "params": copy.deepcopy(source_meta.get("params") or {}),
             "reusedAsset": copy.deepcopy(source_meta.get("reusedAsset") or {}),
+            "episodeIds": sorted(episode_ids_by_node.get(str(source_node.get("id")), set())),
             "createdAt": source_node.get("createdAt", ""),
             "updatedAt": source_node.get("updatedAt", ""),
         })
@@ -604,6 +611,11 @@ def repair_prompt_mentions(prompt, refs):
     repaired = re.sub(r"（图\s*(\d+)）（图\s*\1）", r"（图\1）", repaired)
 
     def replace_plain(match):
+        if match.start() > 0 and repaired[match.start() - 1].isalnum():
+            return match.group(0)
+        prefix_context = repaired[max(0, match.start() - 80):match.start()]
+        if re.search(r"@(?:角色|场景|道具|音频)[｜|][^（(\n]*$", prefix_context):
+            return match.group(0)
         title, prefix = _resolve_figure_ref(match.group("name"), match.group("figure"), refs)
         return f"{prefix}@{title}" if title else match.group(0)
 
@@ -812,9 +824,30 @@ def repair_payload_prompt_mentions(payload):
             value = str(meta.get(key) or "")
             if not value:
                 continue
-            repaired = _ensure_audio_mentions(
-                repair_prompt_mentions(value, filtered_refs),
-                filtered_voices,
+            asset_ref_labels = [
+                str(ref.get("label") or "").strip()
+                for ref in filtered_refs
+                if isinstance(ref, dict)
+                and (
+                    (node_by_id.get(str(ref.get("nodeId") or "")) or {}).get("type")
+                    in {"image", "audio"}
+                    or str(ref.get("label") or "").startswith(
+                        ("角色｜", "场景｜", "道具｜", "音频｜")
+                    )
+                )
+                and str(ref.get("label") or "").strip()
+            ]
+            already_canonical = bool(asset_ref_labels) and all(
+                f"@{label}" in value
+                for label in asset_ref_labels
+            )
+            repaired = (
+                value
+                if already_canonical
+                else _ensure_audio_mentions(
+                    repair_prompt_mentions(value, filtered_refs),
+                    filtered_voices,
+                )
             )
             if repaired != value:
                 meta[key] = repaired
@@ -1030,6 +1063,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         p0a = (p0a[0] if p0a and isinstance(p0a[0], dict) else {})
     script = feed.get("script", "")
     contract = feed.get("canvas_contract") if isinstance(feed.get("canvas_contract"), dict) else {}
+    episode_id, episode_title = _episode_identity(feed)
     reusable_assets = [
         item
         for item in _asset_pool(asset_pool, target_project_id)
@@ -1051,7 +1085,6 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
     vtone = meta.get("visual_tone") or meta.get("视觉基调") or "2006 年东北铁西旧工业区，冷灰蓝与铁锈红，自然硬光，轻手持纪实感，克制表演，细颗粒。"
 
     pid = "".join(secrets.choice(_B62) for _ in range(22))
-    episode_id, episode_title = _episode_identity(feed)
     # Project identity belongs to the episode, not to whichever node happened
     # to occupy the feed's top-level title field.
     title = episode_title or feed.get("title") or meta.get("title") or "画布工作流"
@@ -1128,12 +1161,20 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             reverse=True,
         )
         source_asset = candidates[0] if candidates else None
-        if source_asset:
-            reused_asset_keys.add(asset_key)
         same_project_reuse = bool(
             source_asset
             and source_asset.get("projectId") == target_project_id
         )
+        same_episode_asset = bool(
+            same_project_reuse
+            and str(episode_id).upper() in {
+                str(item).upper()
+                for item in source_asset.get("episodeIds") or []
+            }
+        )
+        cross_episode_reuse = bool(source_asset and not same_episode_asset)
+        if cross_episode_reuse:
+            reused_asset_keys.add(asset_key)
         nid = str(source_asset["id"]) if (source_asset and source_asset.get("projectId") == target_project_id) else _rid_node()
         image_ids.setdefault(code, []).append(nid)
         asset_kinds[nid] = kind
@@ -1176,7 +1217,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             ).strip()
         node_title = canonical_title or f"{kind}｜{short_name}（{code}）"
         reused_content = str(source_asset.get("content") or "") if source_asset else ""
-        if reused_content:
+        if cross_episode_reuse and reused_content:
             reused_generated_asset_keys.add(asset_key)
         prompt_stale = bool(
             reused_content
@@ -1194,7 +1235,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         if source_asset and isinstance(source_asset.get("params"), dict):
             image_params = {**image_params, **source_asset["params"]}
         reuse_meta = None
-        if source_asset:
+        if source_asset and cross_episode_reuse:
             reuse_meta = dict(source_asset.get("reusedAsset") or {})
             reuse_meta.update({
                 "assetKey": asset_key,
@@ -1205,6 +1246,8 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
                 "sourcePrompt": previous_prompt,
                 "sourceComposerContent": previous_composer,
             })
+        elif same_episode_asset and source_asset.get("reusedAsset"):
+            reuse_meta = dict(source_asset.get("reusedAsset") or {})
         nodes.append({
             "height": 405, "width": 720, "id": nid,
             "metadata": {
@@ -1306,6 +1349,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
                 "content": "", "composerContent": audio_composer,
                 "assetKey": _asset_identity(role, "音色"),
                 "prompt": audio_prompt, "status": "idle", "generationMode": "audio", "nodeRole": "generator",
+                "promptStale": False, "promptStaleReason": "",
                 "params": {
                     "provider": "aliyun_bailian", "model": "cosyvoice-v3-5-flash",
                     "ttsModel": "cosyvoice-v3.5-flash", "ttsMode": "design",
@@ -2896,7 +2940,8 @@ def merge_payload_by_episode(existing, incoming):
             incoming_placeholder = _is_placeholder_asset_prompt(new_prompt)
             cross_episode_reuse = str(old.get("id") or "") in shared_by_other_episodes
             preserve_generated_prompt = bool(
-                has_content and (incoming_placeholder or cross_episode_reuse)
+                (has_content or (old_prompt and not _is_placeholder_asset_prompt(old_prompt)))
+                and (incoming_placeholder or cross_episode_reuse)
             )
             if preserve_generated_prompt:
                 prompt_changed = bool(
@@ -3047,9 +3092,13 @@ def merge_payload_by_episode(existing, incoming):
         new_meta = node.get("metadata") or {}
         restored = _restore_generated_asset_prompt(old_meta, node.get("type"), old.get("title"))
         merged_meta = {**old_meta, **new_meta}
-        if node.get("type") in {"image", "audio"} and str(old_meta.get("content") or "").strip():
-            old_prompt = str(old_meta.get("prompt") or "").strip()
-            new_prompt = str(new_meta.get("prompt") or "").strip()
+        old_prompt = str(old_meta.get("prompt") or "").strip()
+        new_prompt = str(new_meta.get("prompt") or "").strip()
+        has_content = bool(str(old_meta.get("content") or "").strip())
+        has_detailed_prompt = bool(
+            old_prompt and not _is_placeholder_asset_prompt(old_prompt)
+        )
+        if node.get("type") in {"image", "audio"} and (has_content or has_detailed_prompt):
             incoming_placeholder = _is_placeholder_asset_prompt(new_prompt)
             cross_episode_reuse = str(old.get("id") or "") in shared_by_other_episodes
             if incoming_placeholder or cross_episode_reuse:
@@ -3151,7 +3200,11 @@ def merge_payload_by_episode(existing, incoming):
         [*other_groups, incoming_group],
         key=lambda group: str(group.get("id") or ""),
     )
-    series_title = _series_title(existing.get("title") or incoming.get("title"))
+    series_title = (
+        str(existing.get("title") or incoming.get("title") or "画布工作流")
+        if not other_groups
+        else _series_title(existing.get("title") or incoming.get("title"))
+    )
     merged_payload = {
         **base,
         "title": series_title,
