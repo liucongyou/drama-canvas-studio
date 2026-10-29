@@ -129,7 +129,7 @@ import {
   modelMaxRefs,
   type BatchGenerationCandidate,
 } from './batchGeneration';
-import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, segShotIdxsOf, solveAlignSnap, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
+import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
 import {
   CANVAS_VIEWPORT_POLICY_VERSION,
   filterMediaNodesInBounds,
@@ -1492,7 +1492,7 @@ function friendlyTaskError(raw?: string): string {
     return `参考素材不符合当前模型要求，请检查数量、格式、大小和槽位顺序。${text ? `详情：${text.slice(0, 180)}` : ''}`;
   }
   if (lower.includes('timeout') || lower.includes('timed out') || text.includes('超时')) {
-    return '任务响应超时。供应商可能仍在处理，请先等待对账或查询任务，不要立即重复提交。';
+    return '提交阶段失败：未创建供应商任务（没有任务 ID）。请先测试供应商连接；确认可用后再重新生成。';
   }
   if (lower.includes('invalid api key') || lower.includes('unauthorized') || lower.includes('forbidden') || text.includes('鉴权')) {
     return '供应商鉴权失败。请检查 API Key、工作空间和模型权限。';
@@ -2439,7 +2439,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
       : node.kind === 'audio'
         ? (p.ttsMode === 'speech' ? `音色 ${p.voiceId || p.ttsVoice || '未设置'}` : '音色设计')
         : `${(node.prompt || '').trim().length} / ${cardPromptLimit} 字`;
-  const footSubText = failed && node.lastError ? node.lastError : footMeta;
+  const footSubText = failed && node.lastError ? friendlyTaskError(node.lastError) : footMeta;
   // 文本节点现在也支持 AI 生成（用户要求），所以状态条同样要有「生成中/失败」语义；
   // 只有 idle 时显示「文本」而不是「待生成」—— 手写的文本本来就算完成。
   const statusText = localUploading
@@ -3523,7 +3523,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     nodeNotices.push(`还有 ${dependencyBlockers.length} 项引用未就绪：${names}${dependencyBlockers.length > 4 ? '…' : ''}`);
   }
   if (node.promptStale) nodeNotices.push(node.promptStaleReason || '源提示词已更新，当前素材仍是旧版本');
-  if (node.status === 'failed' && node.lastError) nodeNotices.push(node.lastError);
+  if (node.status === 'failed' && node.lastError) nodeNotices.push(friendlyTaskError(node.lastError));
   const schema = curModelSpec?.params || {};
   const builtInParamKeys = new Set<string>(isTxt
     ? ['maxTokens', 'temperature', 'system']
@@ -7221,7 +7221,33 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // 资产详情面板（点击资产节点弹出：类型/名称/描述词/大图/音频）
   const [assetDetail, setAssetDetail] = useState<{kind: string; item: CanvasAssetItem} | null>(null);
   // 一集一画布：多集项目按集切换（避免几十集节点同屏卡死）
-  const [currentEp, setCurrentEp] = useState<string | null>(null);
+  const [currentEp, setCurrentEp] = useState<string | null>(() => {
+    try {
+      return resolveInitialEpisode(
+        window.location.search,
+        window.localStorage.getItem(`vimax.canvas.episode.${session}`),
+      );
+    } catch {
+      return null;
+    }
+  });
+  useEffect(() => {
+    if (!currentEp) return;
+    try {
+      window.localStorage.setItem(`vimax.canvas.episode.${session}`, currentEp);
+    } catch {
+      // Local memory is optional; the URL remains the shareable source.
+    }
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get('ep') !== currentEp) {
+        url.searchParams.set('ep', currentEp);
+        window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+      }
+    } catch {
+      // Keep the in-memory selection if the browser URL cannot be rewritten.
+    }
+  }, [currentEp, session]);
   // P2 批2：资产分组折叠（80/120 集项目资产多时收拢分组，只保留分组头）
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const toggleGroup = useCallback((kind: string) => {
@@ -8299,10 +8325,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             setCanvas(null);
           } else {
             setCanvas(data);
+            const currentExists = currentEp
+              ? data.meta.episodes.some((episode) => episode.ep_id === currentEp)
+              : false;
             // 多集长剧：默认进入一集，避免整剧总览一次性渲染全部资产/镜头导致卡死
             if (!autoEpAppliedRef.current) {
               autoEpAppliedRef.current = true;
-              if (currentEp === null && data.meta.episodes.length > 1) {
+              if (!currentExists && data.meta.episodes.length > 1) {
                 // 默认进入"最近活动且有内容"的一集（pickDefaultEpisode 纯函数，见 canvasLayout.ts）。
                 // 旧逻辑只看 updated_at：120 集剧本刚拆完时最后被触碰的一集常常只有 0 镜
                 // （实测 ep02），画布于是开在空集上——表现为"场景/镜头都不显示"。

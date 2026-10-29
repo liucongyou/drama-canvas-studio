@@ -48,6 +48,27 @@ export type FallbackSegment = {
 };
 
 /**
+ * Resolve the initial episode from URL and per-project local memory.
+ * URL wins so a shared/bookmarked link opens the intended episode; local
+ * memory restores the user's last selection; null means the caller may use
+ * the project's default episode policy.
+ */
+export function resolveInitialEpisode(
+  search: string,
+  remembered: string | null | undefined,
+): string | null {
+  let fromUrl = '';
+  try {
+    fromUrl = new URLSearchParams(search).get('ep')?.trim() || '';
+  } catch {
+    fromUrl = '';
+  }
+  if (fromUrl) return fromUrl.toUpperCase();
+  const stored = String(remembered || '').trim();
+  return stored ? stored.toUpperCase() : null;
+}
+
+/**
  * 无 segments.json 时的兜底分组（纯函数，便于单测）。
  * 三条硬性约束：
  * ① 必须带 ep_id —— 否则总览模式段卡 id（seg-ep00-N）与时间线按镜头 ep_id 拼出的

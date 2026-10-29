@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.16';
+export const APP_VERSION = '2026.10.29.17';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.17',
+    date: '2026-10-29',
+    title: '记住当前集并支持 URL 恢复',
+    changes: [
+      '点击某一集后会写入 URL（?ep=EP001）并记住该项目的上次选择，刷新不再跳回最近活动的其它集。',
+      '刷新优先恢复 URL 中的集号，其次恢复本地记忆，只有两者都没有时才使用默认集策略。',
+      '分享或收藏带集号参数的链接可直接打开对应集；已删除的旧集号会自动回退到可用集。',
+    ],
+  },
   {
     version: '2026.10.29.16',
     date: '2026-10-29',

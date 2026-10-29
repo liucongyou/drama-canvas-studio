@@ -1,5 +1,20 @@
 import {describe, expect, it} from 'vitest';
-import {absolutePositionOf, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, segShotIdxsOf, solveAlignSnap} from './canvasLayout';
+import {absolutePositionOf, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap} from './canvasLayout';
+
+describe('resolveInitialEpisode', () => {
+  it('URL 中的集号优先，支持刷新和分享链接', () => {
+    expect(resolveInitialEpisode('?ep=EP001', 'EP003')).toBe('EP001');
+  });
+
+  it('没有 URL 时恢复该项目上次选中的集', () => {
+    expect(resolveInitialEpisode('', 'ep01')).toBe('EP01');
+  });
+
+  it('没有 URL 和本地记忆时返回 null，交给默认集策略', () => {
+    expect(resolveInitialEpisode('', null)).toBeNull();
+    expect(resolveInitialEpisode('', '')).toBeNull();
+  });
+});
 
 const shots = [
   {idx: 0, segment_id: 1, ep_id: 'ep01'},
