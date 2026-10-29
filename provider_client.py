@@ -1435,6 +1435,39 @@ def _video_url_from_task(task: dict[str, Any]) -> str:
     return ""
 
 
+def _newapi_video_url_from_task(task: dict[str, Any]) -> str:
+    """New API relay result fields (differences from Agnes/Ark)."""
+    for key in ("video_url", "url", "content_url"):
+        if task.get(key):
+            return str(task[key])
+    artifacts = task.get("artifacts")
+    if isinstance(artifacts, dict):
+        artifacts = [artifacts]
+    if isinstance(artifacts, list):
+        for item in artifacts:
+            if isinstance(item, dict):
+                for key in ("content_url", "video_url", "url"):
+                    if item.get(key):
+                        return str(item[key])
+    data = task.get("data")
+    if isinstance(data, dict):
+        data = [data]
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, str) and item.startswith(("http://", "https://", "/")):
+                return item
+            if isinstance(item, dict):
+                for key in ("video_url", "url", "content_url"):
+                    if item.get(key):
+                        return str(item[key])
+    output = task.get("output")
+    if isinstance(output, dict):
+        for key in ("video_url", "url", "content_url"):
+            if output.get(key):
+                return str(output[key])
+    return _video_url_from_task(task)
+
+
 def _newapi_video(
     provider: dict[str, Any],
     model: dict[str, Any],
@@ -1529,7 +1562,7 @@ def _newapi_video(
             "progress": task.get("progress"),
         })
         if status in {"completed", "succeeded", "success", "done"}:
-            url = _video_url_from_task(task)
+            url = _newapi_video_url_from_task(task)
             if not url:
                 raise RuntimeError(f"视频任务完成但没有视频地址：{json.dumps(task, ensure_ascii=False)[:500]}")
             return {"url": url, "raw": task, "taskId": task_id}
@@ -1799,7 +1832,7 @@ def _newapi_suanli_video(
             "progress": task.get("progress"),
         })
         if status == "completed":
-            url = _video_url_from_task(task)
+            url = _newapi_video_url_from_task(task)
             if not url:
                 raise RuntimeError("特价视频已完成，但没有返回视频地址")
             return {"url": url, "raw": task, "taskId": task_id}
@@ -2239,8 +2272,13 @@ def check_video_task(
         raise RuntimeError(f"不支持恢复的视频适配器：{adapter}")
     task = _request_json("GET", poll_url, key, timeout=30)
     raw_status = str(task.get("status") or "").lower()
+    url = ""
     if raw_status in {"completed", "succeeded", "success", "done"}:
-        url = _video_url_from_task(task)
+        url = (
+            _newapi_video_url_from_task(task)
+            if adapter == "newapi_video"
+            else _video_url_from_task(task)
+        )
         if not url:
             raise RuntimeError(f"视频任务完成但没有视频地址：{json.dumps(task, ensure_ascii=False)[:500]}")
         state = "completed"
@@ -2255,7 +2293,7 @@ def check_video_task(
         "status": state,
         "rawStatus": raw_status,
         "progress": task.get("progress"),
-        "url": _video_url_from_task(task) if state == "completed" else "",
+        "url": url,
         "error": detail or "",
         "raw": task,
     }

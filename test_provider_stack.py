@@ -162,6 +162,50 @@ class ProviderCatalogTests(unittest.TestCase):
             )],
         )
 
+    def test_newapi_video_result_fields_are_provider_specific(self):
+        self.assertEqual(
+            provider_client._newapi_video_url_from_task({
+                "data": [{"url": "https://cdn.example/data-url.mp4"}],
+            }),
+            "https://cdn.example/data-url.mp4",
+        )
+        self.assertEqual(
+            provider_client._newapi_video_url_from_task({
+                "data": [{"content_url": "https://cdn.example/content.mp4"}],
+            }),
+            "https://cdn.example/content.mp4",
+        )
+        self.assertEqual(
+            provider_client._newapi_video_url_from_task({
+                "artifacts": [{"content_url": "https://cdn.example/artifact.mp4"}],
+            }),
+            "https://cdn.example/artifact.mp4",
+        )
+
+    def test_resumed_newapi_video_returns_provider_specific_url(self):
+        provider = {
+            "id": "canvaspro",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "special-video",
+            "remoteModel": "特价视频-v1",
+            "adapter": "newapi_video",
+        }
+        with patch.object(
+            provider_client,
+            "_request_json",
+            return_value={
+                "status": "completed",
+                "data": [{"content_url": "https://cdn.example/result.mp4"}],
+            },
+        ):
+            result = provider_client.check_video_task(provider, model, "task-1")
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["url"], "https://cdn.example/result.mp4")
+
     def test_provider_submit_timeout_is_short_enough_for_interactive_retry(self):
         self.assertLessEqual(provider_client.SUBMIT_TIMEOUT_SECONDS, 60)
 

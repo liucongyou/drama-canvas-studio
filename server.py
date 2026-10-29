@@ -768,6 +768,50 @@ def queue_generated_image_finalize(
     return True
 
 
+def queue_generated_video_finalize(
+    project_id,
+    node_id,
+    provider_url,
+    provider,
+    model,
+    task_id,
+    generated_at,
+):
+    context = tenant_context.current()
+    tenant_id = context.tenant_id if context else None
+    tenant_slug = context.slug if context else "local"
+
+    def run():
+        try:
+            local_url = persist_generated_media(provider_url, ".mp4")
+            validation = validate_generated_video(local_url)
+            updates = {
+                "content": local_url,
+                "videoValidation": validation,
+                "actualDuration": validation.get("duration"),
+                "storageError": "",
+                "finalizePending": False,
+            }
+            commit_node_metadata(project_id, node_id, updates)
+        except Exception as exc:
+            commit_node_metadata(project_id, node_id, {
+                "storageError": str(exc),
+                "finalizePending": False,
+            })
+            print(
+                f"[video-finalize] {provider_url[:120]}: {exc}",
+                file=sys.stderr,
+            )
+
+    threading.Thread(
+        target=_run_in_tenant,
+        args=(tenant_id, tenant_slug, run),
+        name=f"video-finalize-{node_id}",
+        daemon=True,
+    ).start()
+    return True
+
+
 def queue_generated_image_imgbb_mirror(
     project_id,
     node_id,
@@ -4904,35 +4948,14 @@ class Handler(BaseHTTPRequestHandler):
                 provider_url = str(result.get("url") or "")
                 if not provider_url:
                     raise RuntimeError("供应商未返回视频地址，本次生成没有产生新视频")
-                try:
-                    generated_url = persist_generated_media(provider_url, ".mp4")
-                except Exception as exc:
-                    raise provider_client.ProviderOutcomeUncertain(
-                        f"供应商已生成视频，但下载新视频失败：{exc}"
-                    ) from exc
-                if not generated_url.startswith(("/uploads/", "data:")):
-                    raise provider_client.ProviderOutcomeUncertain(
-                        "供应商已生成视频，但没有拿到本地新文件"
-                    )
                 generated_at = provider_ready_at
+                generated_url = provider_url
                 _record_video_version(
                     meta,
                     generated_url,
                     str(result.get("taskId") or ""),
                     generated_at,
                 )
-                validation = validate_generated_video(
-                    generated_url,
-                    (meta.get("params") or {}).get("duration"),
-                )
-                versions = (meta.get("params") or {}).get("videoVersions") or []
-                if versions:
-                    versions[-1]["actualDuration"] = validation.get("duration")
-                    versions[-1]["validationStatus"] = validation.get("status")
-                media_versions = (meta.get("params") or {}).get("mediaVersions") or []
-                if media_versions:
-                    media_versions[-1]["actualDuration"] = validation.get("duration")
-                    media_versions[-1]["validationStatus"] = validation.get("status")
                 meta["content"] = generated_url
                 meta["status"] = "done"
                 meta["lastNote"] = missing_note(missing)
@@ -4940,10 +4963,18 @@ class Handler(BaseHTTPRequestHandler):
                 meta["generatedAt"] = generated_at
                 meta["generationFinishedAt"] = generated_at
                 meta["providerTaskStatus"] = "completed"
-                meta["providerTaskPhase"] = "已完成"
+                meta["providerTaskPhase"] = "已完成，后台缓存中"
                 meta["providerTaskProgress"] = 100
-                meta["videoValidation"] = validation
-                meta["actualDuration"] = validation.get("duration")
+                meta["finalizePending"] = True
+                queue_generated_video_finalize(
+                    pid,
+                    node["id"],
+                    provider_url,
+                    provider,
+                    model,
+                    str(result.get("taskId") or ""),
+                    generated_at,
+                )
             elif ntype == "audio":
                 audio_refs = [item for item in refs if item.get("kind") in ("image", "text")]
                 if missing:
@@ -4988,7 +5019,8 @@ class Handler(BaseHTTPRequestHandler):
             # A successful retry supersedes any transient 429/5xx recorded by an
             # earlier attempt. Preserve an error only when the latest attempt fails.
             meta["lastError"] = ""
-            meta["finalizePending"] = False
+            if ntype != "video":
+                meta["finalizePending"] = False
             meta["provider"] = provider.get("id")
             meta["model"] = model.get("id")
             meta["remoteModel"] = model.get("remoteModel")
@@ -5094,7 +5126,7 @@ class Handler(BaseHTTPRequestHandler):
         publish_project_event(pid, "media", node["id"], {
             "status": str(meta.get("status") or "done"),
             "url": str(meta.get("content") or ""),
-            "finalizePending": False,
+            "finalizePending": bool(meta.get("finalizePending")),
             "text": meta.get("prompt") if ntype == "text" else None,
             "providerTaskStatus": str(meta.get("providerTaskStatus") or "completed"),
             "providerTaskPhase": str(meta.get("providerTaskPhase") or "已完成"),

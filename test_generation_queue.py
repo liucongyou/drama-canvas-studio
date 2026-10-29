@@ -968,6 +968,73 @@ class GenerationQueueTests(unittest.TestCase):
             any(update.get("phase") == "结果待确认" for update in task_updates)
         )
 
+    def test_video_provider_success_is_visible_before_background_cache(self):
+        node = {
+            "id": "video-ready",
+            "type": "video",
+            "title": "段1",
+            "metadata": {
+                "prompt": "test video",
+                "status": "generating",
+                "params": {"provider": "agnes-ai", "model": "agnes-video"},
+            },
+        }
+        project = {
+            "id": "project-video-ready",
+            "payload": {"nodes": [node]},
+        }
+        provider = {
+            "id": "agnes-ai",
+            "name": "Agnes",
+            "api_key": "test-key",
+            "base_url": "https://api.agnes-ai.cn/v1",
+        }
+        model = {
+            "id": "agnes-video",
+            "remoteModel": "agnes-video-2.5-flash",
+            "defaultParams": {},
+            "limits": {},
+        }
+        sent = []
+        queued = []
+        handler = object.__new__(server.Handler)
+        handler._send = lambda status, payload: sent.append((status, payload)) or payload
+        with (
+            patch.object(server.provider_catalog, "resolve_model", return_value=(provider, model, {})),
+            patch.object(
+                server.provider_catalog,
+                "test_provider",
+                return_value={"ok": True},
+            ),
+            patch.object(
+                server.provider_client,
+                "generate_video",
+                return_value={
+                    "url": "https://provider.example/video.mp4",
+                    "taskId": "provider-video-1",
+                },
+            ),
+            patch.object(
+                server,
+                "queue_generated_video_finalize",
+                side_effect=lambda *args: queued.append(args),
+            ),
+            patch.object(server, "commit_node_metadata"),
+        ):
+            handler._generate_once(
+                project["id"],
+                project,
+                node,
+                task_id="local-video-1",
+            )
+        status, payload = sent[-1]
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "done")
+        self.assertEqual(payload["url"], "https://provider.example/video.mp4")
+        self.assertEqual(node["metadata"]["status"], "done")
+        self.assertEqual(node["metadata"]["content"], "https://provider.example/video.mp4")
+        self.assertEqual(queued[0][2], "https://provider.example/video.mp4")
+
 
 if __name__ == "__main__":
     unittest.main()
