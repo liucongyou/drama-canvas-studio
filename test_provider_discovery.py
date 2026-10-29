@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import tempfile
@@ -143,6 +144,17 @@ class ProviderDiscoveryTests(unittest.TestCase):
         self.assertEqual(result["models"][0]["capability"], "video")
         self.assertEqual(result["models"][0]["adapter"], "newapi_video")
 
+    def test_newapi_image_defaults_to_relay_adapter(self):
+        self.config["providers"][0]["base_url"] = "https://api.canvasproai.com/v1"
+        result = self.discover('{"data":[{"id":"gpt-image-2"}]}')
+        self.assertEqual(result["models"][0]["capability"], "image")
+        self.assertEqual(result["models"][0]["adapter"], "newapi_image")
+
+    def test_generic_openai_image_keeps_openai_adapter(self):
+        result = self.discover('{"data":[{"id":"custom-gpt-image-model"}]}')
+        self.assertEqual(result["models"][0]["capability"], "image")
+        self.assertEqual(result["models"][0]["adapter"], "openai_image")
+
     def test_relay_image_migration_repairs_legacy_parameters(self):
         with tempfile.TemporaryDirectory() as root, patch.dict(
             os.environ,
@@ -171,6 +183,38 @@ class ProviderDiscoveryTests(unittest.TestCase):
         self.assertEqual(model["defaultParams"], {"ratio": "1:1", "size": "1024x1024"})
         self.assertIn("ratio", model["params"])
         self.assertNotIn("temperature", model["params"])
+
+    def test_newapi_legacy_image_adapter_is_migrated(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+            os.environ,
+            {"CANVAS_TENANT_DATA_ROOT": root, "CANVAS_MULTI_TENANT": "1"},
+        ):
+            path = os.path.join(root, "tenants", "alpha", "config.local.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            config = copy.deepcopy(self.config)
+            config["providers"][0].update({
+                "id": "new-api",
+                "base_url": "https://api.canvasproai.com/v1",
+            })
+            config["models"] = [{
+                "id": "gpt-image-2",
+                "providerId": "new-api",
+                "remoteModel": "gpt-image-2",
+                "capability": "image",
+                "adapter": "openai_image",
+                "enabled": True,
+                "defaultParams": {"ratio": "1:1", "size": "1024x1024"},
+                "params": {},
+            }]
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(config, handle, ensure_ascii=False)
+            with tenant_context.use_tenant("alpha", "alpha"):
+                model = next(
+                    item
+                    for item in provider_catalog.load_config()["models"]
+                    if item["id"] == "gpt-image-2"
+                )
+        self.assertEqual(model["adapter"], "newapi_image")
 
     def test_discovery_parses_truncated_model_payload(self):
         with (

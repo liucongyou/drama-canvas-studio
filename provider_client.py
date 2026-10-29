@@ -124,8 +124,80 @@ def _request_json(
         raise RuntimeError(f"供应商接口连接失败：{exc.reason}") from exc
 
 
+def _request_multipart(
+    method: str,
+    url: str,
+    key: str,
+    fields: list[tuple[str, Any]],
+    *,
+    timeout: int = 120,
+) -> dict[str, Any]:
+    boundary = f"----drama-canvas-{secrets.token_hex(12)}"
+    chunks: list[bytes] = []
+    for name, value in fields:
+        if isinstance(value, tuple):
+            filename, mime, content = value
+            chunks.extend([
+                f"--{boundary}\r\n".encode("utf-8"),
+                (
+                    f'Content-Disposition: form-data; name="{name}"; '
+                    f'filename="{filename}"\r\n'
+                ).encode("utf-8"),
+                f"Content-Type: {mime}\r\n\r\n".encode("utf-8"),
+                content,
+                b"\r\n",
+            ])
+            continue
+        chunks.extend([
+            f"--{boundary}\r\n".encode("utf-8"),
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
+            str(value).encode("utf-8"),
+            b"\r\n",
+        ])
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    request = urllib.request.Request(
+        url,
+        data=b"".join(chunks),
+        method=method,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with network_security.safe_urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            return json.loads(raw) if raw.strip() else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:1200]
+        raise ProviderHTTPError(exc.code, detail, exc.headers) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"供应商接口连接失败：{exc.reason}") from exc
+
+
 def _download_bytes(url: str, timeout: int = 120) -> tuple[bytes, str]:
     request = urllib.request.Request(url, headers={"User-Agent": "drama-canvas-studio/1.0"})
+    try:
+        with network_security.safe_urlopen(request, timeout=timeout) as response:
+            data = response.read()
+            content_type = response.headers.get("Content-Type", "").split(";")[0].strip()
+            return data, content_type
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"下载生成结果失败 HTTP {exc.code}：{detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"下载生成结果失败：{exc.reason}") from exc
+
+
+def _download_bytes_with_key(url: str, key: str, timeout: int = 120) -> tuple[bytes, str]:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "User-Agent": "drama-canvas-studio/1.0",
+        },
+    )
     try:
         with network_security.safe_urlopen(request, timeout=timeout) as response:
             data = response.read()
@@ -427,6 +499,400 @@ def _parse_image_result(response: dict[str, Any], provider: dict[str, Any]) -> d
         if output.get(key):
             return {"url": str(output[key]), "raw": response}
     raise RuntimeError(f"{provider.get('name') or '供应商'}出图无返回：{json.dumps(response, ensure_ascii=False)[:400]}")
+
+
+def _newapi_api_origin(base_url: str) -> str:
+    parsed = urllib.parse.urlsplit(str(base_url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("New API 接口地址不是有效的 HTTP 地址")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _newapi_image_route(remote_model: str) -> tuple[str, str, str, str]:
+    """Return submit path, poll path, task-id field, and result parser."""
+    name = str(remote_model or "").strip()
+    lowered = name.lower()
+    if lowered.startswith("s-gpt-image"):
+        return "/hc/v1/images", "/hc/v1/images/tasks/", "task_id", "data"
+    if name.startswith("即梦-"):
+        return "/aistars/v1/images", "/aistars/v1/tasks/", "id", "artifacts"
+    if name.startswith("T香蕉"):
+        return "/kr/gemini/v1/images", "/kr/gemini/v1/images/tasks/", "task_id", "data"
+    if lowered == "gpt-image-2":
+        return "/kr/v1/images", "/kr/v1/images/tasks/", "task_id", "data"
+    raise RuntimeError(
+        f"New API 图片线路未实现：{name or '未填写远程模型 ID'}"
+    )
+
+
+def _newapi_image_result(
+    task: dict[str, Any],
+    *,
+    source: str,
+    provider: dict[str, Any],
+    key: str,
+) -> dict[str, Any]:
+    if source == "artifacts":
+        artifacts = task.get("artifacts") or []
+        if isinstance(artifacts, dict):
+            artifacts = [artifacts]
+        for item in artifacts:
+            if isinstance(item, dict) and item.get("content_url"):
+                return {
+                    "url": str(item["content_url"]),
+                    "raw": task,
+                    "authUrl": True,
+                }
+        raise RuntimeError(
+            f"New API 图片任务完成但没有 artifacts 地址："
+            f"{json.dumps(task, ensure_ascii=False)[:500]}"
+        )
+    try:
+        return _parse_image_result(task, provider)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"New API 图片任务完成但没有图片地址："
+            f"{json.dumps(task, ensure_ascii=False)[:500]}"
+        ) from exc
+
+
+def _newapi_image_reference_fields(
+    route: str,
+    prompt: str,
+    image_urls: list[str],
+    *,
+    size: str,
+    quality: str,
+    image_size: str,
+) -> list[tuple[str, Any]]:
+    fields: list[tuple[str, Any]] = [
+        ("prompt", prompt),
+        ("n", "1"),
+    ]
+    if route == "/hc/v1/images":
+        if size:
+            fields.append(("size", size))
+        if quality:
+            fields.append(("quality", quality))
+        return fields
+    if route == "/kr/v1/images":
+        if size:
+            fields.append(("size", size))
+        if image_size:
+            fields.append(("image_size", image_size))
+        if quality:
+            fields.append(("quality", quality))
+        return fields
+    raise RuntimeError(f"New API 图片编辑线路未实现：{route}")
+
+
+def _newapi_protected_content_url(raw_url: str, base: str) -> bool:
+    parsed = urllib.parse.urlsplit(str(raw_url or "").strip())
+    origin = urllib.parse.urlsplit(str(base or "").strip())
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc == origin.netloc
+        and parsed.path.startswith("/v1/tasks/")
+    )
+
+
+def _newapi_public_image_urls(image_urls: list[str], base: str) -> list[str]:
+    public: list[str] = []
+    for raw in image_urls:
+        url = str(raw or "").strip()
+        if not url.startswith(("http://", "https://")):
+            return []
+        if _newapi_protected_content_url(url, base):
+            return []
+        public.append(url)
+    return public
+
+
+def _newapi_image_file(
+    raw_url: str,
+    *,
+    base: str,
+    key: str,
+) -> tuple[str, str, bytes]:
+    raw = str(raw_url or "").strip()
+    if raw.startswith("data:"):
+        header, _, encoded = raw.partition(",")
+        mime = header[5:].split(";", 1)[0].strip().lower() or "image/png"
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError("New API 参考图 Base64 无法解码") from exc
+    else:
+        url = raw if not raw.startswith("/") else base + raw
+        if raw.startswith("/v1/tasks/") or _newapi_protected_content_url(raw, base):
+            payload, mime = _download_bytes_with_key(url, key)
+        else:
+            payload, mime = _download_bytes(url)
+    mime = str(mime or "image/png").split(";", 1)[0].strip().lower()
+    if mime not in {"image/png", "image/jpeg", "image/webp"}:
+        raise RuntimeError(f"New API 参考图格式不支持：{mime}")
+    ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}[mime]
+    return f"reference{ext}", mime, payload
+
+
+def _newapi_image_files(
+    image_urls: list[str],
+    *,
+    base: str,
+    key: str,
+) -> list[tuple[str, str, bytes]]:
+    return [
+        _newapi_image_file(str(url), base=base, key=key)
+        for url in image_urls
+    ]
+
+
+def _newapi_inline_image_parts(
+    image_urls: list[str],
+    *,
+    base: str,
+    key: str,
+) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+    for raw in image_urls:
+        mime = "image/png"
+        if raw.startswith("data:"):
+            header, _, encoded = raw.partition(",")
+            declared = header[5:].split(";", 1)[0].strip().lower()
+            if declared in {"image/png", "image/jpeg", "image/webp"}:
+                mime = declared
+            try:
+                base64.b64decode(encoded, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise RuntimeError("New API 参考图 Base64 无法解码") from exc
+            data = encoded
+        else:
+            url = raw if not raw.startswith("/") else base + raw
+            if raw.startswith("/v1/tasks/") or _newapi_protected_content_url(raw, base):
+                payload, declared = _download_bytes_with_key(url, key)
+            else:
+                payload, declared = _download_bytes(url)
+            if declared in {"image/png", "image/jpeg", "image/webp"}:
+                mime = declared
+            data = base64.b64encode(payload).decode("ascii")
+        parts.append({"inlineData": {"mimeType": mime, "data": data}})
+    return parts
+
+
+def _newapi_image(
+    provider: dict[str, Any],
+    model: dict[str, Any],
+    prompt: str,
+    params: dict[str, Any],
+    refs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    image_refs = [ref for ref in refs if ref.get("kind") == "image" and ref.get("url")]
+    text_refs = [ref for ref in refs if ref.get("kind") == "text"]
+    text = _reference_prompt(prompt, image_refs)
+    extra_text = _text_refs(text_refs)
+    if extra_text:
+        text += "\n\n" + extra_text
+    text = text.strip()
+    if not text:
+        raise RuntimeError("提示词为空，不能提交生成")
+
+    remote_model = str(model.get("remoteModel") or "").strip()
+    route, poll_prefix, task_field, source = _newapi_image_route(remote_model)
+    base = _newapi_api_origin(provider["base_url"])
+    key = provider_catalog.provider_key(provider)
+
+    size = str(params.get("size") or "").strip()
+    quality = str(params.get("quality") or "").strip()
+    image_size = str(params.get("clarity") or params.get("imageSize") or "").strip().upper()
+    if image_size not in {"1K", "2K", "4K"}:
+        image_size = ""
+    ratio = str(params.get("ratio") or "").strip()
+
+    image_urls = [_asset_url_for_provider(str(ref["url"])) for ref in image_refs]
+    if route == "/kr/v1/images":
+        if len(text) > 4000:
+            raise RuntimeError("gpt-image-2 提示词最多 4000 字符")
+        body: dict[str, Any] = {
+            "model": remote_model,
+            "prompt": text,
+            "n": 1,
+        }
+        if ratio:
+            body["size"] = ratio
+            if image_size:
+                body["image_size"] = image_size
+        elif size:
+            body["size"] = size
+        if quality:
+            body["quality"] = quality
+        _apply_declared_params(body, model, params)
+        if image_urls:
+            fields = [
+                ("model", remote_model),
+                *_newapi_image_reference_fields(
+                    route, text, image_urls,
+                    size=ratio or size,
+                    quality=quality,
+                    image_size=image_size,
+                ),
+            ]
+            public_urls = _newapi_public_image_urls(image_urls, base)
+            if public_urls:
+                for url in public_urls:
+                    fields.append(("image_url[]", url))
+            else:
+                for filename, mime, payload in _newapi_image_files(
+                    image_urls, base=base, key=key,
+                ):
+                    fields.append(("image[]", (filename, mime, payload)))
+            response = _request_multipart(
+                "POST", f"{base}{route}/edits", key, fields, timeout=360,
+            )
+        else:
+            response = _request_json(
+                "POST", f"{base}{route}/generations", key, body, timeout=360,
+            )
+    elif route == "/kr/gemini/v1/images":
+        parts: list[dict[str, Any]] = [{"text": text}]
+        parts.extend(_newapi_inline_image_parts(image_urls, base=base, key=key))
+        aspect_ratio = ratio or "1:1"
+        resolution = image_size or "2K"
+        body = {
+            "model": remote_model,
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {
+                "imageConfig": {
+                    "aspectRatio": aspect_ratio,
+                    "imageSize": resolution,
+                },
+            },
+        }
+        _apply_declared_params(body, model, params)
+        response = _request_json(
+            "POST", f"{base}{route}/generations", key, body, timeout=360,
+        )
+    elif route == "/hc/v1/images":
+        if len(text) > 8000:
+            raise RuntimeError("HC 图片提示词最多 8000 字符")
+        if image_urls:
+            public_urls = _newapi_public_image_urls(image_urls, base)
+            if public_urls:
+                body = {
+                    "model": remote_model,
+                    "prompt": text,
+                    "image": public_urls[0] if len(public_urls) == 1 else public_urls,
+                    "n": 1,
+                }
+                if size:
+                    body["size"] = size
+                if quality:
+                    body["quality"] = quality
+                _apply_declared_params(body, model, params)
+                response = _request_json(
+                    "POST", f"{base}{route}/edits", key, body, timeout=360,
+                )
+            else:
+                fields = [
+                    ("model", remote_model),
+                    ("prompt", text),
+                    ("n", "1"),
+                ]
+                if size:
+                    fields.append(("size", size))
+                if quality:
+                    fields.append(("quality", quality))
+                for filename, mime, payload in _newapi_image_files(
+                    image_urls, base=base, key=key,
+                ):
+                    fields.append(("image", (filename, mime, payload)))
+                response = _request_multipart(
+                    "POST", f"{base}{route}/edits/upload", key, fields, timeout=360,
+                )
+        else:
+            body = {
+                "model": remote_model,
+                "prompt": text,
+                "n": 1,
+            }
+            if size:
+                body["size"] = size
+            if quality:
+                body["quality"] = quality
+            _apply_declared_params(body, model, params)
+            response = _request_json(
+                "POST", f"{base}{route}/generations", key, body, timeout=360,
+            )
+    elif route == "/aistars/v1/images":
+        if len(text) > 5000:
+            raise RuntimeError("即梦图片提示词最多 5000 字符")
+        resolution = str(params.get("clarity") or params.get("resolution") or "").strip().upper()
+        if resolution not in {"1K", "2K", "4K"}:
+            resolution = "2K"
+        aspect_ratio = ratio or "1:1"
+        body = {
+            "model": remote_model,
+            "prompt": text,
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+            "n": 1,
+        }
+        if image_urls:
+            if any(not str(url).startswith("http") for url in image_urls):
+                raise RuntimeError(
+                    "即梦图片参考图必须是公网 HTTP(S) 地址，"
+                    "不能使用本地文件或 Base64"
+                )
+            body["images"] = image_urls
+            action = "edits"
+        else:
+            action = "generations"
+        _apply_declared_params(body, model, params)
+        response = _request_json(
+            "POST", f"{base}{route}/{action}", key, body, timeout=360,
+        )
+    else:
+        raise RuntimeError(f"New API 图片线路未实现：{route}")
+
+    task_id = str(response.get(task_field) or response.get("id") or "").strip()
+    if not task_id:
+        raise RuntimeError(
+            f"New API 图片任务未返回 {task_field}："
+            f"{json.dumps(response, ensure_ascii=False)[:500]}"
+        )
+    poll_url = f"{base}{poll_prefix}{urllib.parse.quote(task_id, safe='')}"
+    deadline = time.time() + 900
+    while time.time() < deadline:
+        status_raw = str(response.get("status") or "").lower()
+        if status_raw in {"succeeded", "completed", "success", "done"}:
+            result = _newapi_image_result(
+                response, source=source, provider=provider, key=key,
+            )
+            result["taskId"] = task_id
+            result["raw"] = response
+            if result.pop("authUrl", False):
+                result["url"] = _persist_auth_url(
+                    str(result["url"]), base, key, ".png",
+                )
+            return result
+        if status_raw in {"failed", "error", "cancelled", "canceled"}:
+            error = response.get("error")
+            detail = error.get("message") if isinstance(error, dict) else error
+            raise RuntimeError(
+                f"New API 图片生成失败：{detail or json.dumps(response, ensure_ascii=False)[:600]}"
+            )
+        time.sleep(3)
+        response = _request_json("GET", poll_url, key, timeout=30)
+    raise RuntimeError(f"New API 图片任务超时（900s，任务 {task_id}）")
+
+
+def _persist_auth_url(url: str, base: str, key: str, fallback_ext: str) -> str:
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("/"):
+        raw = base + raw
+    data, mime = _download_bytes_with_key(raw, key)
+    return save_generated_bytes(data, mime, fallback_ext)
 
 
 def _ark_image(
@@ -1189,6 +1655,8 @@ def generate_image(
         return _ark_image(provider, model, prompt, params, refs)
     if adapter == "openai_image":
         return _openai_image(provider, model, prompt, params, refs)
+    if adapter == "newapi_image":
+        return _newapi_image(provider, model, prompt, params, refs)
     if adapter == "agnes_image":
         return _agnes_image(provider, model, prompt, params, refs)
     raise RuntimeError(f"图片模型适配器未实现：{adapter}")

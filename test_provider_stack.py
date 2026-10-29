@@ -100,6 +100,23 @@ class ProviderCatalogTests(unittest.TestCase):
         model = next(item for item in catalog["models"] if item["id"] == "relay-video")
         self.assertEqual(model["adapter"], "newapi_video")
 
+    def test_newapi_image_adapter_is_supported(self):
+        cfg = {
+            "providers": [{"id": "relay", "name": "Relay", "api_key": "x"}],
+            "models": [],
+        }
+        with patch.object(provider_catalog, "load_config", return_value=cfg), \
+                patch.object(provider_catalog, "save_config"):
+            catalog = provider_catalog.upsert_model({
+                "id": "relay-image",
+                "providerId": "relay",
+                "capability": "image",
+                "adapter": "newapi_image",
+                "remoteModel": "gpt-image-2",
+            })
+        model = next(item for item in catalog["models"] if item["id"] == "relay-image")
+        self.assertEqual(model["adapter"], "newapi_image")
+
     def test_relay_video_uses_videos_endpoint(self):
         requests = []
 
@@ -236,6 +253,214 @@ class ProviderCatalogTests(unittest.TestCase):
 
 
 class ProviderPayloadTests(unittest.TestCase):
+    def test_newapi_gpt_image_uses_kr_async_endpoint(self):
+        requests = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            requests.append((method, url, body))
+            if method == "POST":
+                return {"task_id": "image-task-1", "status": "queued"}
+            return {
+                "task_id": "image-task-1",
+                "status": "succeeded",
+                "data": [{"url": "https://cdn.example/result.png"}],
+            }
+
+        provider = {
+            "id": "new-api",
+            "name": "New API",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "gpt-image-2",
+            "remoteModel": "gpt-image-2",
+            "capability": "image",
+            "adapter": "newapi_image",
+            "params": {},
+        }
+        with patch.object(provider_client, "_request_json", side_effect=fake_request), \
+                patch.object(provider_client.time, "sleep"):
+            result = provider_client.generate_image(
+                provider,
+                model,
+                "测试图片",
+                {"ratio": "1:1", "clarity": "2K"},
+                [],
+            )
+        self.assertEqual(result["url"], "https://cdn.example/result.png")
+        self.assertEqual(result["taskId"], "image-task-1")
+        self.assertEqual(
+            requests[0][:2],
+            ("POST", "https://api.canvasproai.com/kr/v1/images/generations"),
+        )
+        self.assertEqual(
+            requests[1][:2],
+            ("GET", "https://api.canvasproai.com/kr/v1/images/tasks/image-task-1"),
+        )
+        self.assertEqual(requests[0][2]["size"], "1:1")
+        self.assertEqual(requests[0][2]["image_size"], "2K")
+        self.assertFalse(any(
+            item[1] == "https://api.canvasproai.com/v1/images/generations"
+            for item in requests
+        ))
+
+    def test_newapi_gpt_image_reference_uses_edit_endpoint(self):
+        requests = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            requests.append((method, url, body))
+            if method == "POST":
+                return {"task_id": "image-task-2", "status": "queued"}
+            return {
+                "task_id": "image-task-2",
+                "status": "succeeded",
+                "data": [{"url": "https://cdn.example/edited.png"}],
+            }
+
+        provider = {
+            "id": "new-api",
+            "name": "New API",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "gpt-image-2",
+            "remoteModel": "gpt-image-2",
+            "capability": "image",
+            "adapter": "newapi_image",
+            "params": {},
+        }
+        with patch.object(provider_client, "_request_multipart", return_value={
+            "task_id": "image-task-2",
+            "status": "queued",
+        }) as multipart, \
+                patch.object(provider_client, "_request_json", side_effect=fake_request), \
+                patch.object(provider_client.time, "sleep"):
+            result = provider_client.generate_image(
+                provider,
+                model,
+                "保留人物，改成清晨运河",
+                {"ratio": "16:9", "clarity": "1K"},
+                [{"kind": "image", "url": "https://cdn.example/ref.png"}],
+            )
+        self.assertEqual(result["url"], "https://cdn.example/edited.png")
+        self.assertEqual(
+            multipart.call_args.args[:3],
+            (
+                "POST",
+                "https://api.canvasproai.com/kr/v1/images/edits",
+                "test-key",
+            ),
+        )
+        fields = dict(multipart.call_args.args[3])
+        self.assertEqual(fields["image_url[]"], "https://cdn.example/ref.png")
+        self.assertEqual(
+            requests[0][:2],
+            ("GET", "https://api.canvasproai.com/kr/v1/images/tasks/image-task-2"),
+        )
+
+    def test_newapi_gpt_image_local_reference_is_uploaded_as_file(self):
+        fields_seen = []
+
+        def fake_multipart(method, url, key, fields, **kwargs):
+            fields_seen.extend(fields)
+            return {"task_id": "image-task-3", "status": "queued"}
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            return {
+                "task_id": "image-task-3",
+                "status": "succeeded",
+                "data": [{"url": "https://cdn.example/local-edit.png"}],
+            }
+
+        provider = {
+            "id": "new-api",
+            "name": "New API",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "gpt-image-2",
+            "remoteModel": "gpt-image-2",
+            "capability": "image",
+            "adapter": "newapi_image",
+            "params": {},
+        }
+        with patch.object(provider_client, "_asset_url_for_provider", return_value="data:image/png;base64,YWJj"), \
+                patch.object(provider_client, "_request_multipart", side_effect=fake_multipart), \
+                patch.object(provider_client, "_request_json", side_effect=fake_request), \
+                patch.object(provider_client.time, "sleep"):
+            result = provider_client.generate_image(
+                provider,
+                model,
+                "本地参考图编辑",
+                {"size": "1024x1024"},
+                [{"kind": "image", "url": "/uploads/local.png"}],
+            )
+        self.assertEqual(result["url"], "https://cdn.example/local-edit.png")
+        image_fields = [item for item in fields_seen if item[0] == "image[]"]
+        self.assertEqual(len(image_fields), 1)
+        self.assertEqual(image_fields[0][1][0], "reference.png")
+        self.assertEqual(image_fields[0][1][1], "image/png")
+        self.assertEqual(image_fields[0][1][2], b"abc")
+
+    def test_newapi_gpt_image_protected_reference_is_downloaded_with_key(self):
+        fields_seen = []
+        downloads = []
+
+        def fake_multipart(method, url, key, fields, **kwargs):
+            fields_seen.extend(fields)
+            return {"task_id": "image-task-4", "status": "queued"}
+
+        def fake_download(url, key, **kwargs):
+            downloads.append((url, key))
+            return b"image-bytes", "image/png"
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            return {
+                "task_id": "image-task-4",
+                "status": "succeeded",
+                "data": [{"url": "https://cdn.example/protected-edit.png"}],
+            }
+
+        provider = {
+            "id": "new-api",
+            "name": "New API",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "gpt-image-2",
+            "remoteModel": "gpt-image-2",
+            "capability": "image",
+            "adapter": "newapi_image",
+            "params": {},
+        }
+        with patch.object(provider_client, "_download_bytes_with_key", side_effect=fake_download), \
+                patch.object(provider_client, "_request_multipart", side_effect=fake_multipart), \
+                patch.object(provider_client, "_request_json", side_effect=fake_request), \
+                patch.object(provider_client.time, "sleep"):
+            provider_client.generate_image(
+                provider,
+                model,
+                "继续编辑",
+                {"size": "1024x1024"},
+                [{
+                    "kind": "image",
+                    "url": "https://api.canvasproai.com/v1/tasks/old-task/artifacts/image-0/content",
+                }],
+            )
+        self.assertEqual(
+            downloads,
+            [(
+                "https://api.canvasproai.com/v1/tasks/old-task/artifacts/image-0/content",
+                "test-key",
+            )],
+        )
+        image_fields = [item for item in fields_seen if item[0] == "image[]"]
+        self.assertEqual(image_fields[0][1][2], b"image-bytes")
+
     def test_ark_video_uses_task_endpoint_and_ratio_field(self):
         provider = {
             "id": "ark",

@@ -431,13 +431,29 @@ def _deep_merge(defaults: Any, override: Any) -> Any:
     return copy.deepcopy(override)
 
 
-def _is_openai_video_relay(provider: dict[str, Any]) -> bool:
+def _is_newapi_relay(provider: dict[str, Any]) -> bool:
     base_url = str(provider.get("base_url") or "").strip().lower()
     provider_id = str(provider.get("id") or "").strip().lower()
     return (
         provider_id in {"new-api", "aijusheng"}
         or "canvasproai.com" in base_url
         or "aijusheng.com" in base_url
+    )
+
+
+def _is_openai_video_relay(provider: dict[str, Any]) -> bool:
+    return _is_newapi_relay(provider)
+
+
+def _uses_newapi_image_route(remote_model: Any) -> bool:
+    name = str(remote_model or "").strip()
+    lowered = name.lower()
+    return (
+        lowered.startswith("s-gpt-image")
+        or name.startswith("即梦-")
+        or name.startswith("T香蕉")
+        or name.startswith("t香蕉")
+        or lowered == "gpt-image-2"
     )
 
 
@@ -616,7 +632,14 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
             and model.get("capability") == "text"
         ):
             model["capability"] = "image"
-            model["adapter"] = "openai_image"
+            model["adapter"] = (
+                "newapi_image"
+                if (
+                    _is_newapi_relay(provider)
+                    and _uses_newapi_image_route(model.get("remoteModel") or model.get("id"))
+                )
+                else "openai_image"
+            )
         if (
             provider.get("protocol") == "openai"
             and model.get("capability") == "image"
@@ -629,6 +652,13 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
                     "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"]),
                     "size": {"type": "text"},
                 }
+        if (
+            _is_newapi_relay(provider)
+            and model.get("capability") == "image"
+            and model.get("adapter") in {"openai_image", "ark_image", "agnes_image"}
+            and _uses_newapi_image_route(model.get("remoteModel") or model.get("id"))
+        ):
+            model["adapter"] = "newapi_image"
     if migrate and merged != cfg:
         save_config(merged)
     return merged
@@ -985,6 +1015,7 @@ def delete_provider(provider_id: str) -> dict[str, Any]:
 ADAPTER_CAPABILITIES = {
     "ark_image": "image",
     "openai_image": "image",
+    "newapi_image": "image",
     "agnes_image": "image",
     "ark_video": "video",
     "agnes_video": "video",
@@ -1444,9 +1475,17 @@ def _infer_discovered_model(
             video_adapter = "agnes_video"
         else:
             video_adapter = "newapi_video"
+        image_adapter = (
+            "newapi_image"
+            if (
+                _is_newapi_relay(provider)
+                and _uses_newapi_image_route(remote_model)
+            )
+            else ("ark_image" if provider.get("protocol") == "ark" else "openai_image")
+        )
         adapter = {
             "video": video_adapter,
-            "image": "ark_image" if provider.get("protocol") == "ark" else "openai_image",
+            "image": image_adapter,
             "audio": "dashscope_tts" if provider.get("protocol") == "dashscope" else "dashscope_tts",
             "text": "openai_chat",
         }[capability]
