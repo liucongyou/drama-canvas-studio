@@ -79,6 +79,8 @@ _SEEDREAM_SAFE_SIZES = {
     "21:9": "1536x658",
 }
 SUBMIT_TIMEOUT_SECONDS = 45
+SUBMIT_RETRY_WINDOW_SECONDS = 180
+SUBMIT_RETRY_MAX_DELAY_SECONDS = 20
 
 
 def _safe_seedream_size(size: Any, ratio: Any) -> str:
@@ -175,6 +177,78 @@ def _request_multipart(
         raise ProviderHTTPError(exc.code, detail, exc.headers) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"供应商接口连接失败：{exc.reason}") from exc
+
+
+def _submit_with_retry(
+    attempt: Callable[[], dict[str, Any]],
+    *,
+    on_task_update: TaskEventCallback | None = None,
+    retry_window: int = SUBMIT_RETRY_WINDOW_SECONDS,
+) -> dict[str, Any]:
+    """Shared retry policy for every task-creating provider submission.
+
+    Explicit rate-limit / upstream-unavailable responses are retried with
+    bounded exponential backoff. Timeouts and connection drops are ambiguous
+    paid states and are never re-POSTed, so they surface immediately instead of
+    risking a duplicate charge.
+    """
+    deadline = time.time() + max(0, int(retry_window))
+    delay = 3
+    while True:
+        try:
+            return attempt()
+        except ProviderHTTPError as exc:
+            retryable = exc.status_code in {429, 500, 502, 503, 504}
+            if not retryable or time.time() >= deadline:
+                raise
+            wait_seconds = min(SUBMIT_RETRY_MAX_DELAY_SECONDS, delay)
+            _emit_task_event(on_task_update, {
+                "taskId": "",
+                "status": "queued",
+                "phase": "供应商繁忙，系统自动重试",
+                "progress": 15,
+                "retryInSeconds": wait_seconds,
+                "retryable": True,
+                "httpStatus": exc.status_code,
+            })
+            time.sleep(wait_seconds)
+            delay = min(SUBMIT_RETRY_MAX_DELAY_SECONDS, delay * 2)
+        except RuntimeError:
+            raise
+
+
+def _submit_json(
+    method: str,
+    url: str,
+    key: str,
+    body: dict[str, Any],
+    *,
+    timeout: int = SUBMIT_TIMEOUT_SECONDS,
+    on_task_update: TaskEventCallback | None = None,
+    retry_window: int = SUBMIT_RETRY_WINDOW_SECONDS,
+) -> dict[str, Any]:
+    return _submit_with_retry(
+        lambda: _request_json(method, url, key, body, timeout=timeout),
+        on_task_update=on_task_update,
+        retry_window=retry_window,
+    )
+
+
+def _submit_multipart(
+    method: str,
+    url: str,
+    key: str,
+    fields: list[tuple[str, Any]],
+    *,
+    timeout: int = SUBMIT_TIMEOUT_SECONDS,
+    on_task_update: TaskEventCallback | None = None,
+    retry_window: int = SUBMIT_RETRY_WINDOW_SECONDS,
+) -> dict[str, Any]:
+    return _submit_with_retry(
+        lambda: _request_multipart(method, url, key, fields, timeout=timeout),
+        on_task_update=on_task_update,
+        retry_window=retry_window,
+    )
 
 
 def _download_bytes(url: str, timeout: int = 120) -> tuple[bytes, str]:
@@ -746,12 +820,13 @@ def _newapi_image(
                     image_urls, base=base, key=key,
                 ):
                     fields.append(("image[]", (filename, mime, payload)))
-            response = _request_multipart(
-                "POST", f"{base}{route}/edits", key, fields, timeout=360,
+            response = _submit_multipart(
+                "POST", f"{base}{route}/edits", key, fields,
+                timeout=SUBMIT_TIMEOUT_SECONDS,
             )
         else:
-            response = _request_json(
-                "POST", f"{base}{route}/generations", key, body, timeout=360,
+            response = _submit_json(
+                "POST", f"{base}{route}/generations", key, body, timeout=SUBMIT_TIMEOUT_SECONDS,
             )
     elif route == "/kr/gemini/v1/images":
         parts: list[dict[str, Any]] = [{"text": text}]
@@ -769,8 +844,8 @@ def _newapi_image(
             },
         }
         _apply_declared_params(body, model, params)
-        response = _request_json(
-            "POST", f"{base}{route}/generations", key, body, timeout=360,
+        response = _submit_json(
+            "POST", f"{base}{route}/generations", key, body, timeout=SUBMIT_TIMEOUT_SECONDS,
         )
     elif route == "/hc/v1/images":
         if len(text) > 8000:
@@ -789,8 +864,8 @@ def _newapi_image(
                 if quality:
                     body["quality"] = quality
                 _apply_declared_params(body, model, params)
-                response = _request_json(
-                    "POST", f"{base}{route}/edits", key, body, timeout=360,
+                response = _submit_json(
+                    "POST", f"{base}{route}/edits", key, body, timeout=SUBMIT_TIMEOUT_SECONDS,
                 )
             else:
                 fields = [
@@ -806,8 +881,9 @@ def _newapi_image(
                     image_urls, base=base, key=key,
                 ):
                     fields.append(("image", (filename, mime, payload)))
-                response = _request_multipart(
-                    "POST", f"{base}{route}/edits/upload", key, fields, timeout=360,
+                response = _submit_multipart(
+                    "POST", f"{base}{route}/edits/upload", key, fields,
+                    timeout=SUBMIT_TIMEOUT_SECONDS,
                 )
         else:
             body = {
@@ -820,8 +896,8 @@ def _newapi_image(
             if quality:
                 body["quality"] = quality
             _apply_declared_params(body, model, params)
-            response = _request_json(
-                "POST", f"{base}{route}/generations", key, body, timeout=360,
+            response = _submit_json(
+                "POST", f"{base}{route}/generations", key, body, timeout=SUBMIT_TIMEOUT_SECONDS,
             )
     elif route == "/aistars/v1/images":
         if len(text) > 5000:
@@ -848,8 +924,8 @@ def _newapi_image(
         else:
             action = "generations"
         _apply_declared_params(body, model, params)
-        response = _request_json(
-            "POST", f"{base}{route}/{action}", key, body, timeout=360,
+        response = _submit_json(
+            "POST", f"{base}{route}/{action}", key, body, timeout=SUBMIT_TIMEOUT_SECONDS,
         )
     else:
         raise RuntimeError(f"New API 图片线路未实现：{route}")
@@ -931,7 +1007,7 @@ def _ark_image(
             "max_images": _safe_int(params["sequentialMaxImages"], 1, 1, 15)
         }
     _apply_declared_params(body, model, params)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
@@ -958,7 +1034,7 @@ def _openai_image(
     if params.get("style"):
         body["style"] = params["style"]
     _apply_declared_params(body, model, params)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
@@ -1017,7 +1093,7 @@ def _agnes_image(
     if response_format == "b64_json":
         body["return_base64"] = True
     _apply_declared_params(body, model, params)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
@@ -1138,12 +1214,13 @@ def _agnes_video(
         body["seed"] = _safe_int(params.get("seed"), 0, 0, 2**31 - 1)
     _apply_declared_params(body, model, params)
     key = provider_catalog.provider_key(provider)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         _join_url(provider["base_url"], "/videos"),
         key,
         body,
         timeout=SUBMIT_TIMEOUT_SECONDS,
+        on_task_update=on_task_update,
     )
     video_id = str(response.get("video_id") or _task_id(response)).strip()
     if not video_id:
@@ -1277,11 +1354,12 @@ def _newapi_video(
         body["input_reference"] = images[0]
     _apply_declared_params(body, model, params)
     key = provider_catalog.provider_key(provider)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         _join_url(provider["base_url"], "/videos"),
         key,
         body,
+        on_task_update=on_task_update,
     )
     task_id = _task_id(response)
     _emit_task_event(on_task_created, {
@@ -1381,11 +1459,12 @@ def _ark_video(
     if params.get("seed") not in (None, ""):
         body["seed"] = _safe_int(params.get("seed"), -1, -1, 2**31 - 1)
     _apply_declared_params(body, model, params)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         _join_url(provider["base_url"], "/contents/generations/tasks"),
         provider_catalog.provider_key(provider),
         body,
+        on_task_update=on_task_update,
     )
     task_id = _task_id(response)
     _emit_task_event(on_task_created, {
@@ -1537,12 +1616,12 @@ def _dashscope_tts(
             },
         }
         _apply_declared_params(body, model, params)
-        response = _request_json(
+        response = _submit_json(
             "POST",
             f"{base}/services/audio/tts/SpeechSynthesizer",
             key,
             body,
-            timeout=180,
+            timeout=SUBMIT_TIMEOUT_SECONDS,
         )
         url = _audio_payload_result(
             response,
@@ -1591,12 +1670,12 @@ def _dashscope_tts(
         },
     }
     _apply_declared_params(body, model, params)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         f"{base}/services/audio/tts/customization",
         key,
         body,
-        timeout=180,
+        timeout=SUBMIT_TIMEOUT_SECONDS,
     )
     output = response.get("output") if isinstance(response.get("output"), dict) else {}
     created_voice = str(output.get("voice_id") or output.get("voice") or response.get("voice") or "").strip()
@@ -1618,12 +1697,12 @@ def _dashscope_tts(
                 "sample_rate": sample_rate,
             },
         }
-        speech_response = _request_json(
+        speech_response = _submit_json(
             "POST",
             f"{base}/services/audio/tts/SpeechSynthesizer",
             key,
             speech,
-            timeout=180,
+            timeout=SUBMIT_TIMEOUT_SECONDS,
         )
         url = _audio_payload_result(
             speech_response,

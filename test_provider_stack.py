@@ -16,6 +16,48 @@ class ProviderCatalogTests(unittest.TestCase):
     def test_provider_submit_timeout_is_short_enough_for_interactive_retry(self):
         self.assertLessEqual(provider_client.SUBMIT_TIMEOUT_SECONDS, 60)
 
+    def test_submit_runtime_retries_provider_busy_and_reports_phase(self):
+        calls = []
+        events = []
+
+        def fake_request(method, url, key, body=None, timeout=120):
+            calls.append((method, url, body))
+            if len(calls) == 1:
+                raise provider_client.ProviderHTTPError(503, '{"code":"queue_full"}')
+            return {"id": "task-1"}
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request), \
+                patch.object(provider_client.time, "sleep") as sleep:
+            result = provider_client._submit_json(
+                "POST",
+                "https://provider.example/videos",
+                "test-key",
+                {"model": "m"},
+                on_task_update=lambda event: events.append(event),
+            )
+        self.assertEqual(result["id"], "task-1")
+        self.assertEqual(len(calls), 2)
+        sleep.assert_called_once_with(3)
+        self.assertTrue(any(event.get("phase") == "供应商繁忙，系统自动重试" for event in events))
+
+    def test_submit_runtime_does_not_retry_ambiguous_timeout(self):
+        calls = []
+
+        def fake_request(method, url, key, body=None, timeout=120):
+            calls.append((method, url))
+            raise RuntimeError("The write operation timed out")
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request), \
+                patch.object(provider_client.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                provider_client._submit_json(
+                    "POST",
+                    "https://provider.example/videos",
+                    "test-key",
+                    {"model": "m"},
+                )
+        self.assertEqual(len(calls), 1)
+
     def test_required_models_are_registered(self):
         catalog = provider_catalog.public_catalog()
         ids = {model["id"] for model in catalog["models"]}
@@ -920,6 +962,55 @@ class ProviderPayloadTests(unittest.TestCase):
         self.assertEqual([call[0] for call in calls], ["POST", "GET", "GET"])
         sleep.assert_called_once_with(5)
         self.assertEqual(calls[1][1], calls[2][1])
+
+    def test_agnes_video_retries_queue_full_before_creating_task(self):
+        provider = {
+            "id": "agnes-ai",
+            "name": "Agnes AI",
+            "base_url": "https://api.agnes-ai.cn/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "agnes-video-2.5-flash",
+            "remoteModel": "agnes-video-2.5-flash",
+            "adapter": "agnes_video",
+            "params": {},
+        }
+        calls = []
+        events = []
+
+        def fake_request(method, url, key, body=None, timeout=120):
+            calls.append((method, url, body, timeout))
+            if method == "POST":
+                if len([item for item in calls if item[0] == "POST"]) == 1:
+                    raise provider_client.ProviderHTTPError(
+                        503,
+                        '{"code":"video_queue_full","message":"视频队列已满，请稍后重试"}',
+                    )
+                return {"id": "task-full", "video_id": "video-full", "status": "queued"}
+            return {
+                "id": "task-full",
+                "status": "completed",
+                "progress": 100,
+                "url": "https://video.example/after-queue.mp4",
+            }
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request), \
+                patch.object(provider_client.time, "sleep") as sleep:
+            result = provider_client.generate_video(
+                provider,
+                model,
+                "人物转身",
+                {"mode": "text", "ratio": "16:9", "duration": 5},
+                [],
+                [],
+                on_task_update=lambda event: events.append(event),
+            )
+
+        self.assertEqual(result["url"], "https://video.example/after-queue.mp4")
+        self.assertEqual([item[0] for item in calls], ["POST", "POST", "GET"])
+        self.assertTrue(any("自动重试" in str(event.get("phase") or "") for event in events))
+        sleep.assert_called_once_with(3)
 
 
 if __name__ == "__main__":

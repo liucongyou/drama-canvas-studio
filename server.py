@@ -4612,7 +4612,7 @@ class Handler(BaseHTTPRequestHandler):
                 def on_task_update(task):
                     raw_status = str(task.get("status") or "running")
                     progress = task.get("progress")
-                    phase = _provider_task_phase(raw_status, progress)
+                    phase = str(task.get("phase") or "").strip() or _provider_task_phase(raw_status, progress)
                     meta.update({
                         "providerTaskStatus": raw_status,
                         "providerTaskPhase": phase,
