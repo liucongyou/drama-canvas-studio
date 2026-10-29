@@ -1492,7 +1492,7 @@ function friendlyTaskError(raw?: string): string {
     return `参考素材不符合当前模型要求，请检查数量、格式、大小和槽位顺序。${text ? `详情：${text.slice(0, 180)}` : ''}`;
   }
   if (lower.includes('timeout') || lower.includes('timed out') || text.includes('超时')) {
-    return '提交阶段失败：未创建供应商任务（没有任务 ID）。请先测试供应商连接；确认可用后再重新生成。';
+    return '供应商响应较慢，后台仍在继续处理。请到任务中心查看最终结果；不要连续重复提交，以免重复付费。';
   }
   if (lower.includes('invalid api key') || lower.includes('unauthorized') || lower.includes('forbidden') || text.includes('鉴权')) {
     return '供应商鉴权失败。请检查 API Key、工作空间和模型权限。';

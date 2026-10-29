@@ -480,7 +480,7 @@ export function friendlyMediaError(raw?: string): string {
   const lower = text.toLowerCase();
   if (!text) return '';
   if (lower.includes('read operation timed out') || lower.includes('write operation timed out') || lower.includes('timed out')) {
-    return '提交阶段失败：未创建供应商任务（没有任务 ID）。请先测试供应商连接；确认可用后再重新生成。';
+    return '供应商响应较慢，后台仍在继续处理。请到任务中心查看最终结果；不要连续重复提交，以免重复付费。';
   }
   if (lower.includes('overdue') || lower.includes('insufficient') || lower.includes('balance') || lower.includes('quota') || text.includes('余额') || text.includes('欠费') || text.includes('额度')) {
     return '供应商账户余额或额度不足。请先充值或更换供应商，再重新生成。';

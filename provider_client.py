@@ -79,6 +79,7 @@ _SEEDREAM_SAFE_SIZES = {
     "21:9": "1536x658",
 }
 SUBMIT_TIMEOUT_SECONDS = 45
+SYNC_MEDIA_TIMEOUT_SECONDS = 900
 SUBMIT_RETRY_WINDOW_SECONDS = 180
 SUBMIT_RETRY_MAX_DELAY_SECONDS = 20
 
@@ -822,11 +823,11 @@ def _newapi_image(
                     fields.append(("image[]", (filename, mime, payload)))
             response = _submit_multipart(
                 "POST", f"{base}{route}/edits", key, fields,
-                timeout=SUBMIT_TIMEOUT_SECONDS,
+                timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
             )
         else:
             response = _submit_json(
-                "POST", f"{base}{route}/generations", key, body, timeout=SUBMIT_TIMEOUT_SECONDS,
+                "POST", f"{base}{route}/generations", key, body, timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
             )
     elif route == "/kr/gemini/v1/images":
         parts: list[dict[str, Any]] = [{"text": text}]
@@ -845,7 +846,7 @@ def _newapi_image(
         }
         _apply_declared_params(body, model, params)
         response = _submit_json(
-            "POST", f"{base}{route}/generations", key, body, timeout=SUBMIT_TIMEOUT_SECONDS,
+            "POST", f"{base}{route}/generations", key, body, timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
         )
     elif route == "/hc/v1/images":
         if len(text) > 8000:
@@ -865,7 +866,7 @@ def _newapi_image(
                     body["quality"] = quality
                 _apply_declared_params(body, model, params)
                 response = _submit_json(
-                    "POST", f"{base}{route}/edits", key, body, timeout=SUBMIT_TIMEOUT_SECONDS,
+                    "POST", f"{base}{route}/edits", key, body, timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
                 )
             else:
                 fields = [
@@ -883,7 +884,7 @@ def _newapi_image(
                     fields.append(("image", (filename, mime, payload)))
                 response = _submit_multipart(
                     "POST", f"{base}{route}/edits/upload", key, fields,
-                    timeout=SUBMIT_TIMEOUT_SECONDS,
+                    timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
                 )
         else:
             body = {
@@ -897,7 +898,7 @@ def _newapi_image(
                 body["quality"] = quality
             _apply_declared_params(body, model, params)
             response = _submit_json(
-                "POST", f"{base}{route}/generations", key, body, timeout=SUBMIT_TIMEOUT_SECONDS,
+                "POST", f"{base}{route}/generations", key, body, timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
             )
     elif route == "/aistars/v1/images":
         if len(text) > 5000:
@@ -925,7 +926,7 @@ def _newapi_image(
             action = "generations"
         _apply_declared_params(body, model, params)
         response = _submit_json(
-            "POST", f"{base}{route}/{action}", key, body, timeout=SUBMIT_TIMEOUT_SECONDS,
+            "POST", f"{base}{route}/{action}", key, body, timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
         )
     else:
         raise RuntimeError(f"New API 图片线路未实现：{route}")
@@ -1012,6 +1013,7 @@ def _ark_image(
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
         body,
+        timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
     )
     return _parse_image_result(response, provider)
 
@@ -1039,6 +1041,7 @@ def _openai_image(
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
         body,
+        timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
     )
     return _parse_image_result(response, provider)
 
@@ -1098,7 +1101,7 @@ def _agnes_image(
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
         body,
-        timeout=SUBMIT_TIMEOUT_SECONDS,
+        timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
     )
     return _parse_image_result(response, provider)
 

@@ -4,7 +4,8 @@ import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCa
 describe('friendlyMediaError', () => {
   it('translates persisted write/read timeout errors before rendering', () => {
     const write = friendlyMediaError('供应商接口连接失败：The write operation timed out');
-    expect(write).toContain('未创建供应商任务');
+    expect(write).toContain('后台仍在继续处理');
+    expect(write).not.toContain('未创建供应商任务');
     expect(write).not.toContain('timed out');
     expect(friendlyMediaError('供应商接口连接失败：The read operation timed out')).toBe(write);
   });

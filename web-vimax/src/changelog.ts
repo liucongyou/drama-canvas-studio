@@ -7,10 +7,19 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.25';
+export const APP_VERSION = '2026.10.29.26';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.26',
+    date: '2026-10-29',
+    title: '同步图片与音频改用供应商真实响应模型',
+    changes: [
+      '图片和音频按供应商同步返回结果处理，不再错误套用异步任务 ID 判定。',
+      '生成提交后立即返回任务卡，后台持续更新真实状态；供应商返回较慢时不会再误报“提交阶段失败”。',
+    ],
+  },
   {
     version: '2026.10.29.25',
     date: '2026-10-29',
