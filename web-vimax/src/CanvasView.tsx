@@ -7614,7 +7614,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   groupsRef.current = groups;   // persistLayout 里要读最新值（不能挂 deps，会连锁重建回调）
   const viewportRef = useRef({x: 0, y: 0, zoom: 1});
   const overviewReturnViewportRef = useRef<CanvasViewport | null>(null);
-  const focusSelectionRef = useRef<(showEmptyHint?: boolean) => boolean>(() => false);
+  const focusSelectionRef = useRef<(showEmptyHint?: boolean) => void>(() => {});
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadPersistedLayout = useCallback(() => {
@@ -11804,7 +11804,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       // L：一键隐藏/显示所有连线（Logic=连线，和 V/H/C 同一组单键视图快捷键）
       else if (key === 'l') { event.preventDefault(); toggleEdgesHidden(); }
       else if (key === 'f' && event.shiftKey) {
-        // Shift+F：聚焦已选卡片并固定 50%（F 是适应全部）
+        // Shift+F：聚焦已选卡片（自适应比例；F 是适应全部）
         event.preventDefault();
         focusSelectionRef.current();
       }
@@ -12893,34 +12893,18 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [fitCanvas, mediaNodes]);
   const focusSelection = useCallback((showEmptyHint = true) => {
     setLargeCanvasOverview(false);
-    const flowNodes = rf.getNodes();
-    const selected = flowNodes.filter((node) => node.selected);
-    if (selected.length === 0) {
-      if (showEmptyHint) setToast('先选择节点，再点「聚焦」');
-      return false;
-    }
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    selected.forEach((node) => {
-      const absolute = absolutePositionOf(node.id, flowNodes) ?? node.position;
-      const width = node.measured?.width ?? node.width ?? 0;
-      const height = node.measured?.height ?? node.height ?? 0;
-      minX = Math.min(minX, absolute.x);
-      minY = Math.min(minY, absolute.y);
-      maxX = Math.max(maxX, absolute.x + width);
-      maxY = Math.max(maxY, absolute.y + height);
-    });
-    if (!Number.isFinite(minX)) return false;
     window.requestAnimationFrame(() => {
-      rf.setCenter(
-        (minX + maxX) / 2,
-        (minY + maxY) / 2,
-        {zoom: 0.5, duration: 280},
-      );
+      const selected = rf.getNodes().filter((node) => node.selected);
+      if (selected.length === 0) {
+        if (showEmptyHint) setToast('先选择节点，再点「聚焦」');
+        return;
+      }
+      rf.fitView({
+        nodes: selected.map((node) => ({id: node.id})),
+        padding: 0.3,
+        duration: 280,
+      });
     });
-    return true;
   }, [rf, setToast]);
   const focusWorkspace = useCallback(() => {
     focusSelection(true);
@@ -14369,7 +14353,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   type="button"
                   onClick={focusWorkspace}
                   disabled={selectedCount === 0}
-                  title={selectedCount === 0 ? '先选择节点，再聚焦到已选卡片（固定 50%）' : '聚焦到已选卡片（固定 50%）'}
+                  title={selectedCount === 0 ? '先选择节点，再聚焦到已选卡片' : '聚焦到已选卡片'}
                   aria-label="聚焦已选节点"
                 >
                   <span className="canvas-tool-ico"><ScanSearch size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">聚焦</span>

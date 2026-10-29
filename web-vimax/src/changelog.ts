@@ -7,10 +7,18 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.19';
+export const APP_VERSION = '2026.10.29.20';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.20',
+    date: '2026-10-29',
+    title: '聚焦恢复选中卡片自适应比例',
+    changes: [
+      '聚焦已选卡片恢复为此前“适应所选”的自适应比例：按选中卡片实际尺寸和当前视口计算，不再固定成偏小的 50%。',
+    ],
+  },
   {
     version: '2026.10.29.19',
     date: '2026-10-29',
