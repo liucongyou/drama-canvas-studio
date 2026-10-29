@@ -1126,19 +1126,40 @@ class ProviderRequestTimeoutError(RuntimeError):
     """Raised when a provider request exceeds the configured probe timeout."""
 
 
-def _request_status(url: str, key: str, method: str = "GET", body: dict[str, Any] | None = None) -> tuple[int, str]:
+def _request_status(
+    url: str,
+    key: str,
+    method: str = "GET",
+    body: dict[str, Any] | None = None,
+    *,
+    read_limit: int | None = None,
+) -> tuple[int, str]:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(
         url,
         data=data,
         method=method,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Connection": "close",
+            "Content-Type": "application/json",
+        },
     )
     try:
         with network_security.safe_urlopen(request, timeout=15) as response:
-            return response.status, response.read().decode("utf-8", errors="replace")
+            body_bytes = (
+                response.read(read_limit)
+                if read_limit is not None
+                else response.read()
+            )
+            return response.status, body_bytes.decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode("utf-8", errors="replace")
+        body_bytes = (
+            exc.read(read_limit)
+            if read_limit is not None
+            else exc.read()
+        )
+        return exc.code, body_bytes.decode("utf-8", errors="replace")
     except TimeoutError as exc:
         raise ProviderRequestTimeoutError(
             "供应商接口响应超时，请检查网络、接口地址或稍后重试"
@@ -1168,7 +1189,10 @@ def test_provider(provider_id: str) -> dict[str, Any]:
     if not test_path.startswith("/"):
         test_path = "/" + test_path
     try:
-        status, text = _request_status(f"{base}{test_path}", key)
+        # Probe only the response headers and a few KB of body. Some providers
+        # expose very large /models payloads; a connectivity test must not
+        # download the whole catalogue or it will look like a timeout.
+        status, text = _request_status(f"{base}{test_path}", key, read_limit=4096)
     except ProviderRequestTimeoutError as exc:
         return {
             "ok": False,

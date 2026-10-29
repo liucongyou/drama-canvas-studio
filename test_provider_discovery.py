@@ -7,6 +7,23 @@ import provider_catalog
 import tenant_context
 
 
+class _FakeResponse:
+    status = 200
+
+    def __init__(self):
+        self.read_amounts = []
+
+    def read(self, amount=-1):
+        self.read_amounts.append(amount)
+        return b'{"data":[]}'
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+
 class ProviderDiscoveryTests(unittest.TestCase):
     def setUp(self):
         self.config = {
@@ -75,6 +92,18 @@ class ProviderDiscoveryTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(result["timeout"])
         self.assertIn("响应超时", result["message"])
+
+    def test_request_status_uses_bounded_read_when_requested(self):
+        response = _FakeResponse()
+        with patch.object(provider_catalog.network_security, "safe_urlopen", return_value=response):
+            status, text = provider_catalog._request_status(
+                "https://api.example.com/models",
+                "test-key",
+                read_limit=4096,
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(text, '{"data":[]}')
+        self.assertEqual(response.read_amounts, [4096])
 
 
 if __name__ == "__main__":
