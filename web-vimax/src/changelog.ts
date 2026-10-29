@@ -7,10 +7,19 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.23';
+export const APP_VERSION = '2026.10.29.24';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.24',
+    date: '2026-10-29',
+    title: '模型能力与适配器联动修复',
+    changes: [
+      '切换模型能力时会自动切换到匹配的适配器，避免保存后仍被判定为视频模型。',
+      '适配器选项按当前模型能力过滤，并补齐 New API 图片适配器。',
+    ],
+  },
   {
     version: '2026.10.29.23',
     date: '2026-10-29',
