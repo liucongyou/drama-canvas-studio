@@ -29,6 +29,10 @@ _SCHEMA_LOCK = __import__("threading").RLock()
 _WAL_READY_PATHS: set[str] = set()
 
 
+class RevisionConflictError(RuntimeError):
+    """Raised when a project write no longer matches its revision precondition."""
+
+
 def _db_path() -> str:
     context = tenant_context.current()
     if context is not None:
@@ -78,6 +82,7 @@ def _connect():
                 connection_count INTEGER,
                 payload_json TEXT,
                 revision INTEGER,
+                kind TEXT DEFAULT 'auto',
                 created_at TEXT
             )"""
             )
@@ -121,6 +126,13 @@ def _connect():
             if "attempt" not in task_columns:
                 con.execute(
                     "ALTER TABLE generation_tasks ADD COLUMN attempt INTEGER DEFAULT 1"
+                )
+            snapshot_columns = {
+                row[1] for row in con.execute("PRAGMA table_info(canvas_snapshots)")
+            }
+            if "kind" not in snapshot_columns:
+                con.execute(
+                    "ALTER TABLE canvas_snapshots ADD COLUMN kind TEXT DEFAULT 'auto'"
                 )
             con.commit()
             _SCHEMA_READY_PATHS.add(path)
@@ -190,30 +202,79 @@ def create_project(title, payload=None):
             now,
         ),
     )
-    _snapshot(con, pid, title, payload, 1)
+    _snapshot(con, pid, title, payload, 1, kind="auto")
     con.commit()
     con.close()
     return pid
 
 
-def update_project(pid, title=None, payload=None, revision=None):
+def update_project(
+    pid,
+    title=None,
+    payload=None,
+    revision=None,
+    if_revision=None,
+    snapshot_mode="auto",
+):
     con = _connect()
-    row = con.execute("SELECT title, payload_json, revision FROM canvas_projects WHERE id=?", (pid,)).fetchone()
-    if not row:
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT title, payload_json, revision FROM canvas_projects WHERE id=?",
+            (pid,),
+        ).fetchone()
+        if not row:
+            con.rollback()
+            return False
+        current_revision = int(row[2])
+        if if_revision is not None and current_revision != int(if_revision):
+            con.rollback()
+            raise RevisionConflictError(
+                f"项目已更新：期望 revision={if_revision}，实际 revision={current_revision}"
+            )
+        new_title = title if title is not None else row[0]
+        new_payload = json.loads(row[1]) if payload is None else payload
+        if not isinstance(new_payload, dict):
+            con.rollback()
+            raise ValueError("payload must be an object")
+        new_rev = (current_revision + 1) if revision is None else int(revision)
+        now = _now_iso()
+        new_payload = json.loads(json.dumps(new_payload, ensure_ascii=False))
+        new_payload["revision"] = new_rev
+        new_payload["title"] = new_title
+        new_payload["updatedAt"] = now
+        cursor = con.execute(
+            "UPDATE canvas_projects SET title=?, payload_json=?, revision=?, updated_at=? "
+            "WHERE id=? AND revision=?",
+            (
+                new_title,
+                json.dumps(new_payload, ensure_ascii=False),
+                new_rev,
+                now,
+                pid,
+                current_revision,
+            ),
+        )
+        if cursor.rowcount != 1:
+            con.rollback()
+            raise RevisionConflictError("项目写入冲突，请重新读取后再试")
+        _maybe_snapshot(
+            con,
+            pid,
+            new_title,
+            new_payload,
+            new_rev,
+            mode=snapshot_mode,
+            now=now,
+        )
+        con.commit()
+        return True
+    except Exception:
+        if con.in_transaction:
+            con.rollback()
+        raise
+    finally:
         con.close()
-        return False
-    new_title = title if title is not None else row[0]
-    new_payload = json.loads(row[1]) if payload is None else payload
-    new_rev = (row[2] + 1) if revision is None else revision
-    now = _now_iso()
-    con.execute(
-        "UPDATE canvas_projects SET title=?, payload_json=?, revision=?, updated_at=? WHERE id=?",
-        (new_title, json.dumps(new_payload, ensure_ascii=False), new_rev, now, pid),
-    )
-    _snapshot(con, pid, new_title, new_payload, new_rev)
-    con.commit()
-    con.close()
-    return True
 
 
 def delete_project(pid):
@@ -335,6 +396,83 @@ def list_snapshot_payloads(project_id, limit=30):
     return payloads
 
 
+def list_snapshots(project_id, limit=50):
+    con = _connect()
+    rows = con.execute(
+        "SELECT id,title,node_count,connection_count,revision,kind,created_at "
+        "FROM canvas_snapshots WHERE canvas_id=? "
+        "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        (project_id, max(1, min(int(limit or 50), 200))),
+    ).fetchall()
+    con.close()
+    return [
+        {
+            "id": row[0],
+            "title": row[1],
+            "nodeCount": row[2],
+            "connectionCount": row[3],
+            "revision": row[4],
+            "kind": row[5] or "auto",
+            "createdAt": row[6],
+        }
+        for row in rows
+    ]
+
+
+def get_snapshot(project_id, snapshot_id):
+    con = _connect()
+    row = con.execute(
+        "SELECT id,title,node_count,connection_count,payload_json,revision,kind,created_at "
+        "FROM canvas_snapshots WHERE canvas_id=? AND id=?",
+        (project_id, snapshot_id),
+    ).fetchone()
+    con.close()
+    if not row:
+        return None
+    try:
+        payload = json.loads(row[4])
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return {
+        "id": row[0],
+        "title": row[1],
+        "nodeCount": row[2],
+        "connectionCount": row[3],
+        "payload": payload,
+        "revision": row[5],
+        "kind": row[6] or "auto",
+        "createdAt": row[7],
+    }
+
+
+def create_snapshot(project_id, title=None, kind="manual"):
+    con = _connect()
+    row = con.execute(
+        "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
+    if not row:
+        con.close()
+        return None
+    snapshot_title = title or row[0] or "项目版本"
+    payload = json.loads(row[1])
+    _snapshot(
+        con,
+        project_id,
+        snapshot_title,
+        payload,
+        int(row[2]),
+        kind=kind,
+    )
+    snapshot = con.execute(
+        "SELECT id FROM canvas_snapshots WHERE canvas_id=? ORDER BY rowid DESC LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    con.commit()
+    con.close()
+    return get_snapshot(project_id, snapshot[0]) if snapshot else None
+
+
 def interrupt_orphan_generation_tasks():
     now = _now_iso()
     con = _connect()
@@ -361,7 +499,9 @@ def interrupt_orphan_generation_tasks():
 #
 # 为什么是 30：快照只为「误删/误改兜底」，不是版本历史。
 #   30 条足够覆盖一次连续误操作的回退窗口，同时把库稳定在几 MB 量级。
-SNAPSHOT_KEEP = 30
+AUTO_SNAPSHOT_KEEP = 30
+AUTO_SNAPSHOT_MIN_INTERVAL_SECONDS = 30
+AUTO_SNAPSHOT_MIN_REVISIONS = 20
 
 MAX_VIDEO_VERSIONS = 20
 
@@ -472,19 +612,52 @@ def backfill_video_version_history():
     return updated_projects
 
 
-def _snapshot(con, pid, title, payload, revision):
+def _snapshot(con, pid, title, payload, revision, kind="auto"):
     sid = secrets.token_hex(16)
     con.execute(
-        "INSERT OR REPLACE INTO canvas_snapshots(id,canvas_id,title,node_count,connection_count,payload_json,revision,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO canvas_snapshots("
+        "id,canvas_id,title,node_count,connection_count,payload_json,revision,kind,created_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?)",
         (sid, pid, title, len(payload.get("nodes", [])), len(payload.get("connections", [])),
-         json.dumps(payload, ensure_ascii=False), revision, _now_iso()),
+         json.dumps(payload, ensure_ascii=False), revision, kind, _now_iso()),
     )
-    # 裁剪：只保留该画布最近 N 条，其余删除。
-    # 用 NOT IN (子查询取最新 N 条) 而不是 `revision <= max-N`，
-    # 因为 revision 可能不连续（批量导入/快照还原会跳号），按条数裁更可靠。
+    # 自动快照按数量裁剪；用户手动钉住的版本不能进入这条裁剪链。
     con.execute(
-        "DELETE FROM canvas_snapshots WHERE canvas_id=? AND id NOT IN ("
-        "  SELECT id FROM canvas_snapshots WHERE canvas_id=? ORDER BY revision DESC LIMIT ?"
+        "DELETE FROM canvas_snapshots WHERE canvas_id=? AND kind='auto' AND id NOT IN ("
+        "  SELECT id FROM canvas_snapshots WHERE canvas_id=? AND kind='auto' "
+        "  ORDER BY revision DESC, created_at DESC LIMIT ?"
         ")",
-        (pid, pid, SNAPSHOT_KEEP),
+        (pid, pid, AUTO_SNAPSHOT_KEEP),
     )
+
+
+def _maybe_snapshot(con, pid, title, payload, revision, mode="auto", now=None):
+    if mode == "none":
+        return
+    if mode == "manual":
+        _snapshot(con, pid, title, payload, revision, kind="manual")
+        return
+    latest = con.execute(
+        "SELECT revision,created_at FROM canvas_snapshots "
+        "WHERE canvas_id=? AND kind='auto' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (pid,),
+    ).fetchone()
+    if not latest:
+        _snapshot(con, pid, title, payload, revision, kind="auto")
+        return
+    revision_gap = int(revision) - int(latest[0] or 0)
+    if revision_gap >= AUTO_SNAPSHOT_MIN_REVISIONS:
+        _snapshot(con, pid, title, payload, revision, kind="auto")
+        return
+    try:
+        created = datetime.fromisoformat(
+            str(latest[1]).replace("Z", "+00:00")
+        )
+        current = datetime.fromisoformat(
+            str(now or _now_iso()).replace("Z", "+00:00")
+        )
+        age = (current - created).total_seconds()
+    except (TypeError, ValueError):
+        age = AUTO_SNAPSHOT_MIN_INTERVAL_SECONDS
+    if age >= AUTO_SNAPSHOT_MIN_INTERVAL_SECONDS:
+        _snapshot(con, pid, title, payload, revision, kind="auto")

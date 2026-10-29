@@ -1244,10 +1244,11 @@ def prepare_import(
 def commit_import(plan: ImportPlan, if_revision: int | None = None) -> dict:
     """Commit a prepared plan under a revision precondition."""
     import canvas_store as store
+    import canvas_repository
 
     if not plan.ok or plan.merged_payload is None:
         raise ValueError("导入计划包含错误，不能提交")
-    current = store.get_project(plan.project_id)
+    current = canvas_repository.repository.get_project(plan.project_id)
     if not current:
         raise ValueError("项目不存在")
     if if_revision is not None and int(current.get("revision") or 0) != int(if_revision):
@@ -1255,10 +1256,19 @@ def commit_import(plan: ImportPlan, if_revision: int | None = None) -> dict:
             f"项目已更新：期望 revision={if_revision}，实际 revision={current.get('revision')}"
         )
     title = plan.merged_payload.get("title") or current.get("title")
-    store.update_project(plan.project_id, title=title, payload=plan.merged_payload)
+    try:
+        restored = canvas_repository.repository.commit_payload(
+            plan.project_id,
+            plan.merged_payload,
+            title=title,
+            if_revision=if_revision,
+            snapshot_mode="auto",
+        )
+    except store.RevisionConflictError as exc:
+        raise RevisionConflictError(str(exc)) from exc
     return {
         "id": plan.project_id,
         "title": title,
-        "revision": int(current.get("revision") or 0) + 1,
+        "revision": int(restored.get("revision") or 0),
         "episodeId": plan.episode_id,
     }

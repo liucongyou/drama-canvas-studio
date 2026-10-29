@@ -29,6 +29,7 @@ npm --prefix web-vimax run dev         # 画布前端 8891（ViMax 画布内核 
 |---|---|
 | `server.py` | 本地 HTTP 后端（标准库，零依赖，端口 8890；节点 PUT / catalog / notes / refs / voice / 生成） |
 | `canvas_store.py` | SQLite 存取（payload 整包 + 自动快照） |
+| `canvas_repository.py` | 画布仓储边界（revision 前置条件、节点/连线/视口写入、项目版本与恢复） |
 | `import_feed.py` | 投喂载荷 → 画布 payload（五区布局 + 对白音色过滤 + 自动连线 + 标题=投喂名） |
 | `gate_check.py` | 挂接机检（稿 @//图 ↔ 实连线图 双向核对） |
 | `provider_catalog.py` | 供应商与模型目录、参数 Schema、密钥脱敏与连接测试 |
@@ -66,6 +67,13 @@ npm --prefix web-vimax run dev         # 画布前端 8891（ViMax 画布内核 
 - 排队阶段可在任务中心取消；已经提交到供应商的运行中任务不会被伪造为已取消。
 - 后端每 30 秒按节点终态对账任务表，完成后自动把遗留的 `running` 记录收敛为完成、失败或中断。
 - 可通过环境变量调整：`CANVAS_GENERATION_GLOBAL_CONCURRENCY`、`CANVAS_GENERATION_PROVIDER_CONCURRENCY`、`CANVAS_GENERATION_QUEUE_TIMEOUT`。
+
+## 项目版本与恢复
+
+- 顶栏「工具 → 项目版本历史」可查看自动保护和手动版本，预览恢复会新增、移除或替换多少节点、提示词和媒体。
+- 自动快照至少间隔 30 秒或累计 20 个 revision 才新增，每个项目只保留最近 30 条自动快照。
+- 手动版本不参与自动裁剪；恢复前系统会先保存一条「恢复前自动保护」，恢复失败不会修改当前项目。
+- 恢复请求携带 revision 前置条件，多标签页或后台任务已更新项目时返回 `409 REVISION_CONFLICT`。
 
 ## 模型计费规则
 

@@ -43,6 +43,7 @@ from urllib.parse import urlparse, unquote
 
 import canvas_store as store
 import canvas_feed_contract
+import canvas_repository
 import import_feed
 import gate_check
 import imgbb_storage
@@ -67,8 +68,8 @@ WEBAPP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web-vimax
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "uploads")
 PORT = 8890
 PROJECT_WRITE_LOCK = threading.RLock()
-PROJECT_LOCKS: dict[str, threading.RLock] = {}
-PROJECT_LOCKS_GUARD = threading.Lock()
+PROJECT_LOCKS = canvas_repository.PROJECT_LOCKS
+PROJECT_LOCKS_GUARD = canvas_repository.PROJECT_LOCKS_GUARD
 GENERATION_INFLIGHT: set[tuple[str, str]] = set()
 GENERATION_INFLIGHT_LOCK = threading.Lock()
 RESUMED_VIDEO_TASKS: set[tuple[str, str]] = set()
@@ -121,15 +122,7 @@ class RequestBoundaryError(ValueError):
         self.code = code
 
 
-@contextmanager
-def project_write_lock(project_id: str):
-    key = str(project_id or "").strip()
-    if not key:
-        raise ValueError("project_id is required for project_write_lock")
-    with PROJECT_LOCKS_GUARD:
-        lock = PROJECT_LOCKS.setdefault(key, threading.RLock())
-    with lock:
-        yield
+project_write_lock = canvas_repository.project_write_lock
 
 
 def project_id_for_path(path: str) -> str:
@@ -2596,6 +2589,38 @@ class Handler(BaseHTTPRequestHandler):
             })
         if path in ("/api/model-catalog", "/api/providers"):
             return self._send(200, provider_catalog.public_catalog())
+        m = re.match(r"^/api/projects/([^/]+)/versions/([^/]+)$", path)
+        if m:
+            pid, version_id = unquote(m.group(1)), unquote(m.group(2))
+            try:
+                return self._send(200, canvas_repository.repository.preview_version(
+                    pid,
+                    version_id,
+                ))
+            except KeyError as exc:
+                return self._send(404, {"error": str(exc).strip("'")})
+        m = re.match(r"^/api/projects/([^/]+)/versions$", path)
+        if m:
+            pid = unquote(m.group(1))
+            try:
+                project = canvas_repository.repository.get_project(pid)
+                if not project:
+                    return self._send(404, {"error": "项目不存在"})
+                limit = 50
+                if parsed.query:
+                    query = urllib.parse.parse_qs(parsed.query)
+                    limit = int((query.get("limit") or ["50"])[0])
+                return self._send(200, {
+                    "currentRevision": project["revision"],
+                    "versions": canvas_repository.repository.list_versions(
+                        pid,
+                        limit,
+                    ),
+                })
+            except (TypeError, ValueError):
+                return self._send(400, {"error": "limit 必须是整数"})
+            except KeyError as exc:
+                return self._send(404, {"error": str(exc).strip("'")})
         m = re.match(r"^/api/projects/([^/]+)/assets/export$", path)
         if m:
             pid = unquote(m.group(1))
@@ -2693,7 +2718,7 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/projects/([^/]+)$", path)
         if m:
             pid = unquote(m.group(1))
-            proj = store.get_project(pid)
+            proj = canvas_repository.repository.get_project(pid)
             if not proj:
                 return self._send(404, {"error": "项目不存在"})
             return self._send(200, proj)
@@ -2787,8 +2812,57 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/projects":
             title = body.get("title") or "未命名画布"
             with PROJECT_WRITE_LOCK:
-                pid = store.create_project(title)
+                pid = canvas_repository.repository.create_project(title)
             return self._send(200, {"id": pid, "title": title})
+        m = re.match(r"^/api/projects/([^/]+)/versions/([^/]+)/restore$", path)
+        if m:
+            pid, version_id = unquote(m.group(1)), unquote(m.group(2))
+            if_revision = body.get("if_revision")
+            if if_revision is not None:
+                try:
+                    if_revision = int(if_revision)
+                except (TypeError, ValueError):
+                    return self._send(400, {"error": "if_revision 必须是整数"})
+            try:
+                return self._send(200, canvas_repository.repository.restore_version(
+                    pid,
+                    version_id,
+                    if_revision=if_revision,
+                ))
+            except store.RevisionConflictError as exc:
+                return self._send(409, {
+                    "error": str(exc),
+                    "code": "REVISION_CONFLICT",
+                })
+            except KeyError as exc:
+                return self._send(404, {"error": str(exc).strip("'")})
+        m = re.match(r"^/api/projects/([^/]+)/versions$", path)
+        if m:
+            pid = unquote(m.group(1))
+            if_revision = body.get("if_revision")
+            if if_revision is not None:
+                try:
+                    if_revision = int(if_revision)
+                except (TypeError, ValueError):
+                    return self._send(400, {"error": "if_revision 必须是整数"})
+            try:
+                version = canvas_repository.repository.create_version(
+                    pid,
+                    title=str(body.get("title") or "").strip() or None,
+                    if_revision=if_revision,
+                )
+                project = canvas_repository.repository.get_project(pid)
+                return self._send(200, {
+                    "version": version,
+                    "currentRevision": project["revision"] if project else None,
+                })
+            except store.RevisionConflictError as exc:
+                return self._send(409, {
+                    "error": str(exc),
+                    "code": "REVISION_CONFLICT",
+                })
+            except KeyError as exc:
+                return self._send(404, {"error": str(exc).strip("'")})
         m = re.match(r"^/api/projects/([^/]+)/duplicate$", path)
         if m:
             source_id = unquote(m.group(1))

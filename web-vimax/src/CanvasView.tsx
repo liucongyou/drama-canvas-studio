@@ -61,6 +61,7 @@ import {
   Film,
   Group,
   Hand,
+  History,
   LayoutGrid,
   LibraryBig,
   Link2,
@@ -106,6 +107,14 @@ import {
 } from 'lucide-react';
 import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasPositionBase, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
+import {
+  createProjectVersion,
+  getProjectVersions,
+  previewProjectVersion,
+  restoreProjectVersion,
+  type ProjectVersion,
+  type ProjectVersionPreview,
+} from './api';
 import {
   evaluateBatchGeneration,
   evaluateReferenceLimits,
@@ -6482,6 +6491,238 @@ function BatchModelPicker({kindLabel, models, value, open, disabled, onToggle, o
   );
 }
 
+function ProjectVersionsDialog({
+  projectId,
+  busy,
+  onClose,
+  onMessage,
+}: {
+  projectId: string;
+  busy: boolean;
+  onClose: () => void;
+  onMessage: (message: string) => void;
+}) {
+  const [versions, setVersions] = useState<ProjectVersion[]>([]);
+  const [currentRevision, setCurrentRevision] = useState(0);
+  const [selected, setSelected] = useState<ProjectVersionPreview | null>(null);
+  const [title, setTitle] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [working, setWorking] = useState(false);
+  const [confirmRestore, setConfirmRestore] = useState(false);
+  const [error, setError] = useState('');
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await getProjectVersions(projectId);
+      setVersions(data.versions || []);
+      setCurrentRevision(Number(data.currentRevision || 0));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [onClose]);
+
+  const selectVersion = async (version: ProjectVersion) => {
+    setWorking(true);
+    setError('');
+    setConfirmRestore(false);
+    try {
+      setSelected(await previewProjectVersion(projectId, version.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const saveVersion = async () => {
+    if (busy || working) return;
+    setWorking(true);
+    setError('');
+    try {
+      const data = await createProjectVersion(
+        projectId,
+        title.trim() || '手动版本',
+        currentRevision,
+      );
+      setTitle('');
+      setCurrentRevision(Number(data.currentRevision || currentRevision));
+      await refresh();
+      onMessage('已保存项目版本');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const restoreVersion = async () => {
+    if (!selected || busy || working) return;
+    setWorking(true);
+    setError('');
+    try {
+      await restoreProjectVersion(projectId, selected.id, currentRevision);
+      onMessage('项目已恢复，正在重新载入画布');
+      window.setTimeout(() => window.location.reload(), 180);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setWorking(false);
+    }
+  };
+
+  const formatTime = (value: string) => {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? value
+      : date.toLocaleString('zh-CN', {hour12: false});
+  };
+
+  return (
+    <div className="canvas-prompt-overlay canvas-version-overlay" onClick={onClose}>
+      <section
+        className="canvas-version-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="项目版本历史"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className="canvas-version-head">
+          <span className="canvas-version-title">
+            <History size={16} strokeWidth={1.8} aria-hidden="true" />
+            <strong>项目版本</strong>
+            <small>当前 revision {currentRevision}</small>
+          </span>
+          <button type="button" onClick={onClose} aria-label="关闭">
+            <X size={15} strokeWidth={2.1} aria-hidden="true" />
+          </button>
+        </header>
+        <div className="canvas-version-create">
+          <input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="版本说明，例如：角色资产定稿"
+            maxLength={80}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void saveVersion();
+            }}
+          />
+          <button
+            type="button"
+            disabled={busy || working}
+            onClick={() => void saveVersion()}
+            title={busy ? '画布正在保存，请稍后再创建版本' : '保存当前画布为手动版本'}
+          >
+            <Plus size={13} strokeWidth={2} aria-hidden="true" />
+            保存当前
+          </button>
+        </div>
+        {busy && <p className="canvas-version-note">画布仍有未完成保存，版本操作已暂时锁定。</p>}
+        {error && <p className="canvas-version-error">{error}</p>}
+        <div className="canvas-version-body">
+          <div className="canvas-version-list">
+            {loading ? (
+              <p className="canvas-version-empty">正在读取版本…</p>
+            ) : versions.length === 0 ? (
+              <p className="canvas-version-empty">还没有可恢复的项目版本。</p>
+            ) : versions.map((version) => (
+              <button
+                key={version.id}
+                type="button"
+                className={`canvas-version-item ${selected?.id === version.id ? 'is-active' : ''}`}
+                onClick={() => void selectVersion(version)}
+              >
+                <span className="canvas-version-item-main">
+                  <strong>{version.title || '未命名版本'}</strong>
+                  <small>{formatTime(version.createdAt)}</small>
+                </span>
+                <span className="canvas-version-item-meta">
+                  <em className={version.kind === 'manual' ? 'is-manual' : ''}>
+                    {version.kind === 'manual' ? '手动' : '自动'}
+                  </em>
+                  <span>R{version.revision}</span>
+                  <span>{version.nodeCount} 节点</span>
+                </span>
+              </button>
+            ))}
+          </div>
+          <aside className="canvas-version-preview">
+            {!selected ? (
+              <div className="canvas-version-preview-empty">
+                <History size={22} strokeWidth={1.5} aria-hidden="true" />
+                <p>选择一个版本查看恢复影响</p>
+              </div>
+            ) : (
+              <>
+                <div className="canvas-version-preview-head">
+                  <span>版本预览</span>
+                  <em>{selected.kind === 'manual' ? '手动版本' : '自动保护'}</em>
+                </div>
+                <strong>{selected.title || '未命名版本'}</strong>
+                <small>{formatTime(selected.createdAt)}</small>
+                <div className="canvas-version-stats">
+                  <span><b>{selected.nodeCount}</b>节点</span>
+                  <span><b>{selected.connectionCount}</b>连线</span>
+                  <span><b>{selected.revision}</b>revision</span>
+                </div>
+                <div className="canvas-version-diff">
+                  <span>恢复后新增 {selected.diff.nodesAddedByRestore} 节点</span>
+                  <span>恢复后移除 {selected.diff.nodesRemovedByRestore} 节点</span>
+                  <span>{selected.diff.promptsChanged} 条提示词将被替换</span>
+                  <span>{selected.diff.mediaChanged} 个媒体内容将被替换</span>
+                </div>
+                {!confirmRestore ? (
+                  <button
+                    type="button"
+                    className="canvas-version-restore"
+                    disabled={busy || working}
+                    onClick={() => setConfirmRestore(true)}
+                  >
+                    <RotateCw size={13} strokeWidth={1.9} aria-hidden="true" />
+                    恢复到此版本
+                  </button>
+                ) : (
+                  <div className="canvas-version-confirm">
+                    <p>当前画布会被覆盖，并自动保留恢复前保护版本。</p>
+                    <div>
+                      <button type="button" onClick={() => setConfirmRestore(false)}>取消</button>
+                      <button
+                        type="button"
+                        className="is-danger"
+                        disabled={working}
+                        onClick={() => void restoreVersion()}
+                      >
+                        {working ? '恢复中…' : '确认恢复'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </aside>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds, onClose, onGenerate, onSubmitted}: {
   targets: CanvasMediaNode[];
   pool: CanvasMediaNode[];
@@ -6861,6 +7102,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // LibTV 风格交互状态
   const [mouseMode, setMouseMode] = useState<MouseMode>('select');
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [versionsOpen, setVersionsOpen] = useState(false);
   const [userEdges, setUserEdges] = useState<Edge[]>([]);
   const [deletedAutoEdgeIds, setDeletedAutoEdgeIds] = useState<Set<string>>(new Set());
   const [panning, setPanning] = useState(false);
@@ -12574,6 +12816,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   <button type="button" onClick={() => { setOpenMenu(null); resetLayout(); }}>恢复默认布局</button>
                   <button type="button" title="仅恢复节点位置和连线；技能生成的投喂载荷请用顶部「项目设置 → 导入投喂载荷」" onClick={() => { setOpenMenu(null); layoutFileRef.current?.click(); }}>导入布局 JSON</button>
                   <button type="button" onClick={() => { setOpenMenu(null); exportLayoutJson(); }}>导出布局 JSON</button>
+                  <div className="canvas-tools-section">版本</div>
+                  <button type="button" onClick={() => { setOpenMenu(null); setVersionsOpen(true); }}>
+                    <History size={13} strokeWidth={1.9} aria-hidden="true" />
+                    项目版本历史
+                  </button>
                   <div className="canvas-tools-section">帮助</div>
                   <button type="button" onClick={() => { setOpenMenu(null); setHelpOpen(true); }}>快捷键与操作说明</button>
                 </div>
@@ -13800,6 +14047,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                 if (n > 0) setToast(`已删除 ${n} 个节点，Ctrl+Z 可撤销`);
                 else setToast('没有删除任何节点');
               }}
+            />
+          )}
+          {versionsOpen && (
+            <ProjectVersionsDialog
+              projectId={session}
+              busy={saveState === 'saving' || dirtyShots.size > 0}
+              onClose={() => setVersionsOpen(false)}
+              onMessage={setToast}
             />
           )}
           {taskCenterOpen && (

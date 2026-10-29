@@ -723,6 +723,67 @@ export async function getGenerationTasks(projectId: string, limit = 80): Promise
   return data.tasks || [];
 }
 
+export type ProjectVersion = {
+  id: string;
+  title: string;
+  nodeCount: number;
+  connectionCount: number;
+  revision: number;
+  kind: 'auto' | 'manual' | string;
+  createdAt: string;
+};
+
+export type ProjectVersionPreview = ProjectVersion & {
+  currentRevision: number;
+  diff: {
+    nodesAddedByRestore: number;
+    nodesRemovedByRestore: number;
+    promptsChanged: number;
+    mediaChanged: number;
+  };
+};
+
+export async function getProjectVersions(projectId: string): Promise<{
+  currentRevision: number;
+  versions: ProjectVersion[];
+}> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/versions`);
+}
+
+export async function createProjectVersion(
+  projectId: string,
+  title: string,
+  ifRevision?: number,
+): Promise<{version: ProjectVersion; currentRevision: number}> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/versions`, {
+    method: 'POST',
+    body: JSON.stringify({title, if_revision: ifRevision}),
+  });
+}
+
+export async function previewProjectVersion(
+  projectId: string,
+  versionId: string,
+): Promise<ProjectVersionPreview> {
+  return request(
+    `/api/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}`,
+  );
+}
+
+export async function restoreProjectVersion(
+  projectId: string,
+  versionId: string,
+  ifRevision: number,
+): Promise<{id: string; title: string; revision: number; restoredFrom: string}> {
+  return request(
+    `/api/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/restore`,
+    {
+      method: 'POST',
+      body: JSON.stringify({if_revision: ifRevision}),
+    },
+  );
+}
+
 export async function cancelGenerationTask(taskId: string): Promise<{ok: boolean; taskId: string}> {
   return request(`/api/generation-tasks/${encodeURIComponent(taskId)}/cancel`, {
     method: 'POST',
