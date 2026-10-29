@@ -3407,9 +3407,16 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   };
   const selectModel = (spec: ModelSpec) => {
     const defaults = spec.defaultParams || {};
+    const preservedKeys = new Set([
+      'refs', 'voiceRef', 'voiceRefs', 'mediaVersions', 'mediaVersionIndex',
+      'videoVersions', 'videoVersionIndex',
+    ]);
+    const preserved = Object.fromEntries(
+      Object.entries(paramsRef.current).filter(([key]) => preservedKeys.has(key)),
+    ) as CanvasMediaParams;
     const next: CanvasMediaParams = {
       ...defaults,
-      ...paramsRef.current,
+      ...preserved,
       provider: spec.providerId,
       model: spec.id,
     };
@@ -12399,13 +12406,19 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       setToast(`提示词超过当前模型上限（${promptLimit} 字符）`);
       return false;
     }
+    const preservedKeys = new Set([
+      'refs', 'voiceRef', 'voiceRefs', 'mediaVersions', 'mediaVersionIndex',
+      'videoVersions', 'videoVersionIndex',
+    ]);
     let params: CanvasMediaParams = activeModel ? {
       ...(activeModel.defaultParams || {}),
-      ...(node.params || {}),
+      ...Object.fromEntries(
+        Object.entries(node.params || {}).filter(([key]) => preservedKeys.has(key)),
+      ),
       provider: activeModel.providerId,
       model: activeModel.id,
       ...(node.kind === 'audio' ? {ttsModel: activeModel.remoteModel} : {}),
-    } : {...(node.params || {})};
+    } as CanvasMediaParams : {...(node.params || {})};
     if (activeModel) {
       for (const key of ['ratio', 'resolution', 'clarity', 'guidance'] as const) {
         const options = activeModel.params?.[key]?.options;
@@ -12475,8 +12488,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       providerTaskProgress: 0,
       params,
     }, {persist: false});
-    const startedLabel = node.status === 'done' ? '重新生成已提交' : '生成已提交';
-    setToast(`${startedLabel}：${kindLabel[node.kind]}，任务中心会实时更新`);
+    const startedLabel = node.status === 'done' ? '重新生成已连接供应商' : '正在连接供应商';
+    setToast(`${startedLabel}：${kindLabel[node.kind]}，结果会自动回写`);
     void (async () => {
       try {
         // The generation endpoint applies this explicit prompt/params snapshot

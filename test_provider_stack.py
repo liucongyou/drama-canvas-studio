@@ -2,6 +2,7 @@
 import base64
 import copy
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -13,6 +14,30 @@ import provider_client
 
 
 class ProviderCatalogTests(unittest.TestCase):
+    def test_curl_post_parses_body_and_status_separately(self):
+        def fake_run(command, **kwargs):
+            output_path = command[command.index("--output") + 1]
+            with open(output_path, "wb") as handle:
+                handle.write(b'{"id":"task-1","status":"queued"}')
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=b"200",
+                stderr=b"",
+            )
+
+        with patch.object(provider_client.shutil, "which", return_value="curl"), \
+                patch.object(provider_client.subprocess, "run", side_effect=fake_run):
+            result = provider_client._request_json(
+                "POST",
+                "https://provider.example/v1/images/generations",
+                "test-key",
+                {"prompt": "test"},
+                timeout=10,
+            )
+        self.assertEqual(result["id"], "task-1")
+        self.assertEqual(result["status"], "queued")
+
     def test_provider_submit_timeout_is_short_enough_for_interactive_retry(self):
         self.assertLessEqual(provider_client.SUBMIT_TIMEOUT_SECONDS, 60)
 

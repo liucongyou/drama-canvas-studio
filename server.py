@@ -555,14 +555,7 @@ def persist_generated_media(url, fallback_ext):
     raw = str(url or "").strip()
     if not raw or raw.startswith(("/uploads/", "data:")):
         return raw
-    try:
-        return provider_client.save_generated_url(raw, fallback_ext)
-    except Exception as exc:
-        # Generation already succeeded. Preserve the provider URL instead of
-        # presenting a false generation failure; the original error remains visible
-        # in the server log for diagnosis.
-        print(f"[media-cache] failed to localize {raw[:120]}: {exc}", file=sys.stderr)
-        return raw
+    return provider_client.save_generated_url(raw, fallback_ext)
 
 
 _EVENT_SUBSCRIBERS: dict[str, list[queue.Queue]] = {}
@@ -1339,9 +1332,10 @@ def _generation_error_status(exc):
             "缺少",
             "不合法的模式",
             "只支持",
+            "未产生新图片",
         )
     ):
-        return 400
+        return 409 if "未产生新图片" in text else 400
     if "超时" in text or "timed out" in text.lower():
         return 504
     if "连接失败" in text or "connection" in text.lower():
@@ -4521,6 +4515,29 @@ class Handler(BaseHTTPRequestHandler):
                     file=sys.stderr,
                 )
                 return None
+            if isinstance(exc, provider_client.ProviderOutcomeUncertain):
+                if task_id:
+                    store.update_generation_task(
+                        task_id,
+                        status="interrupted",
+                        phase="结果待确认",
+                        error=str(exc),
+                        finished_at=store._now_iso(),
+                    )
+                commit_node_metadata(pid, node["id"], {
+                    "status": "failed",
+                    "lastError": str(exc),
+                    "providerTaskStatus": "uncertain",
+                    "providerTaskPhase": "结果待确认",
+                })
+                return self._send(202, {
+                    "accepted": True,
+                    "taskId": task_id or "",
+                    "nodeId": node["id"],
+                    "status": "pending",
+                    "code": "PROVIDER_OUTCOME_UNCERTAIN",
+                    "error": str(exc),
+                })
             if task_id:
                 store.update_generation_task(
                     task_id, status="failed", phase="任务异常", error=str(exc),
@@ -4700,24 +4717,18 @@ class Handler(BaseHTTPRequestHandler):
                 validate_refs(refs)
                 result = provider_client.generate_image(provider, model, prompt, effective, refs)
                 provider_ready_at = store._now_iso()
-                mark_provider_ready(
-                    pid, node, meta, task_id,
-                    str(result.get("url") or ""), provider_ready_at,
-                )
                 provider_url = str(result.get("url") or "")
-                local_generated_url = provider_url
-                cache_error = ""
+                if not provider_url:
+                    raise RuntimeError("供应商未返回图片地址，本次生成没有产生新图片")
                 try:
-                    cached_url = persist_generated_media(provider_url, ".png")
-                    if cached_url:
-                        local_generated_url = cached_url
+                    local_generated_url = persist_generated_media(provider_url, ".png")
                 except Exception as exc:
-                    # Provider output is already durable enough to show. A
-                    # local cache failure is not a generation failure.
-                    cache_error = str(exc)
-                    print(
-                        f"[media-cache] failed to localize {provider_url[:120]}: {exc}",
-                        file=sys.stderr,
+                    raise provider_client.ProviderOutcomeUncertain(
+                        f"供应商已生成图片，但下载新图失败：{exc}"
+                    ) from exc
+                if not local_generated_url.startswith("/uploads/"):
+                    raise provider_client.ProviderOutcomeUncertain(
+                        "供应商已生成图片，但没有拿到本地新文件"
                     )
                 generated_at = provider_ready_at
                 generated_url = local_generated_url
@@ -4745,7 +4756,7 @@ class Handler(BaseHTTPRequestHandler):
                 meta["generatedAt"] = generated_at
                 meta["finalizePending"] = False
                 meta["storage"] = storage if isinstance(storage, dict) else {}
-                meta["storageError"] = cache_error or (
+                meta["storageError"] = (
                     str(storage.get("error") or "")
                     if isinstance(storage, dict)
                     else ""
@@ -4890,11 +4901,10 @@ class Handler(BaseHTTPRequestHandler):
                     on_task_update=on_task_update,
                 )
                 provider_ready_at = store._now_iso()
-                mark_provider_ready(
-                    pid, node, meta, task_id,
-                    str(result.get("url") or ""), provider_ready_at,
-                )
-                generated_url = persist_generated_media(result["url"], ".mp4")
+                provider_url = str(result.get("url") or "")
+                if not provider_url:
+                    raise RuntimeError("供应商未返回视频地址，本次生成没有产生新视频")
+                generated_url = persist_generated_media(provider_url, ".mp4")
                 generated_at = provider_ready_at
                 _record_video_version(
                     meta,
@@ -5003,6 +5013,8 @@ class Handler(BaseHTTPRequestHandler):
                 if ntype == "video":
                     meta["params"]["videoVersions"] = [dict(item) for item in version_list]
         except Exception as exc:
+            if isinstance(exc, provider_client.ProviderOutcomeUncertain):
+                raise
             meta["status"] = "failed"
             meta["lastError"] = str(exc)
             commit_node_metadata(pid, node["id"], {

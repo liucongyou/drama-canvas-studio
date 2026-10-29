@@ -76,6 +76,10 @@ class ProviderHTTPError(RuntimeError):
         self.headers = headers
 
 
+class ProviderOutcomeUncertain(RuntimeError):
+    """The paid request may have been accepted, but no usable response arrived."""
+
+
 _GUIDANCE_WORDS = {
     "轻度": "\nlight detail, keep loose and natural",
     "中等": "\nbalanced detail, standard quality",
@@ -121,6 +125,78 @@ def _request_json(
     *,
     timeout: int = 120,
 ) -> dict[str, Any]:
+    if method.upper() == "POST" and body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            suffix=".json",
+            delete=False,
+        ) as handle:
+            handle.write(data)
+            payload_path = handle.name
+        headers_path = payload_path + ".headers"
+        response_path = payload_path + ".response"
+        try:
+            curl = shutil.which("curl")
+            if curl:
+                result = subprocess.run(
+                    [
+                        curl,
+                        "--silent",
+                        "--show-error",
+                        "--max-time", str(max(1, int(timeout))),
+                        "--connect-timeout", "15",
+                        "--dump-header", headers_path,
+                        "--output", response_path,
+                        "--header", f"Authorization: Bearer {key}",
+                        "--header", "Content-Type: application/json",
+                        "--header", "Accept: application/json",
+                        "--data-binary", f"@{payload_path}",
+                        "--write-out", "%{http_code}",
+                        url,
+                    ],
+                    capture_output=True,
+                    timeout=max(5, int(timeout) + 5),
+                    check=False,
+                )
+                status_text = (
+                    result.stdout.decode("utf-8", errors="replace")
+                    if isinstance(result.stdout, bytes)
+                    else str(result.stdout or "")
+                ).strip()
+                try:
+                    status = int(status_text)
+                except ValueError:
+                    status = 0
+                if result.returncode != 0 or status == 0:
+                    detail = result.stderr.decode("utf-8", errors="replace") if isinstance(result.stderr, bytes) else str(result.stderr)
+                    raise ProviderOutcomeUncertain(
+                        f"供应商请求已发出，但未收到可确认结果：{detail or 'curl request failed'}"
+                    )
+                body_bytes = b""
+                if os.path.isfile(response_path):
+                    with open(response_path, "rb") as response_file:
+                        body_bytes = response_file.read()
+                if status >= 400:
+                    raise ProviderHTTPError(
+                        status,
+                        body_bytes.decode("utf-8", errors="replace")[:1200],
+                        None,
+                    )
+                return json.loads(body_bytes.decode("utf-8", errors="replace")) if body_bytes.strip() else {}
+        finally:
+            try:
+                os.unlink(payload_path)
+            except OSError:
+                pass
+            try:
+                os.unlink(headers_path)
+            except OSError:
+                pass
+            try:
+                os.unlink(response_path)
+            except OSError:
+                pass
     data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
     request = urllib.request.Request(
         url,
@@ -139,7 +215,17 @@ def _request_json(
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:1200]
         raise ProviderHTTPError(exc.code, detail, exc.headers) from exc
+    except (TimeoutError, OSError) as exc:
+        if method.upper() == "POST":
+            raise ProviderOutcomeUncertain(
+                f"供应商请求已发出，但读取结果超时：{exc}"
+            ) from exc
+        raise RuntimeError(f"供应商接口读取失败：{exc}") from exc
     except urllib.error.URLError as exc:
+        if method.upper() == "POST":
+            raise ProviderOutcomeUncertain(
+                f"供应商请求未取得可确认结果：{exc.reason}"
+            ) from exc
         raise RuntimeError(f"供应商接口连接失败：{exc.reason}") from exc
 
 
@@ -783,6 +869,8 @@ def _newapi_image(
     prompt: str,
     params: dict[str, Any],
     refs: list[dict[str, Any]],
+    *,
+    on_task_created: TaskEventCallback | None = None,
 ) -> dict[str, Any]:
     image_refs = [ref for ref in refs if ref.get("kind") == "image" and ref.get("url")]
     text_refs = [ref for ref in refs if ref.get("kind") == "text"]
@@ -959,6 +1047,12 @@ def _newapi_image(
             f"New API 图片任务未返回 {task_field}："
             f"{json.dumps(response, ensure_ascii=False)[:500]}"
         )
+    _emit_task_event(on_task_created, {
+        "taskId": task_id,
+        "status": "queued",
+        "progress": 0,
+        "createdAt": time.time(),
+    })
     poll_url = f"{base}{poll_prefix}{urllib.parse.quote(task_id, safe='')}"
     deadline = time.time() + 900
     poll_started = time.time()

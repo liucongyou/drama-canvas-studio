@@ -157,6 +157,172 @@ class GenerationQueueTests(unittest.TestCase):
         with patch.object(server.store, "get_generation_task", return_value={"status": "failed"}):
             self.assertFalse(server.preserve_generation_outcome("task-1", RuntimeError("provider failed")))
 
+    def test_media_version_is_not_duplicated_by_provider_ready_intermediate(self):
+        meta = {
+            "content": "/uploads/generated.png",
+            "params": {
+                "mediaVersions": [
+                    {"url": "/uploads/generated.png", "kind": "image"},
+                ],
+                "mediaVersionIndex": 0,
+            },
+        }
+        versions = server._record_media_version(
+            meta,
+            "image",
+            "/uploads/generated.png",
+            "provider-task-1",
+            "2026-10-30T00:00:00.000Z",
+        )
+        self.assertEqual(len(versions), 1)
+        self.assertEqual(versions[0]["url"], "/uploads/generated.png")
+
+    def test_image_download_failure_does_not_create_fake_version(self):
+        node = {
+            "id": "image-same-result",
+            "type": "image",
+            "title": "角色｜赵铁柱（图1）",
+            "metadata": {
+                "prompt": "test image",
+                "status": "done",
+                "content": "/uploads/generated.png",
+                "params": {
+                    "provider": "agnes-ai",
+                    "model": "agnes-image",
+                    "mediaVersions": [
+                        {
+                            "url": "/uploads/generated.png",
+                            "kind": "image",
+                            "provider": "agnes-ai",
+                            "model": "agnes-image",
+                        },
+                    ],
+                    "mediaVersionIndex": 0,
+                },
+            },
+        }
+        project = {"id": "project-same-result", "payload": {"nodes": [node]}}
+        provider = {
+            "id": "agnes-ai",
+            "api_key": "test-key",
+            "base_url": "https://api.agnes-ai.cn/v1",
+        }
+        model = {
+            "id": "agnes-image",
+            "remoteModel": "agnes-image-2.5-flash",
+            "defaultParams": {},
+            "limits": {},
+        }
+        sent = []
+        task_updates = []
+        handler = object.__new__(server.Handler)
+        handler._send = lambda status, payload: sent.append((status, payload)) or payload
+        with (
+            patch.object(server.provider_catalog, "resolve_model", return_value=(provider, model, {})),
+            patch.object(
+                server.provider_catalog,
+                "test_provider",
+                return_value={"ok": True, "message": "连接成功"},
+            ),
+            patch.object(
+                server.provider_client,
+                "generate_image",
+                return_value={"url": "https://provider/same.png"},
+            ),
+            patch.object(
+                server,
+                "persist_generated_media",
+                side_effect=RuntimeError("download failed"),
+            ),
+            patch.object(
+                server.store,
+                "update_generation_task",
+                side_effect=lambda task_id, **fields: task_updates.append(fields),
+            ),
+            patch.object(
+                server,
+                "commit_node_metadata",
+                side_effect=lambda project_id, node_id, updates: node["metadata"].update(updates),
+            ),
+        ):
+            handler._generate(
+                project["id"],
+                project,
+                node,
+                task_id="local-same-result",
+            )
+        status, payload = sent[-1]
+        self.assertEqual(status, 202)
+        self.assertEqual(payload["code"], "PROVIDER_OUTCOME_UNCERTAIN")
+        self.assertIn("download failed", payload["error"])
+        self.assertEqual(
+            len(node["metadata"]["params"]["mediaVersions"]),
+            1,
+        )
+        self.assertTrue(
+            any(update.get("phase") == "结果待确认" for update in task_updates)
+        )
+
+    def test_uncertain_provider_outcome_is_not_reported_as_plain_failure(self):
+        node = {
+            "id": "image-uncertain",
+            "type": "image",
+            "title": "角色｜待确认（图1）",
+            "metadata": {
+                "prompt": "test image",
+                "status": "generating",
+                "params": {"provider": "agnes-ai", "model": "agnes-image"},
+            },
+        }
+        project = {"id": "project-uncertain", "payload": {"nodes": [node]}}
+        provider = {
+            "id": "agnes-ai",
+            "api_key": "test-key",
+            "base_url": "https://api.agnes-ai.cn/v1",
+        }
+        model = {
+            "id": "agnes-image",
+            "remoteModel": "agnes-image-2.5-flash",
+            "defaultParams": {},
+            "limits": {},
+        }
+        sent = []
+        updates = []
+        handler = object.__new__(server.Handler)
+        handler._send = lambda status, payload: sent.append((status, payload)) or payload
+        with (
+            patch.object(server.provider_catalog, "resolve_model", return_value=(provider, model, {})),
+            patch.object(
+                server.provider_catalog,
+                "test_provider",
+                return_value={"ok": True, "message": "连接成功"},
+            ),
+            patch.object(
+                server.provider_client,
+                "generate_image",
+                side_effect=server.provider_client.ProviderOutcomeUncertain(
+                    "供应商请求已发出，但读取结果超时",
+                ),
+            ),
+            patch.object(
+                server.store,
+                "update_generation_task",
+                side_effect=lambda task_id, **fields: updates.append(fields),
+            ),
+            patch.object(server, "commit_node_metadata"),
+        ):
+            handler._generate(
+                project["id"],
+                project,
+                node,
+                task_id="local-uncertain",
+            )
+        status, payload = sent[-1]
+        self.assertEqual(status, 202)
+        self.assertEqual(payload["status"], "pending")
+        self.assertEqual(payload["code"], "PROVIDER_OUTCOME_UNCERTAIN")
+        self.assertTrue(any(update.get("phase") == "结果待确认" for update in updates))
+
     def test_runtime_does_not_reap_active_task_without_provider_id(self):
         project_id = "project-ghost"
         node_id = "node-ghost"
@@ -728,7 +894,7 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(queued[0][2], "/uploads/generated.png")
         self.assertEqual(committed[-1][2]["content"], "/uploads/generated.png")
 
-    def test_successful_provider_result_is_not_downgraded_by_cache_failure(self):
+    def test_provider_success_with_download_failure_is_pending_not_failed(self):
         node = {
             "id": "image-cache-failure",
             "type": "image",
@@ -787,7 +953,7 @@ class GenerationQueueTests(unittest.TestCase):
             ),
             patch.object(server, "commit_node_metadata"),
         ):
-            handler._generate_once(
+            handler._generate(
                 project["id"],
                 project,
                 node,
@@ -795,13 +961,11 @@ class GenerationQueueTests(unittest.TestCase):
             )
 
         status, payload = sent[-1]
-        self.assertEqual(status, 200)
-        self.assertEqual(payload["status"], "done")
+        self.assertEqual(status, 202)
+        self.assertEqual(payload["status"], "pending")
+        self.assertEqual(payload["code"], "PROVIDER_OUTCOME_UNCERTAIN")
         self.assertTrue(
-            any(update.get("status") == "succeeded" for update in task_updates)
-        )
-        self.assertFalse(
-            any(update.get("status") == "failed" for update in task_updates)
+            any(update.get("phase") == "结果待确认" for update in task_updates)
         )
 
 
