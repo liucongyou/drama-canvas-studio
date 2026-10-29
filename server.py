@@ -2547,8 +2547,11 @@ class Handler(BaseHTTPRequestHandler):
         if self._admin_session() is None:
             return
         rows = []
-        for account in tenant_registry.list_accounts():
+        accounts = tenant_registry.list_accounts()
+        activity = tenant_registry.account_activity([account["id"] for account in accounts])
+        for account in accounts:
             tenant = tenant_registry.get_tenant_by_id(account["tenant_id"]) or {}
+            state = activity.get(account["id"]) or {}
             rows.append({
                 "id": account["id"],
                 "username": account["username"],
@@ -2558,6 +2561,8 @@ class Handler(BaseHTTPRequestHandler):
                 "slug": tenant.get("slug") or "",
                 "createdAt": account["created_at"],
                 "lastLoginAt": account["last_login_at"],
+                "lastSeenAt": state.get("lastSeenAt") or "",
+                "online": bool(state.get("online")) and account["status"] == "active",
                 "lockedUntil": account["locked_until"],
             })
         return self._send(200, {"accounts": rows})

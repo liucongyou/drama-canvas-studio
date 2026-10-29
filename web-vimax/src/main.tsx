@@ -795,6 +795,8 @@ function AdminAccountsDialog({onClose}: {onClose: () => void}) {
 
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => { void load(); }, 30_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const submit = async (event: FormEvent) => {
@@ -900,11 +902,17 @@ function AdminAccountsDialog({onClose}: {onClose: () => void}) {
               <div className="canvas-admin-account-copy">
                 <strong>
                   {account.username}
+                  <i className={account.online ? 'is-online' : 'is-offline'}>
+                    {account.online ? '在线' : '离线'}
+                  </i>
                   <i className={account.status === 'active' ? 'is-active' : 'is-disabled'}>
                     {account.status === 'active' ? '已启用' : '已停用'}
                   </i>
                 </strong>
-                <small>{account.slug} · {account.role === 'admin' ? '管理员' : '成员'} · {account.lastLoginAt ? `最近登录 ${new Date(account.lastLoginAt).toLocaleString()}` : '尚未登录'}</small>
+                <small>
+                  {account.slug} · {account.role === 'admin' ? '管理员' : '成员'} · {account.lastLoginAt ? `最近登录 ${new Date(account.lastLoginAt).toLocaleString()}` : '尚未登录'}
+                  {account.lastSeenAt ? ` · 最后活动 ${new Date(account.lastSeenAt).toLocaleString()}` : ''}
+                </small>
               </div>
               <div className="canvas-admin-account-actions">
                 <button type="button" disabled={busy} onClick={() => {
@@ -1082,10 +1090,14 @@ function AuthGate() {
           setError('无法连接认证服务，请稍后重试。');
         }
       });
+    const heartbeat = window.setInterval(() => {
+      if (!cancelled) void getAuthSession().catch(() => undefined);
+    }, 60_000);
     const onRequired = () => setState('anonymous');
     window.addEventListener(AUTH_REQUIRED_EVENT, onRequired);
     return () => {
       cancelled = true;
+      window.clearInterval(heartbeat);
       window.removeEventListener(AUTH_REQUIRED_EVENT, onRequired);
     };
   }, []);

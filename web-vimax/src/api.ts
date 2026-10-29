@@ -708,6 +708,8 @@ export type ManagedAccount = {
   slug: string;
   createdAt: string;
   lastLoginAt?: string;
+  lastSeenAt?: string;
+  online?: boolean;
   lockedUntil?: string;
 };
 

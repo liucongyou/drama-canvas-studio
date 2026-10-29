@@ -14406,6 +14406,23 @@ button:disabled, [role="button"]:disabled { transition: none; }
   color: var(--v-text-muted);
 }
 
+.canvas-admin-account-row strong {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.canvas-admin-account-row strong i.is-online {
+  color: var(--v-ok, #2f9e62);
+  background: color-mix(in srgb, var(--v-ok, #2f9e62) 14%, transparent);
+}
+
+.canvas-admin-account-row strong i.is-offline {
+  color: var(--v-text-muted);
+  background: color-mix(in srgb, var(--v-text-muted) 12%, transparent);
+}
+
 @media (max-width: 560px) {
   .canvas-admin-dialog form {
     grid-template-columns: 1fr;

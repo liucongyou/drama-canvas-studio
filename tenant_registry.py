@@ -658,6 +658,33 @@ def get_session(raw_token: str) -> dict[str, Any] | None:
     }
 
 
+def account_activity(account_ids: list[str], *, online_window_seconds: int = 90) -> dict[str, dict[str, str | bool]]:
+    ids = [str(item or "") for item in account_ids if str(item or "")]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    cutoff = _iso(_now() - timedelta(seconds=max(30, int(online_window_seconds))))
+    now = _iso()
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT account_id, MAX(last_seen_at) AS last_seen_at FROM sessions "
+            "WHERE revoked_at='' AND expires_at>? AND account_id IN (" + placeholders + ") "
+            "GROUP BY account_id",
+            (now, *ids),
+        ).fetchall()
+    finally:
+        con.close()
+    activity: dict[str, dict[str, str | bool]] = {}
+    for row in rows:
+        last_seen = row["last_seen_at"] or ""
+        activity[str(row["account_id"])] = {
+            "online": bool(last_seen) and last_seen >= cutoff,
+            "lastSeenAt": last_seen,
+        }
+    return activity
+
+
 def revoke_session(raw_token: str) -> bool:
     con = _connect()
     cursor = con.execute(

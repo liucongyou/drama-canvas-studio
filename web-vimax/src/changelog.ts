@@ -7,10 +7,19 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.20';
+export const APP_VERSION = '2026.10.29.21';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.21',
+    date: '2026-10-29',
+    title: '账号在线状态与最后活动时间',
+    changes: [
+      '账号管理显示在线/离线状态、最后登录时间和最后活动时间，管理员可以直接看到成员是否正在使用画布。',
+      '页面每 60 秒发送一次会话心跳，在线判定窗口为 90 秒；后台驻留但暂时没有操作的账号不会被误判为离线。',
+    ],
+  },
   {
     version: '2026.10.29.20',
     date: '2026-10-29',

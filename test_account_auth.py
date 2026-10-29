@@ -370,6 +370,37 @@ class AccountAuthTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertIn(b"ADMIN_REQUIRED", body)
 
+    def test_admin_account_list_reports_online_state_and_last_activity(self):
+        status, headers, _ = self.request(
+            "POST",
+            "/api/auth/login",
+            json.dumps({"username": "alice", "password": "correct-horse"}),
+        )
+        self.assertEqual(status, 200)
+        admin_cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+
+        status, headers, _ = self.request(
+            "POST",
+            "/api/auth/login",
+            json.dumps({"username": "bob", "password": "correct-horse"}),
+        )
+        self.assertEqual(status, 200)
+        bob_cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+
+        status, _, body = self.request("GET", "/api/admin/accounts", cookie=admin_cookie)
+        self.assertEqual(status, 200)
+        accounts = {item["username"]: item for item in json.loads(body)["accounts"]}
+        self.assertTrue(accounts["alice"]["online"])
+        self.assertTrue(accounts["bob"]["online"])
+        self.assertTrue(accounts["bob"]["lastSeenAt"])
+
+        status, _, _ = self.request("POST", "/api/auth/logout", "{}", cookie=bob_cookie)
+        self.assertEqual(status, 200)
+        status, _, body = self.request("GET", "/api/admin/accounts", cookie=admin_cookie)
+        self.assertEqual(status, 200)
+        accounts = {item["username"]: item for item in json.loads(body)["accounts"]}
+        self.assertFalse(accounts["bob"]["online"])
+
 
 if __name__ == "__main__":
     unittest.main()
