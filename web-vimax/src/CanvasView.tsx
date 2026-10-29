@@ -120,6 +120,7 @@ import {
   type ProjectVersion,
   type ProjectVersionPreview,
 } from './api';
+import {useDialogFocusTrap} from './useDialogFocusTrap';
 import {
   evaluateBatchGeneration,
   evaluateReferenceLimits,
@@ -3120,6 +3121,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   // 弹窗相对卡片的定位形态：below（卡片下方，默认）/ above（翻到上方）/ center（夹在视口中央）
   const [popupMode, setPopupMode] = useState<'below' | 'above' | 'center'>('below');
   const barRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(barRef);
   const promptAreaRef = useRef<HTMLDivElement>(null);
   const paramsPanelRef = useRef<HTMLDivElement>(null);
   const [paramsPanelPos, setParamsPanelPos] = useState<{left: number; top: number} | null>(null);
@@ -3893,6 +3895,10 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
       <div
         className={`jim-bar ${closing ? 'is-closing' : ''}`}
         ref={barRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${meta.label}生成参数`}
         data-kind={node.kind}
         onClick={(e) => e.stopPropagation()}
         // 只有用户主动点击提示词输入框时才进入编辑态。点击弹窗空白区域只阻止
@@ -4953,6 +4959,7 @@ type ContextMenuState = {
 // 对齐 AniShort 提示词面板：左分镜脚本信息 + 参考图身份（@图片N）+ 完整提示词 + 复制/关闭。
 // 段级提示词弹窗：回看本段渲染用的完整提示词（资产绑定/机位/时间线/光线/禁项/固定块）
 function SegmentPromptModal({segment, onClose}: {segment: CanvasSegment; onClose: () => void}) {
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>();
   const [copied, setCopied] = useState(false);
   const fields: [string, string | null | undefined][] = [
     ['段标题', segment.title],
@@ -4978,7 +4985,7 @@ function SegmentPromptModal({segment, onClose}: {segment: CanvasSegment; onClose
   };
   return (
     <div className="canvas-prompt-overlay" onClick={onClose}>
-      <div className="canvas-prompt-modal canvas-prompt-modal--seg" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} tabIndex={-1} className="canvas-prompt-modal canvas-prompt-modal--seg" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="段提示词">
         <header className="canvas-prompt-header">
           <div>
             <strong>段提示词 · Scene{segment.segment_id}</strong>
@@ -5003,6 +5010,7 @@ function SegmentPromptModal({segment, onClose}: {segment: CanvasSegment; onClose
 }
 
 function ShotPromptModal({shot, canvas, onClose, onZoom}: {shot: CanvasShot; canvas: Canvas; onClose: () => void; onZoom: (url: string) => void}) {
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>();
   const [copied, setCopied] = useState(false);
   const chars = shot.char_idxs.map((i) => canvas.characters[i]).filter(Boolean);
   const scenes = shot.scene_idxs.map((i) => canvas.scenes[i]).filter(Boolean);
@@ -5017,7 +5025,7 @@ function ShotPromptModal({shot, canvas, onClose, onZoom}: {shot: CanvasShot; can
   };
   return (
     <div className="canvas-prompt-overlay" role="dialog" aria-modal="true" onClick={onClose}>
-      <div className="canvas-prompt-modal" onClick={(event) => event.stopPropagation()}>
+      <div ref={dialogRef} tabIndex={-1} className="canvas-prompt-modal" onClick={(event) => event.stopPropagation()}>
         <header className="canvas-prompt-header">
           <div>
             <strong>镜头 {shot.idx}</strong>
@@ -5190,6 +5198,7 @@ function DeleteDialog({targets, mediaNodes, notes, onCancel, onConfirm}: {
   onCancel: () => void;
   onConfirm: (ids: string[]) => void;
 }) {
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>();
   const [checked, setChecked] = useState<Set<string>>(() => new Set(targets.map((t) => t.id)));
   const toggle = (id: string) => setChecked((prev) => {
     const next = new Set(prev);
@@ -5212,7 +5221,7 @@ function DeleteDialog({targets, mediaNodes, notes, onCancel, onConfirm}: {
   };
   return (
     <div className="canvas-help-backdrop" onClick={onCancel}>
-      <div className="canvas-arrange" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
+      <div ref={dialogRef} tabIndex={-1} className="canvas-arrange" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
         <header>
           <strong>删除确认</strong>
           <button type="button" className="canvas-inspector-close" onClick={onCancel} aria-label="关闭"><X size={15} strokeWidth={2} aria-hidden="true" /></button>
@@ -5259,6 +5268,7 @@ function ArrangeDialog({selectedCount, totalCount, onClose, onAlign, onSort}: {
   onAlign: (mode: 'left' | 'right' | 'top' | 'bottom' | 'hcenter' | 'vcenter' | 'distH' | 'distV', scopeAll: boolean) => void;
   onSort: (key: 'name' | 'kind' | 'created', cols: number, scopeAll: boolean) => void;
 }) {
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>();
   const [cols, setCols] = useState(4);
   // 未选中时默认不动手：整批重排会打乱既有版式，必须显式勾选「应用到全部」才生效。
   const [applyAll, setApplyAll] = useState(false);
@@ -5276,7 +5286,7 @@ function ArrangeDialog({selectedCount, totalCount, onClose, onAlign, onSort}: {
       : '未选中，请先在画布上框选节点';
   return (
     <div className="canvas-help-backdrop" onClick={onClose}>
-      <div className="canvas-arrange" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
+      <div ref={dialogRef} tabIndex={-1} className="canvas-arrange" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
         <header>
           <strong>整理节点</strong>
           <button type="button" className="canvas-inspector-close" onClick={onClose} aria-label="关闭"><X size={15} strokeWidth={2} aria-hidden="true" /></button>
@@ -5494,6 +5504,7 @@ function BatchParamsDialog({targets, catalog, onClose, onApply}: {
   onClose: () => void;
   onApply: (patch: BatchParamsPatch, scope: BatchScope) => void;
 }) {
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>();
   const hasImage = targets.some((n) => n.kind === 'image');
   const hasVideo = targets.some((n) => n.kind === 'video');
   const hasAudio = targets.some((n) => n.kind === 'audio');
@@ -5955,7 +5966,7 @@ function BatchParamsDialog({targets, catalog, onClose, onApply}: {
         ⇒ 改成三段式：header / 可滚动的 `.canvas-batch-body` / 固定的 footer。
           下拉浮层改用 position:fixed（见 BatchModelPicker），不再依赖祖先 overflow:visible。
       */}
-      <div className="canvas-arrange canvas-batch-params" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
+      <div ref={dialogRef} tabIndex={-1} className="canvas-arrange canvas-batch-params" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
         <header>
           <strong>批量调参</strong>
           <button type="button" className="canvas-inspector-close" onClick={onClose} aria-label="关闭"><X size={15} strokeWidth={2} aria-hidden="true" /></button>
@@ -6515,6 +6526,7 @@ function GenerationBudgetDialog({
   onClose: () => void;
   onMessage: (message: string) => void;
 }) {
+  const dialogRef = useDialogFocusTrap();
   const [config, setConfig] = useState<BudgetConfig>({
     enabled: false,
     currency: 'CNY',
@@ -6584,6 +6596,8 @@ function GenerationBudgetDialog({
     <div className="canvas-prompt-overlay canvas-budget-overlay" onClick={onClose}>
       <section
         className="canvas-budget-dialog"
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label="生成预算保护"
@@ -6683,6 +6697,7 @@ function ProjectVersionsDialog({
   onClose: () => void;
   onMessage: (message: string) => void;
 }) {
+  const dialogRef = useDialogFocusTrap();
   const [versions, setVersions] = useState<ProjectVersion[]>([]);
   const [currentRevision, setCurrentRevision] = useState(0);
   const [selected, setSelected] = useState<ProjectVersionPreview | null>(null);
@@ -6780,6 +6795,8 @@ function ProjectVersionsDialog({
     <div className="canvas-prompt-overlay canvas-version-overlay" onClick={onClose}>
       <section
         className="canvas-version-dialog"
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label="项目版本历史"
@@ -6915,6 +6932,7 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
   onGenerate: (node: CanvasMediaNode) => boolean;
   onSubmitted: (started: number, selected: number) => void;
 }) {
+  const dialogRef = useDialogFocusTrap();
   const candidates = useMemo(
     () => evaluateBatchGeneration(targets, pool, catalog, tasks, busyNodeIds, edges),
     [targets, pool, catalog, tasks, busyNodeIds, edges],
@@ -6946,6 +6964,8 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
   return (
     <div className="canvas-batch-gen-backdrop" onClick={onClose}>
       <article
+        ref={dialogRef}
+        tabIndex={-1}
         className="canvas-batch-gen-dialog"
         role="dialog"
         aria-modal="true"
@@ -7285,6 +7305,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
+  const toolsTriggerRef = useRef<HTMLButtonElement>(null);
   const [userEdges, setUserEdges] = useState<Edge[]>([]);
   const [deletedAutoEdgeIds, setDeletedAutoEdgeIds] = useState<Set<string>>(new Set());
   const [panning, setPanning] = useState(false);
@@ -12979,7 +13000,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               )}
             </div>
             <div ref={toolsMenuRef} className="canvas-menu-wrap">
-              <button type="button" className={openMenu === 'tools' ? 'is-open' : ''} onClick={() => setOpenMenu(openMenu === 'tools' ? null : 'tools')} title="导出、布局与帮助">
+              <button ref={toolsTriggerRef} type="button" className={openMenu === 'tools' ? 'is-open' : ''} onClick={() => setOpenMenu(openMenu === 'tools' ? null : 'tools')} title="导出、布局与帮助">
                 <SlidersHorizontal size={13} strokeWidth={1.9} aria-hidden="true" />
                 工具<ChevronDown size={13} strokeWidth={2} aria-hidden="true" />
               </button>
@@ -12999,11 +13020,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   <button type="button" title="仅恢复节点位置和连线；技能生成的投喂载荷请用顶部「项目设置 → 导入投喂载荷」" onClick={() => { setOpenMenu(null); layoutFileRef.current?.click(); }}>导入布局 JSON</button>
                   <button type="button" onClick={() => { setOpenMenu(null); exportLayoutJson(); }}>导出布局 JSON</button>
                   <div className="canvas-tools-section">版本</div>
-                  <button type="button" onClick={() => { setOpenMenu(null); setVersionsOpen(true); }}>
+                  <button type="button" onClick={() => { toolsTriggerRef.current?.focus(); setOpenMenu(null); setVersionsOpen(true); }}>
                     <History size={13} strokeWidth={1.9} aria-hidden="true" />
                     项目版本历史
                   </button>
-                  <button type="button" onClick={() => { setOpenMenu(null); setBudgetOpen(true); }}>
+                  <button type="button" onClick={() => { toolsTriggerRef.current?.focus(); setOpenMenu(null); setBudgetOpen(true); }}>
                     <Wallet size={13} strokeWidth={1.9} aria-hidden="true" />
                     生成预算保护
                   </button>
