@@ -63,10 +63,17 @@ npm --prefix web-vimax run dev         # 画布前端 8891（ViMax 画布内核 
 
 ## 生成队列与任务恢复
 
-- 不同节点不会直接同时打到供应商。默认全局最多 2 路、同一供应商最多 1 路，其余任务持久化为“排队中”。
+- 不同节点默认最多全局 80 路、同一租户 32 路、同一供应商 20 路；图片/视频/音频/文本还分别有类型并发上限，超出后任务持久化为“排队中”。
 - 排队阶段可在任务中心取消；已经提交到供应商的运行中任务不会被伪造为已取消。
 - 后端每 30 秒按节点终态对账任务表，完成后自动把遗留的 `running` 记录收敛为完成、失败或中断。
-- 可通过环境变量调整：`CANVAS_GENERATION_GLOBAL_CONCURRENCY`、`CANVAS_GENERATION_PROVIDER_CONCURRENCY`、`CANVAS_GENERATION_QUEUE_TIMEOUT`。
+- 可通过环境变量调整：`CANVAS_GENERATION_GLOBAL_CONCURRENCY`、`CANVAS_GENERATION_TENANT_CONCURRENCY`、`CANVAS_GENERATION_PROVIDER_CONCURRENCY`、`CANVAS_GENERATION_QUEUE_TIMEOUT`。
+
+## 生成预算保护
+
+- 顶栏「工具 → 生成预算保护」可设置单次、每日、每月费用上限和币种。
+- 所有生成请求都在服务端重新计算预计费用，不信任前端价格；超过预算直接返回 `402`，任务不会进入供应商队列。
+- 启用预算保护但模型缺少可核实 `pricing` 时默认拒绝生成，也可显式允许未知费用；混合币种不会被静默比较。
+- 任务创建时记录费用预留，任务中心同步显示预计费用，便于在供应商扣费前发现异常。
 
 ## 项目版本与恢复
 

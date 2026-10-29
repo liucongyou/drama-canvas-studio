@@ -46,6 +46,7 @@ import canvas_feed_contract
 import canvas_repository
 import import_feed
 import gate_check
+import generation_budget
 import imgbb_storage
 import provider_catalog
 import provider_client
@@ -70,6 +71,7 @@ PORT = 8890
 PROJECT_WRITE_LOCK = threading.RLock()
 PROJECT_LOCKS = canvas_repository.PROJECT_LOCKS
 PROJECT_LOCKS_GUARD = canvas_repository.PROJECT_LOCKS_GUARD
+GENERATION_BUDGET_LOCK = threading.RLock()
 GENERATION_INFLIGHT: set[tuple[str, str]] = set()
 GENERATION_INFLIGHT_LOCK = threading.Lock()
 RESUMED_VIDEO_TASKS: set[tuple[str, str]] = set()
@@ -123,6 +125,78 @@ class RequestBoundaryError(ValueError):
 
 
 project_write_lock = canvas_repository.project_write_lock
+
+
+def generation_budget_status():
+    budget = provider_catalog.budget_config()
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = day_start.replace(day=1)
+    day = store.generation_cost_total(day_start.isoformat())
+    month = store.generation_cost_total(month_start.isoformat())
+    return {
+        "budget": budget,
+        "dayStart": day_start.isoformat(),
+        "monthStart": month_start.isoformat(),
+        "daySpend": day["amount"],
+        "monthSpend": month["amount"],
+        "spendCurrency": day["currency"] or month["currency"] or budget["currency"],
+    }
+
+
+def check_generation_budget(kind, params, payload):
+    budget = provider_catalog.budget_config()
+    params = params if isinstance(params, dict) else {}
+    try:
+        _provider, model, _cfg = provider_catalog.resolve_model(
+            params.get("provider") or None,
+            params.get("model") or None,
+            kind,
+            require_api_key=False,
+        )
+    except (TypeError, ValueError, RuntimeError):
+        model = {}
+    refs = params.get("refs") if isinstance(params.get("refs"), list) else []
+    ref_types = {
+        str(node.get("id") or ""): str(node.get("type") or "")
+        for node in payload.get("nodes", [])
+        if isinstance(node, dict)
+    }
+    has_video_input = any(
+        isinstance(ref, dict)
+        and ref_types.get(str(ref.get("nodeId") or "")) == "video"
+        for ref in refs
+    )
+    estimate = generation_budget.estimate_generation_cost(
+        kind,
+        params,
+        model,
+        has_video_input=has_video_input,
+    )
+    if not budget.get("enabled"):
+        return None, estimate
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = day_start.replace(day=1)
+    daily = store.generation_cost_total(day_start.isoformat())
+    monthly = store.generation_cost_total(month_start.isoformat())
+    spent_currencies = {
+        currency
+        for currency in [*daily["currencies"], *monthly["currencies"]]
+        if currency
+    }
+    if spent_currencies and spent_currencies != {str(budget.get("currency") or "CNY")}:
+        return {
+            "code": "BUDGET_SPEND_CURRENCY_MIXED",
+            "message": "已有任务使用了不同币种的费用预留，无法安全比较预算。请统一模型计费币种后再生成。",
+        }, estimate
+    issue = generation_budget.check_budget(
+        budget=budget,
+        estimate=estimate,
+        daily_spend=daily["amount"],
+        monthly_spend=monthly["amount"],
+    )
+    return issue, estimate
 
 
 def project_id_for_path(path: str) -> str:
@@ -2579,6 +2653,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"dir": upload_dir, "exists": True, "files": files})
         if path == "/api/config":
             return self._send(200, provider_catalog.config_status())
+        if path == "/api/budget":
+            return self._send(200, generation_budget_status())
         if path == "/api/tenant/session":
             context = tenant_context.current()
             return self._send(200, {
@@ -2791,6 +2867,12 @@ class Handler(BaseHTTPRequestHandler):
                 storage = provider_catalog.save_storage_config(body)
                 return self._send(200, {"ok": True, "storage": storage})
             except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
+        if path == "/api/budget":
+            try:
+                provider_catalog.save_budget_config(body)
+                return self._send(200, {"ok": True, **generation_budget_status()})
+            except (TypeError, ValueError) as exc:
                 return self._send(400, {"error": str(exc)})
         if path == "/api/storage/test":
             try:
@@ -3109,23 +3191,39 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "REFERENCE_NOT_READY",
                     "missing": blockers,
                 })
-            reconcile_active_generation_task_for_node(pid, node["id"], node)
-            task = store.create_generation_task(
-                pid, node["id"], title=node.get("title", ""), kind=node.get("type", ""),
-                provider=params.get("provider") or meta.get("provider") or "",
-                model=params.get("model") or meta.get("model") or "",
-            )
-            if (
-                task
-                and task.get("status") in {"queued", "submitting", "running"}
-                and not task.get("created_new")
-            ):
-                return self._send(409, {
-                    "error": "该节点已有供应商任务正在运行，请到任务中心查看（GENERATION_IN_PROGRESS）",
-                    "code": "GENERATION_IN_PROGRESS",
-                    "taskId": task.get("id"),
-                    "providerTaskId": task.get("provider_task_id"),
-                })
+            # Reserve budget and create the task atomically within this process.
+            # Otherwise two simultaneous submissions can both pass the same
+            # remaining-budget check before either task is persisted.
+            with GENERATION_BUDGET_LOCK:
+                budget_issue, budget_estimate = check_generation_budget(
+                    node.get("type") or "",
+                    params,
+                    proj["payload"],
+                )
+                if budget_issue:
+                    return self._send(402, {
+                        **budget_issue,
+                        "estimate": budget_estimate,
+                    })
+                reconcile_active_generation_task_for_node(pid, node["id"], node)
+                task = store.create_generation_task(
+                    pid, node["id"], title=node.get("title", ""), kind=node.get("type", ""),
+                    provider=params.get("provider") or meta.get("provider") or "",
+                    model=params.get("model") or meta.get("model") or "",
+                    estimated_cost=(budget_estimate or {}).get("amount") or 0,
+                    cost_currency=(budget_estimate or {}).get("currency") or "",
+                )
+                if (
+                    task
+                    and task.get("status") in {"queued", "submitting", "running"}
+                    and not task.get("created_new")
+                ):
+                    return self._send(409, {
+                        "error": "该节点已有供应商任务正在运行，请到任务中心查看（GENERATION_IN_PROGRESS）",
+                        "code": "GENERATION_IN_PROGRESS",
+                        "taskId": task.get("id"),
+                        "providerTaskId": task.get("provider_task_id"),
+                    })
             provider_key = str(
                 task.get("provider")
                 or params.get("provider")

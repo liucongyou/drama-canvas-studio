@@ -316,6 +316,25 @@ export type ModelCatalog = {
   providers: ProviderSpec[];
   models: ModelSpec[];
   storage?: StorageSpec;
+  budget?: BudgetConfig;
+};
+
+export type BudgetConfig = {
+  enabled: boolean;
+  currency: 'CNY' | 'USD' | string;
+  dailyLimit: number;
+  monthlyLimit: number;
+  maxRequestCost: number;
+  allowUnknownCost: boolean;
+};
+
+export type BudgetStatus = {
+  budget: BudgetConfig;
+  dayStart: string;
+  monthStart: string;
+  daySpend: number;
+  monthSpend: number;
+  spendCurrency: string;
 };
 
 export type StorageSpec = {
@@ -357,6 +376,8 @@ export type GenerationTask = {
   model?: string;
   provider_task_id?: string;
   attempt?: number;
+  estimated_cost?: number;
+  cost_currency?: string;
   queue_position?: number | null;
   error?: string;
   error_kind?: 'local_validation' | 'provider' | '';
@@ -833,6 +854,17 @@ export async function testStorageConfig(provider: 'tos' | 'imgbb' = 'tos'): Prom
   return request(provider === 'imgbb' ? '/api/storage/imgbb/test' : '/api/storage/test', {
     method: 'POST',
     body: '{}',
+  });
+}
+
+export async function getBudgetStatus(): Promise<BudgetStatus> {
+  return request('/api/budget');
+}
+
+export async function saveBudgetConfig(budget: BudgetConfig): Promise<{ok: boolean} & BudgetStatus> {
+  return request('/api/budget', {
+    method: 'POST',
+    body: JSON.stringify({budget}),
   });
 }
 

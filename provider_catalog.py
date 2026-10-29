@@ -402,11 +402,21 @@ DEFAULT_STORAGE = {
     },
 }
 
+DEFAULT_BUDGET = {
+    "enabled": False,
+    "currency": "CNY",
+    "dailyLimit": 0,
+    "monthlyLimit": 0,
+    "maxRequestCost": 0,
+    "allowUnknownCost": False,
+}
+
 
 DEFAULTS = {
     "providers": DEFAULT_PROVIDERS,
     "models": DEFAULT_MODELS,
     "storage": DEFAULT_STORAGE,
+    "budget": DEFAULT_BUDGET,
 }
 
 
@@ -466,6 +476,10 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
     merged["storage"] = _deep_merge(
         DEFAULT_STORAGE,
         cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {},
+    )
+    merged["budget"] = _deep_merge(
+        DEFAULT_BUDGET,
+        cfg.get("budget") if isinstance(cfg.get("budget"), dict) else {},
     )
     merged["deletedProviders"] = sorted(deleted_providers)
     merged["deletedModels"] = sorted(deleted_models)
@@ -625,6 +639,42 @@ def _public_storage(storage: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _public_budget(budget: dict[str, Any]) -> dict[str, Any]:
+    def number(value: Any) -> float:
+        try:
+            return max(0.0, float(value or 0))
+        except (TypeError, ValueError):
+            return 0.0
+    return {
+        "enabled": bool(budget.get("enabled")),
+        "currency": str(budget.get("currency") or "CNY").upper(),
+        "dailyLimit": number(budget.get("dailyLimit")),
+        "monthlyLimit": number(budget.get("monthlyLimit")),
+        "maxRequestCost": number(budget.get("maxRequestCost")),
+        "allowUnknownCost": bool(budget.get("allowUnknownCost")),
+    }
+
+
+def budget_config() -> dict[str, Any]:
+    cfg = load_config()
+    return _public_budget(
+        cfg.get("budget") if isinstance(cfg.get("budget"), dict) else DEFAULT_BUDGET,
+    )
+
+
+def save_budget_config(input_data: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(input_data, dict):
+        raise ValueError("预算配置必须是对象")
+    source = input_data.get("budget") if isinstance(input_data.get("budget"), dict) else input_data
+    budget = _public_budget({**DEFAULT_BUDGET, **source})
+    if budget["currency"] not in {"CNY", "USD"}:
+        raise ValueError("预算币种仅支持 CNY 或 USD")
+    cfg = load_config()
+    cfg["budget"] = budget
+    save_config(cfg)
+    return budget
+
+
 def storage_config() -> dict[str, Any]:
     cfg = load_config()
     storage = cfg.get("storage")
@@ -775,6 +825,9 @@ def public_catalog() -> dict[str, Any]:
         "storage": _public_storage(
             cfg.get("storage") if isinstance(cfg.get("storage"), dict) else DEFAULT_STORAGE,
         ),
+        "budget": _public_budget(
+            cfg.get("budget") if isinstance(cfg.get("budget"), dict) else DEFAULT_BUDGET,
+        ),
     }
 
 
@@ -798,6 +851,7 @@ def config_status() -> dict[str, Any]:
         "providers": catalog["providers"],
         "models": catalog["models"],
         "storage": catalog["storage"],
+        "budget": catalog["budget"],
     }
 
 
@@ -983,6 +1037,8 @@ def resolve_model(
     provider_id: str | None,
     model_ref: str | None,
     capability: str,
+    *,
+    require_api_key: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     cfg = load_config()
     providers = {
@@ -1055,7 +1111,7 @@ def resolve_model(
     if not provider:
         raise RuntimeError(f"供应商 {model.get('providerId')} 未启用")
     key = str(provider.get("api_key") or "").strip()
-    if not key:
+    if require_api_key and not key:
         raise RuntimeError(f"{provider.get('name') or provider.get('id')} 尚未配置 API Key")
     resolved_model = copy.deepcopy(model)
     resolved_model["limits"] = _normalize_model_limits(resolved_model.get("limits") or {})

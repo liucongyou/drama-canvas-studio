@@ -93,6 +93,28 @@ class CanvasStoreConcurrencyTests(unittest.TestCase):
 
         self.assertEqual(revisions, [2] * len(project_ids))
 
+    def test_generation_cost_reservations_are_summed_for_budget_checks(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("budget")
+            canvas_store.create_generation_task(
+                project_id,
+                "node-image",
+                kind="image",
+                estimated_cost=0.3,
+                cost_currency="CNY",
+            )
+            canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+                estimated_cost=6.93,
+                cost_currency="CNY",
+            )
+            total = canvas_store.generation_cost_total("2000-01-01T00:00:00+00:00")
+        self.assertAlmostEqual(total["amount"], 7.23, places=6)
+        self.assertEqual(total["currency"], "CNY")
+        self.assertEqual(total["currencies"], ["CNY"])
+
 
 if __name__ == "__main__":
     unittest.main()

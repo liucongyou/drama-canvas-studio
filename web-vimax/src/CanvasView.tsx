@@ -100,6 +100,7 @@ import {
   Video,
   Volume2,
   VolumeX,
+  Wallet,
   Wand2,
   Image as ImageGlyph,
   AudioLines,
@@ -109,9 +110,13 @@ import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getCanvasWorkspace, getG
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
+  getBudgetStatus,
   getProjectVersions,
   previewProjectVersion,
   restoreProjectVersion,
+  saveBudgetConfig,
+  type BudgetConfig,
+  type BudgetStatus,
   type ProjectVersion,
   type ProjectVersionPreview,
 } from './api';
@@ -6491,6 +6496,170 @@ function BatchModelPicker({kindLabel, models, value, open, disabled, onToggle, o
   );
 }
 
+function GenerationBudgetDialog({
+  onClose,
+  onMessage,
+}: {
+  onClose: () => void;
+  onMessage: (message: string) => void;
+}) {
+  const [config, setConfig] = useState<BudgetConfig>({
+    enabled: false,
+    currency: 'CNY',
+    dailyLimit: 0,
+    monthlyLimit: 0,
+    maxRequestCost: 0,
+    allowUnknownCost: false,
+  });
+  const [status, setStatus] = useState<BudgetStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setLoading(true);
+    void getBudgetStatus()
+      .then((data) => {
+        setStatus(data);
+        setConfig(data.budget);
+      })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [onClose]);
+
+  const updateNumber = (key: 'dailyLimit' | 'monthlyLimit' | 'maxRequestCost', value: string) => {
+    setConfig((current) => ({
+      ...current,
+      [key]: Math.max(0, Number(value) || 0),
+    }));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      const data = await saveBudgetConfig(config);
+      setStatus(data);
+      setConfig(data.budget);
+      onMessage(config.enabled ? '生成预算保护已启用' : '生成预算保护已关闭');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const symbol = config.currency === 'USD' ? '$' : '¥';
+  const dailyPercent = config.dailyLimit > 0
+    ? Math.min(100, (Number(status?.daySpend || 0) / config.dailyLimit) * 100)
+    : 0;
+  const monthlyPercent = config.monthlyLimit > 0
+    ? Math.min(100, (Number(status?.monthSpend || 0) / config.monthlyLimit) * 100)
+    : 0;
+
+  return (
+    <div className="canvas-prompt-overlay canvas-budget-overlay" onClick={onClose}>
+      <section
+        className="canvas-budget-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="生成预算保护"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header>
+          <span><Wallet size={16} strokeWidth={1.8} aria-hidden="true" /><strong>生成预算保护</strong></span>
+          <button type="button" onClick={onClose} aria-label="关闭"><X size={15} strokeWidth={2} /></button>
+        </header>
+        {loading ? (
+          <p className="canvas-budget-loading">正在读取预算配置…</p>
+        ) : (
+          <>
+            <label className="canvas-budget-toggle">
+              <span>
+                <strong>启用预算校验</strong>
+                <small>每次提交生成前由服务端校验，前端显示的金额不能绕过。</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={config.enabled}
+                onChange={(event) => setConfig((current) => ({...current, enabled: event.target.checked}))}
+              />
+            </label>
+            <div className="canvas-budget-usage">
+              <div>
+                <span>今日已占用</span>
+                <strong>{symbol}{Number(status?.daySpend || 0).toFixed(2)}</strong>
+                <i><b style={{width: `${dailyPercent}%`}} /></i>
+              </div>
+              <div>
+                <span>本月已占用</span>
+                <strong>{symbol}{Number(status?.monthSpend || 0).toFixed(2)}</strong>
+                <i><b style={{width: `${monthlyPercent}%`}} /></i>
+              </div>
+            </div>
+            <div className="canvas-budget-fields">
+              <label>
+                <span>币种</span>
+                <select
+                  value={config.currency}
+                  onChange={(event) => setConfig((current) => ({...current, currency: event.target.value}))}
+                >
+                  <option value="CNY">人民币 CNY</option>
+                  <option value="USD">美元 USD</option>
+                </select>
+              </label>
+              <label>
+                <span>单次上限</span>
+                <input type="number" min="0" step="0.01" value={config.maxRequestCost} onChange={(event) => updateNumber('maxRequestCost', event.target.value)} />
+                <small>0 = 不限制单次</small>
+              </label>
+              <label>
+                <span>每日上限</span>
+                <input type="number" min="0" step="0.01" value={config.dailyLimit} onChange={(event) => updateNumber('dailyLimit', event.target.value)} />
+                <small>0 = 不限制每日</small>
+              </label>
+              <label>
+                <span>每月上限</span>
+                <input type="number" min="0" step="0.01" value={config.monthlyLimit} onChange={(event) => updateNumber('monthlyLimit', event.target.value)} />
+                <small>0 = 不限制每月</small>
+              </label>
+            </div>
+            <label className="canvas-budget-unknown">
+              <input
+                type="checkbox"
+                checked={config.allowUnknownCost}
+                onChange={(event) => setConfig((current) => ({...current, allowUnknownCost: event.target.checked}))}
+              />
+              <span>模型没有计费规则时仍允许生成</span>
+            </label>
+            {!config.allowUnknownCost && config.enabled && (
+              <p className="canvas-budget-hint">预算保护开启时，缺少 pricing 的模型会被拒绝，建议先补齐模型计费规则。</p>
+            )}
+            {error && <p className="canvas-budget-error">{error}</p>}
+            <footer>
+              <button type="button" onClick={onClose}>取消</button>
+              <button type="button" className="is-primary" disabled={saving} onClick={() => void save()}>
+                {saving ? '保存中…' : '保存预算设置'}
+              </button>
+            </footer>
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function ProjectVersionsDialog({
   projectId,
   busy,
@@ -7103,6 +7272,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [mouseMode, setMouseMode] = useState<MouseMode>('select');
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [versionsOpen, setVersionsOpen] = useState(false);
+  const [budgetOpen, setBudgetOpen] = useState(false);
   const [userEdges, setUserEdges] = useState<Edge[]>([]);
   const [deletedAutoEdgeIds, setDeletedAutoEdgeIds] = useState<Set<string>>(new Set());
   const [panning, setPanning] = useState(false);
@@ -12821,6 +12991,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                     <History size={13} strokeWidth={1.9} aria-hidden="true" />
                     项目版本历史
                   </button>
+                  <button type="button" onClick={() => { setOpenMenu(null); setBudgetOpen(true); }}>
+                    <Wallet size={13} strokeWidth={1.9} aria-hidden="true" />
+                    生成预算保护
+                  </button>
                   <div className="canvas-tools-section">帮助</div>
                   <button type="button" onClick={() => { setOpenMenu(null); setHelpOpen(true); }}>快捷键与操作说明</button>
                 </div>
@@ -14057,6 +14231,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               onMessage={setToast}
             />
           )}
+          {budgetOpen && (
+            <GenerationBudgetDialog
+              onClose={() => setBudgetOpen(false)}
+              onMessage={setToast}
+            />
+          )}
           {taskCenterOpen && (
             <div className="canvas-task-center-backdrop" onClick={() => setTaskCenterOpen(false)}>
               <aside className="canvas-task-center" role="dialog" aria-label="生成任务中心" onClick={(event) => event.stopPropagation()}>
@@ -14100,6 +14280,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                           <span>{task.provider || '未提交'}</span>
                           <span>{task.model || '-'}</span>
                           <span>第 {Number(task.attempt || 1)} 次</span>
+                          {Number(task.estimated_cost || 0) > 0 && (
+                            <span>
+                              预计 {task.cost_currency === 'USD' ? '$' : '¥'}
+                              {Number(task.estimated_cost).toFixed(2)}
+                            </span>
+                          )}
                           {task.queue_position && ['queued', 'submitting', 'running'].includes(task.status) && (
                             <span>队列第 {task.queue_position} 位</span>
                           )}

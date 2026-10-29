@@ -100,6 +100,8 @@ def _connect():
                 model TEXT,
                 provider_task_id TEXT,
                 attempt INTEGER DEFAULT 1,
+                estimated_cost REAL DEFAULT 0,
+                cost_currency TEXT DEFAULT '',
                 error TEXT,
                 created_at TEXT,
                 started_at TEXT,
@@ -126,6 +128,14 @@ def _connect():
             if "attempt" not in task_columns:
                 con.execute(
                     "ALTER TABLE generation_tasks ADD COLUMN attempt INTEGER DEFAULT 1"
+                )
+            if "estimated_cost" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN estimated_cost REAL DEFAULT 0"
+                )
+            if "cost_currency" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN cost_currency TEXT DEFAULT ''"
                 )
             snapshot_columns = {
                 row[1] for row in con.execute("PRAGMA table_info(canvas_snapshots)")
@@ -289,10 +299,20 @@ def delete_project(pid):
 _TASK_FIELDS = {
     "status", "phase", "progress", "provider", "model", "provider_task_id",
     "error", "started_at", "finished_at", "title", "kind",
+    "estimated_cost", "cost_currency",
 }
 
 
-def create_generation_task(project_id, node_id, title="", kind="", provider="", model=""):
+def create_generation_task(
+    project_id,
+    node_id,
+    title="",
+    kind="",
+    provider="",
+    model="",
+    estimated_cost=0,
+    cost_currency="",
+):
     con = _connect()
     active = con.execute(
         "SELECT * FROM generation_tasks WHERE project_id=? AND node_id=? "
@@ -313,11 +333,13 @@ def create_generation_task(project_id, node_id, title="", kind="", provider="", 
         con.execute(
             "INSERT INTO generation_tasks("
             "id,project_id,node_id,title,kind,status,phase,progress,provider,model,"
-            "provider_task_id,attempt,error,created_at,started_at,updated_at,finished_at"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "provider_task_id,attempt,estimated_cost,cost_currency,error,"
+            "created_at,started_at,updated_at,finished_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 task_id, project_id, node_id, title, kind, "queued", "等待调度", 0,
-                provider, model, "", attempt, "", now, "", now, "",
+                provider, model, "", attempt, float(estimated_cost or 0),
+                str(cost_currency or ""), "", now, "", now, "",
             ),
         )
     except sqlite3.IntegrityError:
@@ -373,6 +395,28 @@ def list_generation_tasks(project_id=None, limit=80):
         ).fetchall()
     con.close()
     return [dict(zip(columns, row)) for row in rows]
+
+
+def generation_cost_total(since_iso):
+    con = _connect()
+    row = con.execute(
+        "SELECT COALESCE(SUM(estimated_cost),0), "
+        "COALESCE(MAX(cost_currency),''), "
+        "COALESCE(GROUP_CONCAT(DISTINCT NULLIF(cost_currency,'')),'') "
+        "FROM generation_tasks "
+        "WHERE created_at>=? "
+        "AND NOT (status='interrupted' AND "
+        "(provider_task_id IS NULL OR provider_task_id=''))",
+        (since_iso,),
+    ).fetchone()
+    con.close()
+    return {
+        "amount": float(row[0] or 0),
+        "currency": str(row[1] or ""),
+        "currencies": [
+            item for item in str(row[2] or "").split(",") if item
+        ],
+    }
 
 
 def list_snapshot_payloads(project_id, limit=30):
