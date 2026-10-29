@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {absolutePositionOf, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, segShotIdxsOf, solveAlignSnap} from './canvasLayout';
+import {absolutePositionOf, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, segShotIdxsOf, solveAlignSnap} from './canvasLayout';
 
 const shots = [
   {idx: 0, segment_id: 1, ep_id: 'ep01'},
@@ -175,6 +175,16 @@ describe('computeAlignSnap', () => {
 
   it('无其它节点时不吸附', () => {
     expect(computeAlignSnap(moving, [])).toEqual({dx: 0, dy: 0, guides: []});
+  });
+
+  it('提前显示即将对齐的竖排参考线', () => {
+    const r = computeAlignSnap(
+      {id: 'moving', x: 111, y: 260, w: 100, h: 60},
+      [{id: 'a', x: 100, y: 80, w: 100, h: 60}],
+      ALIGN_VISIBLE_PX,
+    );
+    expect(r.dx).toBe(-11);
+    expect(r.guides.find((guide) => guide.axis === 'v')?.delta).toBe(-11);
   });
 
   it('左边缘相差在阈值内 → 吸附并画竖线', () => {

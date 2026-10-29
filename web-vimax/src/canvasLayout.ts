@@ -203,6 +203,8 @@ export type AlignAxisLock = {
 export const ALIGN_ENTER_PX = 6;
 export const ALIGN_GLUE_PX = 26;
 export const ALIGN_RELEASE_PX = 44;
+/** 尚未进入吸附距离时，也提前显示参考线的屏幕距离。 */
+export const ALIGN_VISIBLE_PX = 20;
 
 /** 阈值（画布坐标 px）。超过这个距离就不吸附、不画线。 */
 export const ALIGN_SNAP_THRESHOLD = ALIGN_ENTER_PX;
@@ -425,8 +427,20 @@ export function computeAlignSnap(
   }
 
   const guides: AlignGuide[] = [];
-  if (bestX) guides.push({axis: 'v', pos: bestX.pos, from: bestX.from, to: bestX.to});
-  if (bestY) guides.push({axis: 'h', pos: bestY.pos, from: bestY.from, to: bestY.to});
+  if (bestX) guides.push({
+    axis: 'v',
+    pos: bestX.pos,
+    from: bestX.from,
+    to: bestX.to,
+    delta: Math.round(bestX.delta * 10) / 10,
+  });
+  if (bestY) guides.push({
+    axis: 'h',
+    pos: bestY.pos,
+    from: bestY.from,
+    to: bestY.to,
+    delta: Math.round(bestY.delta * 10) / 10,
+  });
   return {dx: bestX ? bestX.delta : 0, dy: bestY ? bestY.delta : 0, guides};
 }
 

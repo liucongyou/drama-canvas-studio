@@ -127,7 +127,7 @@ import {
   modelMaxRefs,
   type BatchGenerationCandidate,
 } from './batchGeneration';
-import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, segShotIdxsOf, solveAlignSnap, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
+import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, segShotIdxsOf, solveAlignSnap, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
 import {
   CANVAS_VIEWPORT_POLICY_VERSION,
   filterMediaNodesInBounds,
@@ -10614,9 +10614,15 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const enter = Math.max(3, Math.min(30, ALIGN_ENTER_PX / zoom));
     const glue = Math.max(enter + 2, Math.min(90, ALIGN_GLUE_PX / zoom));
     const release = Math.max(glue + 4, Math.min(160, ALIGN_RELEASE_PX / zoom));
+    const visible = Math.max(enter, ALIGN_VISIBLE_PX / zoom);
     const solved = solveAlignSnap(movingBox, others, alignStateRef.current, enter, glue, release);
+    const liveGuides = computeAlignSnap(movingBox, others, visible).guides;
+    const displayGuides = [
+      ...solved.guides,
+      ...liveGuides.filter((guide) => !solved.guides.some((active) => active.axis === guide.axis)),
+    ];
     alignStateRef.current = solved.state;
-    updateAlignGuides(solved.guides, zoom);
+    updateAlignGuides(displayGuides, zoom);
     // 修正量叠加到 position change 上（同一批统一叠加，保持多选组相对位置）
     const patched = allowed.map((c) => {
       if (c.type !== 'position' || !c.position) return c;
@@ -12914,7 +12920,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           <div className="workspace-title-copy">
             <strong>画布</strong>
             <span>
-              {currentEp ? fmtEp(currentEp) : '整剧总览'} · 资产 {canvas ? canvas.characters.length + canvas.scenes.length + canvas.props.length + canvas.voices.length : 0}
+              {currentEp ? fmtEp(currentEp) : '项目画布'} · 资产 {canvas ? canvas.characters.length + canvas.scenes.length + canvas.props.length + canvas.voices.length : 0}
             </span>
           </div>
           {actions}
@@ -13189,7 +13195,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           {loading && (
             <div className="canvas-reload-bar" role="status">
               <span className="canvas-reload-spin" />
-              <span>正在加载{currentEp ? ` ${fmtEp(currentEp)}` : '整剧总览'}…（画布内容保留）</span>
+              <span>正在加载{currentEp ? ` ${fmtEp(currentEp)}` : '项目画布'}…（画布内容保留）</span>
             </div>
           )}
           <aside className={`canvas-ep-list ${epListOpen ? 'is-open' : ''}`} aria-hidden={!epListOpen}>
@@ -13230,10 +13236,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             </div>
             {railTab === 'eps' ? (
               <div className="canvas-ep-list-body">
-                <button type="button" className={currentEp === null ? 'is-active' : ''} onClick={() => setCurrentEp(null)} title="整剧总览（全部集节点同屏）">
-                  <span className="ep-name">整剧总览</span>
-                  <span className="ep-badge">全部</span>
-                </button>
                 {canvas.meta.episodes.map((ep) => {
                   // 计划镜数（storyboard.json）与落地镜数（shot_description.json）不一致时
                   // 显示"5/32"：只报计划数会让人以为分镜做完了，进渲染才发现门禁拒。
@@ -13363,11 +13365,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   ? '先在「分镜」阶段为本集生成镜头（确认剧本后运行分镜生成），画布会自动汇入段卡、关键帧与片段。'
                   : '各集都还没有镜头：先在第 1 集生成分镜，再回画布查看。'}
               </span>
-              {currentEp && canvas.meta.episodes.length > 1 && (
-                <button type="button" className="canvas-empty-guide-btn" onClick={() => setCurrentEp(null)} title="切换到整剧总览，查看其它集">
-                  查看整剧总览
-                </button>
-              )}
             </div>
           )}
           <ReactFlow
