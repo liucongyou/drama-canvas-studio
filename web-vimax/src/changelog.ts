@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.26';
+export const APP_VERSION = '2026.10.29.27';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.27',
+    date: '2026-10-29',
+    title: '生成请求恢复直达供应商',
+    changes: [
+      '恢复图片同步直连、视频异步任务直连，生成结果直接回写画布节点，不再先返回“后台提交中”。',
+      '保留多任务并发控制、模型适配器、任务中心和视频轮询；移除会在重连或重启后误判的进程内后台线程。',
+      '任务状态以供应商真实响应和最终节点内容为准，供应商已成功时前端可直接显示结果。',
+    ],
+  },
   {
     version: '2026.10.29.26',
     date: '2026-10-29',

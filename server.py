@@ -32,7 +32,6 @@ import shutil
 import subprocess
 import threading
 import time
-import types
 import urllib.parse
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
@@ -1436,90 +1435,6 @@ def _latest_terminal_generation_task(project_id, node_id):
         if status == "interrupted" and interrupted is None:
             interrupted = item
     return interrupted
-
-
-def _run_generation_background(project_id, node_id, task_id, tenant_id, tenant_slug):
-    """Execute a persisted generation task outside the HTTP request lifecycle."""
-    try:
-        with tenant_context.use_tenant(tenant_id, tenant_slug):
-            proj = store.get_project(project_id)
-            if not proj:
-                store.update_generation_task(
-                    task_id, status="failed", phase="项目不存在",
-                    error="项目不存在或已被删除", finished_at=store._now_iso(),
-                )
-                return
-            node = next(
-                (item for item in proj["payload"].get("nodes", []) if item.get("id") == node_id),
-                None,
-            )
-            if not node:
-                store.update_generation_task(
-                    task_id, status="failed", phase="节点不存在",
-                    error="节点不存在或已被删除", finished_at=store._now_iso(),
-                )
-                return
-            task = store.get_generation_task(task_id) or {}
-            provider_key = str(
-                task.get("provider")
-                or (node.get("metadata") or {}).get("provider")
-                or "__default__"
-            )
-            model_key = str(
-                task.get("model")
-                or (node.get("metadata") or {}).get("model")
-                or ""
-            )
-            kind = str(task.get("kind") or node.get("type") or "")
-            try:
-                slot = acquire_generation_slot(task_id, provider_key, model_key, kind)
-            except GenerationQueueCancelled as exc:
-                store.update_generation_task(
-                    task_id, status="interrupted", phase="已取消",
-                    error=str(exc), finished_at=store._now_iso(),
-                )
-                return
-            except Exception as exc:
-                store.update_generation_task(
-                    task_id, status="failed", phase="队列不可用",
-                    error=str(exc), finished_at=store._now_iso(),
-                )
-                return
-            try:
-                _run_generation_once(project_id, proj, node, task_id=task_id)
-            finally:
-                release_generation_slot(slot)
-    except Exception as exc:
-        store.update_generation_task(
-            task_id, status="failed", phase="后台任务异常",
-            error=str(exc), finished_at=store._now_iso(),
-        )
-        print(f"[generation] background task failed task={task_id} error={exc}", file=sys.stderr)
-
-
-class _BackgroundGenerationRuntime:
-    """Minimal stand-in for Handler so the existing generation pipeline can run off-request."""
-
-    def _send(self, status, payload=None, **_kwargs):
-        return {"status": status, "payload": payload}
-
-
-def _run_generation_once(project_id, proj, node, task_id=None):
-    runtime = _BackgroundGenerationRuntime()
-    runtime._generate = types.MethodType(Handler._generate, runtime)
-    runtime._generate_once = types.MethodType(Handler._generate_once, runtime)
-    return runtime._generate(project_id, proj, node, task_id=task_id)
-
-
-def _start_generation_background(project_id, node_id, task_id, tenant_id, tenant_slug):
-    thread = threading.Thread(
-        target=_run_generation_background,
-        args=(project_id, node_id, task_id, tenant_id, tenant_slug),
-        name=f"generation-{task_id[:8]}",
-        daemon=True,
-    )
-    thread.start()
-    return thread
 
 
 def _finalize_resumed_video(project_id, node_id, result, provider, model):
@@ -3711,6 +3626,31 @@ class Handler(BaseHTTPRequestHandler):
                         "currency": task.get("cost_currency"),
                     },
                 )
+            provider_key = str(
+                task.get("provider")
+                or params.get("provider")
+                or meta.get("provider")
+                or "__default__"
+            )
+            try:
+                slot = acquire_generation_slot(
+                    task["id"],
+                    provider_key,
+                    task.get("model") or params.get("model") or meta.get("model"),
+                    task.get("kind") or node.get("type"),
+                )
+            except GenerationQueueCancelled as exc:
+                return self._send(409, {
+                    "error": str(exc),
+                    "code": "GENERATION_QUEUE_CANCELLED",
+                    "taskId": task.get("id"),
+                })
+            except Exception as exc:
+                return self._send(503, {
+                    "error": str(exc),
+                    "code": "GENERATION_QUEUE_TIMEOUT",
+                    "taskId": task.get("id"),
+                })
             generation_started_at = store._now_iso()
             start_updates = {
                 "status": "generating",
@@ -3726,21 +3666,10 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(body.get("prompt"), str):
                 start_updates["prompt"] = body["prompt"]
             commit_node_metadata(pid, nid, start_updates)
-            tenant = tenant_context.current()
-            _start_generation_background(
-                pid,
-                nid,
-                str(task["id"]),
-                tenant.tenant_id if tenant else "legacy",
-                tenant.slug if tenant else "local",
-            )
-            return self._send(202, {
-                "accepted": True,
-                "taskId": task["id"],
-                "nodeId": nid,
-                "status": "queued",
-                "phase": "已提交，后台生成中",
-            })
+            try:
+                return self._generate(pid, proj, node, task_id=task["id"])
+            finally:
+                release_generation_slot(slot)
         m = re.match(r"^/api/generation-tasks/([^/]+)/cancel$", path)
         if m:
             task_id = unquote(m.group(1))

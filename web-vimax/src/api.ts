@@ -1657,8 +1657,8 @@ export async function sendMessage(sessionId: string, text: string): Promise<{rep
 }
 
 /**
- * 单项媒体生成：后端只负责创建持久化任务并返回 taskId，真实生成在后台线程
- * 继续执行。即使浏览器连接被 Nginx 504 切断，任务也不会丢失或重复扣费。
+ * 单项媒体生成：请求直达供应商并等待本次结果，视频仍按供应商任务轮询。
+ * 不能用 HTTP 先回 202 再在进程内换线程，进程重启会让已付费任务失联。
  */
 export async function generateCanvasNodeNow(
   sessionId: string,
@@ -1678,9 +1678,8 @@ export async function generateCanvasNodeNow(
     }) as {accepted?: boolean; taskId?: string; url?: string; text?: string; params?: CanvasMediaParams};
     if (result.accepted) {
       startPolling(sessionId);
-      return {deferred: true, accepted: true, taskId: result.taskId, reason: '后台生成中'};
+      return {deferred: true, accepted: true, taskId: result.taskId, reason: '生成请求已受理'};
     }
-    // Compatibility with old servers that still return a completed payload.
     emit({
       type: 'done',
       sessionId,
