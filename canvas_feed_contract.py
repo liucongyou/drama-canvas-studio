@@ -39,6 +39,8 @@ class ErrorCode(StrEnum):
 class WarningCode(StrEnum):
     WARN_DEPRECATED_VOICE_FIELD = "WARN_DEPRECATED_VOICE_FIELD"
     WARN_DERIVED_DIALECT = "WARN_DERIVED_DIALECT"
+    WARN_GENERATOR_METADATA_MISSING = "WARN_GENERATOR_METADATA_MISSING"
+    WARN_CODE_CANONICALIZED = "WARN_CODE_CANONICALIZED"
     WARN_RETRIED_AFTER_REVISION = "WARN_RETRIED_AFTER_REVISION"
 
 
@@ -417,6 +419,16 @@ def analyze_declared_feed(payload: dict) -> GateResult:
             ErrorCode.SCHEMA_VERSION_UNSUPPORTED,
             f"仅支持 {SCHEMA_VERSION}，收到 {schema or '<missing>'}",
             path="canvas_contract.schema",
+        ))
+    generator = contract.get("generator") if isinstance(contract, dict) else None
+    if not isinstance(generator, dict) or not any(
+        str(generator.get(key) or "").strip()
+        for key in ("name", "skillVersion", "packageRevision")
+    ):
+        issues.append(_issue(
+            WarningCode.WARN_GENERATOR_METADATA_MISSING,
+            "缺少 canvas_contract.generator，无法追踪技能名称和版本",
+            path="canvas_contract.generator",
         ))
 
     assets = payload.get("asset_prompts") if isinstance(payload, dict) else None
@@ -989,9 +1001,70 @@ def _payload_diff(before: dict, after: dict) -> dict:
     }
 
 
+def _canonical_feed_for_hash(feed: dict) -> dict:
+    canonical = copy.deepcopy(feed)
+
+    def normalize_code_fields(items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            code = canonical_code(item.get("code"))
+            if code:
+                item["code"] = code
+            canvas = item.get("canvas")
+            if not isinstance(canvas, dict):
+                continue
+            if isinstance(canvas.get("asset_codes"), list):
+                canvas["asset_codes"] = [
+                    canonical_code(value) or value
+                    for value in canvas["asset_codes"]
+                ]
+            if isinstance(canvas.get("asset_refs"), list):
+                for ref in canvas["asset_refs"]:
+                    if not isinstance(ref, dict):
+                        continue
+                    code = canonical_code(ref.get("code"))
+                    if code:
+                        ref["code"] = code
+
+    normalize_code_fields(canonical.get("asset_prompts"))
+    normalize_code_fields(canonical.get("voice_prompts"))
+    for segment in canonical.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        raw = str(segment.get("raw") or "")
+        segment["raw"] = re.sub(
+            r"图\s*0*(\d+)",
+            lambda match: f"图{int(match.group(1))}",
+            raw,
+        )
+        canvas = segment.get("canvas")
+        if not isinstance(canvas, dict):
+            continue
+        if isinstance(canvas.get("asset_codes"), list):
+            canvas["asset_codes"] = [
+                canonical_code(value) or value
+                for value in canvas["asset_codes"]
+            ]
+        if isinstance(canvas.get("asset_refs"), list):
+            for ref in canvas["asset_refs"]:
+                if not isinstance(ref, dict):
+                    continue
+                code = canonical_code(ref.get("code"))
+                if code:
+                    ref["code"] = code
+    return canonical
+
+
 def _source_provenance(feed: dict, source: dict | None) -> dict:
     source = dict(source or {})
-    normalized = json.dumps(feed, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    normalized = json.dumps(
+        _canonical_feed_for_hash(feed),
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
     contract = feed.get("canvas_contract") if isinstance(feed.get("canvas_contract"), dict) else {}
     generator = contract.get("generator") if isinstance(contract.get("generator"), dict) else {}
     return {

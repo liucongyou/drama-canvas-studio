@@ -410,6 +410,61 @@ class CanvasFeedNegativeContractTests(unittest.TestCase):
             {issue.code for issue in result.warnings},
         )
 
+    def test_missing_generator_warns_but_remains_compatible(self):
+        feed = json.loads(
+            (VALID_FIXTURES / "generic.json").read_text(encoding="utf-8")
+        )
+        feed["canvas_contract"].pop("generator", None)
+
+        result = analyze_declared_feed(feed)
+        plan = prepare_import(
+            {"nodes": [], "connections": [], "episodeImports": []},
+            feed,
+            "project-1",
+            1,
+            source={"name": "compatible.json"},
+        )
+
+        self.assertFalse(result.errors)
+        self.assertIn(
+            WarningCode.WARN_GENERATOR_METADATA_MISSING,
+            {issue.code for issue in result.warnings},
+        )
+        self.assertTrue(plan.ok, [issue_dict(item) for item in plan.errors])
+        group = plan.merged_payload["episodeImports"][0]
+        self.assertIn(
+            "WARN_GENERATOR_METADATA_MISSING",
+            {
+                item["code"]
+                for item in group.get("importWarnings") or []
+            },
+        )
+
+    def test_provenance_hash_uses_canonical_figure_codes(self):
+        feed = json.loads(
+            (VALID_FIXTURES / "generic.json").read_text(encoding="utf-8")
+        )
+        reordered = copy.deepcopy(feed)
+        reordered["asset_prompts"][0]["code"] = "图09"
+        reordered["voice_prompts"][0]["code"] = "图09"
+        for segment in reordered["segments"]:
+            segment["raw"] = segment["raw"].replace("图9", "图09")
+
+        first = prepare_import(
+            {"nodes": [], "connections": [], "episodeImports": []},
+            feed,
+            "project-1",
+            1,
+        )
+        second = prepare_import(
+            {"nodes": [], "connections": [], "episodeImports": []},
+            reordered,
+            "project-1",
+            1,
+        )
+
+        self.assertEqual(first.provenance["feedSha256"], second.provenance["feedSha256"])
+
     def test_provenance_is_attached_to_episode_group(self):
         feed = json.loads((VALID_FIXTURES / "generic.json").read_text(encoding="utf-8"))
         plan = prepare_import(
