@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.11';
+export const APP_VERSION = '2026.10.29.12';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.12',
+    date: '2026-10-29',
+    title: '彻底修复拖拽撤销回弹',
+    changes: [
+      '拖动历史从仅媒体卡扩展为所有可拖节点：媒体卡、分段卡、备注、编组框和子卡。',
+      '撤销时同步恢复非媒体节点的 positionRef 位置真源，避免派生布局把节点拉回拖动后的位置。',
+      '编组外框拖动也记录位置快照，撤销后外框和卡片保持同一坐标。',
+    ],
+  },
   {
     version: '2026.10.29.11',
     date: '2026-10-29',

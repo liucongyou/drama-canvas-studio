@@ -10971,12 +10971,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     // 新一轮拖拽：重置磁吸状态与吸附坐标，避免上一轮的锁定/偏移残留
     alignStateRef.current = createAlignState();
     snappedPosRef.current.clear();
-    // 媒体卡片拖动前先入栈历史，使移动可撤销（撤销会恢复到拖动前的位置）
-    if (node.id.startsWith('media-')) {
-      // Drag is a position mutation: snapshot coordinates as well, otherwise
-      // undo keeps the current x/y and the card appears not to move back.
-      pushHistory(userEdgesRef.current, notesRef.current, {positions: true});
-    }
+    // Every draggable node type (media, segment, note, group frame, child card)
+    // needs a position snapshot before the first movement. Media-only snapshots
+    // left segments/groups/notes impossible to undo and caused the card to snap
+    // back when the derived layout read the stale positionRef.
+    pushHistory(userEdgesRef.current, notesRef.current, {positions: true});
     // 分段卡：允许自由拖拽，不走"拖子卡=移父框"逻辑
     if (node.type === 'segment') {
       childDragRef.current = null;
@@ -11549,7 +11548,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         : prevMedia,
     );
     if (snapshot.positions && snapshot.flowNodes) {
-    const beforeById = new Map(prevMedia.map((node) => [`${MEDIA_PREFIX}${node.id}`, node]));
+      const beforeById = new Map(prevMedia.map((node) => [`${MEDIA_PREFIX}${node.id}`, node]));
+      const restoredPositionRef: Record<string, {x: number; y: number}> = {...positionRef.current};
+      for (const node of snapshot.flowNodes) {
+        if (!node.id.startsWith(MEDIA_PREFIX) && !node.id.startsWith('asset-')) {
+          restoredPositionRef[node.id] = {...node.position};
+        }
+      }
+      positionRef.current = restoredPositionRef;
       setNodes((prev) => prev.map((node) => {
         const target = snapshot.flowNodes?.find((item) => item.id === node.id);
         const restoredMedia = beforeById.get(node.id);
@@ -11562,6 +11568,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         }
         return node;
       }));
+      requestAnimationFrame(() => syncGroupFrames());
     }
     persistNotes(snapshot.notes);
     if (changedNodes.length > 0) persistMediaNodes(merged, changedNodes);
@@ -11585,7 +11592,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         setToast(error instanceof Error ? error.message : '撤销新增节点失败');
       });
     }
-  }, [deleteMediaNodePersistently, persistNotes, persistMediaNodes, persistMediaPositions, setNodes, setToast]);
+  }, [deleteMediaNodePersistently, persistNotes, persistMediaNodes, persistMediaPositions, setNodes, setToast, syncGroupFrames]);
 
   const applyMetadataSnapshot = useCallback((node: CanvasMediaNode) => {
     const next = mediaNodesRef.current.map((item) => item.id === node.id ? node : item);
