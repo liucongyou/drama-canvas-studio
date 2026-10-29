@@ -97,6 +97,19 @@ describe('api request recovery', () => {
     expect(message).not.toContain('供应商服务暂时异常');
   });
 
+  it('keeps provider model_not_found separate from reference errors', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: '供应商接口HTTP 503：{"code":"model_not_found","message":"No available channel for model demo-image"}',
+    }), {
+      status: 503,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    const message = await getModelCatalog().catch((error) => String(error));
+    expect(message).toContain('没有该模型的可用通道');
+    expect(message).not.toContain('参考素材不符合');
+  });
+
   it('keeps account login errors separate from provider auth failures', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       error: '账号或密码错误',

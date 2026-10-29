@@ -586,6 +586,13 @@ function friendlyRequestError(status: number, raw: string): string {
     return '供应商鉴权失败。请在「模型接口」中检查 API Key、工作空间和模型权限。';
   }
   if (
+    lower.includes('model_not_found')
+    || lower.includes('no available channel')
+    || text.includes('无可用通道')
+  ) {
+    return `供应商没有该模型的可用通道。请在「模型接口」中检查模型是否已启用、分组或路由是否正确。详细信息：${text.slice(0, 240)}`;
+  }
+  if (
     lower.includes('reference')
     || lower.includes('image')
     || lower.includes('audio')

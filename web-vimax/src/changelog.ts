@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.7';
+export const APP_VERSION = '2026.10.29.8';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.8',
+    date: '2026-10-29',
+    title: '模型无通道提示与图片参数修正',
+    changes: [
+      '供应商返回 model_not_found 或没有可用通道时，明确提示模型路由问题，不再误报参考素材错误。',
+      '中转站图片模型迁移时同步修正默认比例为 1:1、尺寸为 1024x1024，移除遗留的 temperature 参数。',
+      '模型拉取、图片识别和视频适配器版本记录保持同步。',
+    ],
+  },
   {
     version: '2026.10.29.7',
     date: '2026-10-29',

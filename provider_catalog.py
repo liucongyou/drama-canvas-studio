@@ -613,6 +613,13 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
         if _looks_like_image_model(model_ref):
             model["capability"] = "image"
             model["adapter"] = "openai_image"
+            params = model.setdefault("params", {})
+            if set(params) <= {"temperature"}:
+                model["defaultParams"] = {"ratio": "1:1", "size": "1024x1024"}
+                model["params"] = {
+                    "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"]),
+                    "size": {"type": "text"},
+                }
     if migrate and merged != cfg:
         save_config(merged)
     return merged
@@ -1434,6 +1441,14 @@ def _infer_discovered_model(
             "audio": "dashscope_tts" if provider.get("protocol") == "dashscope" else "dashscope_tts",
             "text": "openai_chat",
         }[capability]
+    if capability == "image" and adapter == "openai_image":
+        existing_params = params if "params" in locals() else {}
+        if set(existing_params) <= {"temperature"}:
+            default_params = {"ratio": "1:1", "size": "1024x1024"}
+            params = {
+                "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"]),
+                "size": {"type": "text"},
+            }
     label = remote_model
     model_id = normalize_model_id(remote_model)
     if capability == "video":

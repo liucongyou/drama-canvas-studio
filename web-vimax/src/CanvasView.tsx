@@ -1485,6 +1485,9 @@ function friendlyTaskError(raw?: string): string {
   if (lower.includes('overdue') || lower.includes('insufficient') || lower.includes('balance') || lower.includes('quota') || text.includes('余额') || text.includes('欠费') || text.includes('额度')) {
     return '供应商账户余额或额度不足。请先充值或更换供应商，再重新生成。';
   }
+  if (lower.includes('model_not_found') || lower.includes('no available channel') || text.includes('无可用通道')) {
+    return `供应商没有该模型的可用通道，请检查模型是否启用或分组路由是否正确。${text ? `详情：${text.slice(0, 180)}` : ''}`;
+  }
   if (lower.includes('reference') || text.includes('参考素材') || text.includes('参考图片') || text.includes('参考音频') || text.includes('参考视频')) {
     return `参考素材不符合当前模型要求，请检查数量、格式、大小和槽位顺序。${text ? `详情：${text.slice(0, 180)}` : ''}`;
   }
