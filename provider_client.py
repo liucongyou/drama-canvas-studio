@@ -1056,27 +1056,28 @@ def _newapi_image(
     poll_url = f"{base}{poll_prefix}{urllib.parse.quote(task_id, safe='')}"
     deadline = time.time() + 900
     poll_started = time.time()
+    task = response
     while time.time() < deadline:
-        status_raw = str(response.get("status") or "").lower()
+        status_raw = str(task.get("status") or "").lower()
         if status_raw in {"succeeded", "completed", "success", "done"}:
             result = _newapi_image_result(
-                response, source=source, provider=provider, key=key,
+                task, source=source, provider=provider, key=key,
             )
             result["taskId"] = task_id
-            result["raw"] = response
+            result["raw"] = task
             if result.pop("authUrl", False):
                 result["url"] = _persist_auth_url(
                     str(result["url"]), base, key, ".png",
                 )
             return result
         if status_raw in {"failed", "error", "cancelled", "canceled"}:
-            error = response.get("error")
+            error = task.get("error")
             detail = error.get("message") if isinstance(error, dict) else error
             raise RuntimeError(
-                f"New API 图片生成失败：{detail or json.dumps(response, ensure_ascii=False)[:600]}"
+                f"New API 图片生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}"
             )
         time.sleep(poll_delay(time.time() - poll_started))
-        response = _request_json("GET", poll_url, key, timeout=30)
+        task = _request_json("GET", poll_url, key, timeout=30)
     raise RuntimeError(f"New API 图片任务超时（900s，任务 {task_id}）")
 
 

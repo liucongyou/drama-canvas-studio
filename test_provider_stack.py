@@ -38,6 +38,64 @@ class ProviderCatalogTests(unittest.TestCase):
         self.assertEqual(result["id"], "task-1")
         self.assertEqual(result["status"], "queued")
 
+    def test_aistars_image_polls_task_endpoint_and_downloads_protected_artifact(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "65-seedream-5-pro",
+            "remoteModel": "即梦-65-seedream-5-pro",
+            "adapter": "newapi_image",
+            "params": {},
+        }
+        calls = []
+        downloads = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            if method == "POST":
+                return {"id": "task-aistars", "status": "queued"}
+            return {
+                "id": "task-aistars",
+                "status": "completed",
+                "artifacts": [{
+                    "content_url": "/v1/tasks/task-aistars/artifacts/image-0/content",
+                }],
+            }
+
+        def fake_download(url, key, **kwargs):
+            downloads.append((url, key))
+            return b"image-bytes", "image/png"
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request), \
+                patch.object(provider_client, "_download_bytes_with_key", side_effect=fake_download), \
+                patch.object(provider_client, "save_generated_bytes", return_value="/uploads/result.png"), \
+                patch.object(provider_client.time, "sleep"):
+            result = provider_client.generate_image(
+                provider,
+                model,
+                "test",
+                {"ratio": "16:9", "resolution": "2K"},
+                [],
+            )
+
+        self.assertEqual(result["taskId"], "task-aistars")
+        self.assertEqual(result["url"], "/uploads/result.png")
+        self.assertEqual(calls[0][0], "POST")
+        self.assertEqual(calls[0][1], "https://api.canvasproai.com/aistars/v1/images/generations")
+        self.assertEqual(calls[1][0], "GET")
+        self.assertEqual(calls[1][1], "https://api.canvasproai.com/aistars/v1/tasks/task-aistars")
+        self.assertEqual(
+            downloads,
+            [(
+                "https://api.canvasproai.com/v1/tasks/task-aistars/artifacts/image-0/content",
+                "test-key",
+            )],
+        )
+
     def test_provider_submit_timeout_is_short_enough_for_interactive_retry(self):
         self.assertLessEqual(provider_client.SUBMIT_TIMEOUT_SECONDS, 60)
 
