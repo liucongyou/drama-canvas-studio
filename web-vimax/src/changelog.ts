@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.29.4';
+export const APP_VERSION = '2026.10.29.5';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.29.5',
+    date: '2026-10-29',
+    title: '模型设置窄屏适配',
+    changes: [
+      '修复模型设置里参数表与计费表在中等窗口宽度下被挤到屏幕外的问题。',
+      '1080px 以下侧栏改为上下排列，详情区独占剩余宽度。',
+      '参数行、计费档位和下拉框增加收缩边界，避免出现横向滚动条。',
+    ],
+  },
   {
     version: '2026.10.29.4',
     date: '2026-10-29',
