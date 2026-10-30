@@ -122,8 +122,15 @@ def _recoverable_task_id(detail: Any) -> str:
 
 
 class ProviderHTTPError(RuntimeError):
-    def __init__(self, status_code: int, detail: str, headers: Any = None):
-        super().__init__(f"供应商接口 HTTP {status_code}：{detail}")
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        headers: Any = None,
+        *,
+        message: str | None = None,
+    ):
+        super().__init__(message or f"供应商接口 HTTP {status_code}：{detail}")
         self.status_code = status_code
         self.detail = detail
         self.headers = headers
@@ -410,23 +417,67 @@ def _submit_with_retry(
     return attempt()
 
 
+def _is_balance_error_detail(detail: Any) -> bool:
+    lower_detail = str(detail or "").lower()
+    return any(
+        marker in lower_detail
+        for marker in (
+            "overdue",
+            "insufficient",
+            "balance",
+            "arrear",
+            "payment required",
+            "insufficient_quota",
+            "quota exceeded",
+            "billing",
+            "credit",
+            "欠费",
+            "余额不足",
+            "额度不足",
+        )
+    )
+
+
 def _provider_submit_error(exc: Exception) -> Exception:
     """Return a precise error for the single submission attempt."""
-    if isinstance(exc, ProviderHTTPError) and exc.status_code in {401, 403}:
-        return RuntimeError(
-            "New API 鉴权失败：当前 Key 无效、已撤销或无该模型权限；"
-            "请到 New API 密钥页重新创建或启用对应的本站 Key 后再提交。"
-        )
+    if isinstance(exc, ProviderHTTPError):
+        detail = str(exc.detail or "").strip()
+        if _is_balance_error_detail(detail):
+            message = (
+                f"供应商账户余额不足或已欠费（HTTP {exc.status_code}）："
+                f"{detail or '供应商未返回详情'}"
+            )
+            return ProviderHTTPError(
+                exc.status_code,
+                detail,
+                exc.headers,
+                message=message,
+            )
+        if exc.status_code in {401, 403}:
+            message = (
+                f"供应商鉴权或权限失败（HTTP {exc.status_code}）："
+                f"{detail or '供应商未返回详情'}"
+            )
+            return ProviderHTTPError(
+                exc.status_code,
+                detail,
+                exc.headers,
+                message=message,
+            )
     if isinstance(exc, ProviderHTTPError) and exc.status_code in {429, 500, 502, 503, 504}:
         detail = str(exc.detail or "").lower()
         if "video_queue_full" in detail or "视频队列已满" in detail:
-            return RuntimeError(
+            return ProviderHTTPError(
+                exc.status_code,
                 "供应商视频队列已满，本次未创建任务、未进入生成；"
-                "系统不会自动重提，请等待后由用户主动重新生成。"
+                "系统不会自动重提，请等待后由用户主动重新生成。",
+                exc.headers,
             )
-        return RuntimeError(
-            f"供应商提交失败（HTTP {exc.status_code}），系统不会自动重提；"
-            "请确认供应商是否已受理后，由用户主动重新生成。"
+        return ProviderHTTPError(
+            exc.status_code,
+            "供应商提交失败，系统不会自动重提；"
+            f"供应商详情：{str(exc.detail or '').strip() or '未返回详情'}",
+            exc.headers,
         )
     return exc
 
@@ -1175,12 +1226,12 @@ def _newapi_image(
                     image_urls, base=base, key=key,
                 ):
                     fields.append(("image[]", (filename, mime, payload)))
-            response = _request_multipart(
+            response = _submit_multipart(
                 "POST", f"{base}{route}/edits", key, fields,
                 timeout=360,
             )
         else:
-            response = _request_json(
+            response = _submit_json(
                 "POST", f"{base}{route}/generations", key, body, timeout=360,
             )
     elif route == "/kr/gemini/v1/images":
@@ -1199,7 +1250,7 @@ def _newapi_image(
             },
         }
         _apply_declared_params(body, model, params)
-        response = _request_json(
+        response = _submit_json(
             "POST", f"{base}{route}/generations", key, body, timeout=360,
         )
     elif route == "/hc/v1/images":
@@ -1219,7 +1270,7 @@ def _newapi_image(
                 if quality:
                     body["quality"] = quality
                 _apply_declared_params(body, model, params)
-                response = _request_json(
+                response = _submit_json(
                     "POST", f"{base}{route}/edits", key, body, timeout=360,
                 )
             else:
@@ -1236,7 +1287,7 @@ def _newapi_image(
                     image_urls, base=base, key=key,
                 ):
                     fields.append(("image", (filename, mime, payload)))
-                response = _request_multipart(
+                response = _submit_multipart(
                     "POST", f"{base}{route}/edits/upload", key, fields,
                     timeout=360,
                 )
@@ -1251,7 +1302,7 @@ def _newapi_image(
             if quality:
                 body["quality"] = quality
             _apply_declared_params(body, model, params)
-            response = _request_json(
+            response = _submit_json(
                 "POST", f"{base}{route}/generations", key, body, timeout=360,
             )
     elif route == "/aistars/v1/images":
@@ -1291,6 +1342,8 @@ def _newapi_image(
                 "POST", f"{base}{route}/{action}", key, body, timeout=360,
             )
         except ProviderHTTPError as exc:
+            if _is_balance_error_detail(exc.detail):
+                raise _provider_submit_error(exc) from exc
             if exc.status_code in {429, 500, 502, 503, 504}:
                 # Some relays return a payment-side 5xx while still exposing a
                 # task id in the body. Retain it so polling can recover the
@@ -1325,7 +1378,7 @@ def _newapi_image(
                         submitted_at=submitted_at,
                     ) from exc
             else:
-                raise
+                raise _provider_submit_error(exc) from exc
     else:
         raise RuntimeError(f"New API 图片线路未实现：{route}")
 
@@ -1414,7 +1467,7 @@ def _ark_image(
             "max_images": _safe_int(params["sequentialMaxImages"], 1, 1, 15)
         }
     _apply_declared_params(body, model, params)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
@@ -1442,7 +1495,7 @@ def _openai_image(
     if params.get("style"):
         body["style"] = params["style"]
     _apply_declared_params(body, model, params)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
@@ -1502,7 +1555,7 @@ def _agnes_image(
     if response_format == "b64_json":
         body["return_base64"] = True
     _apply_declared_params(body, model, params)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         _join_url(provider["base_url"], "/images/generations"),
         provider_catalog.provider_key(provider),
@@ -2366,11 +2419,12 @@ def _openai_chat(
         "temperature": _safe_float(params.get("temperature"), 0.7, 0.0, 2.0),
     }
     _apply_declared_params(body, model, params)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         _join_url(provider["base_url"], "/chat/completions"),
         provider_catalog.provider_key(provider),
         body,
+        timeout=120,
     )
     choices = response.get("choices") or []
     if not choices:

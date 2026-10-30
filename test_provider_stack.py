@@ -946,7 +946,7 @@ class ProviderCatalogTests(unittest.TestCase):
                     '{"error":{"message":"Invalid token"}}',
                 ),
             ),
-            self.assertRaisesRegex(RuntimeError, "New API 鉴权失败"),
+            self.assertRaisesRegex(RuntimeError, "供应商鉴权或权限失败"),
         ):
             provider_client._submit_json(
                 "POST",
@@ -955,6 +955,68 @@ class ProviderCatalogTests(unittest.TestCase):
                 {"model": "002系列/sd2.0(9图3音频12秒不卡脸720P)"},
                 retry_window=0,
             )
+
+    def test_overdue_provider_response_is_reported_as_balance_failure(self):
+        detail = (
+            '{"error":{"code":"AccountOverdueError",'
+            '"message":"The request failed because your account has an overdue balance."}}'
+        )
+        mapped = provider_client._provider_submit_error(
+            provider_client.ProviderHTTPError(403, detail)
+        )
+
+        self.assertIsInstance(mapped, provider_client.ProviderHTTPError)
+        self.assertEqual(mapped.status_code, 403)
+        self.assertIn("供应商账户余额不足或已欠费", str(mapped))
+        self.assertIn("AccountOverdueError", str(mapped))
+        self.assertNotIn("供应商接口 HTTP 403：供应商账户", str(mapped))
+
+    def test_quota_error_is_reported_as_balance_failure_even_on_429(self):
+        detail = (
+            '{"error":{"code":"insufficient_quota",'
+            '"message":"You exceeded your current quota, please check your plan and billing details."}}'
+        )
+        mapped = provider_client._provider_submit_error(
+            provider_client.ProviderHTTPError(429, detail)
+        )
+
+        self.assertIsInstance(mapped, provider_client.ProviderHTTPError)
+        self.assertEqual(mapped.status_code, 429)
+        self.assertIn("供应商账户余额不足或已欠费", str(mapped))
+        self.assertIn("insufficient_quota", str(mapped))
+
+    def test_ark_image_submit_uses_the_shared_provider_error_mapping(self):
+        provider = {
+            "id": "ark",
+            "base_url": "https://ark.example/api/v3",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "doubao-seedream-5-0-pro",
+            "remoteModel": "doubao-seedream-5-0-pro-260628",
+            "adapter": "ark_image",
+        }
+        detail = (
+            '{"error":{"code":"AccountOverdueError",'
+            '"message":"The request failed because your account has an overdue balance."}}'
+        )
+        with patch.object(
+            provider_client,
+            "_request_json",
+            side_effect=provider_client.ProviderHTTPError(403, detail),
+        ):
+            with self.assertRaises(provider_client.ProviderHTTPError) as caught:
+                provider_client.generate_image(
+                    provider,
+                    model,
+                    "极简蓝色圆点",
+                    {"size": "1536x1536"},
+                    [],
+                )
+
+        self.assertEqual(caught.exception.status_code, 403)
+        self.assertIn("供应商账户余额不足或已欠费", str(caught.exception))
+        self.assertIn("AccountOverdueError", str(caught.exception))
 
     def test_newapi_video_result_fields_are_provider_specific(self):
         self.assertEqual(

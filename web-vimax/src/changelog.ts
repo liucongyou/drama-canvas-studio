@@ -7,10 +7,21 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.30.12';
+export const APP_VERSION = '2026.10.30.13';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.30.13',
+    date: '2026-10-30',
+    title: '供应商余额错误与模型切换回归',
+    changes: [
+      '火山方舟等供应商返回账户欠费时，任务卡直接显示“供应商账户余额不足或已欠费”，不再误报成 New API 鉴权失败。',
+      '供应商错误的 HTTP 状态码和原始返回详情会保留，便于核对 Key、权限、余额与供应商请求记录。',
+      '同一节点已经成功生成或明确失败后，可以换模型并使用新的操作号重新提交；旧任务不会被复用，也不会阻塞新任务。',
+      '旧任务仍在运行或结果待确认时继续禁止重复提交，避免换模型绕过保护造成重复扣费。',
+    ],
+  },
   {
     version: '2026.10.30.12',
     date: '2026-10-30',

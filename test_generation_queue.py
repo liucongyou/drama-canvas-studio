@@ -112,6 +112,73 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertTrue(replacement["created_new"])
         self.assertNotEqual(replacement["id"], first["id"])
 
+    def test_succeeded_node_accepts_new_model_with_new_operation(self):
+        first = canvas_store.create_generation_task(
+            "project-model-switch-success",
+            "node-model-switch-success",
+            kind="video",
+            provider="agnes-ai",
+            model="agnes-video-2.5-flash",
+            client_operation_id="agnes-video-operation",
+            request_snapshot={
+                "provider": "agnes-ai",
+                "model": "agnes-video-2.5-flash",
+            },
+        )
+        canvas_store.finish_generation_task(
+            first["id"],
+            status="succeeded",
+            phase="已完成",
+            delivery_status="ready",
+        )
+        replacement = canvas_store.create_generation_task(
+            "project-model-switch-success",
+            "node-model-switch-success",
+            kind="video",
+            provider="ark",
+            model="doubao-seedance-2-5",
+            client_operation_id="ark-video-operation",
+            request_snapshot={
+                "provider": "ark",
+                "model": "doubao-seedance-2-5",
+            },
+        )
+
+        self.assertTrue(replacement["created_new"])
+        self.assertNotEqual(replacement["id"], first["id"])
+        self.assertEqual(replacement["provider"], "ark")
+        self.assertEqual(replacement["model"], "doubao-seedance-2-5")
+        self.assertIn("doubao-seedance-2-5", replacement["request_json"])
+
+    def test_unresolved_old_model_blocks_new_model_submission(self):
+        first = canvas_store.create_generation_task(
+            "project-model-switch-pending",
+            "node-model-switch-pending",
+            kind="video",
+            provider="agnes-ai",
+            model="agnes-video-2.5-flash",
+            client_operation_id="agnes-pending-operation",
+        )
+        canvas_store.update_generation_task(
+            first["id"],
+            status="running",
+            phase="结果待确认",
+            provider_task_id="provider-pending-task",
+        )
+        blocked = canvas_store.create_generation_task(
+            "project-model-switch-pending",
+            "node-model-switch-pending",
+            kind="video",
+            provider="ark",
+            model="doubao-seedance-2-5",
+            client_operation_id="ark-blocked-operation",
+        )
+
+        self.assertFalse(blocked["created_new"])
+        self.assertEqual(blocked["id"], first["id"])
+        self.assertEqual(blocked["provider"], "agnes-ai")
+        self.assertEqual(blocked["provider_task_id"], "provider-pending-task")
+
     def test_provider_phase_hides_non_progress_values(self):
         self.assertEqual(server._provider_task_phase("running", 0), "生成中")
         self.assertEqual(server._provider_task_phase("running", 10), "生成中 10%")
