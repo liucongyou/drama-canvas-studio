@@ -446,6 +446,7 @@ export type GenerationTask = {
   started_at?: string;
   updated_at?: string;
   finished_at?: string;
+  progress_updated_at?: string;
 };
 
 export type CanvasMediaNode = {
@@ -1790,7 +1791,10 @@ export async function getCanvasWorkspace(
       providerTaskPhase: task.phase || '生成中',
       providerTaskProgress: Number(task.progress || node.providerTaskProgress || 0),
       providerTaskProgressChangedAt:
-        task.updated_at || task.created_at || node.providerTaskProgressChangedAt,
+        task.progress_updated_at
+        || task.started_at
+        || task.created_at
+        || node.providerTaskProgressChangedAt,
       providerTaskId: String(task.provider_task_id || node.providerTaskId || ''),
       providerTaskStatusRaw: task.status,
     };

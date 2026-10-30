@@ -4540,22 +4540,21 @@ class Handler(BaseHTTPRequestHandler):
             project_id = str((query.get("projectId") or [""])[0]).strip() or None
             limit = int((query.get("limit") or ["80"])[0])
             episode_id = str((query.get("episodeId") or [""])[0]).strip().upper()
-            tasks = store.list_generation_tasks(
-                project_id,
-                limit,
-                episode_id=episode_id or None,
-            )
             if episode_id:
                 node_ids = store.get_episode_node_ids(project_id, episode_id)
                 if not node_ids:
                     tasks = []
                 else:
-                    tasks = _filter_generation_tasks_for_episode(
+                    tasks = store.list_generation_tasks_for_node_ids(
                         project_id,
-                        tasks,
-                        episode_id,
-                        node_ids=node_ids,
+                        node_ids,
+                        limit=limit,
                     )
+            else:
+                tasks = store.list_generation_tasks(
+                    project_id,
+                    limit,
+                )
             for task in tasks:
                 if (
                     task.get("status") == "succeeded"

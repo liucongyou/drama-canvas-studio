@@ -75,6 +75,39 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(first["id"], replay["id"])
         self.assertIn("first snapshot", replay["request_json"])
 
+    def test_episode_task_lookup_is_not_truncated_by_newer_other_episode_tasks(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("episode-task-limit")
+            old = canvas_store.create_generation_task(
+                project_id,
+                "episode-a-node",
+                kind="video",
+                episode_id="EP001",
+            )
+            canvas_store.finish_generation_task(
+                old["id"],
+                status="succeeded",
+                phase="已完成",
+            )
+            for index in range(120):
+                other = canvas_store.create_generation_task(
+                    project_id,
+                    f"episode-b-node-{index}",
+                    kind="video",
+                    episode_id="EP002",
+                )
+                canvas_store.finish_generation_task(
+                    other["id"],
+                    status="succeeded",
+                    phase="已完成",
+                )
+            tasks = canvas_store.list_generation_tasks_for_node_ids(
+                project_id,
+                ["episode-a-node"],
+            )
+
+        self.assertEqual([task["id"] for task in tasks], [old["id"]])
+
     def test_operation_replay_is_scoped_to_project_and_node(self):
         with tenant_context.use_context(self.context):
             first = canvas_store.create_generation_task(

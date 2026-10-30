@@ -130,7 +130,8 @@ def _connect():
                 heartbeat_at TEXT,
                 delivery_status TEXT DEFAULT 'pending',
                 delivery_attempts INTEGER DEFAULT 0,
-                result_ready_at TEXT
+                result_ready_at TEXT,
+                progress_updated_at TEXT DEFAULT ''
             )"""
             )
             con.execute(
@@ -255,6 +256,10 @@ def _connect():
             if "result_ready_at" not in task_columns:
                 con.execute(
                     "ALTER TABLE generation_tasks ADD COLUMN result_ready_at TEXT"
+                )
+            if "progress_updated_at" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN progress_updated_at TEXT DEFAULT ''"
                 )
             con.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_tasks_operation "
@@ -474,6 +479,7 @@ _TASK_FIELDS = {
     "local_result_url", "provider_result_url",
     "request_json", "client_operation_id", "lease_owner", "lease_expires_at",
     "heartbeat_at", "delivery_status", "delivery_attempts", "result_ready_at",
+    "progress_updated_at",
 }
 
 _ACTIVE_TASK_STATUSES = {"queued", "submitting", "running"}
@@ -718,7 +724,10 @@ def update_generation_task(task_id, **fields):
                 updates.pop("progress", None)
         if not updates:
             return
-        updates["updated_at"] = _now_iso()
+        now = _now_iso()
+        updates["updated_at"] = now
+        if "progress" in updates:
+            updates["progress_updated_at"] = now
         if lease_owner is not None:
             set_clause = ",".join(
                 (
@@ -1319,6 +1328,52 @@ def list_generation_tasks(project_id=None, limit=80, episode_id=None):
         ).fetchall()
     con.close()
     return [dict(zip(columns, row)) for row in rows]
+
+
+def list_generation_tasks_for_node_ids(
+    project_id,
+    node_ids,
+    limit=300,
+):
+    """List task history by node without an earlier project-wide truncation."""
+    normalized = [
+        str(node_id)
+        for node_id in (node_ids or [])
+        if str(node_id or "").strip()
+    ]
+    if not project_id or not normalized:
+        return []
+    capped_limit = max(1, min(int(limit or 300), 1000))
+    con = _connect()
+    columns = [
+        item[0]
+        for item in con.execute(
+            "SELECT * FROM generation_tasks LIMIT 0"
+        ).description
+    ]
+    tasks_by_id = {}
+    for offset in range(0, len(normalized), 200):
+        batch = normalized[offset:offset + 200]
+        placeholders = ",".join("?" for _ in batch)
+        rows = con.execute(
+            "SELECT * FROM generation_tasks "
+            f"WHERE project_id=? AND node_id IN ({placeholders}) "
+            "ORDER BY created_at DESC, updated_at DESC, rowid DESC LIMIT ?",
+            (project_id, *batch, capped_limit),
+        ).fetchall()
+        for row in rows:
+            task = dict(zip(columns, row))
+            tasks_by_id[str(task.get("id") or "")] = task
+    con.close()
+    tasks = list(tasks_by_id.values())
+    tasks.sort(
+        key=lambda task: (
+            str(task.get("created_at") or ""),
+            str(task.get("updated_at") or ""),
+        ),
+        reverse=True,
+    )
+    return tasks[:capped_limit]
 
 
 def get_episode_node_ids(project_id, episode_id):
