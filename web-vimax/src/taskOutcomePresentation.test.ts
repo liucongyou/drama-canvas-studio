@@ -1,0 +1,75 @@
+import {describe, expect, it} from 'vitest';
+import {taskOutcomePresentation} from './taskOutcomePresentation';
+
+describe('task outcome presentation', () => {
+  it('keeps a disconnected historical paid submission pending', () => {
+    const result = taskOutcomePresentation({
+      status: 'failed',
+      phase: '任务异常',
+      error: '[WinError 10053] 你的主机中的软件中止了一个已建立的连接。',
+    });
+    expect(result.outcomeUncertain).toBe(true);
+    expect(result.statusLabel).toBe('结果待确认');
+    expect(result.canRegenerate).toBe(true);
+  });
+
+  it('keeps the original paid result labeled pending', () => {
+    const result = taskOutcomePresentation({
+      status: 'interrupted',
+      phase: '结果待确认',
+      error: '供应商已受理，但没有返回任务号',
+    });
+    expect(result.outcomePending).toBe(true);
+    expect(result.statusLabel).toBe('结果待确认');
+    expect(result.canRegenerate).toBe(true);
+  });
+
+  it('allows local validation failures to be fixed and retried', () => {
+    const result = taskOutcomePresentation({
+      status: 'failed',
+      error: '参考素材缺失 1 项：音频｜柜员',
+      error_kind: 'local_validation',
+    });
+    expect(result.localBlocked).toBe(true);
+    expect(result.outcomeUncertain).toBe(false);
+    expect(result.statusLabel).toBe('待补素材');
+    expect(result.canRegenerate).toBe(true);
+  });
+
+  it('does not offer retry for a running task', () => {
+    const result = taskOutcomePresentation({
+      status: 'running',
+      phase: '生成中',
+    });
+    expect(result.statusLabel).toBe('生成中');
+    expect(result.canRegenerate).toBe(false);
+  });
+
+  it('uses the backend outcome instead of error text', () => {
+    const result = taskOutcomePresentation({
+      status: 'failed',
+      error: '供应商暂时不可用',
+      outcome: {
+        phase: 'unknown',
+        regenerate: 'confirm',
+        reason: 'provider_outcome_unknown',
+        requiresConfirmation: true,
+        providerAccepted: false,
+      },
+    });
+    expect(result.statusLabel).toBe('结果待确认');
+    expect(result.canRegenerate).toBe(true);
+  });
+
+  it('blocks regeneration when the backend marks it blocked', () => {
+    const result = taskOutcomePresentation({
+      status: 'running',
+      outcome: {
+        phase: 'running',
+        regenerate: 'blocked',
+        requiresConfirmation: false,
+      },
+    });
+    expect(result.canRegenerate).toBe(false);
+  });
+});

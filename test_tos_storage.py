@@ -59,6 +59,8 @@ class StorageConfigTests(unittest.TestCase):
                     "access_key": "AK-test-value",
                     "secret_key": "SK-test-value",
                 })
+                self.assertFalse(storage["enabled"])
+                storage = provider_catalog.activate_storage_provider("tos")
                 self.assertTrue(storage["ready"])
                 self.assertFalse(storage["has_secret_key"] is False)
                 self.assertNotIn("AK-test-value", json.dumps(storage))
@@ -74,28 +76,9 @@ class StorageConfigTests(unittest.TestCase):
                 self.assertTrue(storage["has_access_key"])
                 self.assertTrue(storage["has_secret_key"])
                 saved = provider_catalog.storage_config()
-                self.assertEqual(saved["access_key"], "AK-test-value")
-                self.assertEqual(saved["secret_key"], "SK-test-value")
-
-    def test_imgbb_can_be_the_selected_storage_backend_without_tos(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config_path = os.path.join(tmp, "config.local.json")
-            with mock.patch.object(provider_catalog, "LOCAL_CONFIG_PATH", config_path):
-                storage = provider_catalog.save_storage_config({
-                    "enabled": True,
-                    "provider": "imgbb",
-                    "imgbb_api_key": "imgbb-secret-key",
-                })
-                self.assertEqual(storage["provider"], "imgbb")
-                self.assertTrue(storage["ready"])
-                self.assertTrue(storage["imgbb"]["has_api_key"])
-                self.assertFalse(storage["tos_ready"])
-                self.assertNotIn("imgbb-secret-key", json.dumps(storage))
-
-                saved = provider_catalog.storage_config()
-                self.assertEqual(saved["provider"], "imgbb")
-                self.assertEqual(saved["imgbb"]["api_key"], "imgbb-secret-key")
-
+                profile = saved["providers"]["tos"]
+                self.assertEqual(profile["access_key"], "AK-test-value")
+                self.assertEqual(profile["secret_key"], "SK-test-value")
 
 class TosStorageTests(unittest.TestCase):
     def setUp(self):

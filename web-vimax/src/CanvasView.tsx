@@ -124,6 +124,7 @@ import {
 import {useDialogFocusTrap} from './useDialogFocusTrap';
 import {dialog} from './GDialog';
 import {reconcileSucceededNode} from './generationReconcile';
+import {taskOutcomePresentation} from './taskOutcomePresentation';
 import {
   generationDurationLabel,
   generationPhaseLabel,
@@ -1485,6 +1486,12 @@ function friendlyTaskError(raw?: string): string {
   const text = String(raw || '').trim();
   const lower = text.toLowerCase();
   if (!text) return '';
+  const providerHttp = text.match(/供应商接口 HTTP (\d{3})[：:]\s*([\s\S]*)/i);
+  if (providerHttp) {
+    const status = Number(providerHttp[1]);
+    const detail = providerHttp[2].replace(/\s+/g, ' ').trim();
+    return `供应商返回 HTTP ${status}：${detail.slice(0, 500)}`;
+  }
   if (lower.includes('没有返回任务号') && lower.includes('server_error')) {
     return `New API 中转未返回任务号，提交结果未知。请先核对供应商账单/任务记录，确认前不要重复提交。${text ? `详情：${text.slice(0, 220)}` : ''}`;
   }
@@ -2470,6 +2477,8 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   // 只有 idle 时显示「文本」而不是「待生成」—— 手写的文本本来就算完成。
   const statusText = localUploading
     ? `上传 ${localUploadPercent}%`
+    : busy && node.providerTaskStatus === 'retrying'
+      ? '查询重试中'
     : isText
     ? (busy ? '生成中' : failed ? '生成失败' : done ? '已生成' : '文本')
     : busy ? '生成中' : done ? '已生成' : failed ? '生成失败' : '待生成';
@@ -8757,10 +8766,16 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     if (!fileKind || fileKind !== target.kind) {
       throw new Error(`请选择${target.kind === 'image' ? '图片' : target.kind === 'audio' ? '音频' : '视频'}文件`);
     }
-    const uploaded = await uploadWorkspaceFileWithProgress(session, file, {
-      signal: options?.signal,
-      onProgress: (_loaded, _total, percent) => options?.onProgress?.(percent),
-    });
+    let uploaded: Awaited<ReturnType<typeof uploadWorkspaceFileWithProgress>>;
+    try {
+      uploaded = await uploadWorkspaceFileWithProgress(session, file, {
+        signal: options?.signal,
+        onProgress: (_loaded, _total, percent) => options?.onProgress?.(percent),
+      });
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : '素材上传失败');
+      throw error;
+    }
     const inspected = await inspectLocalMedia(file);
     // The initial node save may finish while the upload is in flight. Re-read the
     // latest version before writing media fields so the patch does not use a stale
@@ -8787,6 +8802,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       mime: uploaded.mime || file.type,
       size: uploaded.size || file.size,
       sha256: uploaded.sha256,
+      storage: uploaded.storage,
       width: inspected.width,
       height: inspected.height,
       actualDuration: inspected.duration,
@@ -8832,6 +8848,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         width: inspected.width,
         height: inspected.height,
       },
+      storage: uploaded.storage,
+      storageError: '',
       params,
     };
     const persistedAt = new Date().toISOString();
@@ -8961,7 +8979,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       setToast(`当前模型最多引用 ${maxRefs} 个素材`);
       return;
     }
-    const maxAudios = Number(model?.limits?.maxAudios || 3);
+    const maxAudiosLimit = model?.limits?.maxAudios;
+    const maxAudios = Number(
+      maxAudiosLimit === undefined || maxAudiosLimit === null
+        ? 3
+        : maxAudiosLimit,
+    );
     if (target.kind === 'video' && src.kind === 'audio' && voiceRefs.length >= maxAudios) {
       setToast(`当前模型最多引用 ${maxAudios} 个音色`);
       return;
@@ -8997,6 +9020,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         mime: uploaded.mime || file.type,
         size: uploaded.size || file.size,
         sha256: uploaded.sha256,
+        storage: uploaded.storage,
         width: inspected.width,
         height: inspected.height,
         actualDuration: inspected.duration,
@@ -9022,6 +9046,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           width: inspected.width,
           height: inspected.height,
         },
+        storage: uploaded.storage,
+        storageError: '',
         x: pos.x,
         y: pos.y,
         updatedAt: new Date().toISOString(),
@@ -9103,6 +9129,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           mime: uploaded.mime || file.type,
           size: uploaded.size || file.size,
           sha256: uploaded.sha256,
+          storage: uploaded.storage,
           width: inspected.width,
           height: inspected.height,
           actualDuration: inspected.duration,
@@ -9126,6 +9153,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             width: inspected.width,
             height: inspected.height,
           },
+          storage: uploaded.storage,
+          storageError: '',
           x: base.x + (index % 3) * 300,
           y: base.y + Math.floor(index / 3) * 260,
           updatedAt: uploadedAt,
@@ -9296,9 +9325,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // 轮询就是「卡片多久变」的下限，所以有任务时按 1.5s 拉，闲时降到 15s 兜底。
   // 早先没有任务就整个不轮询，一旦本地状态丢了（刷新、换标签页、任务过期），
   // 后端明明完成也永远不会再回来。
-  const generationSyncMs = eventsConnected
-    ? 12_000
-    : hasGeneratingMedia ? 1_500 : 15_000;
+  // SSE is an optimization, not a guarantee: proxies can keep the connection
+  // open while buffering events. While a paid task is in flight, always poll
+  // terminal state quickly so a lost `done` event cannot leave a completed
+  // image/video invisible for 12 seconds.
+  const generationSyncMs = hasGeneratingMedia || activeGenerationTaskCount > 0
+    ? 1_500
+    : eventsConnected ? 7_000 : 15_000;
   useEffect(() => {
     let alive = true;
     let syncing = false;
@@ -9325,10 +9358,15 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             const needsContent = !node.mediaUrl
               && remoteById.get(node.id)?.status === 'done'
               && !!remoteById.get(node.id)?.mediaUrl;
+            const remoteVersionCount = remoteById.get(node.id)?.params?.mediaVersions?.length || 0;
+            const localVersionCount = node.params?.mediaVersions?.length || 0;
+            const hasNewRemoteVersion = remoteVersionCount > localVersionCount
+              && remoteById.get(node.id)?.status === 'done';
             if (
               node.status !== 'generating'
               && !generationBusyIds.has(node.id)
               && !needsContent
+              && !hasNewRemoteVersion
             ) return node;
             const remote = remoteById.get(node.id);
             if (!remote) return node;
@@ -9367,6 +9405,17 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               ...node,
               status: remote.status,
               mediaUrl: remote.status === 'done' ? (remote.mediaUrl || node.mediaUrl) : node.mediaUrl,
+              params: {
+                ...(node.params || {}),
+                mediaVersions: remote.params?.mediaVersions || node.params?.mediaVersions,
+                mediaVersionIndex: remote.params?.mediaVersionIndex ?? node.params?.mediaVersionIndex,
+                ...(node.kind === 'video'
+                  ? {
+                      videoVersions: remote.params?.videoVersions || node.params?.videoVersions,
+                      videoVersionIndex: remote.params?.videoVersionIndex ?? node.params?.videoVersionIndex,
+                    }
+                  : {}),
+              },
               lastError: remote.status === 'failed' ? (remote.lastError || '生成失败') : undefined,
               generationFinishedAt: remote.generationFinishedAt,
               providerTaskStatus: remote.providerTaskStatus,
@@ -9453,6 +9502,37 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         copy[index] = updated;
         return copy;
       });
+      if (nodeId && typeof data.providerTaskStatus === 'string' && data.providerTaskStatus === 'retrying') {
+        setGenerationTasks((prev) => prev.map((task) => (
+          task.node_id === nodeId && ['queued', 'submitting', 'running'].includes(task.status)
+            ? {
+                ...task,
+                phase: '查询重试中',
+                error: typeof data.error === 'string' ? data.error : task.error,
+              }
+            : task
+        )));
+      }
+      if (nextStatus === 'failed' || nextStatus === 'done') {
+        setGenerationTasks((prev) => prev.map((task) => (
+          task.node_id === nodeId
+          && ['queued', 'submitting', 'running'].includes(task.status)
+            ? {
+                ...task,
+                status: nextStatus === 'done' ? 'succeeded' : 'failed',
+                phase: typeof data.providerTaskPhase === 'string'
+                  ? data.providerTaskPhase
+                  : task.phase,
+                error: nextStatus === 'failed'
+                  ? String(data.error || task.error || '生成失败')
+                  : '',
+                finished_at: typeof data.generationFinishedAt === 'string'
+                  ? data.generationFinishedAt
+                  : task.finished_at,
+              }
+            : task
+        )));
+      }
     };
 
     const open = () => {
@@ -12371,7 +12451,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         || item.id === node.params?.ttsModel
       );
       const linkedLimit = modelMaxRefs(activeModel);
-      const audioLimit = Number(activeModel?.limits?.maxAudios || 3);
+      const audioLimitValue = activeModel?.limits?.maxAudios;
+      const audioLimit = Number(
+        audioLimitValue === undefined || audioLimitValue === null
+          ? 3
+          : audioLimitValue,
+      );
       let dirty = false;
       for (const src of linked) {
         if (src.id === node.id) continue;
@@ -15089,28 +15174,18 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                     const taskError = ['queued', 'submitting', 'running'].includes(task.status)
                       ? ''
                       : friendlyTaskError(task.error);
-                    const localBlocked = task.error_kind === 'local_validation'
-                      || /参考素材未就绪|参考素材缺失|引用节点不存在|提示词为空|当前模型最多/.test(
-                      String(task.error || ''),
-                      );
-                    const outcomeUncertain = task.status === 'interrupted'
-                      && (
-                        task.phase === '结果待确认'
-                        || /没有返回任务号/.test(String(task.error || ''))
-                      );
-                    const statusLabel: Record<GenerationTask['status'], string> = {
-                      queued: '排队中',
-                      submitting: '提交中',
-                      running: '生成中',
-                      succeeded: '已完成',
-                      failed: localBlocked ? '待补素材' : '失败',
-                      interrupted: outcomeUncertain ? '结果待确认' : '已中断',
-                    };
+                    const {
+                      localBlocked,
+                      outcomeUncertain,
+                      outcomePending,
+                      statusLabel,
+                      canRegenerate,
+                    } = taskOutcomePresentation(task);
                     return (
                       <article key={task.id} className={`canvas-task-item is-${task.status}`}>
                         <div className="canvas-task-item-head">
                           <strong title={task.title}>{task.title || node?.title || '生成任务'}</strong>
-                          <span>{statusLabel[task.status] || task.status}</span>
+                          <span>{statusLabel || task.status}</span>
                         </div>
                         <div className="canvas-task-item-meta">
                           <span>{task.kind === 'video' ? '视频' : task.kind === 'image' ? '图片' : task.kind === 'audio' ? '音频' : '文本'}</span>
@@ -15134,7 +15209,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                             {task.status === 'succeeded' && <Check size={11} strokeWidth={2.5} aria-hidden="true" />}
                             {task.status === 'succeeded'
                               ? '已完成'
-                              : generationPhaseLabel(task.phase || taskError || statusLabel[task.status])}
+                              : generationPhaseLabel(task.phase || taskError || statusLabel)}
                           </span>
                         </div>
                         {taskError && <p title={taskError}>{taskError}</p>}
@@ -15175,8 +15250,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                                 .catch((error) => setToast(error instanceof Error ? error.message : '取消任务失败'));
                             }}>取消排队</button>
                           )}
-                          {node && ['failed', 'interrupted'].includes(task.status) && (
-                            <button type="button" className="is-retry" onClick={() => { setTaskCenterOpen(false); onGenerateMediaNode(node); }}>重新生成</button>
+                          {node && canRegenerate && (
+                            <button type="button" className="is-retry" onClick={() => {
+                              setTaskCenterOpen(false);
+                              onGenerateMediaNode(node);
+                            }}>重新生成</button>
                           )}
                         </div>
                       </article>

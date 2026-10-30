@@ -28,7 +28,10 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 import network_security
+import newapi_video_contract
+import media_storage
 import provider_catalog
+import provider_protocols
 import tenant_context
 import tos_storage
 
@@ -36,6 +39,8 @@ import tos_storage
 BASE = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE, "data", "uploads")
 MAX_INLINE_BYTES = 24 * 1024 * 1024
+CANVASPRO_IMAGE_INLINE_MAX_BYTES = 900 * 1024
+CANVASPRO_IMAGE_INLINE_MAX_EDGE = 2048
 TaskEventCallback = Callable[[dict[str, Any]], None]
 
 
@@ -95,6 +100,27 @@ def _emit_task_created(
         ) from exc
 
 
+def _recoverable_task_id(detail: Any) -> str:
+    """Extract a concrete task id from an error body without guessing a status."""
+    try:
+        payload = json.loads(str(detail or ""))
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    candidates = [payload]
+    for key in ("data", "task", "result"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+    for item in candidates:
+        for key in ("id", "task_id", "taskId", "video_id"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
 class ProviderHTTPError(RuntimeError):
     def __init__(self, status_code: int, detail: str, headers: Any = None):
         super().__init__(f"供应商接口 HTTP {status_code}：{detail}")
@@ -139,6 +165,8 @@ SUBMIT_TIMEOUT_SECONDS = 45
 SYNC_MEDIA_TIMEOUT_SECONDS = 900
 SUBMIT_RETRY_WINDOW_SECONDS = 180
 SUBMIT_RETRY_MAX_DELAY_SECONDS = 20
+NEWAPI_VIDEO_SUBMIT_TIMEOUT_SECONDS = 180
+NEWAPI_VIDEO_MAX_BODY_BYTES = 8 * 1024 * 1024
 
 
 def _safe_seedream_size(size: Any, ratio: Any) -> str:
@@ -252,6 +280,12 @@ def _request_json(
             return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:1200]
+        if method.upper() == "POST" and _recoverable_task_id(detail):
+            raise ProviderOutcomeUncertain(
+                f"供应商提交返回 HTTP {exc.code}，但响应携带任务号；"
+                "系统将只查询该任务，不会重新提交。",
+                response={"body": detail},
+            ) from exc
         raise ProviderHTTPError(exc.code, detail, exc.headers) from exc
     except (TimeoutError, OSError, ssl.SSLError) as exc:
         if method.upper() == "POST":
@@ -314,8 +348,24 @@ def _request_multipart(
             return json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:1200]
+        if method.upper() == "POST" and _recoverable_task_id(detail):
+            raise ProviderOutcomeUncertain(
+                f"供应商提交返回 HTTP {exc.code}，但响应携带任务号；"
+                "系统将只查询该任务，不会重新提交。",
+                response={"body": detail},
+            ) from exc
         raise ProviderHTTPError(exc.code, detail, exc.headers) from exc
+    except (TimeoutError, OSError, ssl.SSLError) as exc:
+        if method.upper() == "POST":
+            raise ProviderOutcomeUncertain(
+                f"供应商请求已发出，但未收到可确认结果：{exc}"
+            ) from exc
+        raise RuntimeError(f"供应商接口读取失败：{exc}") from exc
     except urllib.error.URLError as exc:
+        if method.upper() == "POST":
+            raise ProviderOutcomeUncertain(
+                f"供应商请求未取得可确认结果：{exc.reason}"
+            ) from exc
         raise RuntimeError(f"供应商接口连接失败：{exc.reason}") from exc
 
 
@@ -349,50 +399,35 @@ def _poll_json(
 def _submit_with_retry(
     attempt: Callable[[], dict[str, Any]],
     *,
-    on_task_update: TaskEventCallback | None = None,
     retry_window: int = SUBMIT_RETRY_WINDOW_SECONDS,
 ) -> dict[str, Any]:
-    """Shared retry policy for every task-creating provider submission.
+    """Execute one paid task-creating request exactly once.
 
-    Explicit rate-limit / upstream-unavailable responses are retried with
-    bounded exponential backoff. Timeouts and connection drops are ambiguous
-    paid states and are never re-POSTed, so they surface immediately instead of
-    risking a duplicate charge.
+    Only the user can explicitly authorize another paid submission after a
+    failure. GET polling remains separately retryable because it is read-only.
     """
-    deadline = time.time() + max(0, int(retry_window))
-    delay = 3
-    while True:
-        try:
-            return attempt()
-        except ProviderHTTPError as exc:
-            retryable = exc.status_code in {429, 500, 502, 503, 504}
-            if not retryable or time.time() >= deadline:
-                raise
-            wait_seconds = min(SUBMIT_RETRY_MAX_DELAY_SECONDS, delay)
-            _emit_task_event(on_task_update, {
-                "taskId": "",
-                "status": "queued",
-                "phase": "供应商繁忙，系统自动重试",
-                "progress": 15,
-                "retryInSeconds": wait_seconds,
-                "retryable": True,
-                "httpStatus": exc.status_code,
-            })
-            time.sleep(wait_seconds)
-            delay = min(SUBMIT_RETRY_MAX_DELAY_SECONDS, delay * 2)
-        except RuntimeError:
-            raise
+    del retry_window
+    return attempt()
 
 
 def _provider_submit_error(exc: Exception) -> Exception:
-    """Return a precise final error after bounded retries have been exhausted."""
+    """Return a precise error for the single submission attempt."""
+    if isinstance(exc, ProviderHTTPError) and exc.status_code in {401, 403}:
+        return RuntimeError(
+            "New API 鉴权失败：当前 Key 无效、已撤销或无该模型权限；"
+            "请到 New API 密钥页重新创建或启用对应的本站 Key 后再提交。"
+        )
     if isinstance(exc, ProviderHTTPError) and exc.status_code in {429, 500, 502, 503, 504}:
         detail = str(exc.detail or "").lower()
         if "video_queue_full" in detail or "视频队列已满" in detail:
             return RuntimeError(
                 "供应商视频队列已满，本次未创建任务、未进入生成；"
-                "请等待 30–60 秒后重试，不要连续提交。"
+                "系统不会自动重提，请等待后由用户主动重新生成。"
             )
+        return RuntimeError(
+            f"供应商提交失败（HTTP {exc.status_code}），系统不会自动重提；"
+            "请确认供应商是否已受理后，由用户主动重新生成。"
+        )
     return exc
 
 
@@ -409,7 +444,6 @@ def _submit_json(
     try:
         return _submit_with_retry(
             lambda: _request_json(method, url, key, body, timeout=timeout),
-            on_task_update=on_task_update,
             retry_window=retry_window,
         )
     except Exception as exc:
@@ -429,7 +463,6 @@ def _submit_multipart(
     try:
         return _submit_with_retry(
             lambda: _request_multipart(method, url, key, fields, timeout=timeout),
-            on_task_update=on_task_update,
             retry_window=retry_window,
         )
     except Exception as exc:
@@ -616,6 +649,126 @@ def _asset_url_for_provider(url: str) -> str:
     with open(local, "rb") as fh:
         encoded = base64.b64encode(fh.read()).decode("ascii")
     return f"data:{mime};base64,{encoded}"
+
+
+def _canvaspro_asset_url(url: str) -> str:
+    """Return a public URL or a documented, size-bounded data URI."""
+    raw = str(url or "").strip()
+    if not raw:
+        raise RuntimeError("引用素材缺少 URL")
+    if raw.startswith(("http://", "https://")):
+        return raw
+    if raw.startswith("data:"):
+        return raw
+    if raw.startswith("/uploads/"):
+        storage = provider_catalog.storage_config()
+        if media_storage.is_ready(storage):
+            try:
+                descriptor = media_storage.ensure_local(
+                    raw,
+                    kind="image" if _is_image_path(raw) else "audio",
+                    fallback_ext=os.path.splitext(urllib.parse.urlsplit(raw).path)[1] or ".bin",
+                    source={"localUrl": raw},
+                )
+                public_url = media_storage.public_url(descriptor)
+                if public_url.startswith(("http://", "https://")):
+                    return public_url
+            except Exception:
+                # Fall back to the documented data-URI path. The provider
+                # only accepts URLs it can fetch; a login-gated /uploads path
+                # must never be sent.
+                pass
+        if _is_image_path(raw):
+            return _canvaspro_inline_image(raw)
+        # Small local audio clips can be inlined when object storage is
+        # unavailable; the request-body limit still protects the gateway.
+        #
+        # /uploads/ requires the app's login session, so it is not a public
+        # media URL even when prefixed with the public origin. The Suanli
+        # contract explicitly accepts MP3 data URIs (and image data URIs), so
+        # resolve local files through the size-guarded inline path instead.
+        return _asset_url_for_provider(raw)
+    local = local_upload_path(raw)
+    if local:
+        # A local-only file cannot be fetched by the provider. Inline it only
+        # after the normal size guard so an oversized JSON body is rejected
+        # locally instead of producing a gateway 503/timeout.
+        size = os.path.getsize(local)
+        if size > MAX_INLINE_BYTES:
+            raise RuntimeError(
+                "本地参考素材超过 24MB，且没有可公网访问的地址；"
+                "请先启用公网存储后再提交"
+            )
+        mime = mimetypes.guess_type(local)[0] or "application/octet-stream"
+        with open(local, "rb") as fh:
+            encoded = base64.b64encode(fh.read()).decode("ascii")
+        return f"data:{mime};base64,{encoded}"
+    raise RuntimeError(f"不支持的素材地址：{raw[:80]}")
+
+
+def _canvaspro_inline_image(url: str) -> str:
+    """Compress a local reference image before turning it into a data URI."""
+    local = local_upload_path(url)
+    if not local:
+        raise RuntimeError(f"不支持的图片地址：{url[:80]}")
+    size = os.path.getsize(local)
+    if size <= CANVASPRO_IMAGE_INLINE_MAX_BYTES:
+        with open(local, "rb") as handle:
+            data = handle.read()
+        mime = mimetypes.guess_type(local)[0] or "image/png"
+        return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+    ffmpeg = _ffmpeg_executable()
+    if not ffmpeg:
+        raise RuntimeError(
+            "本地参考图较大，对象存储当前不可用，"
+            "服务端缺少 ffmpeg，无法安全压缩后提交"
+        )
+    with tempfile.TemporaryDirectory(prefix="canvaspro-image-") as tmp:
+        target = os.path.join(tmp, "reference.jpg")
+        command = [
+            ffmpeg,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            local,
+            "-vf",
+            (
+                "scale="
+                f"'min({CANVASPRO_IMAGE_INLINE_MAX_EDGE},iw)':"
+                f"'min({CANVASPRO_IMAGE_INLINE_MAX_EDGE},ih)':"
+                "force_original_aspect_ratio=decrease"
+            ),
+            "-frames:v",
+            "1",
+            "-q:v",
+            "4",
+            target,
+        ]
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=60,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if completed.returncode != 0 or not os.path.isfile(target):
+            detail = completed.stderr.decode("utf-8", errors="replace")[:400]
+            raise RuntimeError(f"参考图压缩失败：{detail or '未生成输出文件'}")
+        data = open(target, "rb").read()
+    if len(data) > CANVASPRO_IMAGE_INLINE_MAX_BYTES:
+        raise RuntimeError(
+            "参考图压缩后仍超过 900 KB，无法安全内联；"
+            "请检查公网图片存储或降低参考图尺寸"
+        )
+    return f"data:image/jpeg;base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _is_image_path(path: str) -> bool:
+    return path.lower().split("?", 1)[0].endswith(
+        (".png", ".jpg", ".jpeg", ".webp", ".gif")
+    )
 
 
 def _ark_reference_url(ref: dict[str, Any]) -> str:
@@ -1138,7 +1291,7 @@ def _newapi_image(
                 "POST", f"{base}{route}/{action}", key, body, timeout=360,
             )
         except ProviderHTTPError as exc:
-            if exc.status_code in {500, 502, 503, 504}:
+            if exc.status_code in {429, 500, 502, 503, 504}:
                 # Some relays return a payment-side 5xx while still exposing a
                 # task id in the body. Retain it so polling can recover the
                 # already-created task instead of treating it as lost.
@@ -1164,10 +1317,11 @@ def _newapi_image(
                     response = recovered
                 else:
                     raise ProviderOutcomeUncertain(
-                        f"供应商请求已发出，但异步图片任务没有返回任务号；"
-                        f"HTTP {exc.status_code}：{detail[:500]}。"
+                        f"供应商请求返回 HTTP {exc.status_code}，但没有返回任务号；"
+                        f"详情：{detail[:500]}。"
                         f"提交时间 {submitted_at}。"
-                        "请先到供应商账单/任务记录核对，确认前不要重复提交。",
+                        "系统不会自动重提；请先到供应商账单/任务记录核对，"
+                        "确认前不要重复提交。",
                         submitted_at=submitted_at,
                     ) from exc
             else:
@@ -1533,7 +1687,14 @@ def _agnes_video(
             raise RuntimeError(f"Agnes 视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}")
         time.sleep(poll_delay(time.time() - poll_started))
     suffix = f"，最后错误：{last_poll_error}" if last_poll_error else ""
-    raise RuntimeError(f"Agnes 视频任务超时（900s，video_id {video_id}）{suffix}")
+    return {
+        "url": "",
+        "raw": {},
+        "taskId": video_id,
+        "pending": True,
+        "providerStatus": "running",
+        "message": f"Agnes 视频任务仍在处理中，已保留任务号 {video_id}{suffix}",
+    }
 
 
 def _task_id(response: dict[str, Any]) -> str:
@@ -1613,86 +1774,137 @@ def _newapi_video(
     on_task_created: TaskEventCallback | None = None,
     on_task_update: TaskEventCallback | None = None,
 ) -> dict[str, Any]:
-    """New APl video adapter.
-
-    The provider is one adapter. Its published models have different task
-    protocols, so protocol selection happens inside this adapter by exact
-    model name instead of leaking one adapter per product line.
-    """
+    """Compile and submit any documented New API video route."""
     profile = str(model.get("profile") or "").strip().lower()
     if not profile:
         raise RuntimeError(
             "当前 New API 视频模型缺少接口档案 profile；"
             "请重新拉取模型或重新保存模型，系统不会按名称猜测接口"
         )
-    if profile == "aistars-video":
-        return _newapi_aistars_video(
-            provider, model, prompt, params, refs, voices,
-            on_task_created=on_task_created,
-            on_task_update=on_task_update,
-        )
-    if profile == "hc-video":
-        return _newapi_hc_video(
-            provider, model, prompt, params, refs, voices,
-            on_task_created=on_task_created,
-            on_task_update=on_task_update,
-        )
-    if profile == "suanli-video":
-        return _newapi_suanli_video(
-            provider, model, prompt, params, refs, voices,
-            on_task_created=on_task_created,
-            on_task_update=on_task_update,
-        )
-    if profile != "openai-video":
-        raise RuntimeError(f"New API 视频接口档案未实现：{profile}")
-    text = _reference_prompt(prompt, refs + voices)
-    text_refs = _text_refs(refs)
-    if text_refs:
-        text += "\n\n" + text_refs
-    images = [
-        _asset_url_for_provider(str(ref["url"]))
+    contracts = provider_catalog._documented_video_profile_templates()
+    template = contracts.get(profile)
+    if not template:
+        raise RuntimeError(f"New API 视频线路模板未实现：{profile}")
+    contract = provider_catalog.documented_video_contract(model.get("remoteModel"))
+    if not contract and profile == "openai-video":
+        contract = {
+            "durations": list(range(1, 31)),
+            "resolutions": ["480P", "720P", "1080P"],
+            "aspectRatios": ["16:9", "9:16", "1:1"],
+            "maxReferences": {"images": 9, "videos": 3, "audios": 3},
+            "referenceCombinations": [],
+            "modes": [],
+            "profile": "openai-video",
+        }
+    # The legacy OpenAI-compatible route is a compatibility fallback for
+    # non-canvasprov relays. It is never selected for a documented model.
+    if not contract and profile == "openai-video":
+        contract = {
+            "durations": list(range(1, 31)),
+            "resolutions": ["480P", "720P", "1080P"],
+            "aspectRatios": ["16:9", "9:16", "1:1"],
+            "maxReferences": {"images": 9, "videos": 3, "audios": 3},
+            "referenceCombinations": [],
+            "modes": [],
+            "profile": "openai-video",
+        }
+    if not contract:
+        if profile == "openai-video":
+            contract = {
+                "durations": list(range(1, 31)),
+                "resolutions": ["480P", "720P", "1080P"],
+                "aspectRatios": ["16:9", "9:16", "1:1"],
+                "maxReferences": {"images": 9, "videos": 3, "audios": 3},
+                "referenceCombinations": [],
+                "modes": [],
+                "profile": "openai-video",
+            }
+        else:
+            raise RuntimeError(
+                f"New API 视频模型不在当前接口目录：{model.get('remoteModel')}"
+            )
+    asset_resolver = (
+        _canvaspro_asset_url
+        if profile in {"suanli-video", "aistars-video", "hc-video"}
+        else _asset_url_for_provider
+    )
+    image_urls = [
+        asset_resolver(str(ref["url"]))
         for ref in refs
         if ref.get("kind") == "image" and ref.get("url")
     ]
-    seconds = _safe_int(params.get("duration") or params.get("seconds"), 5, 1, 30)
-    resolution = str(params.get("resolution") or "720P").upper().replace("P", "p")
-    metadata = {
-        "resolution": resolution,
-        "generate_audio": bool(params.get("generateAudio", True)),
-        "watermark": bool(params.get("watermark", False)),
-    }
-    body: dict[str, Any] = {
-        "model": model["remoteModel"],
-        "prompt": text,
-        "seconds": seconds,
-        "size": resolution,
-        "metadata": metadata,
-    }
-    if images:
-        body["images"] = images
-        body["image"] = images[0] if len(images) == 1 else images
-        body["input_reference"] = images[0]
-    _apply_declared_params(body, model, params)
+    video_urls = [
+        asset_resolver(str(ref["url"]))
+        for ref in refs
+        if ref.get("kind") == "video" and ref.get("url")
+    ]
+    audio_urls = [
+        asset_resolver(str(ref["url"]))
+        for ref in voices
+        if ref.get("url")
+    ]
+    text_refs = _text_refs([ref for ref in refs if ref.get("kind") == "text"])
+    text = str(prompt or "")
+    if text_refs:
+        text += "\n\n" + text_refs
+    try:
+        compiled = newapi_video_contract.compile_video_request(
+            model=model,
+            contract=contract,
+            template=template,
+            prompt=text,
+            params=params,
+            image_urls=image_urls,
+            video_urls=video_urls,
+            audio_urls=audio_urls,
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    body_bytes = len(
+        json.dumps(compiled["body"], ensure_ascii=False).encode("utf-8")
+    )
+    if body_bytes > NEWAPI_VIDEO_MAX_BODY_BYTES:
+        raise RuntimeError(
+            f"视频请求体 {body_bytes / 1024 / 1024:.1f} MB，超过安全上限 "
+            f"{NEWAPI_VIDEO_MAX_BODY_BYTES // 1024 // 1024} MB；"
+            "参考素材需要先上传公网存储，不能用大体积 Base64 提交"
+        )
+    base = _newapi_api_origin(provider["base_url"])
     key = provider_catalog.provider_key(provider)
+    submit_url = (
+        _join_url(provider["base_url"], compiled["path"])
+        if profile == "openai-video"
+        else base + compiled["path"]
+    )
     response = _submit_json(
         "POST",
-        _join_url(provider["base_url"], "/videos"),
+        submit_url,
         key,
-        body,
+        compiled["body"],
+        timeout=NEWAPI_VIDEO_SUBMIT_TIMEOUT_SECONDS,
         on_task_update=on_task_update,
     )
-    task_id = _task_id(response)
+    task_id = newapi_video_contract.task_id_from_response(
+        response,
+        compiled["taskFields"],
+    )
+    if not task_id:
+        raise RuntimeError(
+            f"New API 视频未返回任务号：{json.dumps(response, ensure_ascii=False)[:500]}"
+        )
     _emit_task_created(on_task_created, {
         "taskId": task_id,
         "status": "queued",
         "progress": response.get("progress") or 0,
         "createdAt": time.time(),
     })
-    poll_url = _join_url(
-        provider["base_url"],
-        "/videos/" + urllib.parse.quote(task_id, safe=""),
+    poll_path = newapi_video_contract.build_query_path(template, task_id)
+    poll_url = (
+        _join_url(provider["base_url"], poll_path)
+        if profile == "openai-video"
+        else base + poll_path
     )
-    deadline = time.time() + 1800
+    deadline = time.time() + 3600
     poll_started = time.time()
     while time.time() < deadline:
         task = _poll_json(poll_url, key, timeout=30)
@@ -1702,17 +1914,31 @@ def _newapi_video(
             "status": status or "running",
             "progress": task.get("progress"),
         })
-        if status in {"completed", "succeeded", "success", "done"}:
+        if status in compiled["successStatuses"]:
             url = _newapi_video_url_from_task(task)
             if not url:
-                raise RuntimeError(f"视频任务完成但没有视频地址：{json.dumps(task, ensure_ascii=False)[:500]}")
+                raise RuntimeError(
+                    f"视频已完成但未返回视频地址：{json.dumps(task, ensure_ascii=False)[:500]}"
+                )
+            if profile == "aistars-video":
+                if not url.startswith(("http://", "https://", "/")):
+                    raise RuntimeError(f"即梦视频返回了无效地址：{url[:200]}")
+                full_url = url if url.startswith("http") else base + url
+                data, mime = _download_bytes_with_key(full_url, key)
+                return {
+                    "url": save_generated_bytes(data, mime, ".mp4"),
+                    "raw": task,
+                    "taskId": task_id,
+                }
             return {"url": url, "raw": task, "taskId": task_id}
-        if status in {"failed", "error", "cancelled", "canceled"}:
+        if status in compiled["failureStatuses"]:
             error = task.get("error")
             detail = error.get("message") if isinstance(error, dict) else error
-            raise RuntimeError(f"视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}")
-        time.sleep(poll_delay(time.time() - poll_started))
-    raise RuntimeError(f"视频任务超时（1800s，任务 {task_id}）")
+            raise RuntimeError(
+                f"视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}"
+            )
+        time.sleep(max(5.0, poll_delay(time.time() - poll_started)))
+    raise RuntimeError(f"视频任务超时（3600s，任务 {task_id}）")
 
 
 def _newapi_aistars_video(
@@ -1765,12 +1991,13 @@ def _newapi_aistars_video(
         body["audios"] = audios
     base = _newapi_api_origin(provider["base_url"])
     key = provider_catalog.provider_key(provider)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         f"{base}/aistars/v1/videos",
         key,
         body,
-        timeout=120,
+        timeout=NEWAPI_VIDEO_SUBMIT_TIMEOUT_SECONDS,
+        on_task_update=on_task_update,
     )
     task_id = str(response.get("id") or response.get("task_id") or "").strip()
     if not task_id:
@@ -1865,12 +2092,13 @@ def _newapi_hc_video(
     }
     base = _newapi_api_origin(provider["base_url"])
     key = provider_catalog.provider_key(provider)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         f"{base}/hc-cn/v1/video/tasks",
         key,
         body,
-        timeout=120,
+        timeout=NEWAPI_VIDEO_SUBMIT_TIMEOUT_SECONDS,
+        on_task_update=on_task_update,
     )
     task_id = _task_id(response)
     if not task_id:
@@ -1930,12 +2158,40 @@ def _newapi_suanli_video(
         for ref in voices
         if ref.get("url")
     ]
+    duration = _safe_int(params.get("duration"), 5, 1, 30)
+    resolution = str(params.get("resolution") or "720P").upper()
+    duration_spec = (model.get("params") or {}).get("duration") or {}
+    allowed_durations = [
+        int(value)
+        for value in (duration_spec.get("options") or [])
+        if str(value).strip().isdigit()
+    ]
+    if not allowed_durations:
+        lo = _safe_int(duration_spec.get("min"), duration, 1, 30)
+        hi = _safe_int(duration_spec.get("max"), duration, lo, 30)
+        allowed_durations = list(range(lo, hi + 1))
+    if duration not in allowed_durations:
+        raise RuntimeError(
+            f"当前模型只支持 {allowed_durations} 秒，实际请求 {duration} 秒；"
+            "已停止提交，避免供应商拒单"
+        )
+    resolution_spec = (model.get("params") or {}).get("resolution") or {}
+    allowed_resolutions = {
+        str(value).upper()
+        for value in (resolution_spec.get("options") or [])
+        if str(value).strip()
+    }
+    if allowed_resolutions and resolution not in allowed_resolutions:
+        raise RuntimeError(
+            f"当前模型只支持 {sorted(allowed_resolutions)}，实际请求 {resolution}；"
+            "已停止提交，避免供应商拒单"
+        )
     body = {
         "model": model["remoteModel"],
         "prompt": str(prompt or ""),
-        "resolution": str(params.get("resolution") or "720P").lower(),
+        "resolution": resolution.lower(),
         "aspect_ratio": str(params.get("ratio") or "16:9"),
-        "seconds": _safe_int(params.get("duration"), 5, 1, 30),
+        "seconds": duration,
     }
     if images:
         body["images"] = images
@@ -1945,12 +2201,13 @@ def _newapi_suanli_video(
         body["audio_refs"] = audios
     base = _newapi_api_origin(provider["base_url"])
     key = provider_catalog.provider_key(provider)
-    response = _request_json(
+    response = _submit_json(
         "POST",
         f"{base}/suanli/v1/videos",
         key,
         body,
-        timeout=120,
+        timeout=NEWAPI_VIDEO_SUBMIT_TIMEOUT_SECONDS,
+        on_task_update=on_task_update,
     )
     task_id = _task_id(response)
     if not task_id:
@@ -2355,7 +2612,7 @@ def generate_video(
             on_task_created=on_task_created,
             on_task_update=on_task_update,
         )
-    if adapter == "newapi_video":
+    if adapter in {"canvaspro_video", "openai_video"}:
         return _newapi_video(
             provider, model, prompt, params, refs, voices,
             on_task_created=on_task_created,
@@ -2380,6 +2637,9 @@ def check_video_task(
     if not task_id:
         raise RuntimeError("视频任务 ID 为空")
     adapter = str(model.get("adapter") or "")
+    protocol = provider_protocols.for_adapter(adapter)
+    if protocol is None:
+        raise RuntimeError(f"视频适配器未声明协议：{adapter}")
     key = provider_catalog.provider_key(provider)
     if adapter == "agnes_video":
         poll_url = (
@@ -2391,54 +2651,47 @@ def check_video_task(
             provider["base_url"],
             "/contents/generations/tasks/" + urllib.parse.quote(task_id, safe=""),
         )
-    elif adapter == "newapi_video":
+    elif adapter in {"canvaspro_video", "openai_video"}:
         profile = str(model.get("profile") or "").strip().lower()
         if not profile:
             raise RuntimeError(
                 "当前 New API 视频模型缺少接口档案 profile；"
                 "请重新拉取模型或重新保存模型，系统不会按名称猜测接口"
             )
+        templates = provider_catalog._documented_video_profile_templates()
+        template = templates.get(profile)
+        if not template:
+            raise RuntimeError(f"New API 视频线路模板未实现：{profile}")
         base = _newapi_api_origin(provider["base_url"])
-        if profile == "aistars-video":
-            poll_url = (
-                f"{base}/aistars/v1/tasks/"
-                + urllib.parse.quote(task_id, safe="")
-            )
-        elif profile == "hc-video":
-            poll_url = (
-                f"{base}/hc-cn/v1/video/tasks/"
-                + urllib.parse.quote(task_id, safe="")
-            )
-        elif profile == "suanli-video":
-            poll_url = (
-                f"{base}/suanli/v1/videos/"
-                + urllib.parse.quote(task_id, safe="")
-            )
-        elif profile == "openai-video":
-            poll_url = _join_url(
-                provider["base_url"],
-                "/videos/" + urllib.parse.quote(task_id, safe=""),
-            )
-        else:
-            raise RuntimeError(f"New API 视频接口档案未实现：{profile}")
+        poll_url = base + newapi_video_contract.build_query_path(template, task_id)
     else:
         raise RuntimeError(f"不支持恢复的视频适配器：{adapter}")
     task = _poll_json(poll_url, key, timeout=30)
     raw_status = str(task.get("status") or "").lower()
     url = ""
-    if raw_status in {"completed", "succeeded", "success", "done"}:
+    success_statuses = set(protocol.success_statuses)
+    failure_statuses = set(protocol.failure_statuses)
+    if adapter in {"canvaspro_video", "openai_video"}:
+        success_statuses = set(template.get("successStatuses") or [])
+        failure_statuses = set(template.get("failureStatuses") or [])
+    if raw_status in success_statuses:
         url = (
             _newapi_video_url_from_task(task)
-            if adapter == "newapi_video"
+            if adapter in {"canvaspro_video", "openai_video"}
             else _video_url_from_task(task)
         )
         if not url:
             raise RuntimeError(f"视频任务完成但没有视频地址：{json.dumps(task, ensure_ascii=False)[:500]}")
         state = "completed"
-    elif raw_status in {"failed", "error", "cancelled", "canceled"}:
+    elif raw_status in failure_statuses:
         state = "failed"
-    else:
+    elif raw_status in {"queued", "pending", "created", "submitted", "running", "processing", "retrying", "in_progress"}:
         state = "running"
+    else:
+        # An empty/unknown status is not evidence that the paid task failed.
+        # Keep it recoverable so the poller can retry the same task later.
+        state = "running"
+        raw_status = raw_status or "unknown"
     error = task.get("error")
     detail = error.get("message") if isinstance(error, dict) else error
     return {
@@ -2461,7 +2714,9 @@ def check_image_task(
     task_id = str(task_id or "").strip()
     if not task_id:
         raise RuntimeError("图片任务 ID 为空")
-    if str(model.get("adapter") or "") != "newapi_image":
+    adapter = str(model.get("adapter") or "")
+    protocol = provider_protocols.for_adapter(adapter)
+    if protocol is None or adapter != "newapi_image":
         raise RuntimeError(f"不支持恢复的图片适配器：{model.get('adapter')}")
     profile = str(model.get("profile") or "").strip()
     if not profile:
@@ -2476,7 +2731,7 @@ def check_image_task(
     task = _poll_json(poll_url, key, timeout=30)
     raw_status = str(task.get("status") or "").lower()
     url = ""
-    if raw_status in {"succeeded", "completed", "success", "done"}:
+    if raw_status in protocol.success_statuses:
         result = _newapi_image_result(
             task,
             source=source,
@@ -2492,7 +2747,7 @@ def check_image_task(
                 f"{json.dumps(task, ensure_ascii=False)[:500]}"
             )
         state = "completed"
-    elif raw_status in {"failed", "error", "cancelled", "canceled"}:
+    elif raw_status in protocol.failure_statuses:
         state = "failed"
     else:
         state = "running"

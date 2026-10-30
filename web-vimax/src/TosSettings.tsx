@@ -1,28 +1,20 @@
 import {useEffect, useState} from 'react';
 import {Check, CloudUpload, KeyRound, RefreshCw, Save, ShieldCheck, X} from 'lucide-react';
 import {
+  activateStorage,
+  deactivateStorage,
   getStorageConfig,
   saveStorageConfig,
   testStorageConfig,
   type StorageSpec,
 } from './api';
+import {draftForProvider, mergeSavedStorageState, mergeStorageProfile, type StorageDraft} from './storageSettings';
 
-type StorageDraft = {
-  enabled: boolean;
-  provider: 'tos' | 'imgbb';
-  bucket: string;
-  region: string;
-  endpoint: string;
-  internal_endpoint: string;
-  prefix: string;
-  url_ttl_seconds: string;
-  auto_persist_images: boolean;
-  auto_persist_videos: boolean;
-  require_for_ark_portrait: boolean;
-  access_key: string;
-  secret_key: string;
-  imgbb_api_key: string;
-};
+function storageLabel(provider: string) {
+  if (provider === 'aliyun_oss') return '阿里云 OSS';
+  if (provider === 'qiniu') return '七牛云';
+  return '火山 TOS';
+}
 
 const DEFAULT_DRAFT: StorageDraft = {
   enabled: false,
@@ -31,32 +23,39 @@ const DEFAULT_DRAFT: StorageDraft = {
   region: 'cn-beijing',
   endpoint: 'tos-cn-beijing.volces.com',
   internal_endpoint: 'tos-cn-beijing.ivolces.com',
+  public_domain: '',
   prefix: 'drama-canvas/',
   url_ttl_seconds: '3600',
   auto_persist_images: true,
   auto_persist_videos: true,
+  auto_persist_audio: true,
   require_for_ark_portrait: true,
   access_key: '',
   secret_key: '',
-  imgbb_api_key: '',
 };
 
 function draftFromStorage(storage: StorageSpec): StorageDraft {
+  const selectedProfile = storage.profiles?.[storage.provider];
   return {
     enabled: storage.enabled,
-    provider: storage.provider === 'imgbb' ? 'imgbb' : 'tos',
-    bucket: storage.bucket,
-    region: storage.region || 'cn-beijing',
-    endpoint: storage.endpoint || 'tos-cn-beijing.volces.com',
-    internal_endpoint: storage.internal_endpoint || 'tos-cn-beijing.ivolces.com',
-    prefix: storage.prefix || 'drama-canvas/',
-    url_ttl_seconds: String(storage.url_ttl_seconds || 3600),
+    provider: storage.provider === 'aliyun_oss'
+      ? 'aliyun_oss'
+      : storage.provider === 'qiniu'
+        ? 'qiniu'
+        : 'tos',
+    bucket: selectedProfile?.bucket || storage.bucket,
+    region: selectedProfile?.region || storage.region || 'cn-beijing',
+    endpoint: selectedProfile?.endpoint || storage.endpoint || 'tos-cn-beijing.volces.com',
+    internal_endpoint: selectedProfile?.internal_endpoint || storage.internal_endpoint || 'tos-cn-beijing.ivolces.com',
+    public_domain: selectedProfile?.public_domain || storage.public_domain || '',
+    prefix: selectedProfile?.prefix || storage.prefix || 'drama-canvas/',
+    url_ttl_seconds: String(selectedProfile?.url_ttl_seconds || storage.url_ttl_seconds || 3600),
     auto_persist_images: storage.auto_persist_images !== false,
     auto_persist_videos: storage.auto_persist_videos !== false,
+    auto_persist_audio: storage.auto_persist_audio !== false,
     require_for_ark_portrait: storage.require_for_ark_portrait !== false,
     access_key: '',
     secret_key: '',
-    imgbb_api_key: '',
   };
 }
 
@@ -88,14 +87,13 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
   const [draft, setDraft] = useState<StorageDraft>({...DEFAULT_DRAFT});
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [testingProvider, setTestingProvider] = useState<'tos' | 'aliyun_oss' | 'qiniu' | null>(null);
   const [status, setStatus] = useState('');
   const [testState, setTestState] = useState<{ok: boolean; message: string} | null>(null);
-  const [clearImgbbKey, setClearImgbbKey] = useState(false);
 
   const apply = (next: StorageSpec) => {
     setStorage(next);
     setDraft(draftFromStorage(next));
-    setClearImgbbKey(false);
   };
 
   const load = async () => {
@@ -114,24 +112,29 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
 
   const update = <K extends keyof StorageDraft>(key: K, value: StorageDraft[K]) => {
     setDraft((current) => ({...current, [key]: value}));
-    if (key === 'imgbb_api_key' && String(value || '').trim()) setClearImgbbKey(false);
+    setStatus('');
+  };
+
+  const selectProvider = (provider: StorageDraft['provider']) => {
+    setDraft((current) => draftForProvider(current, storage, provider));
+    setTestState(null);
     setStatus('');
   };
 
   const save = async () => {
     if (busy) return;
+    const provider = draft.provider;
     setBusy(true);
     setStatus('');
     setTestState(null);
     try {
       const next = await saveStorageConfig({
         ...draft,
-        imgbb_api_key_clear: clearImgbbKey,
-        imgbb_api_key: draft.imgbb_api_key,
         url_ttl_seconds: Number(draft.url_ttl_seconds || 3600),
       });
-      apply(next);
-      setStatus(`${draft.provider === 'imgbb' ? 'ImgBB' : 'TOS'} 配置已保存`);
+      setStorage(next);
+      setDraft((current) => mergeSavedStorageState(current, next, provider));
+      setStatus(`${storageLabel(provider)} 配置已保存`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -141,11 +144,17 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
 
   const test = async () => {
     if (testing) return;
+    const provider = draft.provider;
     setTesting(true);
+    setTestingProvider(provider);
     setTestState(null);
     try {
-      const result = await testStorageConfig(draft.provider);
+      const result = await testStorageConfig(provider);
       setTestState({ok: result.ok, message: result.message || '连接成功'});
+      if (provider !== draft.provider) return;
+      const refreshed = await getStorageConfig();
+      setStorage(refreshed);
+      setDraft((current) => mergeStorageProfile(current, refreshed, provider));
     } catch (error) {
       setTestState({
         ok: false,
@@ -153,16 +162,61 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
       });
     } finally {
       setTesting(false);
+      setTestingProvider(null);
     }
   };
 
+  const activate = async () => {
+    if (busy) return;
+    setBusy(true);
+    setStatus('');
+    try {
+      const next = await activateStorage(draft.provider);
+      apply(next);
+      setStatus(`${storageLabel(draft.provider)} 已启用`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deactivate = async () => {
+    if (busy) return;
+    setBusy(true);
+    setStatus('');
+    try {
+      const next = await deactivateStorage();
+      apply(next);
+      setStatus('自动转存已停用');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const storedCredentials = Boolean(
+    storage?.profiles?.[draft.provider]?.has_access_key
+    && storage.profiles[draft.provider].has_secret_key,
+  );
+  const draftCredentials = Boolean(
+    draft.access_key.trim() && draft.secret_key.trim(),
+  );
+  const canTest = Boolean(
+    draft.enabled
+    && draft.bucket.trim()
+    && (storedCredentials || draftCredentials)
+    && (draft.provider !== 'qiniu' || draft.public_domain.trim())
+    && (draft.provider === 'qiniu' || draft.endpoint.trim()),
+  );
+
   return (
-    <div className="canvas-help-backdrop model-settings-backdrop" onClick={onClose}>
+    <div className="canvas-help-backdrop model-settings-backdrop">
       <section
         className="canvas-help tos-settings-dialog"
         role="dialog"
         aria-modal="true"
-        onClick={(event) => event.stopPropagation()}
       >
         <header>
           <div>
@@ -172,7 +226,7 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
           <div className="model-settings-header-actions">
             <span className={`tos-state-pill ${storage?.ready ? 'is-ready' : ''}`}>
               {storage?.ready ? <Check size={12} /> : <CloudUpload size={12} />}
-              {storage?.ready ? (storage.provider === 'imgbb' ? 'ImgBB 已启用' : 'TOS 已启用') : '未启用'}
+              {storage?.ready ? `${storageLabel(storage.provider)} 已启用` : '未启用'}
             </span>
             <button type="button" onClick={() => void load()} title="刷新存储配置"><RefreshCw size={14} />刷新</button>
             <button type="button" className="canvas-inspector-close" onClick={onClose} aria-label="关闭"><X size={15} /></button>
@@ -193,43 +247,58 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
             <button
               type="button"
               className={!draft.enabled ? 'is-active' : ''}
-              onClick={() => update('enabled', false)}
+              onClick={() => void deactivate()}
             >不转存</button>
             <button
               type="button"
               className={draft.enabled && draft.provider === 'tos' ? 'is-active' : ''}
               onClick={() => {
-                update('provider', 'tos');
-                update('enabled', true);
+                selectProvider('tos');
               }}
             >火山 TOS</button>
             <button
               type="button"
-              className={draft.enabled && draft.provider === 'imgbb' ? 'is-active' : ''}
+              className={draft.enabled && draft.provider === 'aliyun_oss' ? 'is-active' : ''}
               onClick={() => {
-                update('provider', 'imgbb');
-                update('enabled', true);
+                selectProvider('aliyun_oss');
               }}
-            >ImgBB</button>
+            >阿里云 OSS</button>
+            <button
+              type="button"
+              className={draft.enabled && draft.provider === 'qiniu' ? 'is-active' : ''}
+              onClick={() => {
+                selectProvider('qiniu');
+              }}
+            >七牛云</button>
           </div>
 
-          {draft.enabled && draft.provider === 'tos' && <div className="model-settings-form tos-settings-form">
+          <div className="model-settings-form tos-settings-form">
             <label>
               <span>Bucket</span>
-              <input value={draft.bucket} onChange={(event) => update('bucket', event.target.value)} placeholder="例如 drama-originals" autoComplete="off" />
+              <input value={draft.bucket} onChange={(event) => update('bucket', event.target.value)} placeholder={draft.provider === 'qiniu' ? '七牛空间名' : draft.provider === 'aliyun_oss' ? 'OSS Bucket 名' : '例如 drama-originals'} autoComplete="off" />
             </label>
-            <label>
+            {draft.provider !== 'qiniu' && <label>
               <span>Region</span>
-              <input value={draft.region} onChange={(event) => update('region', event.target.value)} placeholder="cn-beijing" autoComplete="off" />
-            </label>
-            <label>
-              <span>公网 Endpoint</span>
-              <input value={draft.endpoint} onChange={(event) => update('endpoint', event.target.value)} placeholder="tos-cn-beijing.volces.com" autoComplete="off" />
-            </label>
-            <label>
-              <span>内网 Endpoint</span>
-              <input value={draft.internal_endpoint} onChange={(event) => update('internal_endpoint', event.target.value)} placeholder="tos-cn-beijing.ivolces.com" autoComplete="off" />
-            </label>
+              <input value={draft.region} onChange={(event) => update('region', event.target.value)} placeholder={draft.provider === 'aliyun_oss' ? 'oss-cn-beijing' : 'cn-beijing'} autoComplete="off" />
+            </label>}
+            {draft.provider === 'tos' && <>
+              <label>
+                <span>公网 Endpoint</span>
+                <input value={draft.endpoint} onChange={(event) => update('endpoint', event.target.value)} placeholder="tos-cn-beijing.volces.com" autoComplete="off" />
+              </label>
+              <label>
+                <span>内网 Endpoint</span>
+                <input value={draft.internal_endpoint} onChange={(event) => update('internal_endpoint', event.target.value)} placeholder="tos-cn-beijing.ivolces.com" autoComplete="off" />
+              </label>
+            </>}
+            {draft.provider === 'aliyun_oss' && <label>
+              <span>OSS Endpoint</span>
+              <input value={draft.endpoint} onChange={(event) => update('endpoint', event.target.value)} placeholder="oss-cn-beijing.aliyuncs.com" autoComplete="off" />
+            </label>}
+            {draft.provider === 'qiniu' && <label className="is-wide">
+              <span>公网访问域名</span>
+              <input value={draft.public_domain} onChange={(event) => update('public_domain', event.target.value)} placeholder="https://cdn.example.com" autoComplete="off" />
+            </label>}
             <label>
               <span>对象前缀</span>
               <input value={draft.prefix} onChange={(event) => update('prefix', event.target.value)} placeholder="drama-canvas/" autoComplete="off" />
@@ -239,78 +308,65 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
               <input value={draft.url_ttl_seconds} onChange={(event) => update('url_ttl_seconds', event.target.value)} placeholder="3600" inputMode="numeric" />
             </label>
             <label className="is-wide">
-              <span>Access Key {storage?.has_access_key ? <i>{storage.access_key_hint}</i> : null}</span>
+              <span>
+                Access Key{' '}
+                {storage?.profiles?.[draft.provider]?.has_access_key
+                  ? <i>{storage.profiles[draft.provider].access_key_hint}</i>
+                  : <i className="is-empty">未配置</i>}
+              </span>
               <div className="tos-secret-input">
                 <KeyRound size={14} />
-                <input type="password" value={draft.access_key} onChange={(event) => update('access_key', event.target.value)} placeholder="留空保留现有 Access Key" autoComplete="new-password" />
+              <input type="password" value={draft.access_key} onChange={(event) => update('access_key', event.target.value)} placeholder={storage?.profiles?.[draft.provider]?.has_access_key ? '留空保留现有 Access Key' : '填写该服务商的 Access Key'} autoComplete="new-password" />
               </div>
             </label>
             <label className="is-wide">
-              <span>Secret Key {storage?.has_secret_key ? <i>{storage.secret_key_hint}</i> : null}</span>
+              <span>
+                Secret Key{' '}
+                {storage?.profiles?.[draft.provider]?.has_secret_key
+                  ? <i>{storage.profiles[draft.provider].secret_key_hint}</i>
+                  : <i className="is-empty">未配置</i>}
+              </span>
               <div className="tos-secret-input">
                 <KeyRound size={14} />
-                <input type="password" value={draft.secret_key} onChange={(event) => update('secret_key', event.target.value)} placeholder="留空保留现有 Secret Key" autoComplete="new-password" />
+              <input type="password" value={draft.secret_key} onChange={(event) => update('secret_key', event.target.value)} placeholder={storage?.profiles?.[draft.provider]?.has_secret_key ? '留空保留现有 Secret Key' : '填写该服务商的 Secret Key'} autoComplete="new-password" />
               </div>
             </label>
-          </div>}
+          </div>
 
-          {draft.enabled && draft.provider === 'tos' && <div className="tos-settings-options">
+          <div className="tos-settings-options">
             <div>
-              <span><strong>图片生成后自动转存</strong><small>新生成的图片立即写入 TOS</small></span>
-              <Switch checked={draft.auto_persist_images} label="图片生成后自动转存 TOS" onChange={(value) => update('auto_persist_images', value)} />
-            </div>
-            <div>
-              <span><strong>视频生成后自动转存</strong><small>视频先显示，再在后台缓存并写入 TOS</small></span>
-              <Switch checked={draft.auto_persist_videos} label="视频生成后自动转存 TOS" onChange={(value) => update('auto_persist_videos', value)} />
+              <span><strong>图片生成后自动转存</strong><small>新生成的图片立即写入当前对象存储</small></span>
+              <Switch checked={draft.auto_persist_images} label="图片生成后自动转存" onChange={(value) => update('auto_persist_images', value)} />
             </div>
             <div>
-              <span><strong>Seedream 角色图强制 TOS</strong><small>进入 Seedance 前没有 TOS 原始对象时阻止提交</small></span>
-              <Switch checked={draft.require_for_ark_portrait} label="Seedream 角色图强制使用 TOS" onChange={(value) => update('require_for_ark_portrait', value)} />
+              <span><strong>视频生成后自动转存</strong><small>视频先显示，再在后台缓存并写入当前对象存储</small></span>
+              <Switch checked={draft.auto_persist_videos} label="视频生成后自动转存" onChange={(value) => update('auto_persist_videos', value)} />
             </div>
-          </div>}
-
-          {draft.enabled && draft.provider === 'imgbb' && (
-            <div className="model-settings-form tos-settings-form imgbb-settings-form">
-              <label className="is-wide">
-                <span>
-                  ImgBB API Key
-                  {storage?.imgbb?.has_api_key ? <i>{storage.imgbb.api_key_hint}</i> : null}
-                </span>
-                <div className="tos-secret-input">
-                  <KeyRound size={14} />
-                  <input
-                    type="password"
-                    value={draft.imgbb_api_key}
-                    onChange={(event) => update('imgbb_api_key', event.target.value)}
-                    placeholder={storage?.imgbb?.has_api_key ? '留空保留现有 API Key' : '填写 imgbb.com 的 API Key'}
-                    autoComplete="new-password"
-                  />
-                </div>
-              </label>
-              <div className="imgbb-note is-wide">
-                <strong>配置后自动转存</strong>
-                <p>每张生成图片完成后自动上传 ImgBB，节点使用 ImgBB 返回的公开图片地址；上传失败时保留本地缓存图。</p>
-              </div>
-              {storage?.imgbb?.has_api_key && (
-                <button
-                  type="button"
-                  className="imgbb-clear-key is-wide"
-                  onClick={() => {
-                    update('enabled', false);
-                    update('imgbb_api_key', '');
-                    setClearImgbbKey(true);
-                  }}
-                >
-                  移除 ImgBB API Key（保存后生效）
-                </button>
-              )}
+            <div>
+              <span><strong>音频参考自动转存</strong><small>视频提交前把本地音频转成公开 URL</small></span>
+              <Switch checked={draft.auto_persist_audio} label="音频参考自动转存" onChange={(value) => update('auto_persist_audio', value)} />
             </div>
-          )}
+            <div>
+              <span><strong>Seedream 角色图强制存储</strong><small>进入 Seedance 前没有存储原始对象时阻止提交</small></span>
+              <Switch checked={draft.require_for_ark_portrait} label="Seedream 角色图强制使用对象存储" onChange={(value) => update('require_for_ark_portrait', value)} />
+            </div>
+          </div>
 
           {testState && (
             <div className={`tos-test-result ${testState.ok ? 'is-ok' : 'is-error'}`}>
               {testState.ok ? <Check size={13} /> : <X size={13} />}
               <span>{testState.message}</span>
+            </div>
+          )}
+          {!testState && testingProvider === draft.provider && (
+            <div className="tos-test-result">
+              <span>正在上传测试文件并检查公网访问…</span>
+            </div>
+          )}
+          {!testState && testingProvider === null && storage?.provider === draft.provider && storage.last_test_ok === false && storage.last_test_error && (
+            <div className="tos-test-result is-error">
+              <X size={13} />
+              <span>{storage.last_test_error}</span>
             </div>
           )}
         </div>
@@ -319,9 +375,17 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
           <button type="button" className="is-primary" disabled={busy} onClick={() => void save()}>
             <Save size={13} />{busy ? '保存中…' : '保存存储配置'}
           </button>
-          <button type="button" disabled={testing || !storage?.ready || storage.provider !== draft.provider} onClick={() => void test()}>
-            {testing ? '测试中…' : `测试 ${draft.provider === 'imgbb' ? 'ImgBB' : 'TOS'}`}
+          <button type="button" disabled={testing || !canTest} onClick={() => void test()}>
+            {testing ? '测试中…' : `测试 ${storageLabel(draft.provider)}`}
           </button>
+          <button type="button" disabled={busy || !canTest} onClick={() => void activate()}>
+            {storage?.enabled && storage.provider === draft.provider ? '已启用' : '启用此存储'}
+          </button>
+          {storage?.enabled && (
+            <button type="button" disabled={busy} onClick={() => void deactivate()}>
+              停用自动转存
+            </button>
+          )}
           <span className="model-settings-hint"><ShieldCheck size={12} />密钥仅保存在服务端，不返回完整值</span>
         </footer>
       </section>

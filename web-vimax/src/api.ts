@@ -325,6 +325,7 @@ export type DiscoveredModelSpec = {
   limits: Record<string, unknown>;
   pricing: Record<string, unknown>;
   alreadyConfigured?: boolean;
+  disabled?: boolean;
 };
 
 export type ProviderSpec = {
@@ -366,15 +367,17 @@ export type BudgetStatus = {
 
 export type StorageSpec = {
   enabled: boolean;
-  provider: 'tos' | 'imgbb' | string;
+  provider: 'tos' | 'aliyun_oss' | 'qiniu' | string;
   bucket: string;
   region: string;
   endpoint: string;
   internal_endpoint: string;
+  public_domain: string;
   prefix: string;
   url_ttl_seconds: number;
   auto_persist_images: boolean;
   auto_persist_videos: boolean;
+  auto_persist_audio: boolean;
   require_for_ark_portrait: boolean;
   has_access_key: boolean;
   access_key_hint?: string;
@@ -382,13 +385,27 @@ export type StorageSpec = {
   secret_key_hint?: string;
   ready: boolean;
   tos_ready: boolean;
-  imgbb: {
-    enabled: boolean;
-    has_api_key: boolean;
-    api_key_hint?: string;
-    auto_persist_images: boolean;
-    ready: boolean;
-  };
+  oss_ready: boolean;
+  qiniu_ready: boolean;
+  last_test_ok?: boolean | null;
+  last_test_error?: string;
+  last_test_at?: string;
+  profiles?: Record<string, {
+    bucket: string;
+    region: string;
+    endpoint: string;
+    internal_endpoint: string;
+    public_domain: string;
+    prefix: string;
+    url_ttl_seconds: number;
+    has_access_key: boolean;
+    access_key_hint?: string;
+    has_secret_key: boolean;
+    secret_key_hint?: string;
+    last_test_ok?: boolean | null;
+    last_test_error?: string;
+    last_test_at?: string;
+  }>;
 };
 
 export type GenerationTask = {
@@ -409,6 +426,14 @@ export type GenerationTask = {
   queue_position?: number | null;
   error?: string;
   error_kind?: 'local_validation' | 'provider' | '';
+  outcome?: {
+    phase?: 'running' | 'unknown' | 'ready' | 'failed' | string;
+    regenerate?: 'allowed' | 'confirm' | 'blocked' | string;
+    reason?: string;
+    requiresConfirmation?: boolean;
+    providerTaskId?: string;
+    providerAccepted?: boolean;
+  };
   created_at: string;
   started_at?: string;
   updated_at?: string;
@@ -936,10 +961,28 @@ export async function saveStorageConfig(
   return payload.storage;
 }
 
-export async function testStorageConfig(provider: 'tos' | 'imgbb' = 'tos'): Promise<{ok: boolean; message: string; url?: string}> {
-  return request(provider === 'imgbb' ? '/api/storage/imgbb/test' : '/api/storage/test', {
+export async function activateStorage(
+  provider: 'tos' | 'aliyun_oss' | 'qiniu',
+): Promise<StorageSpec> {
+  const payload = await request<{ok: boolean; storage: StorageSpec}>('/api/storage/activate', {
+    method: 'POST',
+    body: JSON.stringify({provider}),
+  });
+  return payload.storage;
+}
+
+export async function deactivateStorage(): Promise<StorageSpec> {
+  const payload = await request<{ok: boolean; storage: StorageSpec}>('/api/storage/deactivate', {
     method: 'POST',
     body: '{}',
+  });
+  return payload.storage;
+}
+
+export async function testStorageConfig(provider: 'tos' | 'aliyun_oss' | 'qiniu' = 'tos'): Promise<{ok: boolean; message: string; url?: string}> {
+  return request('/api/storage/test', {
+    method: 'POST',
+    body: JSON.stringify({provider}),
   });
 }
 
@@ -1674,7 +1717,10 @@ export async function sendMessage(sessionId: string, text: string): Promise<{rep
 export async function generateCanvasNodeNow(
   sessionId: string,
   nodeId: string,
-  payload?: {prompt?: string; params?: CanvasMediaParams},
+  payload?: {
+    prompt?: string;
+    params?: CanvasMediaParams;
+  },
 ) {
   const key = `${sessionId}::${nodeId}`;
   if (inflight.has(key)) {
@@ -1825,6 +1871,15 @@ export type UploadFileResult = {
   mime: string;
   sha256?: string;
   kind?: 'image' | 'audio' | 'video';
+  storage?: {
+    provider?: string;
+    bucket?: string;
+    key?: string;
+    status?: string;
+    url?: string;
+    storedAt?: string;
+  };
+  remoteUrl?: string;
 };
 
 export function uploadWorkspaceFileWithProgress(

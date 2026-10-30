@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 import base64
 import copy
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import types
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 import provider_catalog
@@ -272,6 +274,55 @@ class ProviderCatalogTests(unittest.TestCase):
             "https://api.canvasproai.com/aistars/v1/images/generations",
         )
 
+    def test_aistars_image_429_without_task_id_is_uncertain_and_not_retried(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "65-seedream-5-pro",
+            "remoteModel": "即梦-65-seedream-5-pro",
+            "adapter": "newapi_image",
+            "profile": "aistars-image",
+            "params": {},
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            raise provider_client.ProviderHTTPError(
+                429,
+                '{"error":{"code":"rate_limit","message":"busy"}}',
+            )
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request):
+            with self.assertRaisesRegex(
+                provider_client.ProviderOutcomeUncertain,
+                "没有返回任务号",
+            ):
+                provider_client.generate_image(
+                    provider,
+                    model,
+                    "test",
+                    {"ratio": "9:16", "clarity": "2K"},
+                    [],
+                )
+
+        self.assertEqual(len(calls), 1)
+
+    def test_submit_http_500_is_not_automatically_repeated(self):
+        calls = []
+
+        def fail():
+            calls.append("POST")
+            raise provider_client.ProviderHTTPError(500, "busy")
+
+        with self.assertRaises(provider_client.ProviderHTTPError):
+            provider_client._submit_with_retry(fail)
+        self.assertEqual(calls, ["POST"])
+
     def test_aistars_image_503_with_task_id_recovers_by_polling_same_task(self):
         provider = {
             "id": "new-apl",
@@ -344,7 +395,7 @@ class ProviderCatalogTests(unittest.TestCase):
         model = {
             "id": "47-seedance-2.5",
             "remoteModel": "即梦-47-seedance-2.5",
-            "adapter": "newapi_video",
+            "adapter": "canvaspro_video",
             "profile": "aistars-video",
             "params": {},
         }
@@ -458,7 +509,7 @@ class ProviderCatalogTests(unittest.TestCase):
         model = {
             "id": "high-quality-sd20",
             "remoteModel": "高质量sd2.0/(全参933原生过真人速度快720P)",
-            "adapter": "newapi_video",
+            "adapter": "canvaspro_video",
             "profile": "suanli-video",
             "params": {},
         }
@@ -520,6 +571,391 @@ class ProviderCatalogTests(unittest.TestCase):
             "https://api.canvasproai.com/suanli/v1/videos/task-suanli",
         )
 
+    def test_002_sd20_12s_720p_rejects_stale_video_defaults_before_submit(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "002-sd2.0-9-3-12-720p",
+            "remoteModel": "002系列/sd2.0(9图3音频12秒不卡脸720P)",
+            "adapter": "canvaspro_video",
+            "profile": "suanli-video",
+            "params": {
+                "resolution": {"type": "select", "options": ["720P"]},
+                "duration": {"type": "range", "min": 12, "max": 12, "step": 1},
+            },
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            return {"id": "must-not-submit", "status": "queued"}
+
+        with (
+            patch.object(provider_client, "_request_json", side_effect=fake_request),
+            self.assertRaisesRegex(RuntimeError, "只支持 \\[12\\] 秒"),
+        ):
+            provider_client.generate_video(
+                provider,
+                model,
+                "人物回头",
+                {
+                    "ratio": "9:16",
+                    "resolution": "480P",
+                    "duration": 5,
+                },
+                [],
+                [],
+            )
+
+        self.assertEqual(calls, [])
+
+    def test_002_sd20_12s_720p_submits_exact_documented_video_contract(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "002-sd2.0-9-3-12-720p",
+            "remoteModel": "002系列/sd2.0(9图3音频12秒不卡脸720P)",
+            "adapter": "canvaspro_video",
+            "profile": "suanli-video",
+            "params": {
+                "resolution": {"type": "select", "options": ["720P"]},
+                "duration": {"type": "range", "min": 12, "max": 12, "step": 1},
+            },
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            if method == "POST":
+                return {"id": "task-002", "status": "queued"}
+            return {
+                "id": "task-002",
+                "status": "completed",
+                "content_url": "/suanli/v1/tasks/task-002/artifacts/video/content",
+            }
+
+        with (
+            patch.object(provider_client, "_request_json", side_effect=fake_request),
+            patch.object(provider_client.time, "sleep"),
+        ):
+            result = provider_client.generate_video(
+                provider,
+                model,
+                "九张参考图与三段音色生成十二秒人物镜头",
+                {
+                    "ratio": "9:16",
+                    "resolution": "720P",
+                    "duration": 12,
+                },
+                [
+                    {
+                        "kind": "image",
+                        "url": f"https://cdn.example/ref-{index}.png",
+                        "label": f"参考图 {index}",
+                    }
+                    for index in range(1, 10)
+                ],
+                [
+                    {
+                        "kind": "audio",
+                        "url": f"https://cdn.example/voice-{index}.mp3",
+                        "label": f"音色 {index}",
+                    }
+                    for index in range(1, 4)
+                ],
+            )
+
+        self.assertEqual(result["taskId"], "task-002")
+        self.assertEqual(calls[0][0], "POST")
+        self.assertEqual(
+            calls[0][1],
+            "https://api.canvasproai.com/suanli/v1/videos",
+        )
+        body = calls[0][2]
+        self.assertEqual(body["model"], model["remoteModel"])
+        self.assertEqual(body["resolution"], "720p")
+        self.assertEqual(body["seconds"], 12)
+        self.assertEqual(body["aspect_ratio"], "9:16")
+        self.assertEqual(
+            body["images"],
+            [f"https://cdn.example/ref-{index}.png" for index in range(1, 10)],
+        )
+        self.assertEqual(
+            body["audio_refs"],
+            [f"https://cdn.example/voice-{index}.mp3" for index in range(1, 4)],
+        )
+
+    def test_002_sd20_local_images_use_data_uri_when_storage_not_ready(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "002-sd2.0-9-3-12-720p",
+            "remoteModel": "002系列/sd2.0(9图3音频12秒不卡脸720P)",
+            "adapter": "canvaspro_video",
+            "profile": "suanli-video",
+            "params": {
+                "resolution": {"type": "select", "options": ["720P"]},
+                "duration": {"type": "number", "default": 12, "min": 12, "max": 12},
+            },
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            if method == "POST":
+                return {"id": "task-public", "status": "queued"}
+            return {
+                "id": "task-public",
+                "status": "completed",
+                "content_url": "https://cdn.example/result.mp4",
+            }
+
+        with (
+            patch.object(provider_client, "_request_json", side_effect=fake_request),
+            patch.object(provider_client.time, "sleep"),
+            patch.object(
+                provider_client.media_storage,
+                "is_ready",
+                return_value=False,
+            ),
+            patch.object(
+                provider_client,
+                "_canvaspro_inline_image",
+                side_effect=lambda url: "[image omitted]",
+            ),
+        ):
+            provider_client.generate_video(
+                provider,
+                model,
+                "公共素材测试",
+                {"ratio": "9:16", "resolution": "720P", "duration": 12},
+                [
+                    {
+                        "kind": "image",
+                        "url": f"/uploads/generated-{index}.png",
+                        "label": f"图{index}",
+                    }
+                    for index in range(4)
+                ],
+                [
+                    {
+                        "kind": "audio",
+                        "url": f"https://cdn.example/voice-{index}.mp3",
+                        "label": f"音{index}",
+                    }
+                    for index in range(2)
+                ],
+            )
+
+        body = calls[0][2]
+        self.assertTrue(
+            all(
+                url.startswith("[image omitted]")
+                for url in body["images"]
+            )
+        )
+        self.assertTrue(
+            all(
+                url.startswith("https://cdn.example/")
+                for url in body["audio_refs"]
+            )
+        )
+        self.assertLess(len(json.dumps(body, ensure_ascii=False).encode("utf-8")), 100_000)
+
+    def test_canvaspro_local_audio_is_inlined_when_no_public_storage_exists(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "generated-voice.mp3")
+            with open(path, "wb") as handle:
+                handle.write(b"ID3-audio")
+            old = provider_client.UPLOAD_DIR
+            provider_client.UPLOAD_DIR = root
+            try:
+                value = provider_client._canvaspro_asset_url(
+                    "/uploads/generated-voice.mp3"
+                )
+            finally:
+                provider_client.UPLOAD_DIR = old
+        self.assertTrue(value.startswith("data:audio/mpeg;base64,"))
+
+    def test_oversized_base64_video_body_is_rejected_before_submit(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "002-sd2.0-9-3-12-720p",
+            "remoteModel": "002系列/sd2.0(9图3音频12秒不卡脸720P)",
+            "adapter": "canvaspro_video",
+            "profile": "suanli-video",
+            "params": {},
+        }
+        calls = []
+        with (
+            patch.object(provider_client, "_request_json", side_effect=lambda *args, **kwargs: calls.append(args)),
+            patch.object(provider_client, "_canvaspro_asset_url", return_value="data:image/png;base64," + "A" * (9 * 1024 * 1024)),
+            self.assertRaisesRegex(RuntimeError, "超过安全上限"),
+        ):
+            provider_client.generate_video(
+                provider,
+                model,
+                "超大请求体测试",
+                {"ratio": "9:16", "resolution": "720P", "duration": 12},
+                [{"kind": "image", "url": "/uploads/fake.png", "label": "图1"}],
+                [],
+            )
+        self.assertEqual(calls, [])
+
+    def test_002_sd20_local_images_use_storage_public_urls_when_ready(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "002-sd2.0-9-3-12-720p",
+            "remoteModel": "002系列/sd2.0(9图3音频12秒不卡脸720P)",
+            "adapter": "canvaspro_video",
+            "profile": "suanli-video",
+            "params": {
+                "resolution": {"type": "select", "options": ["720P"]},
+                "duration": {"type": "number", "default": 12, "min": 12, "max": 12},
+            },
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            if method == "POST":
+                return {"id": "task-imgbb", "status": "queued"}
+            return {
+                "id": "task-imgbb",
+                "status": "completed",
+                "content_url": "https://cdn.example/result.mp4",
+            }
+
+        with (
+            patch.object(provider_client, "_request_json", side_effect=fake_request),
+            patch.object(provider_client.time, "sleep"),
+            patch.object(
+                provider_client.media_storage,
+                "is_ready",
+                return_value=True,
+            ),
+            patch.object(
+                provider_client.media_storage,
+                "ensure_local",
+                side_effect=lambda url, **kwargs: {
+                    "provider": "aliyun_oss",
+                    "key": url.rsplit("/", 1)[-1],
+                },
+            ),
+            patch.object(
+                provider_client.media_storage,
+                "public_url",
+                side_effect=lambda descriptor: "https://cdn.example/" + descriptor["key"],
+            ),
+        ):
+            provider_client.generate_video(
+                provider,
+                model,
+                "ImgBB 公共素材测试",
+                {"ratio": "9:16", "resolution": "720P", "duration": 12},
+                [
+                    {
+                        "kind": "image",
+                        "url": f"/uploads/generated-{index}.png",
+                        "label": f"图{index}",
+                    }
+                    for index in range(4)
+                ],
+                [],
+            )
+        body = calls[0][2]
+        self.assertTrue(
+            all(url.startswith("https://cdn.example/") for url in body["images"])
+        )
+        self.assertLess(len(json.dumps(body, ensure_ascii=False).encode("utf-8")), 100_000)
+
+    def test_newapi_video_submit_timeout_is_uncertain_and_not_reposted(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "002-sd2.0-9-3-12-720p",
+            "remoteModel": "002系列/sd2.0(9图3音频12秒不卡脸720P)",
+            "adapter": "canvaspro_video",
+            "profile": "suanli-video",
+            "params": {
+                "resolution": {"type": "select", "options": ["720P"]},
+                "duration": {"type": "range", "min": 12, "max": 12, "step": 1},
+            },
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            raise provider_client.ProviderOutcomeUncertain(
+                "供应商请求已发出，但未收到明确确认结果",
+            )
+
+        with (
+            patch.object(provider_client, "_request_json", side_effect=fake_request),
+            self.assertRaises(provider_client.ProviderOutcomeUncertain),
+        ):
+            provider_client.generate_video(
+                provider,
+                model,
+                "人物回头",
+                {
+                    "ratio": "9:16",
+                    "resolution": "720P",
+                    "duration": 12,
+                },
+                [],
+                [],
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "POST")
+
+    def test_newapi_invalid_token_is_reported_as_auth_action(self):
+        with (
+            patch.object(
+                provider_client,
+                "_request_json",
+                side_effect=provider_client.ProviderHTTPError(
+                    401,
+                    '{"error":{"message":"Invalid token"}}',
+                ),
+            ),
+            self.assertRaisesRegex(RuntimeError, "New API 鉴权失败"),
+        ):
+            provider_client._submit_json(
+                "POST",
+                "https://api.canvasproai.com/suanli/v1/videos",
+                "invalid-token",
+                {"model": "002系列/sd2.0(9图3音频12秒不卡脸720P)"},
+                retry_window=0,
+            )
+
     def test_newapi_video_result_fields_are_provider_specific(self):
         self.assertEqual(
             provider_client._newapi_video_url_from_task({
@@ -549,7 +985,7 @@ class ProviderCatalogTests(unittest.TestCase):
         model = {
             "id": "special-video",
             "remoteModel": "特价视频-v1",
-            "adapter": "newapi_video",
+            "adapter": "canvaspro_video",
             "profile": "suanli-video",
         }
         with patch.object(
@@ -592,29 +1028,24 @@ class ProviderCatalogTests(unittest.TestCase):
     def test_sync_image_media_uses_long_response_timeout(self):
         self.assertGreaterEqual(provider_client.SYNC_MEDIA_TIMEOUT_SECONDS, 600)
 
-    def test_submit_runtime_retries_provider_busy_and_reports_phase(self):
+    def test_submit_runtime_does_not_retry_provider_busy(self):
         calls = []
-        events = []
 
         def fake_request(method, url, key, body=None, timeout=120):
             calls.append((method, url, body))
-            if len(calls) == 1:
-                raise provider_client.ProviderHTTPError(503, '{"code":"queue_full"}')
-            return {"id": "task-1"}
+            raise provider_client.ProviderHTTPError(503, '{"code":"queue_full"}')
 
         with patch.object(provider_client, "_request_json", side_effect=fake_request), \
                 patch.object(provider_client.time, "sleep") as sleep:
-            result = provider_client._submit_json(
-                "POST",
-                "https://provider.example/videos",
-                "test-key",
-                {"model": "m"},
-                on_task_update=lambda event: events.append(event),
-            )
-        self.assertEqual(result["id"], "task-1")
-        self.assertEqual(len(calls), 2)
-        sleep.assert_called_once_with(3)
-        self.assertTrue(any(event.get("phase") == "供应商繁忙，系统自动重试" for event in events))
+            with self.assertRaisesRegex(RuntimeError, "不会自动重提"):
+                provider_client._submit_json(
+                    "POST",
+                    "https://provider.example/videos",
+                    "test-key",
+                    {"model": "m"},
+                )
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
 
     def test_submit_runtime_does_not_retry_ambiguous_timeout(self):
         calls = []
@@ -704,7 +1135,7 @@ class ProviderCatalogTests(unittest.TestCase):
                     "remoteModel": "wrong-model",
                 })
 
-    def test_newapi_video_adapter_is_supported(self):
+    def test_canvaspro_video_adapter_is_supported(self):
         cfg = {
             "providers": [{"id": "relay", "name": "Relay", "api_key": "x"}],
             "models": [],
@@ -715,11 +1146,11 @@ class ProviderCatalogTests(unittest.TestCase):
                 "id": "relay-video",
                 "providerId": "relay",
                 "capability": "video",
-                "adapter": "newapi_video",
+                "adapter": "canvaspro_video",
                 "remoteModel": "relay-video",
             })
         model = next(item for item in catalog["models"] if item["id"] == "relay-video")
-        self.assertEqual(model["adapter"], "newapi_video")
+        self.assertEqual(model["adapter"], "canvaspro_video")
 
     def test_newapi_image_adapter_is_supported(self):
         cfg = {
@@ -796,7 +1227,7 @@ class ProviderCatalogTests(unittest.TestCase):
             "id": "relay-video",
             "remoteModel": "relay-video",
             "capability": "video",
-            "adapter": "newapi_video",
+            "adapter": "openai_video",
             "profile": "openai-video",
             "params": {},
         }
@@ -814,7 +1245,7 @@ class ProviderCatalogTests(unittest.TestCase):
         self.assertEqual(requests[0][:2], ("POST", "https://api.example.com/v1/videos"))
         self.assertEqual(requests[1][:2], ("GET", "https://api.example.com/v1/videos/video-task-1"))
         self.assertEqual(requests[0][2]["images"], ["https://cdn.example/ref.png"])
-        self.assertEqual(requests[0][2]["metadata"]["resolution"], "720p")
+        self.assertEqual(requests[0][2]["resolution"], "720P")
 
     def test_provider_request_rejects_private_dns_targets(self):
         private_result = [(2, 1, 6, "", ("127.0.0.1", 80))]
@@ -1581,7 +2012,7 @@ class ProviderPayloadTests(unittest.TestCase):
         sleep.assert_called_once_with(1.5)
         self.assertEqual(calls[1][1], calls[2][1])
 
-    def test_agnes_video_retries_queue_full_before_creating_task(self):
+    def test_agnes_video_does_not_repeat_queue_full_submission(self):
         provider = {
             "id": "agnes-ai",
             "name": "Agnes AI",
@@ -1600,12 +2031,10 @@ class ProviderPayloadTests(unittest.TestCase):
         def fake_request(method, url, key, body=None, timeout=120):
             calls.append((method, url, body, timeout))
             if method == "POST":
-                if len([item for item in calls if item[0] == "POST"]) == 1:
-                    raise provider_client.ProviderHTTPError(
-                        503,
-                        '{"code":"video_queue_full","message":"视频队列已满，请稍后重试"}',
-                    )
-                return {"id": "task-full", "video_id": "video-full", "status": "queued"}
+                raise provider_client.ProviderHTTPError(
+                    503,
+                    '{"code":"video_queue_full","message":"视频队列已满，请稍后重试"}',
+                )
             return {
                 "id": "task-full",
                 "status": "completed",
@@ -1615,20 +2044,19 @@ class ProviderPayloadTests(unittest.TestCase):
 
         with patch.object(provider_client, "_request_json", side_effect=fake_request), \
                 patch.object(provider_client.time, "sleep") as sleep:
-            result = provider_client.generate_video(
-                provider,
-                model,
-                "人物转身",
-                {"mode": "text", "ratio": "16:9", "duration": 5},
-                [],
-                [],
-                on_task_update=lambda event: events.append(event),
-            )
+            with self.assertRaisesRegex(RuntimeError, "不会自动重提"):
+                provider_client.generate_video(
+                    provider,
+                    model,
+                    "人物转身",
+                    {"mode": "text", "ratio": "16:9", "duration": 5},
+                    [],
+                    [],
+                    on_task_update=lambda event: events.append(event),
+                )
 
-        self.assertEqual(result["url"], "https://video.example/after-queue.mp4")
-        self.assertEqual([item[0] for item in calls], ["POST", "POST", "GET"])
-        self.assertTrue(any("自动重试" in str(event.get("phase") or "") for event in events))
-        sleep.assert_called_once_with(3)
+        self.assertEqual([item[0] for item in calls], ["POST"])
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":

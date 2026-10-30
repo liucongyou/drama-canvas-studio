@@ -772,85 +772,7 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(meta["content"], "https://i.ibb.co/second.png")
         self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
 
-    def test_imgbb_version_backfill_restores_a_lost_generated_image(self):
-        payload = {
-            "nodes": [{
-                "id": "image-1",
-                "type": "image",
-                "title": "道具",
-                "metadata": {
-                    "content": "/uploads/first.png",
-                    "status": "done",
-                    "provider": "agnes-ai",
-                    "model": "agnes-image",
-                    "params": {
-                        "mediaVersions": [
-                            {"url": "/uploads/first.png", "kind": "image"},
-                        ],
-                        "mediaVersionIndex": 0,
-                    },
-                    "imgbb": {
-                        "status": "stored",
-                        "url": "https://i.ibb.co/second.png",
-                        "uploadedAt": "2026-10-28T03:42:40Z",
-                        "source": {"provider": "agnes-ai", "model": "agnes-image"},
-                    },
-                },
-            }],
-        }
-
-        changed = server._backfill_image_host_versions(payload)
-
-        self.assertEqual(changed, 1)
-        meta = payload["nodes"][0]["metadata"]
-        self.assertEqual(meta["content"], "https://i.ibb.co/second.png")
-        self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
-        self.assertEqual(
-            [item["url"] for item in meta["params"]["mediaVersions"]],
-            ["/uploads/first.png", "https://i.ibb.co/second.png"],
-        )
-
-    def test_imgbb_backfill_keeps_available_local_image_as_preview(self):
-        upload_dir = Path(self.temp_dir.name) / "uploads"
-        upload_dir.mkdir()
-        (upload_dir / "first.png").write_bytes(b"png")
-        payload = {
-            "nodes": [{
-                "id": "image-1",
-                "type": "image",
-                "title": "道具",
-                "metadata": {
-                    "content": "https://i.ibb.co/second.png",
-                    "status": "done",
-                    "params": {
-                        "mediaVersions": [
-                            {"url": "/uploads/first.png", "kind": "image"},
-                            {"url": "https://i.ibb.co/second.png", "kind": "image"},
-                        ],
-                        "mediaVersionIndex": 1,
-                    },
-                    "imgbb": {
-                        "status": "stored",
-                        "url": "https://i.ibb.co/second.png",
-                        "source": {"localUrl": "/uploads/first.png"},
-                    },
-                },
-            }],
-        }
-
-        with patch.object(server, "_upload_dir", return_value=str(upload_dir)):
-            changed = server._backfill_image_host_versions(payload)
-
-        self.assertGreater(changed, 0)
-        meta = payload["nodes"][0]["metadata"]
-        self.assertEqual(meta["content"], "/uploads/first.png")
-        self.assertEqual(meta["params"]["mediaVersionIndex"], 0)
-        self.assertEqual(
-            [item["url"] for item in meta["params"]["mediaVersions"]],
-            ["/uploads/first.png"],
-        )
-
-    def test_image_generation_returns_local_preview_before_imgbb_mirror(self):
+    def test_image_generation_returns_local_preview_before_remote_mirror(self):
         node = {
             "id": "image-1",
             "type": "image",
@@ -870,7 +792,6 @@ class GenerationQueueTests(unittest.TestCase):
             "limits": {},
         }
         sent = []
-        queued = []
         committed = []
         handler = object.__new__(server.Handler)
         handler._send = lambda status, payload: sent.append((status, payload)) or payload
@@ -889,8 +810,6 @@ class GenerationQueueTests(unittest.TestCase):
             patch.object(server.provider_client, "generate_image", return_value={"url": "https://provider/result.png"}),
             patch.object(server, "persist_generated_media", return_value="/uploads/generated.png"),
             patch.object(server, "archive_generated_image", return_value=None),
-            patch.object(server.imgbb_storage, "is_ready", return_value=True),
-            patch.object(server, "queue_generated_image_imgbb_mirror", side_effect=lambda *args: queued.append(args)),
             patch.object(server, "queue_generated_image_tos_archive"),
             patch.object(server, "commit_node_metadata", side_effect=lambda *args: committed.append(args)),
         ):
@@ -898,8 +817,6 @@ class GenerationQueueTests(unittest.TestCase):
 
         self.assertEqual(sent[-1][1]["url"], "/uploads/generated.png")
         self.assertEqual(node["metadata"]["content"], "/uploads/generated.png")
-        self.assertEqual(node["metadata"]["imgbb"]["status"], "pending")
-        self.assertEqual(queued[0][2], "/uploads/generated.png")
         self.assertEqual(committed[-1][2]["content"], "/uploads/generated.png")
 
     def test_image_tos_archive_runs_after_local_success(self):
@@ -945,7 +862,6 @@ class GenerationQueueTests(unittest.TestCase):
                 "queue_generated_image_tos_archive",
                 side_effect=lambda *args: archived.append(args),
             ),
-            patch.object(server.imgbb_storage, "is_ready", return_value=False),
             patch.object(server, "commit_node_metadata"),
         ):
             handler._generate_once(project["id"], project, node)
@@ -1028,7 +944,7 @@ class GenerationQueueTests(unittest.TestCase):
             any(update.get("phase") == "结果待确认" for update in task_updates)
         )
 
-    def test_video_provider_success_is_visible_before_background_cache(self):
+    def test_video_provider_success_is_written_after_local_download(self):
         node = {
             "id": "video-ready",
             "type": "video",
@@ -1076,6 +992,16 @@ class GenerationQueueTests(unittest.TestCase):
             ),
             patch.object(
                 server,
+                "persist_generated_media",
+                return_value="/uploads/video.mp4",
+            ),
+            patch.object(
+                server.store,
+                "update_generation_task",
+                side_effect=lambda task_id, **fields: fields,
+            ),
+            patch.object(
+                server,
                 "queue_generated_video_finalize",
                 side_effect=lambda *args: queued.append(args),
             ),
@@ -1090,10 +1016,10 @@ class GenerationQueueTests(unittest.TestCase):
         status, payload = sent[-1]
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"], "done")
-        self.assertEqual(payload["url"], "https://provider.example/video.mp4")
+        self.assertEqual(payload["url"], "/uploads/video.mp4")
         self.assertEqual(node["metadata"]["status"], "done")
-        self.assertEqual(node["metadata"]["content"], "https://provider.example/video.mp4")
-        self.assertEqual(queued[0][2], "https://provider.example/video.mp4")
+        self.assertEqual(node["metadata"]["content"], "/uploads/video.mp4")
+        self.assertEqual(queued[0][2], "/uploads/video.mp4")
 
     def test_video_finalize_stores_tos_original_bytes(self):
         run = []
@@ -1118,7 +1044,7 @@ class GenerationQueueTests(unittest.TestCase):
                     "auto_persist_videos": True,
                 },
             ),
-            patch.object(server.tos_storage, "persist_local_url", return_value=storage) as persist,
+            patch.object(server.media_storage, "persist_local_url", return_value=storage) as persist,
             patch.object(server, "commit_node_metadata", side_effect=lambda *args: commit.append(args)),
             patch.object(
                 server.threading,
@@ -1161,7 +1087,7 @@ class GenerationQueueTests(unittest.TestCase):
                 },
             ),
             patch.object(
-                server.tos_storage,
+                server.media_storage,
                 "persist_local_url",
                 side_effect=RuntimeError("TOS 欠费"),
             ),
@@ -1203,7 +1129,7 @@ class GenerationQueueTests(unittest.TestCase):
                     "auto_persist_videos": False,
                 },
             ),
-            patch.object(server.tos_storage, "persist_local_url") as persist,
+            patch.object(server.media_storage, "persist_local_url") as persist,
             patch.object(server, "commit_node_metadata"),
             patch.object(
                 server.threading,

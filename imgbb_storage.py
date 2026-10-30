@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -12,6 +14,7 @@ from typing import Any
 
 import network_security
 import provider_catalog
+import tenant_context
 
 
 UPLOAD_URL = "https://api.imgbb.com/1/upload"
@@ -63,7 +66,27 @@ def upload_bytes(data: bytes, *, mime: str = "image/png", name: str = "", source
     )
     try:
         with network_security.safe_urlopen(request, timeout=90) as response:
-            payload = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+            raw = response.read().decode("utf-8", errors="replace").strip()
+            try:
+                payload = json.loads(raw or "{}")
+            except json.JSONDecodeError:
+                # Some ImgBB gateways prepend/append diagnostics around the
+                # JSON object. Keep the first complete object instead of
+                # treating a valid upload as a failed mirror.
+                decoder = json.JSONDecoder()
+                payload = {}
+                for index, char in enumerate(raw):
+                    if char != "{":
+                        continue
+                    try:
+                        candidate, _ = decoder.raw_decode(raw[index:])
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(candidate, dict):
+                        payload = candidate
+                        break
+                if not payload:
+                    raise
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:800]
         try:
@@ -97,6 +120,23 @@ def upload_bytes(data: bytes, *, mime: str = "image/png", name: str = "", source
         "uploadedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source": source or {},
     }
+
+
+def mirror_local_image(url: str) -> dict[str, Any]:
+    """Upload one local image and return its public ImgBB URL."""
+    raw = str(url or "").strip()
+    if not raw.startswith("/uploads/"):
+        raise RuntimeError("只有 /uploads/ 本地图片可以镜像到 ImgBB")
+    name = urllib.parse.unquote(raw[len("/uploads/"):])
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        raise RuntimeError("本地图片路径非法")
+    path = os.path.join(str(tenant_context.current_upload_dir()), name)
+    if not os.path.isfile(path):
+        raise RuntimeError("本地图片不存在")
+    with open(path, "rb") as handle:
+        data = handle.read()
+    mime = mimetypes.guess_type(name)[0] or "image/png"
+    return upload_bytes(data, mime=mime, name=name, source={"localUrl": raw})
 
 
 def test_connection():

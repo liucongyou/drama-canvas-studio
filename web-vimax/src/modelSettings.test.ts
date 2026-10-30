@@ -63,18 +63,20 @@ describe('model settings visual editors', () => {
     ]);
     expect(adaptersForCapability('video').map((item) => item.value)).toEqual([
       'ark_video',
-      'newapi_video',
+      'canvaspro_video',
+      'openai_video',
       'agnes_video',
     ]);
     expect(defaultAdapterForCapability('image')).toBe('ark_image');
-    expect(adaptersForCapability('image').some((item) => item.value === 'newapi_video')).toBe(false);
+    expect(adaptersForCapability('image').some((item) => item.value === 'canvaspro_video')).toBe(false);
   });
 
   it('picks the adapter for the provider rather than the first global adapter', () => {
     expect(defaultAdapterForProvider('image', 'agnes-ai')).toBe('agnes_image');
     expect(defaultAdapterForProvider('video', 'agnes-ai')).toBe('agnes_video');
     expect(defaultAdapterForProvider('image', 'new-apl')).toBe('newapi_image');
-    expect(defaultAdapterForProvider('video', 'new-apl')).toBe('newapi_video');
+    expect(defaultAdapterForProvider('video', 'new-apl')).toBe('canvaspro_video');
+    expect(defaultAdapterForProvider('video', 'other-relay')).toBe('openai_video');
     expect(defaultAdapterForProvider('video', 'ark')).toBe('ark_video');
   });
 });

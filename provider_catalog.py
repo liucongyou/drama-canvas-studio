@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any
 
 import network_security
@@ -26,6 +27,70 @@ CONFIG_PATH = os.path.join(BASE, "config.json")
 LOCAL_CONFIG_PATH = os.path.join(BASE, "config.local.json")
 MODEL_PROFILES_PATH = os.path.join(BASE, "provider_model_profiles.json")
 _MODEL_PROFILES: dict[str, dict[str, Any]] | None = None
+MODEL_DISCOVERY_TIMEOUT_SECONDS = 90
+
+VIDEO_ROUTE_TEMPLATES: dict[str, dict[str, Any]] = {
+    "suanli-video": {
+        "submitPath": "/suanli/v1/videos",
+        "queryPath": "/suanli/v1/videos/{task_id}",
+        "promptField": "prompt",
+        "durationField": "seconds",
+        "ratioField": "aspect_ratio",
+        "resolutionCase": "lower",
+        "imageField": "images",
+        "videoField": "video_refs",
+        "audioField": "audio_refs",
+        "supportsMode": False,
+        "taskFields": ["id", "task_id"],
+        "successStatuses": ["completed"],
+        "failureStatuses": ["failed"],
+    },
+    "aistars-video": {
+        "submitPath": "/aistars/v1/videos",
+        "queryPath": "/aistars/v1/tasks/{task_id}",
+        "promptField": "prompt",
+        "durationField": "seconds",
+        "ratioField": "aspect_ratio",
+        "resolutionCase": "lower",
+        "imageField": "images",
+        "videoField": "videos",
+        "audioField": "audios",
+        "supportsMode": True,
+        "taskFields": ["id", "task_id"],
+        "successStatuses": ["completed"],
+        "failureStatuses": ["failed"],
+    },
+    "hc-video": {
+        "submitPath": "/hc-cn/v1/video/tasks",
+        "queryPath": "/hc-cn/v1/video/tasks/{task_id}",
+        "promptField": "content",
+        "durationField": "duration",
+        "ratioField": "ratio",
+        "resolutionCase": "lower",
+        "imageField": "image_url",
+        "videoField": "video_url",
+        "audioField": "audio_url",
+        "supportsMode": False,
+        "taskFields": ["task_id", "id"],
+        "successStatuses": ["succeeded"],
+        "failureStatuses": ["failed"],
+    },
+    "openai-video": {
+        "submitPath": "/videos",
+        "queryPath": "/videos/{task_id}",
+        "promptField": "prompt",
+        "durationField": "seconds",
+        "ratioField": "size",
+        "resolutionCase": "upper",
+        "imageField": "images",
+        "videoField": "videos",
+        "audioField": "audios",
+        "supportsMode": False,
+        "taskFields": ["id", "task_id"],
+        "successStatuses": ["completed", "succeeded", "success", "done"],
+        "failureStatuses": ["failed", "error", "cancelled", "canceled"],
+    },
+}
 
 
 def _local_config_path() -> str:
@@ -57,9 +122,12 @@ def _decrypt_config_secrets(cfg: dict[str, Any]) -> dict[str, Any]:
         for key in ("access_key", "secret_key"):
             if storage.get(key):
                 storage[key] = tenant_security.decrypt_secret(storage[key])
-        imgbb = storage.get("imgbb")
-        if isinstance(imgbb, dict) and imgbb.get("api_key"):
-            imgbb["api_key"] = tenant_security.decrypt_secret(imgbb["api_key"])
+        for profile in (storage.get("providers") or {}).values():
+            if not isinstance(profile, dict):
+                continue
+            for key in ("access_key", "secret_key"):
+                if profile.get(key):
+                    profile[key] = tenant_security.decrypt_secret(profile[key])
     return result
 
 
@@ -87,9 +155,12 @@ def _encrypt_config_secrets(cfg: dict[str, Any]) -> dict[str, Any]:
         for key in ("access_key", "secret_key"):
             if storage.get(key):
                 storage[key] = tenant_security.encrypt_secret(storage[key])
-        imgbb = storage.get("imgbb")
-        if isinstance(imgbb, dict) and imgbb.get("api_key"):
-            imgbb["api_key"] = tenant_security.encrypt_secret(imgbb["api_key"])
+        for profile in (storage.get("providers") or {}).values():
+            if not isinstance(profile, dict):
+                continue
+            for key in ("access_key", "secret_key"):
+                if profile.get(key):
+                    profile[key] = tenant_security.encrypt_secret(profile[key])
     return result
 
 
@@ -198,7 +269,7 @@ DEFAULT_MODELS = [
         params={
             "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"]),
             "resolution": _select(["480P", "720P", "1080P"]),
-            "duration": {"type": "range", "min": 4, "max": 15, "step": 1, "options": [4, 5, 10, 15]},
+            "duration": {"type": "range", "min": 4, "max": 15, "step": 1},
             "guidance": _select(["轻度", "中等", "高", "极高", "最高"]),
         },
         limits={"maxRefs": 9, "maxImages": 9, "maxVideos": 3, "maxAudios": 3, "maxPromptChars": 8000},
@@ -226,7 +297,7 @@ DEFAULT_MODELS = [
         params={
             "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"]),
             "resolution": _select(["480P", "720P"]),
-            "duration": {"type": "range", "min": 4, "max": 15, "step": 1, "options": [4, 5, 10, 15]},
+            "duration": {"type": "range", "min": 4, "max": 15, "step": 1},
             "guidance": _select(["轻度", "中等", "高", "极高", "最高"]),
         },
         limits={"maxRefs": 9, "maxImages": 9, "maxVideos": 3, "maxAudios": 3, "maxPromptChars": 8000},
@@ -244,7 +315,7 @@ DEFAULT_MODELS = [
         params={
             "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"]),
             "resolution": _select(["480P", "720P"]),
-            "duration": {"type": "range", "min": 4, "max": 15, "step": 1, "options": [4, 5, 10, 15]},
+            "duration": {"type": "range", "min": 4, "max": 15, "step": 1},
             "guidance": _select(["轻度", "中等", "高", "极高", "最高"]),
         },
         limits={"maxRefs": 9, "maxImages": 9, "maxVideos": 3, "maxAudios": 3, "maxPromptChars": 8000},
@@ -272,7 +343,7 @@ DEFAULT_MODELS = [
         params={
             "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"]),
             "resolution": _select(["480P", "720P", "1080P"]),
-            "duration": {"type": "range", "min": 4, "max": 30, "step": 1, "options": [4, 5, 10, 15, 20, 30]},
+            "duration": {"type": "range", "min": 4, "max": 30, "step": 1},
             "guidance": _select(["轻度", "中等", "高", "极高", "最高"]),
         },
         limits={"maxRefs": 30, "maxImages": 30, "maxVideos": 10, "maxAudios": 10, "maxPromptChars": 12000},
@@ -321,7 +392,7 @@ DEFAULT_MODELS = [
         params={
             "ratio": _select(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]),
             "resolution": _select(["720P"]),
-            "duration": {"type": "range", "min": 4, "max": 12, "step": 1, "options": [4, 5, 8, 10, 12]},
+            "duration": {"type": "range", "min": 4, "max": 12, "step": 1},
             "count": {
                 **_select([1]),
                 "default": 1,
@@ -392,17 +463,16 @@ DEFAULT_STORAGE = {
     "region": "cn-beijing",
     "endpoint": "tos-cn-beijing.volces.com",
     "internal_endpoint": "tos-cn-beijing.ivolces.com",
+    "public_domain": "",
     "prefix": "drama-canvas/",
     "access_key": "",
     "secret_key": "",
     "url_ttl_seconds": 3600,
     "auto_persist_images": True,
     "auto_persist_videos": True,
+    "auto_persist_audio": True,
     "require_for_ark_portrait": True,
-    "imgbb": {
-        "api_key": "",
-        "auto_persist_images": True,
-    },
+    "providers": {},
 }
 
 DEFAULT_BUDGET = {
@@ -470,6 +540,262 @@ def _documented_model_entry(remote_model: Any) -> dict[str, Any] | None:
     return entry if isinstance(entry, dict) else None
 
 
+def _documented_video_profile_templates() -> dict[str, dict[str, Any]]:
+    return copy.deepcopy(VIDEO_ROUTE_TEMPLATES)
+
+
+def documented_video_contract(remote_model: Any) -> dict[str, Any] | None:
+    """Return the normalized video contract used by every bridge route."""
+    return _documented_video_spec(remote_model)
+
+
+def _documented_video_spec(remote_model: Any) -> dict[str, Any] | None:
+    """Return the exact parameter contract documented for a video model."""
+    entry = _documented_model_entry(remote_model)
+    if not entry or entry.get("kind") != "video":
+        return None
+    profiles = _documented_video_profile_templates()
+    profile_name = str(entry.get("profile") or "").strip()
+    profile = profiles.get(profile_name) or {}
+    raw_variants = entry.get("variants")
+    variants = [
+        item
+        for item in raw_variants
+        if isinstance(item, dict)
+    ] if isinstance(raw_variants, list) else []
+
+    # Some relay routes publish a flat per-model contract instead of variants.
+    # Normalize it here so every model reaches the same validation/compiler path.
+    if not variants:
+        resolutions = [
+            str(value).strip().upper()
+            for value in entry.get("resolutions") or profile.get("resolutions") or []
+            if str(value).strip()
+        ]
+        durations = []
+        for value in entry.get("durations") or profile.get("durations") or []:
+            try:
+                duration = int(value)
+            except (TypeError, ValueError):
+                continue
+            if duration not in durations:
+                durations.append(duration)
+        ratios = [
+            str(value).strip()
+            for value in entry.get("ratios") or profile.get("ratios") or []
+            if str(value).strip()
+        ]
+        media = entry.get("media") if isinstance(entry.get("media"), dict) else profile.get("media")
+        variants = [{
+            "resolution": resolution,
+            "seconds": durations,
+            "aspectRatios": ratios,
+            "maxReferences": media or {},
+            "referenceTotalMax": (
+                entry.get("referenceTotalMax")
+                or profile.get("referenceTotalMax")
+            ),
+            "modes": entry.get("modes") or profile.get("modes") or [],
+            "audioOnly": entry.get("audio_only", profile.get("audioOnly")),
+        } for resolution in resolutions]
+    if not variants:
+        return None
+
+    durations: list[int] = []
+    resolutions: list[str] = []
+    aspect_ratios: list[str] = []
+    reference_limits = {
+        "images": 0,
+        "videos": 0,
+        "audios": 0,
+        "texts": 0,
+    }
+    reference_combinations: list[str] = []
+    modes: list[str] = []
+    reference_total_max = 0
+    audio_only = False
+    duration_default: int | None = None
+    for variant in variants:
+        for value in variant.get("seconds") or []:
+            try:
+                duration = int(value)
+            except (TypeError, ValueError):
+                continue
+            if duration not in durations:
+                durations.append(duration)
+        resolution = str(variant.get("resolution") or "").strip()
+        if resolution and resolution.upper() not in resolutions:
+            resolutions.append(resolution.upper())
+        for value in variant.get("aspectRatios") or []:
+            ratio = str(value or "").strip()
+            if ratio and ratio not in aspect_ratios:
+                aspect_ratios.append(ratio)
+        max_refs = variant.get("maxReferences")
+        if isinstance(max_refs, dict):
+            for key in reference_limits:
+                try:
+                    reference_limits[key] = max(
+                        reference_limits[key],
+                        int(max_refs.get(key) or 0),
+                    )
+                except (TypeError, ValueError):
+                    continue
+        for value in variant.get("referenceCombinations") or []:
+            combination = str(value or "").strip()
+            if combination and combination not in reference_combinations:
+                reference_combinations.append(combination)
+        for value in variant.get("modes") or []:
+            mode = str(value or "").strip()
+            if mode and mode not in modes:
+                modes.append(mode)
+        try:
+            reference_total_max = max(
+                reference_total_max,
+                int(variant.get("referenceTotalMax") or 0),
+            )
+        except (TypeError, ValueError):
+            pass
+        audio_only = audio_only or bool(variant.get("audioOnly"))
+        candidate_default = variant.get("durationDefault", variant.get("duration_default"))
+        if duration_default is None and candidate_default is not None:
+            try:
+                duration_default = int(candidate_default)
+            except (TypeError, ValueError):
+                pass
+    if not durations:
+        durations = [int(value) for value in profile.get("durations") or []]
+    if not resolutions:
+        resolutions = [
+            str(value).upper()
+            for value in profile.get("resolutions") or []
+        ]
+    if not aspect_ratios:
+        aspect_ratios = [
+            str(value)
+            for value in profile.get("ratios") or []
+        ]
+    if not modes:
+        modes = [
+            str(value)
+            for value in profile.get("modes") or []
+        ]
+    if not reference_combinations:
+        reference_combinations = [
+            str(value)
+            for value in profile.get("referenceCombinations") or []
+        ]
+    if not any(reference_limits.values()):
+        reference_limits = {
+            str(key): int(value)
+            for key, value in (profile.get("maxReferences") or {}).items()
+            if str(key) in {"images", "videos", "audios", "texts"}
+        }
+    if duration_default is None and durations:
+        duration_default = durations[0]
+    durations.sort()
+    return {
+        "durations": durations,
+        "durationDefault": duration_default,
+        "resolutions": resolutions,
+        "aspectRatios": aspect_ratios,
+        "maxReferences": reference_limits,
+        "referenceCombinations": reference_combinations,
+        "modes": modes,
+        "referenceTotalMax": reference_total_max,
+        "audioOnly": audio_only,
+        "profile": profile_name,
+    }
+
+
+def _documented_video_contract(remote_model: Any) -> dict[str, Any] | None:
+    """Backward-compatible name used by the video duration contract tests."""
+    return _documented_video_spec(remote_model)
+
+
+def _apply_documented_video_contract(
+    model: dict[str, Any],
+    documented: dict[str, Any],
+) -> None:
+    """Make saved model parameters match the provider's published API."""
+    durations = [
+        int(value)
+        for value in documented.get("durations") or []
+    ]
+    resolutions = [
+        str(value).upper()
+        for value in documented.get("resolutions") or []
+    ]
+    ratios = [
+        str(value)
+        for value in documented.get("aspectRatios") or []
+    ]
+    if not durations:
+        return
+
+    defaults = copy.deepcopy(model.get("defaultParams") or {})
+    schema = copy.deepcopy(model.get("params") or {})
+    default_duration = _safe_int_value(
+        documented.get("durationDefault"),
+        durations[0],
+    )
+    current_duration = _safe_int_value(defaults.get("duration"), default_duration)
+    defaults["duration"] = (
+        current_duration if current_duration in durations else default_duration
+    )
+    duration_spec: dict[str, Any] = {
+        "type": "range",
+        "min": min(durations),
+        "max": max(durations),
+        "step": 1,
+    }
+    if durations != list(range(min(durations), max(durations) + 1)):
+        duration_spec["options"] = durations
+    if len(durations) == 1:
+        duration_spec = {
+            "type": "number",
+            "default": default_duration,
+            "min": durations[0],
+            "max": durations[0],
+        }
+    schema["duration"] = duration_spec
+
+    if resolutions:
+        current_resolution = str(defaults.get("resolution") or "").upper()
+        defaults["resolution"] = (
+            current_resolution
+            if current_resolution in resolutions
+            else resolutions[0]
+        )
+        schema["resolution"] = _select(resolutions)
+    if ratios:
+        current_ratio = str(defaults.get("ratio") or "")
+        defaults["ratio"] = current_ratio if current_ratio in ratios else ratios[0]
+        schema["ratio"] = _select(ratios)
+    modes = [
+        str(value)
+        for value in documented.get("modes") or []
+        if str(value).strip()
+    ]
+    if modes:
+        defaults["mode"] = (
+            str(defaults.get("mode") or "") if str(defaults.get("mode") or "") in modes
+            else modes[0]
+        )
+        schema["mode"] = _select(modes)
+    else:
+        defaults.pop("mode", None)
+        schema.pop("mode", None)
+    model["defaultParams"] = defaults
+    model["params"] = schema
+
+
+def _safe_int_value(value: Any, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _video_profile_for_model(model: dict[str, Any], provider: dict[str, Any]) -> str:
     explicit = str(model.get("profile") or "").strip()
     if explicit:
@@ -504,6 +830,24 @@ def _looks_like_image_model(value: Any) -> bool:
             "imagen",
             "flux",
             "image generation",
+        )
+    )
+
+
+def _looks_like_video_model(value: Any) -> bool:
+    marker = str(value or "").lower()
+    return any(
+        token in marker
+        for token in (
+            "视频",
+            "video",
+            "seedance",
+            "sd2.",
+            "sd2-",
+            "wan3",
+            "kling",
+            "grok-imagine-video",
+            "happyhorse",
         )
     )
 
@@ -659,6 +1003,12 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
         DEFAULT_STORAGE,
         cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {},
     )
+    if str((merged["storage"] or {}).get("provider") or "") == "imgbb":
+        # ImgBB was retired after repeated maintenance failures. Preserve the
+        # TOS credentials already present in the config and migrate the active
+        # backend instead of leaving the only storage in a dead state.
+        merged["storage"]["provider"] = "tos"
+        merged["storage"].pop("imgbb", None)
     merged["budget"] = _deep_merge(
         DEFAULT_BUDGET,
         cfg.get("budget") if isinstance(cfg.get("budget"), dict) else {},
@@ -772,21 +1122,79 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
             continue
         provider = provider_by_id.get(model.get("providerId"))
         if provider and _is_openai_video_relay(provider):
-            profile = _documented_model_profile(
-                model.get("remoteModel") or model.get("id")
-            )
+            remote_model = model.get("remoteModel") or model.get("id")
+            profile = _documented_model_profile(remote_model)
             if profile:
                 model["profile"] = profile
             else:
                 model.pop("profile", None)
-            if model.get("adapter") in {"agnes_video", "ark_video", "newapi_video"}:
-                model["adapter"] = "newapi_video"
+            if model.get("adapter") in {
+                "agnes_video",
+                "ark_video",
+                "newapi_video",
+                "canvaspro_video",
+                "openai_video",
+            }:
+                model["adapter"] = (
+                    "canvaspro_video"
+                    if _documented_model_entry(remote_model)
+                    else "openai_video"
+                )
+            documented = _documented_video_spec(remote_model)
+            if documented:
+                _apply_documented_video_contract(model, documented)
+                limits_spec = documented.get("maxReferences") or {}
+                model["limits"] = _normalize_model_limits({
+                    "maxImages": int(limits_spec.get("images") or 0),
+                    "maxVideos": int(limits_spec.get("videos") or 0),
+                    "maxAudios": int(limits_spec.get("audios") or 0),
+                    "maxTextRefs": int(limits_spec.get("texts") or 0),
+                    **(
+                        {"maxPromptChars": 10000}
+                        if documented.get("profile") == "aistars-video"
+                        else {}
+                    ),
+                })
     for model in models:
         if not isinstance(model, dict):
             continue
         provider = provider_by_id.get(model.get("providerId"))
         if not provider:
             continue
+        if (
+            provider.get("protocol") == "ark"
+            and model.get("capability") == "video"
+        ):
+            contract = _ark_video_contract(
+                str(model.get("remoteModel") or model.get("id") or "")
+            )
+            params = model.setdefault("params", {})
+            duration = params.get("duration")
+            if not isinstance(duration, dict):
+                duration = {}
+            duration.update({
+                "type": "range",
+                "min": contract["duration"]["min"],
+                "max": contract["duration"]["max"],
+                "step": 1,
+            })
+            duration.pop("options", None)
+            params["duration"] = duration
+            defaults = model.setdefault("defaultParams", {})
+            default_duration = _safe_int_value(
+                defaults.get("duration"),
+                contract["duration"]["min"],
+            )
+            defaults["duration"] = max(
+                contract["duration"]["min"],
+                min(contract["duration"]["max"], default_duration),
+            )
+            available = contract["resolutions"]
+            resolution = str(defaults.get("resolution") or "").upper()
+            defaults["resolution"] = (
+                resolution if resolution in available else available[0]
+            )
+            params["resolution"] = _select(available)
         model_ref = " ".join(
             str(model.get(key) or "")
             for key in ("id", "label", "remoteModel")
@@ -828,6 +1236,12 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
             documented = _documented_model_entry(model.get("remoteModel"))
             if documented and documented.get("profile"):
                 model["profile"] = str(documented["profile"])
+        if model.get("capability") == "video" and model.get("adapter") == "newapi_video":
+            model["adapter"] = (
+                "canvaspro_video"
+                if _documented_model_entry(model.get("remoteModel") or model.get("id"))
+                else "openai_video"
+            )
     if migrate and merged != cfg:
         save_config(merged)
     return merged
@@ -865,35 +1279,85 @@ def _public_provider(provider: dict[str, Any]) -> dict[str, Any]:
 
 
 def _public_storage(storage: dict[str, Any]) -> dict[str, Any]:
-    access_key = str(storage.get("access_key") or "")
-    secret_key = str(storage.get("secret_key") or "")
-    imgbb = storage.get("imgbb") if isinstance(storage.get("imgbb"), dict) else {}
-    imgbb_key = str(imgbb.get("api_key") or "")
     enabled = bool(storage.get("enabled"))
-    provider = str(storage.get("provider") or "tos")
-    tos_ready = bool(
-        enabled
-        and provider == "tos"
-        and storage.get("bucket")
-        and storage.get("region") == "cn-beijing"
-        and storage.get("endpoint")
-        and storage.get("internal_endpoint")
-        and access_key.strip()
-        and secret_key.strip()
-    )
-    imgbb_ready = bool(enabled and provider == "imgbb" and imgbb_key.strip())
-    ready = tos_ready or imgbb_ready
+    provider = str(storage.get("active_provider") or storage.get("provider") or "tos")
+    profiles = storage.get("providers") if isinstance(storage.get("providers"), dict) else {}
+    def profile_ready(name: str, profile: dict[str, Any]) -> bool:
+        if not profile:
+            return False
+        if name == "tos":
+            return bool(
+                profile.get("bucket")
+                and profile.get("region") == "cn-beijing"
+                and profile.get("endpoint")
+                and profile.get("internal_endpoint")
+                and profile.get("access_key")
+                and profile.get("secret_key")
+            )
+        if name == "aliyun_oss":
+            return bool(
+                profile.get("bucket")
+                and profile.get("endpoint")
+                and profile.get("access_key")
+                and profile.get("secret_key")
+            )
+        if name == "qiniu":
+            return bool(
+                profile.get("bucket")
+                and profile.get("public_domain")
+                and profile.get("access_key")
+                and profile.get("secret_key")
+            )
+        return False
+    selected = profiles.get(provider) if isinstance(profiles.get(provider), dict) else {}
+    if not selected:
+        selected = storage
+    legacy_test = {
+        "last_test_ok": None,
+        "last_test_error": "",
+        "last_test_at": "",
+    }
+    selected_test = {
+        "last_test_ok": selected.get("last_test_ok", legacy_test["last_test_ok"]),
+        "last_test_error": str(
+            selected.get("last_test_error", legacy_test["last_test_error"]) or ""
+        ),
+        "last_test_at": str(
+            selected.get("last_test_at", legacy_test["last_test_at"]) or ""
+        ),
+    }
+    access_key = str(selected.get("access_key") or "")
+    secret_key = str(selected.get("secret_key") or "")
+    bucket = str(selected.get("bucket") or "")
+    region = str(selected.get("region") or "cn-beijing")
+    endpoint = str(selected.get("endpoint") or "")
+    internal_endpoint = str(selected.get("internal_endpoint") or "")
+    public_domain = str(selected.get("public_domain") or "")
+    tos_ready = profile_ready("tos", profiles.get("tos") if profiles else (
+        storage if provider == "tos" else {}
+    ))
+    oss_ready = profile_ready("aliyun_oss", profiles.get("aliyun_oss") if profiles else (
+        storage if provider == "aliyun_oss" else {}
+    ))
+    qiniu_ready = profile_ready("qiniu", profiles.get("qiniu") if profiles else (
+        storage if provider == "qiniu" else {}
+    ))
+    tested_ok = storage.get("last_test_ok")
+    ready = (tos_ready or oss_ready or qiniu_ready) and tested_ok is not False
     return {
         "enabled": enabled,
         "provider": provider,
-        "bucket": str(storage.get("bucket") or ""),
-        "region": str(storage.get("region") or "cn-beijing"),
-        "endpoint": str(storage.get("endpoint") or ""),
-        "internal_endpoint": str(storage.get("internal_endpoint") or ""),
-        "prefix": str(storage.get("prefix") or ""),
-        "url_ttl_seconds": int(storage.get("url_ttl_seconds") or 3600),
+        "active_provider": provider,
+        "bucket": bucket,
+        "region": region,
+        "endpoint": endpoint,
+        "internal_endpoint": internal_endpoint,
+        "public_domain": public_domain,
+        "prefix": str(selected.get("prefix") or storage.get("prefix") or ""),
+        "url_ttl_seconds": int(selected.get("url_ttl_seconds") or storage.get("url_ttl_seconds") or 3600),
         "auto_persist_images": storage.get("auto_persist_images", True) is not False,
         "auto_persist_videos": storage.get("auto_persist_videos", True) is not False,
+        "auto_persist_audio": storage.get("auto_persist_audio", True) is not False,
         "require_for_ark_portrait": storage.get("require_for_ark_portrait", True) is not False,
         "has_access_key": bool(access_key.strip()),
         "access_key_hint": _hint(access_key) if access_key.strip() else "",
@@ -901,12 +1365,33 @@ def _public_storage(storage: dict[str, Any]) -> dict[str, Any]:
         "secret_key_hint": _hint(secret_key) if secret_key.strip() else "",
         "ready": ready,
         "tos_ready": tos_ready,
-        "imgbb": {
-            "enabled": bool(enabled and provider == "imgbb"),
-            "has_api_key": bool(imgbb_key.strip()),
-            "api_key_hint": _hint(imgbb_key) if imgbb_key.strip() else "",
-            "auto_persist_images": imgbb.get("auto_persist_images", True) is not False,
-            "ready": imgbb_ready,
+        "oss_ready": oss_ready,
+        "qiniu_ready": qiniu_ready,
+        "enabled": enabled,
+        **selected_test,
+        "profiles": {
+            name: {
+                "bucket": str(profile.get("bucket") or ""),
+                "region": str(profile.get("region") or "cn-beijing"),
+                "endpoint": str(profile.get("endpoint") or ""),
+                "internal_endpoint": str(profile.get("internal_endpoint") or ""),
+                "public_domain": str(profile.get("public_domain") or ""),
+                "prefix": str(profile.get("prefix") or storage.get("prefix") or ""),
+                "url_ttl_seconds": int(
+                    profile.get("url_ttl_seconds")
+                    or storage.get("url_ttl_seconds")
+                    or 3600
+                ),
+                "has_access_key": bool(str(profile.get("access_key") or "").strip()),
+                "access_key_hint": _hint(str(profile.get("access_key") or "")),
+                "has_secret_key": bool(str(profile.get("secret_key") or "").strip()),
+                "secret_key_hint": _hint(str(profile.get("secret_key") or "")),
+                "last_test_ok": profile.get("last_test_ok"),
+                "last_test_error": str(profile.get("last_test_error") or ""),
+                "last_test_at": str(profile.get("last_test_at") or ""),
+            }
+            for name, profile in profiles.items()
+            if isinstance(profile, dict)
         },
     }
 
@@ -957,6 +1442,97 @@ def public_storage_config() -> dict[str, Any]:
     return _public_storage(storage_config())
 
 
+def activate_storage_provider(provider: str) -> dict[str, Any]:
+    """Switch the active storage backend without changing saved credentials."""
+    provider = str(provider or "").strip().lower()
+    if provider not in {"tos", "aliyun_oss", "qiniu"}:
+        raise ValueError("存储类型只能是火山 TOS、阿里云 OSS 或七牛云")
+    cfg = load_config()
+    storage = cfg.setdefault("storage", copy.deepcopy(DEFAULT_STORAGE))
+    profiles = storage.get("providers") if isinstance(storage.get("providers"), dict) else {}
+    profile = profiles.get(provider) if isinstance(profiles.get(provider), dict) else {}
+    if not profile:
+        raise ValueError("请先保存该服务商的配置，再启用")
+    configured = bool(
+        profile.get("bucket")
+        and profile.get("access_key")
+        and profile.get("secret_key")
+        and (
+            profile.get("public_domain")
+            if provider == "qiniu"
+            else profile.get("endpoint")
+        )
+    )
+    if not configured:
+        raise ValueError("该服务商配置不完整，请先补全并保存")
+    storage.update({
+        "enabled": True,
+        "provider": provider,
+        "active_provider": provider,
+    })
+    context = tenant_context.current()
+    if context is not None:
+        import tenant_registry
+        if provider == "tos":
+            tenant_registry.claim_storage_binding(
+                context.tenant_id,
+                bucket=profile["bucket"],
+                region=profile.get("region") or "cn-beijing",
+                prefix=profile.get("prefix") or "",
+                access_key=profile["access_key"],
+            )
+        else:
+            tenant_registry.release_storage_binding(context.tenant_id)
+    save_config(cfg)
+    return public_storage_config()
+
+
+def deactivate_storage() -> dict[str, Any]:
+    cfg = load_config()
+    storage = cfg.setdefault("storage", copy.deepcopy(DEFAULT_STORAGE))
+    storage["enabled"] = False
+    context = tenant_context.current()
+    if context is not None:
+        import tenant_registry
+        tenant_registry.release_storage_binding(context.tenant_id)
+    save_config(cfg)
+    return public_storage_config()
+
+
+def record_storage_test_failure(message: str, *, provider: str = "") -> None:
+    cfg = load_config()
+    storage = cfg.setdefault("storage", copy.deepcopy(DEFAULT_STORAGE))
+    provider = str(provider or storage.get("provider") or "tos").strip().lower()
+    profiles = storage.setdefault("providers", {})
+    profile = profiles.setdefault(provider, {})
+    tested_at = datetime.now(timezone.utc).isoformat()
+    if provider == str(storage.get("active_provider") or storage.get("provider") or "tos"):
+        storage["last_test_ok"] = False
+        storage["last_test_error"] = str(message or "")[:1200]
+        storage["last_test_at"] = tested_at
+    profile["last_test_ok"] = False
+    profile["last_test_error"] = str(message or "")[:1200]
+    profile["last_test_at"] = tested_at
+    save_config(cfg)
+
+
+def record_storage_test_success(*, provider: str = "") -> None:
+    cfg = load_config()
+    storage = cfg.setdefault("storage", copy.deepcopy(DEFAULT_STORAGE))
+    provider = str(provider or storage.get("provider") or "tos").strip().lower()
+    profiles = storage.setdefault("providers", {})
+    profile = profiles.setdefault(provider, {})
+    tested_at = datetime.now(timezone.utc).isoformat()
+    if provider == str(storage.get("active_provider") or storage.get("provider") or "tos"):
+        storage["last_test_ok"] = True
+        storage["last_test_error"] = ""
+        storage["last_test_at"] = tested_at
+    profile["last_test_ok"] = True
+    profile["last_test_error"] = ""
+    profile["last_test_at"] = tested_at
+    save_config(cfg)
+
+
 def _normalize_endpoint(value: Any, default: str) -> str:
     raw = str(value or default).strip()
     if "://" in raw:
@@ -969,44 +1545,50 @@ def save_storage_config(input_data: dict[str, Any]) -> dict[str, Any]:
     source = input_data.get("storage") if isinstance(input_data.get("storage"), dict) else input_data
     current = cfg.setdefault("storage", copy.deepcopy(DEFAULT_STORAGE))
     provider = str(source.get("provider", current.get("provider") or "tos")).strip().lower()
-    if provider not in {"tos", "imgbb"}:
-        raise ValueError("存储类型只能是 TOS 或 ImgBB")
-    bucket = str(source.get("bucket", current.get("bucket") or "")).strip()
-    region = str(source.get("region", current.get("region") or "cn-beijing")).strip()
+    if provider not in {"tos", "aliyun_oss", "qiniu"}:
+        raise ValueError("存储类型只能是火山 TOS、阿里云 OSS 或七牛云")
+    profiles = current.get("providers") if isinstance(current.get("providers"), dict) else {}
+    target_profile = profiles.get(provider) if isinstance(profiles.get(provider), dict) else {}
+    fallback = target_profile or current
+    bucket = str(source.get("bucket", fallback.get("bucket") or "")).strip()
+    region = str(source.get("region", fallback.get("region") or "cn-beijing")).strip()
     endpoint = _normalize_endpoint(
-        source.get("endpoint", current.get("endpoint")),
+        source.get("endpoint", fallback.get("endpoint")),
         "tos-cn-beijing.volces.com",
     )
     internal_endpoint = _normalize_endpoint(
-        source.get("internal_endpoint", current.get("internal_endpoint")),
+        source.get("internal_endpoint", fallback.get("internal_endpoint")),
         "tos-cn-beijing.ivolces.com",
     )
-    prefix = str(source.get("prefix", current.get("prefix") or "")).strip().strip("/")
+    public_domain = str(
+        source.get("public_domain", fallback.get("public_domain") or "")
+    ).strip().rstrip("/")
+    prefix = str(source.get("prefix", fallback.get("prefix") or "")).strip().strip("/")
     if prefix:
         prefix += "/"
     try:
-        url_ttl = int(source.get("url_ttl_seconds", current.get("url_ttl_seconds") or 3600))
+        url_ttl = int(source.get("url_ttl_seconds", fallback.get("url_ttl_seconds") or 3600))
     except (TypeError, ValueError):
         raise ValueError("预签名有效期必须是整数秒")
     url_ttl = max(60, min(604800, url_ttl))
-    enabled = bool(source.get("enabled", current.get("enabled", False)))
-    access_key = str(current.get("access_key") or "")
-    secret_key = str(current.get("secret_key") or "")
-    imgbb_current = current.get("imgbb") if isinstance(current.get("imgbb"), dict) else {}
-    imgbb_api_key = str(imgbb_current.get("api_key") or "")
-    if isinstance(source.get("imgbb_api_key"), str) and source["imgbb_api_key"].strip():
-        imgbb_api_key = source["imgbb_api_key"].strip()
-    if source.get("imgbb_api_key_clear") is True:
-        imgbb_api_key = ""
-    imgbb_auto_persist = bool(source.get(
-        "imgbb_auto_persist_images",
-        imgbb_current.get("auto_persist_images", True),
-    ))
+    previous_provider = str(current.get("provider") or "tos").strip().lower()
+    active_provider = str(
+        current.get("active_provider") or previous_provider or "tos"
+    ).strip().lower()
+    provider_changed = provider != previous_provider
+    # Saving a provider profile never activates it or changes the active
+    # backend. Activation is an explicit user action.
+    enabled = bool(current.get("enabled", False))
+    previous_profile = target_profile
+    if not previous_profile and provider == previous_provider:
+        previous_profile = current
+    access_key = str(previous_profile.get("access_key") or "") if previous_profile else ""
+    secret_key = str(previous_profile.get("secret_key") or "") if previous_profile else ""
     if isinstance(source.get("access_key"), str) and source["access_key"].strip():
         access_key = source["access_key"].strip()
     if isinstance(source.get("secret_key"), str) and source["secret_key"].strip():
         secret_key = source["secret_key"].strip()
-    if enabled and provider == "tos":
+    if enabled and provider == active_provider and provider == "tos":
         missing = [
             label for label, value in (
                 ("Bucket", bucket),
@@ -1024,19 +1606,47 @@ def save_storage_config(input_data: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("方舟可信产物要求 TOS 使用 cn-beijing，内网 Endpoint 也必须位于该地域")
         if not internal_endpoint.endswith("ivolces.com"):
             raise ValueError("内网 Endpoint 必须使用 TOS 内网域名（通常以 .ivolces.com 结尾）")
-    if enabled and provider == "imgbb" and not imgbb_api_key:
-        raise ValueError("启用 ImgBB 前请填写 API Key")
-    current.update({
-        "enabled": enabled,
-        "provider": provider,
+    if enabled and provider == active_provider and provider == "aliyun_oss":
+        missing = [
+            label for label, value in (
+                ("Bucket", bucket),
+                ("Endpoint", endpoint),
+                ("AccessKeyId", access_key),
+                ("AccessKeySecret", secret_key),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"启用阿里云 OSS 前请填写：{'、'.join(missing)}")
+    if enabled and provider == active_provider and provider == "qiniu":
+        missing = [
+            label for label, value in (
+                ("Bucket", bucket),
+                ("公网访问域名", public_domain),
+                ("AccessKey", access_key),
+                ("SecretKey", secret_key),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"启用七牛云前请填写：{'、'.join(missing)}")
+    provider_profile = {
         "bucket": bucket[:128],
         "region": region[:64],
         "endpoint": endpoint[:255],
         "internal_endpoint": internal_endpoint[:255],
+        "public_domain": public_domain[:255],
         "prefix": prefix[:180],
         "access_key": access_key[:2048],
         "secret_key": secret_key[:4096],
         "url_ttl_seconds": url_ttl,
+    }
+    profiles[provider] = provider_profile
+    current.update({
+        "enabled": enabled,
+        "provider": active_provider,
+        "active_provider": active_provider,
+        "providers": profiles,
         "auto_persist_images": bool(source.get(
             "auto_persist_images",
             current.get("auto_persist_images", True),
@@ -1045,29 +1655,28 @@ def save_storage_config(input_data: dict[str, Any]) -> dict[str, Any]:
             "auto_persist_videos",
             current.get("auto_persist_videos", True),
         )),
+        "auto_persist_audio": bool(source.get(
+            "auto_persist_audio",
+            current.get("auto_persist_audio", True),
+        )),
         "require_for_ark_portrait": bool(source.get(
             "require_for_ark_portrait",
             current.get("require_for_ark_portrait", True),
         )),
-        "imgbb": {
-            "api_key": imgbb_api_key[:2048],
-            "auto_persist_images": imgbb_auto_persist,
-        },
+        "last_test_ok": current.get("last_test_ok"),
+        "last_test_error": str(current.get("last_test_error") or ""),
+        "last_test_at": str(current.get("last_test_at") or ""),
     })
     context = tenant_context.current()
-    if context is not None:
+    if context and provider == "tos" and any((bucket, region, access_key)):
         import tenant_registry
-
-        if enabled and provider == "tos":
-            tenant_registry.claim_storage_binding(
-                context.tenant_id,
-                bucket=current["bucket"],
-                region=current["region"],
-                prefix=current["prefix"],
-                access_key=current["access_key"],
-            )
-        else:
-            tenant_registry.release_storage_binding(context.tenant_id)
+        tenant_registry.claim_storage_binding(
+            context.tenant_id,
+            bucket=bucket,
+            region=region,
+            prefix=prefix,
+            access_key=access_key,
+        )
     save_config(cfg)
     return public_storage_config()
 
@@ -1194,6 +1803,8 @@ ADAPTER_CAPABILITIES = {
     "ark_video": "video",
     "agnes_video": "video",
     "newapi_video": "video",
+    "canvaspro_video": "video",
+    "openai_video": "video",
     "openai_chat": "text",
     "dashscope_tts": "audio",
 }
@@ -1245,9 +1856,6 @@ def upsert_model(input_data: dict[str, Any]) -> dict[str, Any]:
     adapter = str(source.get("adapter") or "").strip()
     if adapter not in VALID_ADAPTERS:
         raise ValueError(f"adapter 仅支持 {', '.join(sorted(VALID_ADAPTERS))}")
-    adapter_capability = ADAPTER_CAPABILITIES[adapter]
-    if capability != adapter_capability:
-        raise ValueError(f"适配器 {adapter} 只能用于 {adapter_capability} 模型")
     model_id = normalize_model_id(
         str(source.get("id") or source.get("remoteModel") or source.get("label") or "")
     )
@@ -1273,6 +1881,11 @@ def upsert_model(input_data: dict[str, Any]) -> dict[str, Any]:
         if _is_newapi_relay(provider_record)
         else None
     )
+    if adapter == "newapi_video":
+        adapter = "canvaspro_video" if documented_entry else "openai_video"
+    adapter_capability = ADAPTER_CAPABILITIES[adapter]
+    if capability != adapter_capability:
+        raise ValueError(f"适配器 {adapter} 只能用于 {adapter_capability} 模型")
     if _is_newapi_relay(provider_record) and not documented_entry:
         raise ValueError(
             f"模型 {remote_model} 不在当前接口文档目录中，"
@@ -1309,9 +1922,24 @@ def upsert_model(input_data: dict[str, Any]) -> dict[str, Any]:
             )
         ).strip(),
     })
-    defaults = source.get("defaultParams")
-    schema = source.get("params")
-    limits = source.get("limits")
+    # The provider catalog is authoritative for saved defaults, parameter
+    # schemas and reference limits. Client-side drafts must not reintroduce
+    # generic video values that are invalid for the exact model.
+    defaults = (
+        None
+        if (capability == "video" and _is_newapi_relay(provider_record))
+        else source.get("defaultParams")
+    )
+    schema = (
+        None
+        if (capability == "video" and _is_newapi_relay(provider_record))
+        else source.get("params")
+    )
+    limits = (
+        None
+        if (capability == "video" and _is_newapi_relay(provider_record))
+        else source.get("limits")
+    )
     pricing = source.get("pricing")
     if isinstance(defaults, dict):
         current["defaultParams"] = copy.deepcopy(defaults)
@@ -1350,6 +1978,24 @@ def upsert_model(input_data: dict[str, Any]) -> dict[str, Any]:
         current["pricing"] = copy.deepcopy(pricing)
     elif "pricing" not in current:
         current["pricing"] = {}
+    documented_video = (
+        _documented_video_spec(remote_model)
+        if (
+            capability == "video"
+            and _is_newapi_relay(provider_record)
+        )
+        else None
+    )
+    if documented_video:
+        _apply_documented_video_contract(current, documented_video)
+        limits_spec = documented_video.get("maxReferences") or {}
+        current["limits"] = _normalize_model_limits({
+            "maxImages": int(limits_spec.get("images") or 0),
+            "maxVideos": int(limits_spec.get("videos") or 0),
+            "maxAudios": int(limits_spec.get("audios") or 0),
+            "maxTextRefs": int(limits_spec.get("texts") or 0),
+            **({"maxPromptChars": 10000} if documented_video.get("profile") == "aistars-video" else {}),
+        })
     save_config(cfg)
     return public_catalog()
 
@@ -1357,7 +2003,9 @@ def upsert_model(input_data: dict[str, Any]) -> dict[str, Any]:
 def delete_model(model_id: str) -> dict[str, Any]:
     cfg = load_config()
     models = cfg.setdefault("models", [])
-    if not any(m.get("id") == model_id for m in models):
+    known = any(m.get("id") == model_id for m in models)
+    builtin = any(str(item.get("id")) == model_id for item in DEFAULT_MODELS)
+    if not known and not builtin:
         raise ValueError("模型不存在")
     cfg["models"] = [m for m in models if m.get("id") != model_id]
     deleted = set(cfg.get("deletedModels") or [])
@@ -1742,6 +2390,11 @@ def _infer_discovered_model(
         declared_capability
         or _documented_provider_capability(provider, remote_model)
         or _capability_from_endpoint_types(supported_endpoint_types)
+        or (
+            "video"
+            if _is_newapi_relay(provider) and _looks_like_video_model(remote_model)
+            else None
+        )
     )
     if capability is None:
         return {
@@ -1761,7 +2414,14 @@ def _infer_discovered_model(
         elif str(provider.get("id") or "").strip().lower() == "agnes-ai":
             video_adapter = "agnes_video"
         else:
-            video_adapter = "newapi_video"
+            video_adapter = (
+                "canvaspro_video"
+                if (
+                    _documented_model_entry(remote_model)
+                    or _is_newapi_relay(provider)
+                )
+                else "openai_video"
+            )
         image_adapter = (
             "newapi_image"
             if (
@@ -1788,11 +2448,25 @@ def _infer_discovered_model(
     model_id = normalize_model_id(remote_model)
     if capability == "video":
         default_params = {"ratio": "9:16", "resolution": "480P", "duration": 5}
-        params = {
-            "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"]),
-            "resolution": _select(["480P", "720P", "1080P"]),
-            "duration": {"type": "range", "min": 1, "max": 30, "step": 1, "options": [4, 5, 10, 15, 20, 30]},
-        }
+        if provider.get("protocol") == "ark":
+            ark_video = _ark_video_contract(remote_model)
+            params = {
+                "ratio": _select(["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"]),
+                "resolution": _select(ark_video["resolutions"]),
+                "duration": {
+                    "type": "range",
+                    "min": ark_video["duration"]["min"],
+                    "max": ark_video["duration"]["max"],
+                    "step": 1,
+                },
+            }
+            default_params["resolution"] = ark_video["resolutions"][0]
+        else:
+            params = {
+                "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"]),
+                "resolution": _select(["480P", "720P", "1080P"]),
+                "duration": {"type": "range", "min": 1, "max": 30, "step": 1},
+            }
     elif capability == "image":
         default_params = {"ratio": "1:1", "size": "1024x1024"}
         params = {
@@ -1810,7 +2484,7 @@ def _infer_discovered_model(
         params = {
             "temperature": {"type": "range", "min": 0, "max": 2, "step": 0.1},
         }
-    return {
+    result = {
         "id": model_id,
         "providerId": provider.get("id"),
         "capability": capability,
@@ -1833,6 +2507,59 @@ def _infer_discovered_model(
             if capability == "video" and _is_newapi_relay(provider)
             else ""
         ),
+    }
+    documented_video = (
+        _documented_video_spec(remote_model)
+        if (
+            capability == "video"
+            and _is_newapi_relay(provider)
+        )
+        else None
+    )
+    if documented_video:
+        _apply_documented_video_contract(result, documented_video)
+        limits_spec = documented_video.get("maxReferences") or {}
+        result["limits"] = _normalize_model_limits({
+            "maxImages": int(limits_spec.get("images") or 0),
+            "maxVideos": int(limits_spec.get("videos") or 0),
+            "maxAudios": int(limits_spec.get("audios") or 0),
+            "maxTextRefs": int(limits_spec.get("texts") or 0),
+            **(
+                {"maxPromptChars": 10000}
+                if documented_video.get("profile") == "aistars-video"
+                else {}
+            ),
+        })
+    elif capability == "video":
+        result["disabled"] = True
+        result["disabledReason"] = (
+            "该型号不在当前 CanvasPro 接口文档目录中；"
+            "禁止按猜测字段提交"
+        )
+    return result
+
+
+def _ark_video_contract(remote_model: str) -> dict[str, Any]:
+    """Official Ark Seedance request constraints, not UI shortcut presets."""
+    name = str(remote_model or "").lower()
+    if "seedance-2-5" in name or "seedance-2.5" in name:
+        rates = ["480P", "720P", "1080P"]
+        minimum, maximum = 4, 30
+    elif any(token in name for token in ("seedance-2-0-fast", "seedance-2.0-fast")):
+        rates = ["480P", "720P"]
+        minimum, maximum = 4, 15
+    elif any(token in name for token in ("seedance-2-0-mini", "seedance-2.0-mini")):
+        rates = ["480P", "720P"]
+        minimum, maximum = 4, 15
+    elif any(token in name for token in ("seedance-2-0", "seedance-2.0")):
+        rates = ["480P", "720P", "1080P", "4K"]
+        minimum, maximum = 4, 15
+    else:
+        rates = ["480P", "720P", "1080P"]
+        minimum, maximum = 1, 30
+    return {
+        "resolutions": rates,
+        "duration": {"min": minimum, "max": maximum},
     }
 
 
@@ -1862,7 +2589,7 @@ def discover_provider_models(provider_id: str) -> dict[str, Any]:
             status, text = _request_status(
                 url,
                 key,
-                timeout=30,
+                timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
                 read_limit=1024 * 1024,
             )
             if status == 200:

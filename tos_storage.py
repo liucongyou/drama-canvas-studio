@@ -229,6 +229,33 @@ def internal_presigned_url(
         raise _tos_error(exc, "生成 TOS 内网预签名 URL") from exc
 
 
+def public_presigned_url(
+    storage: dict[str, Any],
+    *,
+    expires: int | None = None,
+) -> str:
+    """Return a signed URL on the public endpoint for external providers."""
+    if not isinstance(storage, dict) or storage.get("provider") != "tos":
+        raise TosStorageError("素材没有 TOS 原始文件信息")
+    bucket = str(storage.get("bucket") or "").strip()
+    key = str(storage.get("key") or "").strip()
+    if not bucket or not key:
+        raise TosStorageError("TOS 对象信息不完整")
+    cfg = _config()
+    ttl = int(expires or cfg.get("url_ttl_seconds") or 3600)
+    tos = _tos()
+    try:
+        result = _client(internal=False).pre_signed_url(
+            tos.enum.HttpMethodType.Http_Method_Get,
+            bucket,
+            key,
+            expires=max(60, min(604800, ttl)),
+        )
+        return str(getattr(result, "signed_url", "") or "")
+    except Exception as exc:
+        raise _tos_error(exc, "生成 TOS 公网预签名 URL") from exc
+
+
 def ensure_local_image(
     url: str,
     *,

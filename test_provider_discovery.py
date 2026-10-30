@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -189,7 +190,12 @@ class ProviderDiscoveryTests(unittest.TestCase):
             [url for url, _ in calls],
             ["https://api.example.com/v1/models"],
         )
-        self.assertTrue(all(kwargs["timeout"] == 30 for _, kwargs in calls))
+        self.assertTrue(
+            all(
+                kwargs["timeout"] == provider_catalog.MODEL_DISCOVERY_TIMEOUT_SECONDS
+                for _, kwargs in calls
+            )
+        )
         self.assertTrue(all(kwargs["read_limit"] == 1024 * 1024 for _, kwargs in calls))
 
     def test_openai_video_defaults_to_relay_adapter(self):
@@ -197,7 +203,7 @@ class ProviderDiscoveryTests(unittest.TestCase):
             '{"data":[{"id":"demo-seedance-video","supported_endpoint_types":["openai_video"]}]}'
         )
         self.assertEqual(result["models"][0]["capability"], "video")
-        self.assertEqual(result["models"][0]["adapter"], "newapi_video")
+        self.assertEqual(result["models"][0]["adapter"], "openai_video")
 
     def test_newapi_image_defaults_to_relay_adapter(self):
         self.config["providers"][0]["base_url"] = "https://api.canvasproai.com/v1"
@@ -305,14 +311,14 @@ class ProviderDiscoveryTests(unittest.TestCase):
         ):
             result = provider_catalog.discover_provider_models("demo")
         self.assertEqual(result["count"], 1)
-        self.assertEqual(result["models"][0]["adapter"], "newapi_video")
+        self.assertEqual(result["models"][0]["adapter"], "openai_video")
 
     def test_endpoint_types_drive_discovered_capability(self):
         result = self.discover(
             '{"data":[{"id":"relay-video","supported_endpoint_types":["openai_video"]}]}'
         )
         self.assertEqual(result["models"][0]["capability"], "video")
-        self.assertEqual(result["models"][0]["adapter"], "newapi_video")
+        self.assertEqual(result["models"][0]["adapter"], "openai_video")
 
     def test_declared_endpoint_types_win_over_model_name(self):
         result = self.discover(json.dumps({
@@ -427,8 +433,147 @@ class ProviderDiscoveryTests(unittest.TestCase):
         self.assertEqual(result["count"], 3)
         self.assertEqual(
             {item["adapter"] for item in result["models"]},
-            {"newapi_video"},
+            {"canvaspro_video", "openai_video"},
         )
+
+    def test_canvaspro_and_generic_relay_video_adapters_are_separate(self):
+        config = {
+            "providers": [
+                {
+                    "id": "new-apl",
+                    "name": "New APl",
+                    "protocol": "openai",
+                    "base_url": "https://api.canvasproai.com/v1",
+                    "api_key": "test-key",
+                },
+                {
+                    "id": "other-relay",
+                    "name": "Other Relay",
+                    "protocol": "openai",
+                    "base_url": "https://api.example.com/v1",
+                    "api_key": "test-key",
+                },
+            ],
+            "models": [
+                {
+                    "id": "canvaspro-video",
+                    "providerId": "new-apl",
+                    "capability": "video",
+                    "adapter": "newapi_video",
+                    "remoteModel": "002系列/sd2.0(9图3音频12秒不卡脸720P)",
+                    "enabled": True,
+                },
+                {
+                    "id": "generic-video",
+                    "providerId": "other-relay",
+                    "capability": "video",
+                    "adapter": "newapi_video",
+                    "remoteModel": "generic-video",
+                    "enabled": True,
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "canvas.db")
+            sqlite3.connect(path).close()
+            with tenant_context.use_tenant("alpha", "alpha"):
+                with open(provider_catalog._local_config_path(), "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=False)
+                models = provider_catalog.load_config(migrate=False)["models"]
+        by_id = {item["id"]: item for item in models}
+        self.assertEqual(by_id["canvaspro-video"]["adapter"], "canvaspro_video")
+        self.assertEqual(by_id["generic-video"]["adapter"], "openai_video")
+
+    def test_canvaspro_discovered_draft_has_exact_params_before_import(self):
+        self.config["providers"][0]["base_url"] = "https://api.canvasproai.com/v1"
+        result = self.discover(
+            '{"data":[{"id":"002系列/sd2.0(9图3音频12秒不卡脸720P)",'
+            '"supported_endpoint_types":["openai_video"]}]}'
+        )
+        draft = result["models"][0]
+        self.assertEqual(draft["adapter"], "canvaspro_video")
+        self.assertEqual(draft["profile"], "suanli-video")
+        self.assertEqual(draft["defaultParams"]["resolution"], "720P")
+        self.assertEqual(draft["defaultParams"]["duration"], 12)
+        self.assertEqual(
+            draft["params"]["resolution"]["options"],
+            ["720P"],
+        )
+        self.assertEqual(draft["limits"]["maxImages"], 9)
+        self.assertEqual(draft["limits"]["maxAudios"], 3)
+        self.assertEqual(draft["limits"]["maxVideos"], 0)
+
+    def test_ark_seedance_discovery_uses_continuous_documented_duration(self):
+        self.config["providers"][0] = {
+            "id": "ark",
+            "name": "火山方舟",
+            "protocol": "ark",
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+            "api_key": "test-key",
+        }
+        result = self.discover(json.dumps({
+            "data": [{
+                "id": "doubao-seedance-2-0-260128",
+                "supported_endpoint_types": ["ark_video"],
+            }],
+        }))
+        draft = result["models"][0]
+        self.assertEqual(draft["params"]["duration"], {
+            "type": "range",
+            "min": 4,
+            "max": 15,
+            "step": 1,
+        })
+        self.assertNotIn("options", draft["params"]["duration"])
+
+    def test_canvaspro_discovery_save_read_back_preserves_contract(self):
+        self.config["providers"][0]["base_url"] = "https://api.canvasproai.com/v1"
+        draft = self.discover(
+            '{"data":[{"id":"002系列/sd2.0(9图3音频12秒不卡脸720P)",'
+            '"supported_endpoint_types":["openai_video"]}]}'
+        )["models"][0]
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+            os.environ,
+            {"CANVAS_TENANT_DATA_ROOT": root, "CANVAS_MULTI_TENANT": "1"},
+        ):
+            path = os.path.join(root, "tenants", "alpha", "config.local.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(self.config, handle, ensure_ascii=False)
+            with tenant_context.use_tenant("alpha", "alpha"):
+                provider_catalog.upsert_model({
+                    **draft,
+                    "capability": "video",
+                    "enabled": True,
+                })
+                saved = next(
+                    item
+                    for item in provider_catalog.load_config()["models"]
+                    if item["remoteModel"] == draft["remoteModel"]
+                )
+        self.assertEqual(saved["adapter"], "canvaspro_video")
+        self.assertEqual(saved["profile"], "suanli-video")
+        self.assertEqual(saved["defaultParams"]["resolution"], "720P")
+        self.assertEqual(saved["defaultParams"]["duration"], 12)
+        self.assertEqual(saved["limits"]["maxImages"], 9)
+        self.assertEqual(saved["limits"]["maxAudios"], 3)
+        self.assertEqual(saved["limits"]["maxVideos"], 0)
+
+    def test_builtin_model_delete_is_persistent(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+            os.environ,
+            {"CANVAS_TENANT_DATA_ROOT": root, "CANVAS_MULTI_TENANT": "1"},
+        ):
+            path = os.path.join(root, "tenants", "alpha", "config.local.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(self.config, handle, ensure_ascii=False)
+            with tenant_context.use_tenant("alpha", "alpha"):
+                provider_catalog.delete_model("doubao-seedance-2-0")
+                ids = {
+                    item["id"] for item in provider_catalog.load_config()["models"]
+                }
+        self.assertNotIn("doubao-seedance-2-0", ids)
 
 
 if __name__ == "__main__":

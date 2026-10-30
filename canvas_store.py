@@ -119,7 +119,9 @@ def _connect():
                 updated_at TEXT,
                 finished_at TEXT,
                 provider_finished_at TEXT,
-                node_written_at TEXT
+                node_written_at TEXT,
+                local_result_url TEXT,
+                provider_result_url TEXT
             )"""
             )
             con.execute(
@@ -192,6 +194,14 @@ def _connect():
             if "node_written_at" not in task_columns:
                 con.execute(
                     "ALTER TABLE generation_tasks ADD COLUMN node_written_at TEXT"
+                )
+            if "local_result_url" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN local_result_url TEXT"
+                )
+            if "provider_result_url" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN provider_result_url TEXT"
                 )
             snapshot_columns = {
                 row[1] for row in con.execute("PRAGMA table_info(canvas_snapshots)")
@@ -394,7 +404,39 @@ _TASK_FIELDS = {
     "status", "phase", "progress", "provider", "model", "provider_task_id",
     "error", "started_at", "finished_at", "title", "kind",
     "estimated_cost", "cost_currency", "provider_finished_at", "node_written_at",
+    "local_result_url", "provider_result_url",
 }
+
+_ACTIVE_TASK_STATUSES = {"queued", "submitting", "running"}
+
+
+def _merge_generation_task_update(task: dict | None, updates: dict) -> dict:
+    """Keep persisted task state monotonic at the storage boundary.
+
+    Provider callbacks, restart reconciliation and the UI poller can race. A
+    stale writer must not turn a succeeded task into failed/running, and only a
+    successful result may replace a persisted failure.
+    """
+    if not task:
+        return dict(updates)
+    current = str(task.get("status") or "")
+    requested = str(updates.get("status") or current)
+    merged = dict(updates)
+    allowed = True
+    if current == "succeeded":
+        allowed = requested == "succeeded"
+    elif current in {"failed", "interrupted", "cancelled"}:
+        allowed = requested == "succeeded" or requested == current
+    elif current in _ACTIVE_TASK_STATUSES and requested == "queued":
+        allowed = False
+    if allowed:
+        return merged
+    # Keep non-status evidence (for example a provider task id from a late
+    # callback), but never regress the task lifecycle itself.
+    merged.pop("status", None)
+    for key in ("phase", "progress", "finished_at", "error"):
+        merged.pop(key, None)
+    return merged
 
 
 def append_event(project_id, kind, node_id="", payload=None):
@@ -465,8 +507,10 @@ def create_generation_task(
     ).fetchone()
     if active:
         columns = [item[0] for item in con.execute("SELECT * FROM generation_tasks LIMIT 0").description]
+        active_task = dict(zip(columns, active))
         con.close()
-        return {**dict(zip(columns, active)), "created_new": False}
+        latest = get_generation_task(active_task["id"]) or active_task
+        return {**latest, "created_new": False}
     task_id = _rid(22)
     now = _now_iso()
     attempt = int(con.execute(
@@ -481,12 +525,13 @@ def create_generation_task(
                 "INSERT INTO generation_tasks("
                 "id,project_id,node_id,title,kind,status,phase,progress,provider,model,"
                 "provider_task_id,attempt,estimated_cost,cost_currency,error,"
-                "created_at,started_at,updated_at,finished_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "created_at,started_at,updated_at,finished_at,local_result_url,"
+                "provider_result_url"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     task_id, project_id, node_id, title, kind, "queued", "等待调度", 0,
                     provider, model, "", attempt, float(estimated_cost or 0),
-                    str(cost_currency or ""), "", now, "", now, "",
+                    str(cost_currency or ""), "", now, "", now, "", "", "",
                 ),
             )
         except sqlite3.IntegrityError:
@@ -505,7 +550,8 @@ def create_generation_task(
 
     result = _run_write_transaction(insert)
     if result and not result.get("created"):
-        return result
+        latest = get_generation_task(result.get("id")) or result
+        return {**latest, "created_new": False}
     return {**(get_generation_task(task_id) or {}), "created_new": True}
 
 
@@ -518,11 +564,23 @@ def get_generation_task(task_id):
 
 
 def update_generation_task(task_id, **fields):
-    updates = {key: value for key, value in fields.items() if key in _TASK_FIELDS}
-    if not updates:
-        return get_generation_task(task_id)
-    updates["updated_at"] = _now_iso()
     def write(con):
+        row = con.execute(
+            "SELECT * FROM generation_tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        columns = [
+            item[0] for item in con.execute(
+                "SELECT * FROM generation_tasks LIMIT 0"
+            ).description
+        ]
+        current = dict(zip(columns, row)) if row else None
+        updates = _merge_generation_task_update(
+            current,
+            {key: value for key, value in fields.items() if key in _TASK_FIELDS},
+        )
+        if not updates:
+            return
+        updates["updated_at"] = _now_iso()
         con.execute(
             "UPDATE generation_tasks SET " + ",".join(f"{key}=?" for key in updates) + " WHERE id=?",
             (*updates.values(), task_id),

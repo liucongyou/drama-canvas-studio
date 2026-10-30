@@ -48,7 +48,8 @@ import canvas_repository
 import import_feed
 import gate_check
 import generation_budget
-import imgbb_storage
+import generation_outcome
+import media_storage
 import provider_catalog
 import provider_client
 import tos_storage
@@ -630,12 +631,12 @@ def archive_generated_image(generated_url, provider, model, task_id, generated_a
     storage_cfg = provider_catalog.storage_config()
     if (
         not storage_cfg.get("enabled")
-        or str(storage_cfg.get("provider") or "tos") != "tos"
+        or not media_storage.is_ready(storage_cfg)
         or not storage_cfg.get("auto_persist_images", True)
     ):
         return None
     try:
-        return tos_storage.persist_local_url(
+        return media_storage.persist_local_url(
             generated_url,
             kind="image",
             fallback_ext=".png",
@@ -648,41 +649,7 @@ def archive_generated_image(generated_url, provider, model, task_id, generated_a
             },
         )
     except Exception as exc:
-        print(f"[tos] failed to archive generated image {generated_url[:120]}: {exc}", file=sys.stderr)
-        return {"status": "failed", "error": str(exc)}
-
-
-def mirror_generated_image_to_imgbb(generated_url, provider, model, task_id, generated_at):
-    """Optionally mirror a locally cached generated image to ImgBB."""
-    if not imgbb_storage.is_ready():
-        return None
-    raw = str(generated_url or "").strip()
-    if not raw.startswith("/uploads/"):
-        return {"status": "failed", "error": "图片尚未形成稳定本地文件，未上传 ImgBB"}
-    filename = raw[len("/uploads/"):]
-    if not filename or "/" in filename or "\\" in filename:
-        return {"status": "failed", "error": "图片缓存路径不合法"}
-    path = os.path.join(_upload_dir(), filename)
-    if not os.path.isfile(path):
-        return {"status": "failed", "error": "图片缓存文件不存在"}
-    mime = mimetypes.guess_type(filename)[0] or "image/png"
-    try:
-        with open(path, "rb") as handle:
-            data = handle.read()
-        return imgbb_storage.upload_bytes(
-            data,
-            mime=mime,
-            name=os.path.splitext(filename)[0],
-            source={
-                "provider": provider.get("id"),
-                "model": model.get("remoteModel") or model.get("id"),
-                "taskId": task_id,
-                "generatedAt": generated_at,
-                "localUrl": generated_url,
-            },
-        )
-    except Exception as exc:
-        print(f"[imgbb] failed to mirror {generated_url}: {exc}", file=sys.stderr)
+        print(f"[storage] failed to archive generated image {generated_url[:120]}: {exc}", file=sys.stderr)
         return {"status": "failed", "error": str(exc)}
 
 
@@ -702,21 +669,9 @@ def finalize_generated_image(
         task_id,
         generated_at,
     )
-    imgbb = (
-        mirror_generated_image_to_imgbb(
-            local_url,
-            provider,
-            model,
-            task_id,
-            generated_at,
-        )
-        if imgbb_storage.is_ready()
-        else None
-    )
     return {
         "localUrl": local_url,
         "storage": storage if isinstance(storage, dict) else {},
-        "imgbb": imgbb if isinstance(imgbb, dict) else {},
     }
 
 
@@ -746,13 +701,11 @@ def queue_generated_image_finalize(
         except Exception as exc:
             result = {
                 "storage": {},
-                "imgbb": {"status": "failed", "error": str(exc)},
+                "storageError": str(exc),
             }
         updates = {
             "storage": result.get("storage") or {},
             "storageError": str((result.get("storage") or {}).get("error") or ""),
-            "imgbb": result.get("imgbb") or {},
-            "imageHostError": str((result.get("imgbb") or {}).get("error") or ""),
         }
         local_url = str(result.get("localUrl") or "")
         if local_url.startswith("/uploads/"):
@@ -834,7 +787,7 @@ def queue_generated_image_tos_archive(
 def queue_generated_video_finalize(
     project_id,
     node_id,
-    provider_url,
+    local_source_url,
     provider,
     model,
     task_id,
@@ -851,7 +804,9 @@ def queue_generated_video_finalize(
             "finalizePending": False,
         }
         try:
-            local_url = persist_generated_media(provider_url, ".mp4")
+            local_url = str(local_source_url or "")
+            if not local_url.startswith("/uploads/"):
+                local_url = persist_generated_media(local_url, ".mp4")
             validation = validate_generated_video(local_url)
             updates.update({
                 "content": local_url,
@@ -861,11 +816,10 @@ def queue_generated_video_finalize(
             storage_cfg = provider_catalog.storage_config()
             if (
                 storage_cfg.get("enabled")
-                and str(storage_cfg.get("provider") or "tos") == "tos"
                 and storage_cfg.get("auto_persist_videos", True)
             ):
                 try:
-                    storage = tos_storage.persist_local_url(
+                    storage = media_storage.persist_local_url(
                         local_url,
                         kind="video",
                         fallback_ext=".mp4",
@@ -874,14 +828,14 @@ def queue_generated_video_finalize(
                             "model": model.get("remoteModel") or model.get("id"),
                             "taskId": task_id,
                             "generatedAt": generated_at,
-                            "url": provider_url,
+                            "url": local_url,
                         },
                     )
                     updates["storage"] = storage
                 except Exception as exc:
                     updates["storageError"] = str(exc)
                     print(
-                        f"[tos] failed to archive generated video {provider_url[:120]}: {exc}",
+                        f"[storage] failed to archive generated video {local_url[:120]}: {exc}",
                         file=sys.stderr,
                     )
             commit_node_metadata(project_id, node_id, updates)
@@ -891,7 +845,7 @@ def queue_generated_video_finalize(
                 "finalizePending": False,
             })
             print(
-                f"[video-finalize] {provider_url[:120]}: {exc}",
+                f"[video-finalize] {local_source_url[:120]}: {exc}",
                 file=sys.stderr,
             )
 
@@ -899,52 +853,6 @@ def queue_generated_video_finalize(
         target=_run_in_tenant,
         args=(tenant_id, tenant_slug, run),
         name=f"video-finalize-{node_id}",
-        daemon=True,
-    ).start()
-    return True
-
-
-def queue_generated_image_imgbb_mirror(
-    project_id,
-    node_id,
-    generated_url,
-    provider_id,
-    model_id,
-    task_id,
-    generated_at,
-):
-    """Mirror an already-saved local image without delaying the generation response."""
-    if not imgbb_storage.is_ready():
-        return False
-    context = tenant_context.current()
-    tenant_id = context.tenant_id if context else None
-    tenant_slug = context.slug if context else "local"
-
-    def run():
-        try:
-            result = mirror_generated_image_to_imgbb(
-                generated_url,
-                {"id": provider_id},
-                {"id": model_id, "remoteModel": model_id},
-                task_id,
-                generated_at,
-            )
-        except Exception as exc:
-            result = {"status": "failed", "error": str(exc)}
-        image_host_error = (
-            str(result.get("error") or "")
-            if isinstance(result, dict) and result.get("status") == "failed"
-            else ""
-        )
-        commit_node_metadata(project_id, node_id, {
-            "imgbb": result if isinstance(result, dict) else {},
-            "imageHostError": image_host_error,
-        })
-
-    threading.Thread(
-        target=_run_in_tenant,
-        args=(tenant_id, tenant_slug, run),
-        name=f"imgbb-mirror-{node_id}",
         daemon=True,
     ).start()
     return True
@@ -1105,8 +1013,6 @@ GENERATION_OWNED_METADATA_FIELDS = {
     "actualDuration",
     "storage",
     "storageError",
-    "imgbb",
-    "imageHostError",
     "source",
 }
 
@@ -1294,6 +1200,44 @@ def preserve_generation_outcome(task_id, exc):
     return False
 
 
+def _submitted_provider_task_id(task_id):
+    if not task_id:
+        return ""
+    try:
+        task = store.get_generation_task(task_id)
+        return str((task or {}).get("provider_task_id") or "").strip()
+    except Exception:
+        return ""
+
+
+def _mark_generation_outcome_uncertain(task_id, project_id, node_id, exc, provider_task_id=""):
+    """Keep an accepted paid task recoverable instead of calling it a failure."""
+    provider_task_id = str(provider_task_id or _submitted_provider_task_id(task_id)).strip()
+    message = str(exc)
+    if task_id:
+        try:
+            store.update_generation_task(
+                task_id,
+                status="interrupted",
+                phase="结果待确认",
+                error=message,
+                provider_task_id=provider_task_id,
+                finished_at="",
+            )
+        except Exception:
+            # The provider id is also in the independent journal. Preserve the
+            # recoverable node state even if the database write is failing.
+            pass
+    commit_node_metadata(project_id, node_id, {
+        "status": "error",
+        "lastError": message,
+        "taskId": provider_task_id,
+        "providerTaskStatus": "uncertain",
+        "providerTaskPhase": "结果待确认",
+        "generationFinishedAt": "",
+    })
+
+
 MAX_MEDIA_VERSIONS = 20
 
 
@@ -1344,95 +1288,6 @@ def _record_video_version(meta, generated_url, task_id, generated_at):
     return _record_media_version(meta, "video", generated_url, task_id, generated_at)
 
 
-def _backfill_image_host_versions(payload):
-    changed = 0
-    for node in payload.get("nodes") or []:
-        if not isinstance(node, dict) or node.get("type") != "image":
-            continue
-        meta = node.get("metadata") or {}
-        imgbb = meta.get("imgbb") if isinstance(meta.get("imgbb"), dict) else {}
-        hosted_url = str(imgbb.get("url") or "").strip()
-        if imgbb.get("status") != "stored" or not hosted_url:
-            continue
-        source = imgbb.get("source") if isinstance(imgbb.get("source"), dict) else {}
-        local_url = str(source.get("localUrl") or "").strip()
-        local_filename = local_url[len("/uploads/"):] if local_url.startswith("/uploads/") else ""
-        local_available = bool(
-            local_filename
-            and os.path.isfile(os.path.join(_upload_dir(), local_filename))
-        )
-        params = meta.setdefault("params", {})
-        versions = [
-            item for item in (params.get("mediaVersions") or [])
-            if isinstance(item, dict) and str(item.get("url") or "").strip()
-        ]
-        if local_available:
-            local_versions = [
-                item for item in versions
-                if str(item.get("url") or "") != hosted_url
-            ]
-            if not any(str(item.get("url") or "") == local_url for item in local_versions):
-                local_versions.append({
-                    "url": local_url,
-                    "taskId": str(source.get("taskId") or ""),
-                    "generatedAt": str(source.get("generatedAt") or meta.get("generatedAt") or ""),
-                    "kind": "image",
-                    "provider": str(source.get("provider") or meta.get("provider") or ""),
-                    "model": str(source.get("model") or meta.get("model") or ""),
-                })
-            local_versions = local_versions[-MAX_MEDIA_VERSIONS:]
-            local_index = next(
-                index for index, item in enumerate(local_versions)
-                if str(item.get("url") or "") == local_url
-            )
-            if meta.get("content") != local_url:
-                meta["content"] = local_url
-                changed += 1
-            if versions != local_versions:
-                params["mediaVersions"] = local_versions
-                changed += 1
-            if params.get("mediaVersionIndex") != local_index:
-                params["mediaVersionIndex"] = local_index
-                changed += 1
-            meta["params"] = params
-            meta["status"] = "done"
-            continue
-        if not any(str(item.get("url") or "") == hosted_url for item in versions):
-            versions.append({
-                "url": hosted_url,
-                "taskId": str((imgbb.get("source") or {}).get("taskId") or ""),
-                "generatedAt": str(imgbb.get("uploadedAt") or meta.get("generatedAt") or ""),
-                "kind": "image",
-                "provider": str((imgbb.get("source") or {}).get("provider") or meta.get("provider") or ""),
-                "model": str((imgbb.get("source") or {}).get("model") or meta.get("model") or ""),
-            })
-            changed += 1
-        versions = versions[-MAX_MEDIA_VERSIONS:]
-        params["mediaVersions"] = versions
-        params["mediaVersionIndex"] = next(
-            index for index, item in enumerate(versions)
-            if str(item.get("url") or "") == hosted_url
-        )
-        meta["params"] = params
-        meta["content"] = hosted_url
-        meta["status"] = "done"
-    return changed
-
-
-def backfill_image_host_versions():
-    changed = 0
-    for project_row in store.list_projects():
-        project = store.get_project(project_row.get("id"))
-        if not project:
-            continue
-        payload = project["payload"]
-        project_changed = _backfill_image_host_versions(payload)
-        if project_changed:
-            store.update_project(project["id"], payload=payload)
-            changed += project_changed
-    return changed
-
-
 def _provider_task_phase(status, progress=None):
     raw = str(status or "").strip().lower()
     if raw in {"queued", "pending", "created", "submitted"}:
@@ -1448,6 +1303,47 @@ def _provider_task_phase(status, progress=None):
     if numeric is None or numeric <= 0 or numeric >= 100:
         return "生成中"
     return f"生成中 {numeric}%"
+
+
+RETRYABLE_PROVIDER_QUERY_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+def _provider_query_error_kind(exc):
+    """Classify a read-only task query without guessing a paid outcome."""
+    if isinstance(exc, provider_client.ProviderHTTPError):
+        status_code = int(getattr(exc, "status_code", 0) or 0)
+        if status_code == 404:
+            return "not_found"
+        if status_code in RETRYABLE_PROVIDER_QUERY_STATUSES:
+            return "retryable"
+        if 400 <= status_code < 500:
+            return "terminal"
+        return "retryable"
+    if isinstance(
+        exc,
+        (
+            TimeoutError,
+            ConnectionError,
+            OSError,
+            RuntimeError,
+        ),
+    ):
+        return "retryable"
+    return "retryable"
+
+
+def _provider_query_failure_message(exc, kind):
+    if kind == "not_found":
+        return (
+            "供应商明确返回任务不存在（HTTP 404）。"
+            "系统已停止查询该任务，不会自动重新提交；请确认后由用户主动重新生成。"
+        )
+    if kind == "terminal":
+        return (
+            f"供应商查询返回不可恢复错误：{exc}。"
+            "系统已停止自动查询，不会自动重新提交；请确认后由用户主动重新生成。"
+        )
+    return str(exc)
 
 
 def _generation_error_status(exc):
@@ -1565,8 +1461,7 @@ LOCAL_VALIDATION_MARKERS = (
 
 
 def is_local_validation_error(message):
-    text = str(message or "")
-    return any(marker in text for marker in LOCAL_VALIDATION_MARKERS)
+    return generation_outcome.is_local_validation_error(message)
 
 
 def _find_generation_task(project_id, node_id, provider_task_id=""):
@@ -1670,6 +1565,18 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
     generated_at = store._now_iso()
     generated_url = persist_generated_media(result["url"], ".mp4")
     task_id = str(result.get("taskId") or meta.get("taskId") or "")
+    generation_task = _find_generation_task(project_id, node_id, task_id)
+    if generation_task:
+        store.update_generation_task(
+            generation_task["id"],
+            provider_result_url=str(result["url"]),
+            local_result_url=generated_url,
+            provider_finished_at=generated_at,
+        )
+    if not generated_url.startswith("/uploads/"):
+        raise provider_client.ProviderOutcomeUncertain(
+            "供应商视频已完成，但没有拿到本地新文件"
+        )
     _record_video_version(meta, generated_url, task_id, generated_at)
     validation = validate_generated_video(generated_url, (meta.get("params") or {}).get("duration"))
     versions = (meta.get("params") or {}).get("videoVersions") or []
@@ -1726,7 +1633,6 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
             "videoVersionIndex": meta["params"].get("videoVersionIndex", 0),
         },
     })
-    generation_task = _find_generation_task(project_id, node_id, task_id)
     if generation_task:
         store.update_generation_task(
             generation_task["id"], status="succeeded", phase="已完成", progress=100,
@@ -1735,26 +1641,195 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
     return True
 
 
+def _recover_persisted_result_to_canvas(project_id, node_id, task):
+    """Resume from an already downloaded local result without re-downloading."""
+    if not task:
+        return False
+    local_url = str(task.get("local_result_url") or "").strip()
+    if not local_url.startswith("/uploads/"):
+        return False
+    try:
+        local_path = provider_client.local_upload_path(local_url)
+    except RuntimeError:
+        local_path = None
+    if not local_path:
+        detail = (
+            "本地生成文件已不存在，无法补写画布。"
+            "系统不会重新下载或自动重新生成；请确认后由用户主动重新生成。"
+        )
+        store.update_generation_task(
+            task.get("id"),
+            status="interrupted",
+            phase="本地文件缺失",
+            error=detail,
+            finished_at=store._now_iso(),
+        )
+        commit_node_metadata(project_id, node_id, {
+            "status": "failed",
+            "lastError": detail,
+            "taskId": str(task.get("provider_task_id") or ""),
+            "providerTaskStatus": "interrupted",
+            "providerTaskPhase": "本地文件缺失",
+            "generationFinishedAt": store._now_iso(),
+        })
+        return True
+    project = store.get_project(project_id)
+    if not project:
+        return False
+    node = next(
+        (item for item in project["payload"].get("nodes", []) if item.get("id") == node_id),
+        None,
+    )
+    if not node:
+        return False
+    meta = node.setdefault("metadata", {})
+    task_id = str(task.get("provider_task_id") or "")
+    generated_at = str(task.get("provider_finished_at") or store._now_iso())
+    kind = str(task.get("kind") or "image")
+    _record_media_version(
+        meta,
+        "video" if kind == "video" else "image",
+        local_url,
+        task_id,
+        generated_at,
+    )
+    meta.update({
+        "status": "done",
+        "content": local_url,
+        "lastError": "",
+        "taskId": task_id,
+        "generatedAt": generated_at,
+        "providerTaskStatus": "completed",
+        "providerTaskPhase": "已完成",
+        "generationFinishedAt": generated_at,
+    })
+    commit_node_metadata(project_id, node_id, {
+        "status": "done",
+        "content": local_url,
+        "lastError": "",
+        "taskId": task_id,
+        "generatedAt": generated_at,
+        "providerTaskStatus": "completed",
+        "providerTaskPhase": "已完成",
+        "generationFinishedAt": generated_at,
+        "_paramsPatch": {
+            "mediaVersions": meta.get("params", {}).get("mediaVersions", []),
+            "mediaVersionIndex": meta.get("params", {}).get("mediaVersionIndex", 0),
+            **(
+                {
+                    "videoVersions": meta.get("params", {}).get("videoVersions", []),
+                    "videoVersionIndex": meta.get("params", {}).get("videoVersionIndex", 0),
+                }
+                if kind == "video"
+                else {}
+            ),
+        },
+    })
+    store.update_generation_task(
+        task.get("id"),
+        status="succeeded",
+        phase="已完成",
+        progress=100,
+        error="",
+        finished_at=store._now_iso(),
+        node_written_at=store._now_iso(),
+    )
+    return True
+
+
+def _mark_resumed_task_terminal_query_failure(
+    project_id,
+    node_id,
+    generation_task,
+    provider_task_id,
+    exc,
+    kind,
+):
+    detail = _provider_query_failure_message(exc, kind)
+    finished_at = store._now_iso()
+    commit_node_metadata(project_id, node_id, {
+        "status": "failed",
+        "lastError": detail,
+        "taskId": provider_task_id,
+        "providerTaskStatus": "failed",
+        "providerTaskPhase": "查询失败",
+        "generationFinishedAt": finished_at,
+    })
+    if generation_task:
+        store.update_generation_task(
+            generation_task["id"],
+            status="failed",
+            phase="查询失败",
+            error=detail,
+            provider_task_id=provider_task_id,
+            finished_at=finished_at,
+        )
+    publish_project_event(project_id, "media", node_id, {
+        "status": "failed",
+        "error": detail,
+        "taskId": provider_task_id,
+        "providerTaskStatus": "failed",
+        "providerTaskPhase": "查询失败",
+        "generationFinishedAt": finished_at,
+    })
+
+
+def _mark_resumed_query_retry(project_id, node_id, generation_task, exc):
+    detail = str(exc)
+    commit_node_metadata(project_id, node_id, {
+        "status": "generating",
+        "providerTaskStatus": "retrying",
+        "providerTaskPhase": "查询重试中",
+        "lastError": "",
+    })
+    if generation_task:
+        store.update_generation_task(
+            generation_task["id"],
+            status="running",
+            phase="查询重试中",
+            error=detail,
+        )
+    publish_project_event(project_id, "media.progress", node_id, {
+        "status": "generating",
+        "error": detail,
+        "providerTaskStatus": "retrying",
+        "providerTaskPhase": "查询重试中",
+    })
+
+
 def _resume_video_task(project_id, node_id, task_id, provider, model):
     key = (project_id, node_id)
     generation_task = _find_generation_task(project_id, node_id, task_id)
+    if _recover_persisted_result_to_canvas(project_id, node_id, generation_task):
+        return
+    if generation_task and generation_task.get("local_result_url"):
+        return
     try:
-        deadline = time.time() + 900
-        while time.time() < deadline:
+        last_query_error = ""
+        while True:
             try:
                 state = provider_client.check_video_task(provider, model, task_id)
+                last_query_error = ""
             except Exception as exc:
-                commit_node_metadata(project_id, node_id, {
-                    "providerTaskStatus": "retrying",
-                    "providerTaskPhase": "查询重试中",
-                    "lastError": str(exc),
-                })
-                if generation_task:
-                    store.update_generation_task(
-                        generation_task["id"], status="running", phase="查询重试中",
-                        error=str(exc),
+                last_query_error = str(exc)
+                error_kind = _provider_query_error_kind(exc)
+                if error_kind != "retryable":
+                    _mark_resumed_task_terminal_query_failure(
+                        project_id,
+                        node_id,
+                        generation_task,
+                        task_id,
+                        exc,
+                        error_kind,
                     )
-                time.sleep(8)
+                    return
+                _mark_resumed_query_retry(
+                    project_id,
+                    node_id,
+                    generation_task,
+                    exc,
+                )
+                time.sleep(15)
                 continue
             progress = state.get("progress")
             commit_node_metadata(project_id, node_id, {
@@ -1773,34 +1848,36 @@ def _resume_video_task(project_id, node_id, task_id, provider, model):
                 _finalize_resumed_video(project_id, node_id, state, provider, model)
                 return
             if state.get("status") == "failed":
+                failure_detail = str(state.get("error") or "视频生成失败")
+                finished_at = store._now_iso()
+                task_id_value = str(
+                    state.get("taskId")
+                    or (generation_task or {}).get("provider_task_id")
+                    or task_id
+                )
                 commit_node_metadata(project_id, node_id, {
                     "status": "failed",
-                    "lastError": str(state.get("error") or "视频生成失败"),
+                    "lastError": failure_detail,
                     "providerTaskStatus": "failed",
                     "providerTaskPhase": "生成失败",
-                    "generationFinishedAt": store._now_iso(),
+                    "generationFinishedAt": finished_at,
                 })
                 if generation_task:
                     store.update_generation_task(
                         generation_task["id"], status="failed", phase="生成失败",
-                        error=str(state.get("error") or "视频生成失败"),
-                        finished_at=store._now_iso(),
+                        error=failure_detail,
+                        finished_at=finished_at,
                     )
+                publish_project_event(project_id, "media", node_id, {
+                    "status": "failed",
+                    "error": failure_detail,
+                    "providerTaskStatus": "failed",
+                    "providerTaskPhase": "生成失败",
+                    "generationFinishedAt": finished_at,
+                    "taskId": task_id_value,
+                })
                 return
-            time.sleep(5)
-        commit_node_metadata(project_id, node_id, {
-            "status": "failed",
-            "lastError": "恢复供应商视频任务超时（900s）",
-            "providerTaskStatus": "timeout",
-            "providerTaskPhase": "生成超时",
-            "generationFinishedAt": store._now_iso(),
-        })
-        if generation_task:
-            store.update_generation_task(
-                generation_task["id"], status="failed", phase="生成超时",
-                error="恢复供应商视频任务超时（900s）",
-                finished_at=store._now_iso(),
-            )
+            time.sleep(8)
     finally:
         with RESUMED_VIDEO_TASKS_LOCK:
             RESUMED_VIDEO_TASKS.discard(key)
@@ -1821,8 +1898,18 @@ def _finalize_resumed_image(project_id, node_id, state, provider, model):
     task_id = str(state.get("taskId") or "")
     generated_url = persist_generated_media(str(state.get("url") or ""), ".png")
     if not generated_url.startswith("/uploads/"):
-        raise RuntimeError("恢复的图片任务完成，但未能保存本地新文件")
+        raise provider_client.ProviderOutcomeUncertain(
+            "供应商图片已完成，但没有拿到本地新文件"
+        )
     generated_at = store._now_iso()
+    generation_task = _find_generation_task(project_id, node_id, task_id)
+    if generation_task:
+        store.update_generation_task(
+            generation_task["id"],
+            provider_result_url=str(state.get("url") or ""),
+            local_result_url=generated_url,
+            provider_finished_at=generated_at,
+        )
     _record_media_version(meta, "image", generated_url, task_id, generated_at)
     meta.update({
         "status": "done",
@@ -1864,7 +1951,6 @@ def _finalize_resumed_image(project_id, node_id, state, provider, model):
             "mediaVersionIndex": meta["params"].get("mediaVersionIndex", 0),
         },
     })
-    generation_task = _find_generation_task(project_id, node_id, task_id)
     if generation_task:
         store.update_generation_task(
             generation_task["id"], status="succeeded", phase="已完成", progress=100,
@@ -1876,23 +1962,33 @@ def _finalize_resumed_image(project_id, node_id, state, provider, model):
 def _resume_image_task(project_id, node_id, task_id, provider, model):
     key = (project_id, node_id)
     generation_task = _find_generation_task(project_id, node_id, task_id)
+    if _recover_persisted_result_to_canvas(project_id, node_id, generation_task):
+        return
+    if generation_task and generation_task.get("local_result_url"):
+        return
     try:
-        deadline = time.time() + 900
-        while time.time() < deadline:
+        while True:
             try:
                 state = provider_client.check_image_task(provider, model, task_id)
             except Exception as exc:
-                commit_node_metadata(project_id, node_id, {
-                    "providerTaskStatus": "retrying",
-                    "providerTaskPhase": "查询重试中",
-                    "lastError": str(exc),
-                })
-                if generation_task:
-                    store.update_generation_task(
-                        generation_task["id"], status="running", phase="查询重试中",
-                        error=str(exc),
+                error_kind = _provider_query_error_kind(exc)
+                if error_kind != "retryable":
+                    _mark_resumed_task_terminal_query_failure(
+                        project_id,
+                        node_id,
+                        generation_task,
+                        task_id,
+                        exc,
+                        error_kind,
                     )
-                time.sleep(8)
+                    return
+                _mark_resumed_query_retry(
+                    project_id,
+                    node_id,
+                    generation_task,
+                    exc,
+                )
+                time.sleep(15)
                 continue
             progress = state.get("progress")
             commit_node_metadata(project_id, node_id, {
@@ -1911,34 +2007,36 @@ def _resume_image_task(project_id, node_id, task_id, provider, model):
                 _finalize_resumed_image(project_id, node_id, state, provider, model)
                 return
             if state.get("status") == "failed":
+                failure_detail = str(state.get("error") or "图片生成失败")
+                finished_at = store._now_iso()
+                task_id_value = str(
+                    state.get("taskId")
+                    or (generation_task or {}).get("provider_task_id")
+                    or task_id
+                )
                 commit_node_metadata(project_id, node_id, {
                     "status": "failed",
-                    "lastError": str(state.get("error") or "图片生成失败"),
+                    "lastError": failure_detail,
                     "providerTaskStatus": "failed",
                     "providerTaskPhase": "生成失败",
-                    "generationFinishedAt": store._now_iso(),
+                    "generationFinishedAt": finished_at,
                 })
                 if generation_task:
                     store.update_generation_task(
                         generation_task["id"], status="failed", phase="生成失败",
-                        error=str(state.get("error") or "图片生成失败"),
-                        finished_at=store._now_iso(),
+                        error=failure_detail,
+                        finished_at=finished_at,
                     )
+                publish_project_event(project_id, "media", node_id, {
+                    "status": "failed",
+                    "error": failure_detail,
+                    "providerTaskStatus": "failed",
+                    "providerTaskPhase": "生成失败",
+                    "generationFinishedAt": finished_at,
+                    "taskId": task_id_value,
+                })
                 return
-            time.sleep(5)
-        commit_node_metadata(project_id, node_id, {
-            "status": "failed",
-            "lastError": "恢复供应商图片任务超时（900s）",
-            "providerTaskStatus": "timeout",
-            "providerTaskPhase": "生成超时",
-            "generationFinishedAt": store._now_iso(),
-        })
-        if generation_task:
-            store.update_generation_task(
-                generation_task["id"], status="failed", phase="生成超时",
-                error="恢复供应商图片任务超时（900s）",
-                finished_at=store._now_iso(),
-            )
+            time.sleep(8)
     finally:
         with RESUMED_VIDEO_TASKS_LOCK:
             RESUMED_VIDEO_TASKS.discard(key)
@@ -2073,6 +2171,38 @@ def start_generation_task_reconciler():
 def start_pending_video_resumers():
     for tenant in _active_tenants():
         def resume_tenant(tenant_record=tenant):
+            known = set()
+
+            def start_resumer(
+                project_id,
+                node_id,
+                provider_task_id,
+                provider,
+                model,
+                kind,
+            ):
+                tenant_id = tenant_record["id"] if tenant_record else None
+                tenant_slug = tenant_record["slug"] if tenant_record else "local"
+                key = (tenant_id or "legacy", project_id, node_id)
+                with RESUMED_VIDEO_TASKS_LOCK:
+                    if key in RESUMED_VIDEO_TASKS:
+                        return
+                    RESUMED_VIDEO_TASKS.add(key)
+                threading.Thread(
+                    target=_run_in_tenant,
+                    args=(
+                        tenant_id,
+                        tenant_slug,
+                        _resume_image_task if kind == "image" else _resume_video_task,
+                        project_id,
+                        node_id,
+                        provider_task_id,
+                        provider,
+                        model,
+                    ),
+                    daemon=True,
+                ).start()
+
             for project_row in store.list_projects():
                 project = store.get_project(project_row.get("id"))
                 if not project:
@@ -2082,11 +2212,24 @@ def start_pending_video_resumers():
                     task_id = str(meta.get("taskId") or "").strip()
                     provider_status = str(meta.get("providerTaskStatus") or "").strip().lower()
                     node_type = str(node.get("type") or "")
-                    if (node_type not in {"image", "video"}
-                            or meta.get("status") != "generating"
-                            or not task_id
-                            or provider_status not in {"queued", "pending", "created", "submitted", "running", "processing", "retrying"}):
+                    resumable_node = (
+                        meta.get("status") == "generating"
+                        and node_type in {"image", "video"}
+                        and bool(task_id)
+                        and provider_status in {
+                            "queued", "pending", "created", "submitted",
+                            "running", "processing", "retrying", "uncertain",
+                        }
+                    )
+                    if not resumable_node:
                         continue
+                    task_row = _find_generation_task(
+                        project["id"],
+                        node["id"],
+                        task_id,
+                    )
+                    if task_row:
+                        known.add(str(task_row.get("id") or ""))
                     try:
                         params = meta.get("params") or {}
                         provider, model, _ = provider_catalog.resolve_model(
@@ -2103,27 +2246,61 @@ def start_pending_video_resumers():
                             "providerTaskPhase": "恢复失败",
                         })
                         continue
-                    tenant_id = tenant_record["id"] if tenant_record else None
-                    tenant_slug = tenant_record["slug"] if tenant_record else "local"
-                    key = (tenant_id or "legacy", project["id"], node["id"])
-                    with RESUMED_VIDEO_TASKS_LOCK:
-                        if key in RESUMED_VIDEO_TASKS:
-                            continue
-                        RESUMED_VIDEO_TASKS.add(key)
-                    threading.Thread(
-                        target=_run_in_tenant,
-                        args=(
-                            tenant_id,
-                            tenant_slug,
-                            _resume_image_task if node_type == "image" else _resume_video_task,
-                            project["id"],
-                            node["id"],
-                            task_id,
-                            provider,
-                            model,
-                        ),
-                        daemon=True,
-                    ).start()
+                    start_resumer(
+                        project["id"],
+                        node["id"],
+                        task_id,
+                        provider,
+                        model,
+                        node_type,
+                    )
+
+            # A browser timeout may have persisted the provider id but already
+            # marked the node failed. The task row remains the source of truth.
+            for task_row in store.list_generation_tasks(None, 300):
+                local_id = str(task_row.get("id") or "")
+                provider_task_id = str(task_row.get("provider_task_id") or "").strip()
+                if (
+                    local_id in known
+                    or not provider_task_id
+                    or task_row.get("kind") not in {"image", "video"}
+                    or task_row.get("status") not in {"running", "interrupted"}
+                ):
+                    continue
+                project = store.get_project(task_row.get("project_id"))
+                node = next(
+                    (
+                        item for item in (project or {}).get("payload", {}).get("nodes", [])
+                        if item.get("id") == task_row.get("node_id")
+                    ),
+                    None,
+                )
+                if not node:
+                    continue
+                try:
+                    provider, model, _ = provider_catalog.resolve_model(
+                        task_row.get("provider"),
+                        task_row.get("model"),
+                        str(task_row.get("kind") or ""),
+                    )
+                except Exception:
+                    continue
+                commit_node_metadata(project["id"], node["id"], {
+                    "status": "generating",
+                    "taskId": provider_task_id,
+                    "providerTaskStatus": "queued",
+                    "providerTaskPhase": "等待恢复",
+                    "lastError": "",
+                    "generationFinishedAt": "",
+                })
+                start_resumer(
+                    project["id"],
+                    node["id"],
+                    provider_task_id,
+                    provider,
+                    model,
+                    str(task_row.get("kind") or ""),
+                )
 
         if tenant is None:
             resume_tenant()
@@ -2585,13 +2762,41 @@ class Handler(BaseHTTPRequestHandler):
         fpath = os.path.join(upload_dir, fname)
         with open(fpath, "wb") as f:
             f.write(blob)
-        return self._send(200, {
+        mime = m.group(1).split(";")[0].strip()
+        result = {
             "ok": True,
             "url": "/uploads/" + fname,
             "name": raw_name or fname,
             "size": len(blob),
-            "mime": m.group(1).split(";")[0].strip(),
-        })
+            "mime": mime,
+        }
+        storage_cfg = provider_catalog.storage_config()
+        if media_storage.is_ready(storage_cfg):
+            try:
+                storage = media_storage.persist_local_url(
+                    result["url"],
+                    kind=self._upload_kind_for_extension(ext) or "media",
+                    fallback_ext=ext,
+                    source={
+                        "type": "local-upload",
+                        "fileName": raw_name or fname,
+                        "mime": mime,
+                    },
+                )
+            except Exception as exc:
+                return self._send(502, {
+                    "error": f"文件已保存在本地，但对象存储上传失败：{exc}",
+                    "code": "STORAGE_UPLOAD_FAILED",
+                    "provider": (
+                        storage_cfg.get("active_provider")
+                        or storage_cfg.get("provider")
+                        or ""
+                    ),
+                    "localUrl": result["url"],
+                })
+            result["storage"] = storage
+            result["remoteUrl"] = media_storage.public_url(storage)
+        return self._send(200, result)
 
     def _handle_stream_upload(self):
         raw_name = urllib.parse.unquote(str(self.headers.get("X-File-Name") or "").strip())
@@ -2649,15 +2854,44 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
             return self._send(400, {"error": str(exc)})
-        return self._send(200, {
+        mime = declared_mime or mimetypes.guess_type(fname)[0] or "application/octet-stream"
+        result = {
             "ok": True,
             "url": "/uploads/" + fname,
             "name": raw_name or fname,
             "size": content_length,
-            "mime": declared_mime or mimetypes.guess_type(fname)[0] or "application/octet-stream",
+            "mime": mime,
             "sha256": digest.hexdigest(),
             "kind": kind,
-        })
+        }
+        storage_cfg = provider_catalog.storage_config()
+        if media_storage.is_ready(storage_cfg):
+            try:
+                storage = media_storage.persist_local_url(
+                    result["url"],
+                    kind=kind,
+                    fallback_ext=ext,
+                    source={
+                        "type": "local-upload",
+                        "fileName": raw_name or fname,
+                        "mime": mime,
+                        "sha256": result["sha256"],
+                    },
+                )
+            except Exception as exc:
+                return self._send(502, {
+                    "error": f"文件已保存在本地，但对象存储上传失败：{exc}",
+                    "code": "STORAGE_UPLOAD_FAILED",
+                    "provider": (
+                        storage_cfg.get("active_provider")
+                        or storage_cfg.get("provider")
+                        or ""
+                    ),
+                    "localUrl": result["url"],
+                })
+            result["storage"] = storage
+            result["remoteUrl"] = media_storage.public_url(storage)
+        return self._send(200, result)
 
     # ---------- 前端静态产物 ----------
     # 把 web-vimax/dist 直接端在 8890 根路径上，8890 单开也能用完整应用。
@@ -3242,9 +3476,10 @@ class Handler(BaseHTTPRequestHandler):
                 if task.get("status") == "failed":
                     task["error_kind"] = (
                         "local_validation"
-                        if is_local_validation_error(task.get("error"))
+                        if generation_outcome.is_local_validation_error(task.get("error"))
                         else "provider"
                     )
+                task["outcome"] = generation_outcome.task_outcome(task)
             queued = sorted(
                 (
                     task for task in tasks
@@ -3525,6 +3760,31 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "storage": storage})
             except ValueError as exc:
                 return self._send(400, {"error": str(exc)})
+        if path == "/api/storage/activate":
+            try:
+                provider = str((body or {}).get("provider") or "")
+                storage = provider_catalog.activate_storage_provider(provider)
+                store.record_audit_event(
+                    "storage.activate",
+                    actor=(self._current_session() or {}).get("account_username", ""),
+                    target_type="storage",
+                    details={"provider": storage.get("provider")},
+                )
+                return self._send(200, {"ok": True, "storage": storage})
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
+        if path == "/api/storage/deactivate":
+            try:
+                storage = provider_catalog.deactivate_storage()
+                store.record_audit_event(
+                    "storage.deactivate",
+                    actor=(self._current_session() or {}).get("account_username", ""),
+                    target_type="storage",
+                    details={"provider": storage.get("provider")},
+                )
+                return self._send(200, {"ok": True, "storage": storage})
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
         if path == "/api/budget":
             try:
                 provider_catalog.save_budget_config(body)
@@ -3538,15 +3798,17 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError) as exc:
                 return self._send(400, {"error": str(exc)})
         if path == "/api/storage/test":
+            request_body = body if isinstance(body, dict) else {}
             try:
-                return self._send(200, {"ok": True, **tos_storage.test_connection()})
+                provider = str(request_body.get("provider") or "").strip().lower()
+                result = (
+                    media_storage.test_connection_for(provider)
+                    if provider
+                    else media_storage.test_connection()
+                )
+                return self._send(200, {"ok": True, **result})
             except tos_storage.TosAccountOverdueError as exc:
                 return self._send(402, {"error": str(exc), "code": "TOS_ACCOUNT_OVERDUE"})
-            except Exception as exc:
-                return self._send(400, {"error": str(exc)})
-        if path == "/api/storage/imgbb/test":
-            try:
-                return self._send(200, {"ok": True, **imgbb_storage.test_connection()})
             except Exception as exc:
                 return self._send(400, {"error": str(exc)})
         # 文件上传：{name, dataUrl} → 落盘返回稳定 URL
@@ -4855,6 +5117,8 @@ class Handler(BaseHTTPRequestHandler):
                 provider_task_id = str(
                     provider_response.get("id")
                     or provider_response.get("task_id")
+                    or provider_response.get("taskId")
+                    or _submitted_provider_task_id(task_id)
                     or ""
                 ).strip()
                 if task_id:
@@ -4866,14 +5130,14 @@ class Handler(BaseHTTPRequestHandler):
                         provider_task_id=provider_task_id,
                         finished_at="",
                     )
-                commit_node_metadata(pid, node["id"], {
-                    "status": "error",
-                    "lastError": str(exc),
-                    "providerTaskStatus": "uncertain",
-                    "providerTaskPhase": "结果待确认",
-                    "providerSubmittedAt": submitted_at,
-                    "providerTaskId": provider_task_id,
-                })
+                _mark_generation_outcome_uncertain(
+                    task_id, pid, node["id"], exc, provider_task_id
+                )
+                if submitted_at:
+                    commit_node_metadata(pid, node["id"], {
+                        "providerSubmittedAt": submitted_at,
+                        "providerTaskId": provider_task_id,
+                    })
                 return self._send(202, {
                     "accepted": True,
                     "taskId": task_id or "",
@@ -4882,6 +5146,19 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "PROVIDER_OUTCOME_UNCERTAIN",
                     "error": str(exc),
                     "providerSubmittedAt": submitted_at,
+                })
+            submitted_provider_task_id = _submitted_provider_task_id(task_id)
+            if submitted_provider_task_id:
+                _mark_generation_outcome_uncertain(
+                    task_id, pid, node["id"], exc, submitted_provider_task_id
+                )
+                return self._send(202, {
+                    "accepted": True,
+                    "taskId": task_id or "",
+                    "nodeId": node["id"],
+                    "status": "pending",
+                    "code": "PROVIDER_OUTCOME_UNCERTAIN",
+                    "error": str(exc),
                 })
             if task_id:
                 store.update_generation_task(
@@ -5120,6 +5397,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise provider_client.ProviderOutcomeUncertain(
                         "供应商已生成图片，但没有拿到本地新文件"
                     )
+                if task_id:
+                    store.update_generation_task(
+                        task_id,
+                        provider_result_url=provider_url,
+                        local_result_url=local_generated_url,
+                        provider_finished_at=provider_ready_at,
+                    )
                 generated_at = provider_ready_at
                 generated_url = local_generated_url
                 _record_media_version(
@@ -5135,12 +5419,6 @@ class Handler(BaseHTTPRequestHandler):
                 meta["finalizePending"] = False
                 meta["storage"] = {}
                 meta["storageError"] = ""
-                imgbb_pending = imgbb_storage.is_ready()
-                meta["imgbb"] = {
-                    "status": "pending",
-                    "source": {"localUrl": local_generated_url},
-                } if imgbb_pending else {}
-                meta["imageHostError"] = ""
                 meta["lastNote"] = missing_note(missing)
                 meta["promptStale"] = False
                 meta["promptStaleReason"] = ""
@@ -5152,15 +5430,6 @@ class Handler(BaseHTTPRequestHandler):
                         local_generated_url,
                         provider,
                         model,
-                        str(result.get("taskId") or ""),
-                        str(generated_at or ""),
-                    )
-                    queue_generated_image_imgbb_mirror(
-                        pid,
-                        node["id"],
-                        local_generated_url,
-                        str(provider.get("id") or ""),
-                        str(model.get("remoteModel") or model.get("id") or ""),
                         str(result.get("taskId") or ""),
                         str(generated_at or ""),
                     )
@@ -5179,6 +5448,11 @@ class Handler(BaseHTTPRequestHandler):
                         None,
                     )
                     if not voice_node:
+                        missing.append({
+                            "nodeId": voice_ref.get("nodeId"),
+                            "label": voice_ref.get("label") or "角色音色",
+                            "reason": "音色节点已不存在",
+                        })
                         continue
                     voice_meta = voice_node.get("metadata", {}) or {}
                     voice_url = str(voice_meta.get("content") or "").strip()
@@ -5291,12 +5565,55 @@ class Handler(BaseHTTPRequestHandler):
                     on_task_created=on_task_created,
                     on_task_update=on_task_update,
                 )
+                if result.get("pending"):
+                    if task_id:
+                        store.update_generation_task(
+                            task_id,
+                            status="interrupted",
+                            phase="结果待确认",
+                            progress=20,
+                            error=str(result.get("message") or "供应商仍在生成"),
+                            provider_task_id=str(result.get("taskId") or ""),
+                            finished_at="",
+                        )
+                    meta.update({
+                        "status": "error",
+                        "lastError": str(result.get("message") or "供应商仍在生成"),
+                        "taskId": str(result.get("taskId") or ""),
+                        "providerTaskStatus": "uncertain",
+                        "providerTaskPhase": "结果待确认",
+                        "generationFinishedAt": "",
+                    })
+                    return self._send(202, {
+                        "accepted": True,
+                        "taskId": task_id or "",
+                        "nodeId": node["id"],
+                        "status": "pending",
+                        "code": "PROVIDER_OUTCOME_UNCERTAIN",
+                        "error": str(result.get("message") or "供应商仍在生成"),
+                    })
                 provider_ready_at = store._now_iso()
                 provider_url = str(result.get("url") or "")
                 if not provider_url:
                     raise RuntimeError("供应商未返回视频地址，本次生成没有产生新视频")
+                try:
+                    local_generated_url = persist_generated_media(provider_url, ".mp4")
+                except Exception as exc:
+                    raise provider_client.ProviderOutcomeUncertain(
+                        f"供应商已生成视频，但下载新视频失败：{exc}"
+                    ) from exc
+                if not local_generated_url.startswith("/uploads/"):
+                    raise provider_client.ProviderOutcomeUncertain(
+                        "供应商已生成视频，但没有拿到本地新文件"
+                    )
+                if task_id:
+                    store.update_generation_task(
+                        task_id,
+                        provider_result_url=provider_url,
+                        local_result_url=local_generated_url,
+                    )
                 generated_at = provider_ready_at
-                generated_url = provider_url
+                generated_url = local_generated_url
                 _record_video_version(
                     meta,
                     generated_url,
@@ -5312,11 +5629,11 @@ class Handler(BaseHTTPRequestHandler):
                 meta["providerTaskStatus"] = "completed"
                 meta["providerTaskPhase"] = "已完成，后台缓存中"
                 meta["providerTaskProgress"] = 100
-                meta["finalizePending"] = True
+                meta["finalizePending"] = False
                 queue_generated_video_finalize(
                     pid,
                     node["id"],
-                    provider_url,
+                    local_generated_url,
                     provider,
                     model,
                     str(result.get("taskId") or ""),
@@ -5402,16 +5719,17 @@ class Handler(BaseHTTPRequestHandler):
                     meta["params"]["videoVersions"] = [dict(item) for item in version_list]
         except Exception as exc:
             if isinstance(exc, provider_client.ProviderOutcomeUncertain):
-                meta["status"] = "error"
-                meta["lastError"] = str(exc)
-                commit_node_metadata(pid, node["id"], {
-                    "status": "error",
-                    "lastError": str(exc),
-                    "providerTaskStatus": "uncertain",
-                    "providerTaskPhase": "结果待确认",
-                    "generationFinishedAt": "",
-                })
+                _mark_generation_outcome_uncertain(
+                    task_id, pid, node["id"], exc
+                )
                 raise
+            if _submitted_provider_task_id(task_id):
+                _mark_generation_outcome_uncertain(
+                    task_id, pid, node["id"], exc
+                )
+                raise provider_client.ProviderOutcomeUncertain(
+                    f"供应商已受理任务，但本地收尾失败：{exc}。系统会继续查询原任务，不会自动重新提交。"
+                ) from exc
             meta["status"] = "failed"
             meta["lastError"] = str(exc)
             commit_node_metadata(pid, node["id"], {
@@ -5459,7 +5777,7 @@ class Handler(BaseHTTPRequestHandler):
                 "generationStartedAt", "generationFinishedAt", "providerTaskStatus",
                 "providerTaskPhase", "providerTaskProgress",
                 "videoValidation", "actualDuration", "storage", "storageError",
-                "imgbb", "imageHostError", "source", "providerUrl", "finalizePending",
+                "source", "providerUrl", "finalizePending",
             )
         }
         if ntype == "text":
@@ -5594,12 +5912,6 @@ def main():
             print(f"已校验 {validated} 个历史视频")
     except Exception as exc:
         print(f"[video-validation] 回填失败：{exc}", file=sys.stderr)
-    try:
-        hosted = _run_for_active_tenants(backfill_image_host_versions)
-        if hosted:
-            print(f"已恢复 {hosted} 个 ImgBB 图片版本")
-    except Exception as exc:
-        print(f"[imgbb] 版本回填失败：{exc}", file=sys.stderr)
     try:
         _run_for_active_tenants(store.interrupt_orphan_generation_tasks)
     except Exception as exc:

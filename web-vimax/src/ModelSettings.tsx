@@ -1,5 +1,6 @@
 import {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {dialog} from './GDialog';
+import {filterDiscoveredModels} from './modelDiscoveryFilter';
 import {Braces, Check, ChevronDown, Plus, RefreshCw, Save, Search, Trash2, X} from 'lucide-react';
 import {
   deleteModelConfig,
@@ -80,7 +81,8 @@ const ADAPTERS = [
   ['ark_image', '火山方舟图片 / Ark 兼容图片'],
   ['ark_video', '火山方舟视频 / Ark 兼容异步视频'],
   ['newapi_image', 'OpenAI 兼容图片 / 中转图片'],
-  ['newapi_video', 'OpenAI 兼容视频 / /v1/videos'],
+  ['canvaspro_video', 'CanvasPro 视频（专用合同）'],
+  ['openai_video', 'OpenAI 兼容视频 / /v1/videos'],
   ['agnes_image', 'Agnes Images'],
   ['agnes_video', 'Agnes Videos'],
   ['openai_chat', 'OpenAI 兼容 Chat Completions'],
@@ -92,7 +94,8 @@ const ADAPTER_CAPABILITIES: Record<string, string> = {
   ark_image: 'image',
   ark_video: 'video',
   newapi_image: 'image',
-  newapi_video: 'video',
+  canvaspro_video: 'video',
+  openai_video: 'video',
   agnes_image: 'image',
   agnes_video: 'video',
   openai_chat: 'text',
@@ -127,7 +130,10 @@ export function defaultAdapterForProvider(
   if (normalized === 'teamorouter') {
     return capability === 'text' ? 'openai_chat' : defaultAdapterForCapability(capability);
   }
-  return capability === 'image' ? 'newapi_image' : capability === 'video' ? 'newapi_video' : defaultAdapterForCapability(capability);
+  if (capability === 'video' && (normalized === 'new-apl' || normalized === 'new-api')) {
+    return 'canvaspro_video';
+  }
+  return capability === 'image' ? 'newapi_image' : capability === 'video' ? 'openai_video' : defaultAdapterForCapability(capability);
 }
 
 function providerDraft(provider?: ProviderSpec): ProviderDraft {
@@ -539,9 +545,11 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
   const [status, setStatus] = useState('');
   const [testState, setTestState] = useState<{ok: boolean; message: string} | null>(null);
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModelSpec[] | null>(null);
+  const [discoveredSelected, setDiscoveredSelected] = useState<Record<string, boolean>>({});
   const [discoveredCapabilities, setDiscoveredCapabilities] = useState<Record<string, string>>({});
   const [discovering, setDiscovering] = useState(false);
   const [discoverQuery, setDiscoverQuery] = useState('');
+  const [discoverCapability, setDiscoverCapability] = useState('');
   const [discoverMessage, setDiscoverMessage] = useState('');
   // 4 个自绘下拉共用一份"当前打开的是哪个"，保证同一时刻只开一个
   const [openSelect, setOpenSelect] = useState<'' | 'protocol' | 'providerId' | 'capability' | 'adapter'>('');
@@ -558,17 +566,36 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
     (item) => Boolean(provider.id) && item.providerId === provider.id,
   );
   const discoverQueryText = discoverQuery.trim().toLowerCase();
-  const filteredDiscoveredModels = (discoveredModels || []).filter((item) => {
-    if (!discoverQueryText) return true;
-    return [
-      item.label,
-      item.remoteModel,
-      item.id,
-      item.capability,
-      item.adapter,
-      item.description,
-    ].some((value) => String(value || '').toLowerCase().includes(discoverQueryText));
-  });
+  const filteredDiscoveredModels = filterDiscoveredModels(
+    discoveredModels || [],
+    discoverCapability,
+    Object.fromEntries(
+      Object.entries(discoveredCapabilities).map(([key, value]) => [
+        key.split(':').slice(1).join(':'),
+        value,
+      ]),
+    ),
+    discoverQueryText,
+  );
+  const selectableFilteredDiscoveredModels = filteredDiscoveredModels.filter(
+    (item) => !item.disabled,
+  );
+  const discoveredSelectedCount = selectableFilteredDiscoveredModels.filter(
+    (item) => discoveredSelected[`${item.providerId}:${item.remoteModel}`],
+  ).length;
+  const allFilteredDiscoveredSelected = Boolean(selectableFilteredDiscoveredModels.length)
+    && discoveredSelectedCount === selectableFilteredDiscoveredModels.length;
+
+  const toggleAllFilteredDiscovered = () => {
+    const checked = !allFilteredDiscoveredSelected;
+    setDiscoveredSelected((current) => {
+      const next = {...current};
+      for (const item of selectableFilteredDiscoveredModels) {
+        next[`${item.providerId}:${item.remoteModel}`] = checked;
+      }
+      return next;
+    });
+  };
 
   const selectProvider = (item: ProviderSpec) => {
     setProvider(providerDraft(item));
@@ -754,6 +781,7 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
     try {
       const result = await discoverProviderModels(provider.id);
       setDiscoveredModels(result.models);
+      setDiscoveredSelected({});
       setDiscoveredCapabilities({});
       setDiscoverMessage(`发现 ${result.count} 个模型，请确认后导入`);
     } catch (error) {
@@ -765,15 +793,17 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
 
   const importDiscoveredModels = async () => {
     const pending = filteredDiscoveredModels.filter((model) => {
-      if (model.alreadyConfigured) return false;
+      const key = `${model.providerId}:${model.remoteModel}`;
+      if (!discoveredSelected[key] || model.disabled) return false;
       const capability = model.capability === 'unknown'
-        ? discoveredCapabilities[`${model.providerId}:${model.remoteModel}`]
+        ? discoveredCapabilities[key]
         : model.capability;
       return Boolean(capability);
     });
     if (!pending.length || modelBusy) return;
     setModelBusy(true);
     setStatus('');
+    let savedCount = 0;
     try {
       let next = catalog;
       for (const item of pending) {
@@ -788,16 +818,23 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
           adapter,
           enabled: true,
         } as unknown as Record<string, unknown>);
+        savedCount += 1;
       }
       if (next) applyCatalog(next);
       setStatus(`已导入 ${pending.length} 个模型`);
       setDiscoveredModels(null);
+      setDiscoveredSelected({});
       setDiscoveredCapabilities({});
       setDiscoverQuery('');
       setDiscoverMessage('');
       window.dispatchEvent(new CustomEvent('canvas-model-catalog-changed'));
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      if (savedCount) {
+        window.dispatchEvent(new CustomEvent('canvas-model-catalog-changed'));
+      }
+      setStatus(
+        `${savedCount ? `已导入 ${savedCount} 个，` : ''}${error instanceof Error ? error.message : String(error)}`,
+      );
     } finally {
       setModelBusy(false);
     }
@@ -879,8 +916,8 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
   };
 
   return (
-    <div className="canvas-help-backdrop model-settings-backdrop" onClick={onClose}>
-      <section className="canvas-help model-settings-dialog" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+    <div className="canvas-help-backdrop model-settings-backdrop">
+      <section className="canvas-help model-settings-dialog" role="dialog" aria-modal="true">
         <header>
           <div>
             <strong>模型接口</strong>
@@ -1193,8 +1230,8 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
               ) : (
                 <>
                   <button type="button" className="is-primary" onClick={() => void saveModel()} disabled={modelBusy}><Save size={13} />{modelBusy ? '保存中…' : '保存模型'}</button>
-                  {model.id && !catalog?.models.find((item) => item.id === model.id)?.builtin && (
-                    <button type="button" className="is-danger" onClick={() => void removeModel()}><Trash2 size={13} />删除</button>
+                  {model.id && (
+                    <button type="button" className="is-danger" onClick={() => void removeModel()} disabled={modelBusy}><Trash2 size={13} />删除模型</button>
                   )}
                   <span className="model-settings-hint"><Check size={12} />保存后自动刷新节点模型下拉</span>
                 </>
@@ -1205,9 +1242,23 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
         {discoveredModels && (
           <div className="model-discover-panel">
             <header>
-              <strong>发现 {discoveredModels.length} 个模型</strong>
-              <button type="button" onClick={() => { setDiscoveredModels(null); setDiscoverQuery(''); }} aria-label="关闭模型发现结果"><X size={13} /></button>
+              <strong>发现 {discoveredModels.length} 个模型 · 已挑选 {discoveredSelectedCount}</strong>
+              <button type="button" onClick={() => { setDiscoveredModels(null); setDiscoverQuery(''); setDiscoverCapability(''); }} aria-label="关闭模型发现结果"><X size={13} /></button>
             </header>
+            <label className="model-discover-select-all">
+              <span className="model-discover-check">
+                <input
+                  type="checkbox"
+                  checked={allFilteredDiscoveredSelected}
+                  disabled={!selectableFilteredDiscoveredModels.length}
+                  aria-label="全选当前筛选结果"
+                  onChange={toggleAllFilteredDiscovered}
+                />
+                <span aria-hidden="true"><Check size={11} strokeWidth={2.4} /></span>
+              </span>
+              <span>全选当前结果</span>
+              <small>{discoveredSelectedCount} / {selectableFilteredDiscoveredModels.length}</small>
+            </label>
             <label className="model-discover-search">
               <Search size={13} aria-hidden="true" />
               <input
@@ -1219,14 +1270,73 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
               />
               {discoverQuery && <button type="button" onClick={() => setDiscoverQuery('')} aria-label="清空搜索"><X size={12} /></button>}
             </label>
+            <div className="model-discover-type-filter" role="group" aria-label="按模型类型筛选">
+              {[
+                ['', '全部'],
+                ['text', '文本'],
+                ['image', '图片'],
+                ['video', '视频'],
+                ['audio', '音频'],
+                ['__unknown__', '待选择'],
+              ].map(([value, label]) => (
+                <button
+                  key={value || 'all'}
+                  type="button"
+                  className={discoverCapability === value ? 'is-active' : ''}
+                  onClick={() => setDiscoverCapability(value)}
+                >
+                  {label}
+                  <small>
+                    {value
+                      ? (discoveredModels || []).filter((item) => {
+                        const selected = discoveredCapabilities[`${item.providerId}:${item.remoteModel}`];
+                        const resolved = item.capability === 'unknown' ? selected || '' : item.capability;
+                        return value === '__unknown__'
+                          ? item.capability === 'unknown'
+                          : resolved === value;
+                      }).length
+                      : (discoveredModels || []).length}
+                  </small>
+                </button>
+              ))}
+            </div>
             <div className="model-discover-list">
               {filteredDiscoveredModels.map((item) => {
                 const key = `${item.providerId}:${item.remoteModel}`;
+                const checked = Boolean(discoveredSelected[key]);
                 const selectedCapability = item.capability === 'unknown'
                   ? discoveredCapabilities[key] || ''
                   : item.capability;
                 return (
-                  <div key={key}>
+                  <div key={key} data-selected={checked ? 'true' : 'false'}>
+                    <label
+                      className="model-discover-check"
+                      aria-label={`选择 ${item.remoteModel}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={Boolean(item.disabled)}
+                        onChange={(event) => {
+                          const nextChecked = event.target.checked;
+                          setDiscoveredSelected((current) => ({
+                            ...current,
+                            [key]: nextChecked,
+                          }));
+                          if (
+                            nextChecked
+                            && item.capability !== 'unknown'
+                            && !item.alreadyConfigured
+                          ) {
+                            setDiscoveredCapabilities((current) => ({
+                              ...current,
+                              [key]: item.capability,
+                            }));
+                          }
+                        }}
+                      />
+                      <span aria-hidden="true"><Check size={11} strokeWidth={2.4} /></span>
+                    </label>
                     <span className={`model-settings-kind is-${selectedCapability || 'unknown'}`}>
                       {selectedCapability || '待选择'}
                     </span>
@@ -1249,7 +1359,13 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
                         ))}
                       </select>
                     ) : (
-                      <em>{item.alreadyConfigured ? '已配置' : '待导入'}</em>
+                      <em>
+                        {item.disabled
+                          ? '暂不可用'
+                          : item.alreadyConfigured
+                            ? '已配置 · 可更新'
+                            : '待导入'}
+                      </em>
                     )}
                   </div>
                 );
@@ -1257,18 +1373,10 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
               {!filteredDiscoveredModels.length && <p className="model-discover-empty">没有匹配的模型。</p>}
             </div>
             <footer>
-              <span>{discoverQueryText ? `当前筛选 ${filteredDiscoveredModels.length} 个，导入只作用于筛选结果。` : '导入后仍可在模型详情中编辑参数。'}</span>
-              <button type="button" onClick={() => { setDiscoveredModels(null); setDiscoverQuery(''); }}>取消</button>
-              <button type="button" className="is-primary" disabled={modelBusy || !filteredDiscoveredModels.some((item) => {
-                if (item.alreadyConfigured) return false;
-                return item.capability !== 'unknown'
-                  || Boolean(discoveredCapabilities[`${item.providerId}:${item.remoteModel}`]);
-              })} onClick={() => void importDiscoveredModels()}>
-                {modelBusy ? '导入中…' : `导入 ${filteredDiscoveredModels.filter((item) => {
-                  if (item.alreadyConfigured) return false;
-                  return item.capability !== 'unknown'
-                    || Boolean(discoveredCapabilities[`${item.providerId}:${item.remoteModel}`]);
-                }).length} 个`}
+              <span>已选 {discoveredSelectedCount} / {selectableFilteredDiscoveredModels.length} 个可导入</span>
+              <button type="button" onClick={() => { setDiscoveredModels(null); setDiscoveredSelected({}); setDiscoverQuery(''); setDiscoverCapability(''); }}>取消</button>
+              <button type="button" className="is-primary" disabled={modelBusy || !discoveredSelectedCount} onClick={() => void importDiscoveredModels()}>
+                {modelBusy ? `处理中…（${discoveredSelectedCount}）` : `导入 ${discoveredSelectedCount} 个`}
               </button>
             </footer>
           </div>
