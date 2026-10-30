@@ -5518,20 +5518,6 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "GENERATION_WORKER_START_FAILED",
                     "taskId": task.get("id"),
                 })
-            start_updates = {
-                "status": "generating",
-                "lastError": None,
-                "taskId": None,
-                "generationStartedAt": store._now_iso(),
-                "generationFinishedAt": None,
-                "providerTaskStatus": "queued",
-                "providerTaskPhase": "正在连接供应商",
-                "providerTaskProgress": 0,
-                "_paramsPatch": params,
-            }
-            if isinstance(body.get("prompt"), str):
-                start_updates["prompt"] = body["prompt"]
-            commit_node_metadata(pid, nid, start_updates)
             return self._send(202, {
                 "accepted": True,
                 "taskId": task["id"],
@@ -6453,6 +6439,23 @@ class Handler(BaseHTTPRequestHandler):
         generic_labels = {"", "资产图", "角色音色", "图片", "音频", "视频", "文本", "素材"}
         provider = None
         model = None
+        deferred_image_archive_args = None
+        deferred_video_finalize_args = None
+
+        def local_reference_issue(url, label):
+            raw_url = str(url or "").strip()
+            if not raw_url.startswith("/uploads/"):
+                return ""
+            local_name = urllib.parse.unquote(raw_url[len("/uploads/"):])
+            local_path = os.path.join(_upload_dir(), local_name)
+            if (
+                not local_name
+                or "/" in local_name
+                or "\\" in local_name
+                or not os.path.isfile(local_path)
+            ):
+                return "参考媒体文件已丢失，请重新生成或导入本地文件"
+            return ""
 
         def resolve_refs(raw_refs):
             resolved = []
@@ -6503,23 +6506,14 @@ class Handler(BaseHTTPRequestHandler):
                         "reason": f"素材地址不可用（{url[:32]}）",
                     })
                     continue
-                if url.startswith("/uploads/"):
-                    local_name = urllib.parse.unquote(
-                        url[len("/uploads/"):]
-                    )
-                    local_path = os.path.join(_upload_dir(), local_name)
-                    if (
-                        not local_name
-                        or "/" in local_name
-                        or "\\" in local_name
-                        or not os.path.isfile(local_path)
-                    ):
-                        missing.append({
-                            "nodeId": ref_id,
-                            "label": label,
-                            "reason": "参考媒体文件已丢失，请重新生成或导入本地文件",
-                        })
-                        continue
+                local_issue = local_reference_issue(url, label)
+                if local_issue:
+                    missing.append({
+                        "nodeId": ref_id,
+                        "label": label,
+                        "reason": local_issue,
+                    })
+                    continue
                 kind = "audio" if source_type == "audio" else "video" if source_type == "video" else "image"
                 source_model = str(
                     source_meta.get("remoteModel")
@@ -6721,7 +6715,7 @@ class Handler(BaseHTTPRequestHandler):
                 meta["promptStaleReason"] = ""
                 meta.pop("sourcePromptUpdatedAt", None)
                 if local_generated_url.startswith("/uploads/"):
-                    queue_generated_image_tos_archive(
+                    deferred_image_archive_args = (
                         pid,
                         node["id"],
                         local_generated_url,
@@ -6766,6 +6760,14 @@ class Handler(BaseHTTPRequestHandler):
                             "nodeId": voice_ref.get("nodeId"),
                             "label": voice_label,
                             "reason": "音色地址不可用",
+                        })
+                        continue
+                    local_issue = local_reference_issue(voice_url, voice_label)
+                    if local_issue:
+                        missing.append({
+                            "nodeId": voice_ref.get("nodeId"),
+                            "label": voice_label,
+                            "reason": local_issue,
                         })
                         continue
                     voices.append({
@@ -6942,7 +6944,7 @@ class Handler(BaseHTTPRequestHandler):
                 meta["providerTaskPhase"] = "已完成，后台缓存中"
                 meta["providerTaskProgress"] = 100
                 meta["finalizePending"] = False
-                queue_generated_video_finalize(
+                deferred_video_finalize_args = (
                     pid,
                     node["id"],
                     local_generated_url,
@@ -7145,6 +7147,13 @@ class Handler(BaseHTTPRequestHandler):
                 })
             raise RuntimeError(f"生成终态提交失败：{reason or 'unknown'}")
         node_written_at = str(terminal_result.get("nodeWrittenAt") or "")
+        # Async validation/object-storage projection must start only after the
+        # terminal transaction. Otherwise it can write first and then be
+        # overwritten by the terminal metadata snapshot.
+        if deferred_image_archive_args:
+            queue_generated_image_tos_archive(*deferred_image_archive_args)
+        if deferred_video_finalize_args:
+            queue_generated_video_finalize(*deferred_video_finalize_args)
         store.record_audit_event(
             "generation.complete",
             target_type="generation_task",

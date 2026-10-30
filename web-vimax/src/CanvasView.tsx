@@ -2344,11 +2344,11 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
     && node.status === 'done'
     && !!generationBusy
     && !node.finalizePending;
-  const done = node.status === 'done' && !liveProviderGeneration;
+  const mediaMissing = !isText && !!node.mediaUrl && mediaLoadFailed;
+  const done = node.status === 'done' && !liveProviderGeneration && !mediaMissing;
   const failed = node.status === 'failed'
     && !liveProviderGeneration
     && !node.mediaUrl;
-  const mediaMissing = !isText && !!node.mediaUrl && mediaLoadFailed;
   const taskOutcome = taskOutcomePresentation({
     status: node.status === 'generating'
       ? 'running'
@@ -8019,9 +8019,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         if (!local) return remote;
         const remoteParams = remote.params || {};
         const localParams = local.params || {};
+        const availability = remote.mediaUrl === local.mediaUrl
+          ? local.mediaAvailability
+          : 'unknown';
         return {
           ...local,
           ...remote,
+          ...(availability ? {mediaAvailability: availability} : {mediaAvailability: undefined}),
           prompt: local.prompt,
           params: {
             ...remoteParams,
@@ -8050,18 +8054,29 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     workspaceRefreshQueuedRef.current = false;
     let failed = false;
     const task: Promise<void> = run()
-      .catch(() => {
+      .catch((error: unknown) => {
         failed = true;
+        // A silent reconciliation failure is indistinguishable from "no new
+        // results" and leaves a completed provider task invisible until reload.
+        setSaveError(
+          `画布同步失败：${error instanceof Error ? error.message : String(error)}`,
+        );
+        workspaceRefreshQueuedRef.current = true;
       })
       .finally(() => {
         if (workspaceRefreshInFlightRef.current === task) {
           workspaceRefreshInFlightRef.current = null;
         }
-        if (workspaceRefreshQueuedRef.current && !failed) {
+        if (workspaceRefreshQueuedRef.current) {
           workspaceRefreshQueuedRef.current = false;
-          void refreshWorkspaceFacts();
-        } else if (failed) {
-          workspaceRefreshQueuedRef.current = false;
+          const retryDelay = failed ? 1_500 : 80;
+          window.setTimeout(() => {
+            if (document.visibilityState !== 'hidden') {
+              void refreshWorkspaceFacts().catch(() => {});
+            } else {
+              workspaceRefreshQueuedRef.current = true;
+            }
+          }, retryDelay);
         }
       });
     workspaceRefreshInFlightRef.current = task;

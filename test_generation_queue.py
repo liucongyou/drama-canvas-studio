@@ -1502,6 +1502,65 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertIn("参考媒体文件已丢失", sent[-1][1]["error"])
         generate.assert_not_called()
 
+    def test_missing_local_voice_reference_is_rejected_before_provider_call(self):
+        source = {
+            "id": "missing-voice",
+            "type": "audio",
+            "title": "音频｜文件丢失（图1）",
+            "metadata": {
+                "status": "done",
+                "content": "/uploads/does-not-exist.mp3",
+            },
+        }
+        node = {
+            "id": "video-target",
+            "type": "video",
+            "title": "段1",
+            "metadata": {
+                "prompt": "根据角色音色生成视频",
+                "status": "generating",
+                "params": {
+                    "provider": "agnes-ai",
+                    "model": "agnes-video",
+                    "voiceRefs": [{
+                        "nodeId": "missing-voice",
+                        "label": "音频｜文件丢失（图1）",
+                    }],
+                },
+            },
+        }
+        project_id = canvas_store.create_project("missing-local-voice")
+        project = {"id": project_id, "payload": {"nodes": [source, node]}}
+        canvas_store.update_project(project_id, payload=project["payload"])
+        provider = {
+            "id": "agnes-ai",
+            "api_key": "test-key",
+            "base_url": "https://api.agnes-ai.cn/v1",
+        }
+        model = {
+            "id": "agnes-video",
+            "remoteModel": "agnes-video",
+            "defaultParams": {},
+            "limits": {},
+        }
+        handler = object.__new__(server.Handler)
+        sent = []
+        handler._send = lambda status, payload: sent.append((status, payload)) or payload
+        with (
+            patch.object(server, "_upload_dir", return_value=self.temp_dir.name),
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(provider, model, {}),
+            ),
+            patch.object(server, "ensure_provider_auth"),
+            patch.object(server.provider_client, "generate_video") as generate,
+        ):
+            handler._generate_once(project_id, project, node)
+        self.assertEqual(sent[-1][0], 400)
+        self.assertIn("参考媒体文件已丢失", sent[-1][1]["error"])
+        generate.assert_not_called()
+
     def test_image_tos_archive_runs_after_local_success(self):
         project_id = canvas_store.create_project("image-tos-finalize")
         node = {
