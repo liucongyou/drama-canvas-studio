@@ -356,6 +356,131 @@ def _run_for_active_tenants(func):
     return total
 
 
+def _collect_for_active_tenants(func):
+    """Run a list-producing function in every active tenant and combine it."""
+    collected = []
+    for tenant in _active_tenants():
+        try:
+            if tenant is None:
+                with tenant_context.use_context(None):
+                    result = func()
+            else:
+                with tenant_context.use_tenant(
+                    tenant["id"],
+                    tenant["slug"],
+                ):
+                    result = func()
+        except Exception as exc:
+            tenant_label = tenant["slug"] if tenant else "legacy"
+            print(
+                f"[tenant:{tenant_label}] {func.__name__} 失败：{exc}",
+                file=sys.stderr,
+            )
+            continue
+        if isinstance(result, list):
+            collected.extend(result)
+    return collected
+
+
+def _resume_expired_provider_tasks(expired):
+    """Start same-task queries only for leases that expired in this pass."""
+    started = 0
+    for item in expired or []:
+        provider_task_id = str(
+            item.get("providerTaskId") or ""
+        ).strip()
+        project_id = str(item.get("projectId") or "").strip()
+        node_id = str(item.get("nodeId") or "").strip()
+        if not provider_task_id or not project_id or not node_id:
+            continue
+        task = store.get_generation_task(item.get("id"))
+        if not task or task.get("status") not in {"running", "interrupted"}:
+            continue
+        if generation_outcome.is_provider_terminal_failure(task):
+            continue
+        project = store.get_project(project_id)
+        node = next(
+            (
+                candidate
+                for candidate in (project or {}).get(
+                    "payload",
+                    {},
+                ).get("nodes", [])
+                if candidate.get("id") == node_id
+            ),
+            None,
+        )
+        if not node:
+            continue
+        try:
+            provider, model, _ = provider_catalog.resolve_model(
+                task.get("provider"),
+                task.get("model"),
+                "video",
+            )
+        except Exception:
+            continue
+        key = (
+            str(item.get("tenantId") or "legacy"),
+            project_id,
+            node_id,
+        )
+        with RESUMED_VIDEO_TASKS_LOCK:
+            if key in RESUMED_VIDEO_TASKS:
+                continue
+            RESUMED_VIDEO_TASKS.add(key)
+
+        tenant_id = item.get("tenantId")
+        tenant_slug = item.get("tenantSlug") or "local"
+
+        def run_resumer(
+            tenant_id=tenant_id,
+            tenant_slug=tenant_slug,
+            project_id=project_id,
+            node_id=node_id,
+            provider_task_id=provider_task_id,
+            provider=provider,
+            model=model,
+        ):
+            try:
+                _run_in_tenant(
+                    tenant_id,
+                    tenant_slug,
+                    _resume_video_task,
+                    project_id,
+                    node_id,
+                    provider_task_id,
+                    provider,
+                    model,
+                )
+            except Exception as exc:
+                print(
+                    f"[generation-resume] expired task failed "
+                    f"node={node_id} task={provider_task_id} error={exc}",
+                    file=sys.stderr,
+                )
+            finally:
+                with RESUMED_VIDEO_TASKS_LOCK:
+                    RESUMED_VIDEO_TASKS.discard(key)
+
+        try:
+            threading.Thread(
+                target=run_resumer,
+                name=f"generation-resume-{node_id}",
+                daemon=True,
+            ).start()
+            started += 1
+        except Exception as exc:
+            with RESUMED_VIDEO_TASKS_LOCK:
+                RESUMED_VIDEO_TASKS.discard(key)
+            print(
+                f"[generation-resume] expired task start failed "
+                f"node={node_id} task={provider_task_id} error={exc}",
+                file=sys.stderr,
+            )
+    return started
+
+
 def _run_in_tenant(tenant_id, slug, func, *args, **kwargs):
     if tenant_id is None:
         with tenant_context.use_context(None):
@@ -1315,7 +1440,21 @@ def _record_media_version(meta, kind, generated_url, task_id, generated_at, stor
             "provider": str(meta.get("provider") or previous_production.get("provider") or ""),
             "model": str(meta.get("model") or previous_production.get("model") or ""),
         })
-    versions = [item for item in versions if str(item.get("url") or "") != generated_url]
+    # One paid provider task must produce one persisted media version. A
+    # recovery attempt may download the same completed provider result to a new
+    # local filename, so URL-only dedupe is insufficient.
+    normalized_task_id = str(task_id or "").strip()
+    if normalized_task_id:
+        versions = [
+            item
+            for item in versions
+            if str(item.get("taskId") or "").strip() != normalized_task_id
+        ]
+    versions = [
+        item
+        for item in versions
+        if str(item.get("url") or "") != generated_url
+    ]
     production = meta.get("production") or {}
     current_version = {
         "url": generated_url,
@@ -1417,25 +1556,27 @@ def _provider_query_failure_message(exc, kind):
     return str(exc)
 
 
-def _filter_generation_tasks_for_episode(project_id, tasks, episode_id):
+def _filter_generation_tasks_for_episode(project_id, tasks, episode_id, node_ids=None):
     """Keep the task center scoped to nodes owned by the selected episode."""
     episode_id = str(episode_id or "").strip().upper()
     if not episode_id:
         return list(tasks or [])
-    project = store.get_project(project_id) if project_id else None
-    if not project:
-        return []
-    group = next(
-        (
-            item
-            for item in project.get("payload", {}).get("episodeImports", [])
-            if str(item.get("id") or "").upper() == episode_id
-        ),
-        None,
-    )
+    if node_ids is None:
+        project = store.get_project(project_id) if project_id else None
+        if not project:
+            return []
+        group = next(
+            (
+                item
+                for item in project.get("payload", {}).get("episodeImports", [])
+                if str(item.get("id") or "").upper() == episode_id
+            ),
+            None,
+        )
+        node_ids = (group or {}).get("nodeIds", [])
     node_ids = {
         str(node_id)
-        for node_id in (group or {}).get("nodeIds", [])
+        for node_id in node_ids
         if node_id
     }
     if not node_ids:
@@ -1577,6 +1718,20 @@ def _find_generation_task(project_id, node_id, provider_task_id=""):
     return None
 
 
+def _generation_task_for_provider(project_id, node_id, provider_task_id):
+    """Find the local row for a provider task regardless of its current state."""
+    provider_task_id = str(provider_task_id or "").strip()
+    if not project_id or not node_id or not provider_task_id:
+        return None
+    for item in store.list_generation_tasks(project_id, 300):
+        if item.get("node_id") != node_id:
+            continue
+        if str(item.get("provider_task_id") or "").strip() != provider_task_id:
+            continue
+        return item
+    return None
+
+
 def reconcile_active_generation_task_for_node(project_id, node_id, node):
     """Close ghost active rows before another click is rejected as in-progress."""
     task = _find_generation_task(project_id, node_id)
@@ -1694,10 +1849,30 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
     if not node:
         return False
     meta = node.setdefault("metadata", {})
-    generated_at = store._now_iso()
-    generated_url = persist_generated_media(result["url"], ".mp4")
     task_id = str(result.get("taskId") or meta.get("taskId") or "")
-    generation_task = _find_generation_task(project_id, node_id, task_id)
+    generation_task = _generation_task_for_provider(
+        project_id,
+        node_id,
+        task_id,
+    )
+    existing_versions = (
+        (meta.get("params") or {}).get("videoVersions")
+        or (meta.get("params") or {}).get("mediaVersions")
+        or []
+    )
+    existing_result = next(
+        (
+            item
+            for item in existing_versions
+            if str(item.get("taskId") or "").strip() == task_id
+            and str(item.get("url") or "").startswith("/uploads/")
+        ),
+        None,
+    )
+    generated_at = store._now_iso()
+    generated_url = str((existing_result or {}).get("url") or "")
+    if not generated_url:
+        generated_url = persist_generated_media(result["url"], ".mp4")
     if generation_task:
         store.update_generation_task(
             generation_task["id"],
@@ -2487,15 +2662,19 @@ def reconcile_failed_generation_task_nodes():
 
 def reconcile_generation_runtime_once():
     """Repair persisted task state without starting provider I/O."""
-    expired = _run_for_active_tenants(store.expire_stale_generation_tasks)
+    expired = _collect_for_active_tenants(
+        store.expire_stale_generation_tasks
+    )
     delivered = _run_for_active_tenants(
         reconcile_pending_generation_deliveries
     )
     reconciled = _run_for_active_tenants(reconcile_generation_task_records)
+    resumed = _resume_expired_provider_tasks(expired)
     return {
-        "expired": list(expired or []),
+        "expired": expired,
         "delivered": int(delivered or 0),
         "reconciled": int(reconciled or 0),
+        "resumed": int(resumed or 0),
     }
 
 
@@ -3985,6 +4164,17 @@ class Handler(BaseHTTPRequestHandler):
                 limit,
                 episode_id=episode_id or None,
             )
+            if episode_id:
+                node_ids = store.get_episode_node_ids(project_id, episode_id)
+                if not node_ids:
+                    tasks = []
+                else:
+                    tasks = _filter_generation_tasks_for_episode(
+                        project_id,
+                        tasks,
+                        episode_id,
+                        node_ids=node_ids,
+                    )
             for task in tasks:
                 if (
                     task.get("status") == "succeeded"

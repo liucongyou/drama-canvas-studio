@@ -194,6 +194,10 @@ def _connect():
                 "CREATE INDEX IF NOT EXISTS idx_generation_tasks_episode "
                 "ON generation_tasks(project_id, episode_id, created_at DESC)"
             )
+            con.execute(
+                "UPDATE generation_tasks SET episode_id='__UNSCOPED__' "
+                "WHERE COALESCE(episode_id,'')=''"
+            )
             if "estimated_cost" not in task_columns:
                 con.execute(
                     "ALTER TABLE generation_tasks ADD COLUMN estimated_cost REAL DEFAULT 0"
@@ -1018,6 +1022,21 @@ def expire_stale_generation_tasks(now=None):
             expired.append(
                 {
                     "id": task_id,
+                    "projectId": (
+                        con.execute(
+                            "SELECT project_id FROM generation_tasks WHERE id=?",
+                            (task_id,),
+                        ).fetchone()[0]
+                    ),
+                    "nodeId": (
+                        con.execute(
+                            "SELECT node_id FROM generation_tasks WHERE id=?",
+                            (task_id,),
+                        ).fetchone()[0]
+                    ),
+                    "providerTaskId": str(provider_task_id or ""),
+                    "tenantId": tenant_context.current_tenant_id(),
+                    "tenantSlug": tenant_context.current_slug(),
                     "status": next_status,
                     "phase": next_phase,
                     "error": detail,
@@ -1104,6 +1123,7 @@ def list_generation_tasks(project_id=None, limit=80, episode_id=None):
         rows = con.execute(
             "SELECT * FROM generation_tasks "
             "WHERE project_id=? AND UPPER(COALESCE(episode_id,''))=? "
+            "AND COALESCE(episode_id,'')!='__UNSCOPED__' "
             "ORDER BY created_at DESC LIMIT ?",
             (
                 project_id,
@@ -1120,6 +1140,34 @@ def list_generation_tasks(project_id=None, limit=80, episode_id=None):
     return [dict(zip(columns, row)) for row in rows]
 
 
+def get_episode_node_ids(project_id, episode_id):
+    """Return an episode's node ids without copying or parsing its full canvas."""
+    normalized_episode = str(episode_id or "").strip().upper()
+    if not project_id or not normalized_episode:
+        return []
+    con = _connect()
+    row = con.execute(
+        "SELECT payload_json FROM canvas_projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
+    con.close()
+    if not row:
+        return []
+    try:
+        payload = json.loads(row[0] or "{}")
+    except (TypeError, ValueError):
+        return []
+    for group in payload.get("episodeImports") or []:
+        if str(group.get("id") or "").upper() != normalized_episode:
+            continue
+        return [
+            str(node_id)
+            for node_id in group.get("nodeIds") or []
+            if node_id
+        ]
+    return []
+
+
 def list_queued_generation_tasks(limit=100):
     con = _connect()
     columns = [item[0] for item in con.execute("SELECT * FROM generation_tasks LIMIT 0").description]
@@ -1127,6 +1175,29 @@ def list_queued_generation_tasks(limit=100):
         "SELECT * FROM generation_tasks WHERE status='queued' "
         "ORDER BY created_at LIMIT ?",
         (max(1, min(int(limit or 100), 300)),),
+    ).fetchall()
+    con.close()
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def list_resumable_video_tasks(limit=300):
+    """Return unresolved video tasks that need a same-task provider query."""
+    con = _connect()
+    columns = [
+        item[0]
+        for item in con.execute(
+            "SELECT * FROM generation_tasks LIMIT 0"
+        ).description
+    ]
+    rows = con.execute(
+        "SELECT * FROM generation_tasks "
+        "WHERE kind='video' "
+        "AND status IN ('running','interrupted') "
+        "AND COALESCE(provider_task_id,'')!='' "
+        "AND COALESCE(local_result_url,'')='' "
+        "AND COALESCE(phase,'') NOT IN ('查询失败','生成失败') "
+        "ORDER BY updated_at DESC LIMIT ?",
+        (max(1, min(int(limit or 300), 500)),),
     ).fetchall()
     con.close()
     return [dict(zip(columns, row)) for row in rows]
@@ -1162,6 +1233,14 @@ def backfill_generation_task_episode_ids():
                 continue
             update_generation_task(task_id, episode_id=episode_id)
             updated += 1
+        con = _connect()
+        con.execute(
+            "UPDATE generation_tasks SET episode_id='__UNSCOPED__' "
+            "WHERE project_id=? AND COALESCE(episode_id,'')=''",
+            (project_row.get("id"),),
+        )
+        con.commit()
+        con.close()
     return updated
 
 

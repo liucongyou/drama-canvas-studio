@@ -7973,6 +7973,59 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     });
   }, [generationTasks, generationBusyIds]);
 
+  const terminalRefreshRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    const terminalSignatures = new Map<string, string>();
+    for (const task of generationTasks) {
+      if (
+        !['succeeded', 'failed', 'interrupted'].includes(task.status)
+        || !task.node_id
+      ) {
+        continue;
+      }
+      terminalSignatures.set(
+        task.node_id,
+        `${task.id}:${task.status}:${task.finished_at || task.updated_at || ''}`,
+      );
+    }
+    const newlyTerminal = [...terminalSignatures].some(
+      ([nodeId, signature]) => (
+        terminalRefreshRef.current.get(nodeId) !== signature
+      ),
+    );
+    terminalRefreshRef.current = terminalSignatures;
+    if (!newlyTerminal) return;
+
+    let alive = true;
+    void Promise.all([
+      getCanvasMediaNodes(session, currentEp),
+      getGenerationTasks(session, 80, currentEp),
+    ]).then(([remoteNodes, tasks]) => {
+      if (!alive) return;
+      setGenerationTasks(tasks);
+      const remoteById = new Map(
+        remoteNodes.map((node) => [node.id, node]),
+      );
+      setMediaNodes((prev) => prev.map((node) => {
+        const remote = remoteById.get(node.id);
+        if (!remote) return node;
+        return remote;
+      }));
+      void getCanvas(session, currentEp)
+        .then((refreshed) => {
+          if (alive && !('empty' in refreshed)) setCanvas(refreshed);
+        })
+        .catch(() => {});
+    }).catch(() => {
+      // Keep the signatures unchanged so the next task poll retries the
+      // terminal refresh instead of depending on a manual browser refresh.
+      terminalRefreshRef.current.clear();
+    });
+    return () => {
+      alive = false;
+    };
+  }, [generationTasks, session, currentEp]);
+
   /**
    * A succeeded generation task is authoritative, even when an earlier
    * provider attempt had already flipped the node to "failed". The task center
@@ -9465,6 +9518,38 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     if (typeof EventSource === 'undefined' || !session) return;
     let source: EventSource | null = null;
     let disposed = false;
+    let terminalRefreshTimer: number | null = null;
+
+    const refreshAfterTerminalEvent = () => {
+      if (terminalRefreshTimer !== null) {
+        window.clearTimeout(terminalRefreshTimer);
+      }
+      terminalRefreshTimer = window.setTimeout(() => {
+        terminalRefreshTimer = null;
+        if (disposed) return;
+        void getCanvasMediaNodes(session, currentEp)
+          .then((remoteNodes) => {
+            if (disposed) return;
+            const remoteById = new Map(
+              remoteNodes.map((item) => [item.id, item]),
+            );
+            setMediaNodes((prev) => prev.map((node) => (
+              remoteById.get(node.id) || node
+            )));
+          })
+          .catch(() => {});
+        void getGenerationTasks(session, 80, currentEp)
+          .then((tasks) => {
+            if (!disposed) setGenerationTasks(tasks);
+          })
+          .catch(() => {});
+        void getCanvas(session, currentEp)
+          .then((refreshed) => {
+            if (!disposed && !('empty' in refreshed)) setCanvas(refreshed);
+          })
+          .catch(() => {});
+      }, 120);
+    };
 
     const applyEvent = (raw: string) => {
       let data: Record<string, unknown>;
@@ -9542,6 +9627,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               }
             : task
         )));
+        refreshAfterTerminalEvent();
       }
     };
 
@@ -9557,11 +9643,15 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     open();
     return () => {
       disposed = true;
+      if (terminalRefreshTimer !== null) {
+        window.clearTimeout(terminalRefreshTimer);
+        terminalRefreshTimer = null;
+      }
       setEventsConnected(false);
       source?.close();
       source = null;
     };
-  }, [session]);
+  }, [session, currentEp]);
 
   // 用户手动连线：把来源媒体节点写进目标节点的 params.refs / voiceRef，
   // 让连线真正参与生成（生成时还会再次扫描边，但此处让弹窗即时反映连接）

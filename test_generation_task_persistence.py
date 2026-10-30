@@ -320,12 +320,312 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
                 if item["id"] == "node-video"
             )
 
-        self.assertNotIn("resumed", reconciled)
+        self.assertEqual(reconciled["resumed"], 0)
         self.assertEqual(saved["status"], "failed")
         self.assertEqual(saved["phase"], "结果待确认")
         self.assertEqual(node["metadata"]["status"], "failed")
         self.assertEqual(node["metadata"]["providerTaskPhase"], "生成中 10%")
         thread_cls.return_value.start.assert_not_called()
+
+    def test_expired_provider_task_starts_one_same_task_query(self):
+        expired = [{
+            "id": "local-expired",
+            "projectId": "project-expired",
+            "nodeId": "node-expired",
+            "providerTaskId": "provider-expired",
+            "tenantId": None,
+            "tenantSlug": "local",
+            "status": "interrupted",
+            "phase": "结果待确认",
+        }]
+        task = {
+            "id": "local-expired",
+            "project_id": "project-expired",
+            "node_id": "node-expired",
+            "provider_task_id": "provider-expired",
+            "provider": "agnes-ai",
+            "model": "agnes-video-2.5-flash",
+            "kind": "video",
+            "status": "interrupted",
+            "phase": "结果待确认",
+            "error": "执行租约已过期",
+        }
+        project = {
+            "id": "project-expired",
+            "payload": {
+                "nodes": [{
+                    "id": "node-expired",
+                    "type": "video",
+                    "metadata": {
+                        "status": "failed",
+                        "taskId": "provider-old",
+                        "providerTaskStatus": "completed",
+                    },
+                }],
+            },
+        }
+        provider = {
+            "id": "agnes-ai",
+            "name": "Agnes AI",
+        }
+        model = {
+            "id": "agnes-video-2.5-flash",
+            "adapter": "agnes_video",
+        }
+        started = []
+        with (
+            patch.object(server, "_active_tenants", return_value=[None]),
+            patch.object(
+                server.store,
+                "expire_stale_generation_tasks",
+                return_value=expired,
+            ),
+            patch.object(
+                server.store,
+                "get_generation_task",
+                return_value=task,
+            ),
+            patch.object(
+                server.store,
+                "get_project",
+                return_value=project,
+            ),
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(provider, model, {}),
+            ),
+            patch.object(server.threading, "Thread") as thread_cls,
+        ):
+            thread_cls.return_value.start.side_effect = lambda: started.append(
+                thread_cls.call_args.kwargs["target"]
+            )
+            result = server.reconcile_generation_runtime_once()
+
+        self.assertEqual(result["resumed"], 1)
+        self.assertEqual(len(started), 1)
+
+    def test_expired_task_resume_uses_own_tenant_context(self):
+        tenants = [
+            {"id": "tenant-a", "slug": "tenant-a"},
+            {"id": "tenant-b", "slug": "tenant-b"},
+        ]
+        expired_by_tenant = {
+            "tenant-a": [{
+                "id": "task-a",
+                "projectId": "project-a",
+                "nodeId": "node-a",
+                "providerTaskId": "provider-a",
+                "tenantId": "tenant-a",
+                "tenantSlug": "tenant-a",
+            }],
+            "tenant-b": [{
+                "id": "task-b",
+                "projectId": "project-b",
+                "nodeId": "node-b",
+                "providerTaskId": "provider-b",
+                "tenantId": "tenant-b",
+                "tenantSlug": "tenant-b",
+            }],
+        }
+        tasks = {
+            "task-a": {
+                "id": "task-a",
+                "project_id": "project-a",
+                "node_id": "node-a",
+                "provider_task_id": "provider-a",
+                "provider": "agnes-ai",
+                "model": "model-a",
+                "kind": "video",
+                "status": "interrupted",
+                "phase": "结果待确认",
+            },
+            "task-b": {
+                "id": "task-b",
+                "project_id": "project-b",
+                "node_id": "node-b",
+                "provider_task_id": "provider-b",
+                "provider": "agnes-ai",
+                "model": "model-b",
+                "kind": "video",
+                "status": "interrupted",
+                "phase": "结果待确认",
+            },
+        }
+        projects = {
+            "project-a": {
+                "id": "project-a",
+                "payload": {"nodes": [{
+                    "id": "node-a",
+                    "type": "video",
+                    "metadata": {},
+                }]},
+            },
+            "project-b": {
+                "id": "project-b",
+                "payload": {"nodes": [{
+                    "id": "node-b",
+                    "type": "video",
+                    "metadata": {},
+                }]},
+            },
+        }
+        observed = []
+
+        def expire():
+            current = tenant_context.current()
+            tenant_id = current.tenant_id if current else "legacy"
+            return expired_by_tenant[tenant_id]
+
+        def start_worker():
+            # Invoke inline so the captured tenant/project values are verified
+            # before the loop advances to the next tenant.
+            thread_cls.call_args.kwargs["target"]()
+
+        def fake_run_in_tenant(tenant_id, slug, func, *args, **kwargs):
+            observed.append((tenant_id, slug, args[0], args[1]))
+
+        with (
+            patch.object(server, "_active_tenants", return_value=tenants),
+            patch.object(
+                server.store,
+                "expire_stale_generation_tasks",
+                side_effect=expire,
+            ),
+            patch.object(
+                server,
+                "reconcile_pending_generation_deliveries",
+                return_value=0,
+            ),
+            patch.object(
+                server,
+                "reconcile_generation_task_records",
+                return_value=0,
+            ),
+            patch.object(
+                server.store,
+                "get_generation_task",
+                side_effect=lambda task_id: tasks[task_id],
+            ),
+            patch.object(
+                server.store,
+                "get_project",
+                side_effect=lambda project_id: projects[project_id],
+            ),
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=({"id": "agnes-ai"}, {"id": "video"}, {}),
+            ),
+            patch.object(
+                server,
+                "_resume_video_task",
+                return_value=None,
+            ),
+            patch.object(
+                server,
+                "_run_in_tenant",
+                side_effect=fake_run_in_tenant,
+            ),
+            patch.object(
+                server.threading,
+                "Thread",
+            ) as thread_cls,
+        ):
+            thread_cls.return_value.start.side_effect = start_worker
+            server.reconcile_generation_runtime_once()
+
+        self.assertEqual(
+            observed,
+            [
+                ("tenant-a", "tenant-a", "project-a", "node-a"),
+                ("tenant-b", "tenant-b", "project-b", "node-b"),
+            ],
+        )
+
+    def test_recovered_video_reuses_local_version_for_same_provider_task(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("recovered-version")
+            project = canvas_store.get_project(project_id)
+            project["payload"]["nodes"] = [{
+                "id": "node-video",
+                "type": "video",
+                "title": "段4 · 庆功",
+                "metadata": {
+                    "status": "done",
+                    "content": "/uploads/existing.mp4",
+                    "taskId": "provider-existing",
+                    "params": {
+                        "duration": 12,
+                        "mediaVersions": [{
+                            "url": "/uploads/existing.mp4",
+                            "taskId": "provider-existing",
+                            "generatedAt": "2026-10-30T15:00:00Z",
+                            "kind": "video",
+                        }],
+                        "mediaVersionIndex": 0,
+                        "videoVersions": [{
+                            "url": "/uploads/existing.mp4",
+                            "taskId": "provider-existing",
+                            "generatedAt": "2026-10-30T15:00:00Z",
+                            "kind": "video",
+                        }],
+                        "videoVersionIndex": 0,
+                    },
+                },
+            }]
+            canvas_store.update_project(project_id, payload=project["payload"])
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+                provider="agnes-ai",
+                model="agnes-video-2.5-flash",
+                client_operation_id="recovered-version-operation",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                provider_task_id="provider-existing",
+                status="interrupted",
+                phase="结果待确认",
+            )
+
+            with (
+                patch.object(server, "persist_generated_media") as persist,
+                patch.object(
+                    server,
+                    "validate_generated_video",
+                    return_value={"status": "valid", "duration": 12},
+                ),
+            ):
+                finalized = server._finalize_resumed_video(
+                    project_id,
+                    "node-video",
+                    {
+                        "taskId": "provider-existing",
+                        "status": "completed",
+                        "url": "https://provider/existing.mp4",
+                    },
+                    {"id": "agnes-ai", "name": "Agnes AI"},
+                    {
+                        "id": "agnes-video-2.5-flash",
+                        "remoteModel": "agnes-video-2.5-flash",
+                        "adapter": "agnes_video",
+                    },
+                )
+
+            saved_project = canvas_store.get_project(project_id)
+            saved_task = canvas_store.get_generation_task(task["id"])
+            node = saved_project["payload"]["nodes"][0]
+            versions = node["metadata"]["params"]["videoVersions"]
+
+        self.assertTrue(finalized)
+        persist.assert_not_called()
+        self.assertEqual(len(versions), 1)
+        self.assertEqual(versions[0]["taskId"], "provider-existing")
+        self.assertEqual(node["metadata"]["content"], "/uploads/existing.mp4")
+        self.assertEqual(saved_task["status"], "succeeded")
+        self.assertEqual(saved_task["local_result_url"], "/uploads/existing.mp4")
 
     def test_resumer_setup_failure_releases_key_for_next_reconcile(self):
         with tenant_context.use_context(self.context):
@@ -760,6 +1060,226 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
         self.assertEqual(len({item["id"] for item in results}), 1)
         self.assertEqual(sum(1 for item in results if item.get("created_new")), 1)
+
+    def test_mixed_episode_task_stress_preserves_isolation_and_single_claim(self):
+        projects = 6
+        nodes_per_episode = 20
+        episodes = ("EP009", "EP010", "EP011")
+        created = []
+
+        def setup(project_index):
+            with tenant_context.use_context(self.context):
+                project_id = canvas_store.create_project(
+                    f"mixed-episode-stress-{project_index}"
+                )
+                for episode_id in episodes:
+                    for node_index in range(nodes_per_episode):
+                        task = canvas_store.create_generation_task(
+                            project_id,
+                            f"{episode_id}-node-{node_index}",
+                            kind="video",
+                            episode_id=episode_id,
+                        )
+                        created.append((project_id, episode_id, task["id"]))
+                return project_id
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            project_ids = list(pool.map(setup, range(projects)))
+
+        self.assertEqual(len(created), projects * len(episodes) * nodes_per_episode)
+
+        def query(index):
+            project_id = project_ids[index % projects]
+            episode_id = episodes[index % len(episodes)]
+            with tenant_context.use_context(self.context):
+                return [
+                    task
+                    for task in canvas_store.list_generation_tasks(
+                        project_id,
+                        300,
+                        episode_id=episode_id,
+                    )
+                ]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=18) as pool:
+            batches = list(pool.map(query, range(90)))
+
+        self.assertTrue(batches)
+        for batch in batches:
+            self.assertTrue(batch)
+            self.assertTrue(
+                all(task.get("episode_id") in episodes for task in batch)
+            )
+
+        claim_targets = created[:60]
+
+        def claim(index_and_item):
+            index, (project_id, episode_id, task_id) = index_and_item
+            with tenant_context.use_context(self.context):
+                return canvas_store.claim_generation_task(
+                    task_id,
+                    f"stress-worker-{index}",
+                    45,
+                )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=24) as pool:
+            outcomes = list(pool.map(claim, enumerate(claim_targets)))
+
+        self.assertEqual(sum(1 for item in outcomes if item), len(claim_targets))
+        with tenant_context.use_context(self.context):
+            for _project_id, _episode_id, task_id in claim_targets:
+                task = canvas_store.get_generation_task(task_id)
+                self.assertEqual(task["status"], "running")
+                self.assertTrue(task["lease_owner"].startswith("stress-worker-"))
+
+    def test_many_workers_race_for_same_task_only_one_wins(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-claim-race",
+                "node-claim-race",
+                kind="video",
+                episode_id="EP010",
+            )
+
+        def claim(index):
+            with tenant_context.use_context(self.context):
+                return canvas_store.claim_generation_task(
+                    task["id"],
+                    f"race-worker-{index}",
+                    45,
+                )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
+            outcomes = list(pool.map(claim, range(64)))
+
+        self.assertEqual(sum(1 for item in outcomes if item), 1)
+        with tenant_context.use_context(self.context):
+            saved = canvas_store.get_generation_task(task["id"])
+        self.assertEqual(saved["status"], "running")
+        self.assertEqual(saved["lease_owner"], "race-worker-" + str(
+            next(index for index, item in enumerate(outcomes) if item)
+        ))
+
+    def test_expired_lease_stress_keeps_terminal_state_monotonic(self):
+        with tenant_context.use_context(self.context):
+            tasks = [
+                canvas_store.create_generation_task(
+                    "project-expired-lease-stress",
+                    f"node-expired-{index}",
+                    kind="video",
+                    episode_id="EP010",
+                )
+                for index in range(48)
+            ]
+            for index, task in enumerate(tasks):
+                owner = f"expired-worker-{index}"
+                self.assertTrue(
+                    canvas_store.claim_generation_task(task["id"], owner, 45)
+                )
+                canvas_store.release_generation_task_lease(task["id"], owner)
+                canvas_store.update_generation_task(
+                    task["id"],
+                    status="failed",
+                    phase="查询失败",
+                    error="供应商明确返回任务不存在（HTTP 404）",
+                    provider_task_id=f"provider-dead-{index}",
+                    delivery_status="failed",
+                )
+
+        def stale_write(index_and_task):
+            index, task = index_and_task
+            with tenant_context.use_context(self.context):
+                return canvas_store.update_generation_task(
+                    task["id"],
+                    _lease_owner=f"expired-worker-{index}",
+                    status="running",
+                    phase="stale progress",
+                    progress=99,
+                )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=24) as pool:
+            results = list(pool.map(stale_write, enumerate(tasks)))
+
+        self.assertEqual(len(results), len(tasks))
+        with tenant_context.use_context(self.context):
+            saved = [
+                canvas_store.get_generation_task(task["id"])
+                for task in tasks
+            ]
+        self.assertTrue(all(task["status"] == "failed" for task in saved))
+        self.assertTrue(all(task["phase"] == "查询失败" for task in saved))
+        self.assertTrue(
+            all(task["provider_task_id"].startswith("provider-dead-") for task in saved)
+        )
+
+    def test_startup_reconciliation_makes_no_provider_calls_under_task_load(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("startup-reconcile-stress")
+            project = canvas_store.get_project(project_id)
+            project["payload"]["nodes"] = []
+            for episode_id in ("EP009", "EP010", "EP011"):
+                for index in range(30):
+                    project["payload"]["nodes"].append({
+                        "id": f"{episode_id}-node-{index}",
+                        "type": "video",
+                        "title": f"{episode_id}-段{index}",
+                        "metadata": {
+                            "status": "failed",
+                            "episodeId": episode_id,
+                            "providerTaskStatus": "failed",
+                            "providerTaskPhase": "查询失败",
+                            "lastError": "供应商明确返回任务不存在（HTTP 404）",
+                        },
+                    })
+            project["payload"]["episodeImports"] = [
+                {
+                    "id": episode_id,
+                    "nodeIds": [
+                        f"{episode_id}-node-{index}"
+                        for index in range(30)
+                    ],
+                }
+                for episode_id in ("EP009", "EP010", "EP011")
+            ]
+            canvas_store.update_project(project_id, payload=project["payload"])
+            for episode_id in ("EP009", "EP010", "EP011"):
+                for index in range(30):
+                    task = canvas_store.create_generation_task(
+                        project_id,
+                        f"{episode_id}-node-{index}",
+                        kind="video",
+                        episode_id=episode_id,
+                    )
+                    canvas_store.finish_generation_task(
+                        task["id"],
+                        status="failed",
+                        phase="查询失败",
+                        error="供应商明确返回任务不存在（HTTP 404）",
+                        provider_task_id=f"provider-dead-{episode_id}-{index}",
+                        delivery_status="failed",
+                    )
+
+        with (
+            patch.object(server, "_active_tenants", return_value=[None]),
+            patch.object(server.provider_client, "check_video_task") as check_video,
+            patch.object(server.provider_client, "check_image_task") as check_image,
+            patch.object(server.threading, "Thread") as thread_cls,
+        ):
+            result = server.reconcile_generation_runtime_once()
+
+        self.assertEqual(result["resumed"], 0)
+        check_video.assert_not_called()
+        check_image.assert_not_called()
+        thread_cls.return_value.start.assert_not_called()
+        with tenant_context.use_context(self.context):
+            for episode_id in ("EP009", "EP010", "EP011"):
+                tasks = canvas_store.list_generation_tasks(
+                    project_id,
+                    300,
+                    episode_id=episode_id,
+                )
+                self.assertEqual(len(tasks), 30)
+                self.assertTrue(all(task["status"] == "failed" for task in tasks))
 
     def test_provider_task_journal_survives_database_failure(self):
         with tenant_context.use_context(self.context):
