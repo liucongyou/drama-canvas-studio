@@ -112,8 +112,18 @@ export function activeGenerationNodeIds(
   // otherwise leave an active node id cached in the UI indefinitely.
   return new Set(
     [...latestTaskByNode(tasks).entries()]
-      .filter(([, task]) => ['queued', 'submitting', 'running'].includes(task.status))
+      .filter(([, task]) => isGenerationTaskActive(task))
       .map(([nodeId]) => nodeId),
+  );
+}
+
+export function isGenerationTaskActive(task: GenerationTask): boolean {
+  if (['queued', 'submitting', 'running'].includes(task.status)) return true;
+  return (
+    task.status === 'interrupted'
+    && Boolean(String(task.provider_task_id || '').trim())
+    && task.outcome?.phase === 'running'
+    && task.outcome?.regenerate === 'blocked'
   );
 }
 
@@ -166,4 +176,11 @@ export function projectGenerationState(
     latestByNode: latestTaskByNode(tasks),
     retainedOptimistic,
   };
+}
+
+export function liveGenerationCount(
+  tasks: GenerationTask[],
+): number {
+  return [...latestTaskByNode(tasks).values()]
+    .filter(isGenerationTaskActive).length;
 }

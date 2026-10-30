@@ -753,6 +753,185 @@ def update_generation_task(task_id, **fields):
     return get_generation_task(task_id)
 
 
+def commit_generation_terminal(
+    project_id,
+    node_id,
+    node_updates,
+    *,
+    task_id="",
+    task_updates=None,
+    event_kind="media",
+    event_payload=None,
+    lease_owner=None,
+    snapshot_mode="auto",
+):
+    """Commit node result, task terminal state and outbox event atomically."""
+    result = {
+        "committed": False,
+        "reason": "",
+        "eventId": 0,
+        "eventPayload": {},
+        "nodeWrittenAt": "",
+        "task": None,
+    }
+
+    def write(con):
+        node_written_at = _now_iso()
+        effective_task_updates = dict(task_updates or {})
+        if "node_written_at" in effective_task_updates:
+            effective_task_updates["node_written_at"] = (
+                effective_task_updates["node_written_at"] or node_written_at
+            )
+        if "finished_at" in effective_task_updates:
+            effective_task_updates["finished_at"] = (
+                effective_task_updates["finished_at"] or node_written_at
+            )
+        row = con.execute(
+            "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if not row:
+            result["reason"] = "project_not_found"
+            return
+        task = None
+        task_columns = [
+            item[0]
+            for item in con.execute("SELECT * FROM generation_tasks LIMIT 0").description
+        ]
+        if task_id:
+            task_row = con.execute(
+                "SELECT * FROM generation_tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            task = dict(zip(task_columns, task_row)) if task_row else None
+            if not task:
+                result["reason"] = "task_not_found"
+                return
+            if lease_owner is not None:
+                owner = str(lease_owner or "")
+                if (
+                    str(task.get("lease_owner") or "") != owner
+                    or str(task.get("status") or "") != "running"
+                ):
+                    result["reason"] = "lease_lost"
+                    return
+            fields = {
+                key: value
+                for key, value in effective_task_updates.items()
+                if key in _TASK_FIELDS
+            }
+            merged = _merge_generation_task_update(task, fields)
+            if merged:
+                merged["updated_at"] = _now_iso()
+                cursor = con.execute(
+                    "UPDATE generation_tasks SET "
+                    + ",".join(f"{key}=?" for key in merged)
+                    + (
+                        " WHERE id=? AND lease_owner=? AND status='running'"
+                        if lease_owner is not None
+                        else " WHERE id=?"
+                    ),
+                    (
+                        *merged.values(),
+                        task_id,
+                        *(
+                            [str(lease_owner or "")]
+                            if lease_owner is not None
+                            else []
+                        ),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    result["reason"] = "lease_lost"
+                    return
+                task = {
+                    **task,
+                    **merged,
+                }
+
+        payload = json.loads(row[1])
+        nodes = payload.get("nodes") or []
+        node = next(
+            (item for item in nodes if item.get("id") == node_id),
+            None,
+        )
+        if not node:
+            result["reason"] = "node_not_found"
+            return
+        meta = node.setdefault("metadata", {})
+        pending = dict(node_updates or {})
+        params_patch = pending.pop("_paramsPatch", None)
+        for key, value in pending.items():
+            if value is None:
+                meta.pop(key, None)
+            else:
+                meta[key] = value
+        if isinstance(params_patch, dict) and params_patch:
+            meta["params"] = {
+                **(meta.get("params") or {}),
+                **params_patch,
+            }
+        node["updatedAt"] = node_written_at
+
+        current_revision = int(row[2])
+        new_revision = current_revision + 1
+        new_payload = json.loads(json.dumps(payload, ensure_ascii=False))
+        new_payload["revision"] = new_revision
+        new_payload["updatedAt"] = node_written_at
+        title = row[0]
+        cursor = con.execute(
+            "UPDATE canvas_projects SET payload_json=?,revision=?,updated_at=? "
+            "WHERE id=? AND revision=?",
+            (
+                json.dumps(new_payload, ensure_ascii=False),
+                new_revision,
+                node_written_at,
+                project_id,
+                current_revision,
+            ),
+        )
+        if cursor.rowcount != 1:
+            result["reason"] = "project_revision_conflict"
+            raise RevisionConflictError("项目写入冲突，请重新读取后再试")
+        _maybe_snapshot(
+            con,
+            project_id,
+            title,
+            new_payload,
+            new_revision,
+            mode=snapshot_mode,
+            now=node_written_at,
+        )
+        event_cursor = con.execute(
+            "INSERT INTO canvas_events(project_id,kind,node_id,payload_json,created_at) "
+            "VALUES(?,?,?,?,?)",
+            (
+                project_id,
+                str(event_kind or "media"),
+                str(node_id or ""),
+                json.dumps(event_payload or {}, ensure_ascii=False),
+                node_written_at,
+            ),
+        )
+        event_id = int(event_cursor.lastrowid or 0)
+        if event_id > 0:
+            con.execute(
+                "DELETE FROM canvas_events WHERE project_id=? AND id<=?",
+                (project_id, event_id - 2000),
+            )
+        result.update({
+            "committed": True,
+            "reason": "",
+            "eventId": event_id,
+            "eventPayload": event_payload or {},
+            "nodeWrittenAt": node_written_at,
+            "task": task,
+        })
+
+    _run_write_transaction(write)
+    return result
+
+
 def finish_generation_task(
     task_id,
     *,

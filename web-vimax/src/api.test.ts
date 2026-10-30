@@ -1,5 +1,13 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
+
+describe('project event cursor', () => {
+  it('reconnects SSE from the last rendered events for this project', () => {
+    expect(projectEventsUrl('project-1', 42)).toContain('/events?since=42');
+    expect(projectCursorStorageKey('project-1'))
+      .toBe('vimax.canvas.event-cursor.project-1');
+  });
+});
 
 describe('friendlyMediaError', () => {
   it('translates persisted write/read timeout errors before rendering', () => {
@@ -769,6 +777,24 @@ describe('api request recovery', () => {
       url: '/uploads/generated-second.png',
     }));
     unsubscribe();
+  });
+
+  it('treats a live provider task returned as accepted 202 as still generating', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      accepted: true,
+      taskId: 'local-task-1',
+      status: 'pending',
+      code: 'PROVIDER_OUTCOME_UNCERTAIN',
+    }), {
+      status: 202,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    await expect(generateCanvasNodeNow('project-2', 'node-2')).resolves.toMatchObject({
+      deferred: true,
+      accepted: true,
+      taskId: 'local-task-1',
+    });
   });
 
   it('sends the current prompt and params with the generation request', async () => {

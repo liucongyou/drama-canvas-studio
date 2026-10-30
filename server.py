@@ -712,6 +712,155 @@ def publish_project_event(project_id, kind, node_id="", payload=None):
     return event_id
 
 
+def _notify_project_event_subscribers(project_id, event_id):
+    if not event_id:
+        return
+    with _EVENT_SUBSCRIBERS_LOCK:
+        subscribers = list(_EVENT_SUBSCRIBERS.get(project_id) or ())
+    for subscriber in subscribers:
+        try:
+            subscriber.put_nowait(event_id)
+        except queue.Full:
+            pass
+
+
+def _roll_forward_next_project_event(project_id, node_id, after_event_id=0):
+    """Publish the next durable event if an interrupted transaction left one pending."""
+    try:
+        events = store.list_events(project_id, int(after_event_id or 0), 8)
+    except Exception:
+        return 0
+    pending = next(
+        (event for event in events if event.get("nodeId") == node_id),
+        None,
+    )
+    if not pending:
+        return 0
+    if pending.get("kind") == "media":
+        publish_project_event(
+            project_id,
+            "media",
+            node_id,
+            dict(pending.get("payload") or {}),
+        )
+    return int(pending.get("id") or 0)
+
+
+def ensure_project_event_subscriber(project_id):
+    """Wake a project's SSE readers after a durable write rolls forward."""
+
+    def run():
+        try:
+            events = store.list_events(project_id, 0, 1)
+            if events:
+                _notify_project_event_subscribers(project_id, events[-1]["id"])
+        except Exception as exc:
+            print(
+                f"[events] wake after recovery failed: {exc}",
+                file=sys.stderr,
+            )
+
+    threading.Thread(
+        target=_run_in_tenant,
+        args=(
+            tenant_context.current_tenant_id(),
+            tenant_context.current_slug(),
+            run,
+        ),
+        name=f"event-wake-{project_id}",
+        daemon=True,
+    ).start()
+
+
+def _generation_terminal_event_payload(node_id, updates, *, task=None):
+    payload = {
+        key: updates[key]
+        for key in (
+            "status", "content", "lastError", "providerTaskStatus",
+            "providerTaskPhase", "providerTaskProgress", "generationFinishedAt",
+            "finalizePending", "storage", "storageError", "videoValidation",
+            "actualDuration",
+        )
+        if key in (updates or {})
+    }
+    if "content" in updates:
+        payload["url"] = updates.get("content") or ""
+    if "lastError" in updates:
+        payload["error"] = updates.get("lastError") or ""
+    if "text" in updates:
+        payload["text"] = updates["text"]
+    params_patch = updates.get("_paramsPatch")
+    if isinstance(params_patch, dict):
+        if "mediaVersions" in params_patch:
+            payload["mediaVersions"] = params_patch["mediaVersions"]
+        if "mediaVersionIndex" in params_patch:
+            payload["mediaVersionIndex"] = params_patch["mediaVersionIndex"]
+    if task:
+        payload["taskId"] = str(task.get("id") or "")
+        payload["taskStatus"] = str((task or {}).get("status") or "")
+        payload["taskPhase"] = str((task or {}).get("phase") or "")
+        payload["taskFinishedAt"] = str((task or {}).get("finished_at") or "")
+    payload["nodeId"] = node_id
+    return payload
+
+
+def commit_generation_terminal(
+    project_id,
+    node_id,
+    node_updates,
+    *,
+    task_id="",
+    task_updates=None,
+    lease_owner=None,
+):
+    """Atomically persist the node, task and event, then wake SSE readers."""
+    task_updates = dict(task_updates or {})
+    if task_updates:
+        task_updates.setdefault("finished_at", "")
+        task_updates.setdefault("node_written_at", "")
+        # A terminal task owns no execution lease. Persist this in the same
+        # transaction as the node write; otherwise a restarted reconciler can
+        # mistake the finished row for a live worker and stall recovery.
+        task_updates["lease_owner"] = ""
+        task_updates["lease_expires_at"] = None
+    payload = _generation_terminal_event_payload(
+        node_id,
+        node_updates,
+        task={"id": task_id, **task_updates},
+    )
+    kind = "media"
+    result = store.commit_generation_terminal(
+        project_id,
+        node_id,
+        node_updates,
+        task_id=task_id,
+        task_updates=task_updates,
+        event_kind=kind,
+        event_payload=payload,
+        lease_owner=lease_owner,
+    )
+    if result.get("committed"):
+        persisted_task = result.get("task") or {}
+        event_payload = dict(result.get("eventPayload") or payload)
+        event_payload["eventId"] = int(result.get("eventId") or 0)
+        if persisted_task:
+            event_payload["taskStatus"] = str(
+                persisted_task.get("status") or ""
+            )
+            event_payload["taskPhase"] = str(
+                persisted_task.get("phase") or ""
+            )
+            event_payload["taskFinishedAt"] = str(
+                persisted_task.get("finished_at") or ""
+            )
+            event_payload["taskUpdatedAt"] = str(
+                persisted_task.get("updated_at") or ""
+            )
+        result["eventPayload"] = event_payload
+        _notify_project_event_subscribers(project_id, result.get("eventId"))
+    return result
+
+
 def mark_provider_ready(project_id, node, meta, task_id, provider_url, ready_at):
     """供应商已产出可用地址时，立刻把节点写成 done。
 
@@ -1445,32 +1594,47 @@ def _mark_generation_outcome_uncertain(task_id, project_id, node_id, exc, provid
     """Keep an accepted paid task recoverable instead of calling it a failure."""
     provider_task_id = str(provider_task_id or _submitted_provider_task_id(task_id)).strip()
     message = str(exc)
-    updated_task = None
-    if task_id:
-        try:
-            updated_task = store.finish_generation_task(
-                task_id,
-                status="interrupted",
-                phase="结果待确认",
-                error=message,
-                provider_task_id=provider_task_id,
-                delivery_status="pending",
-            )
-        except Exception:
-            # The provider id is also in the independent journal. Preserve the
-            # recoverable node state even if the database write is failing.
-            pass
-    if task_id and (not updated_task or updated_task.get("status") == "succeeded"):
-        return False
-    commit_node_metadata(project_id, node_id, {
+    updates = {
         "status": "error",
         "lastError": message,
         "taskId": provider_task_id,
         "providerTaskStatus": "uncertain",
         "providerTaskPhase": "结果待确认",
         "generationFinishedAt": "",
-    })
-    return True
+    }
+    if not task_id:
+        commit_node_metadata(project_id, node_id, updates)
+        return True
+    current = store.get_generation_task(task_id) or {}
+    if current.get("status") == "succeeded":
+        return False
+    try:
+        committed = commit_generation_terminal(
+            project_id,
+            node_id,
+            updates,
+            task_id=task_id,
+            task_updates={
+                "status": "interrupted",
+                "phase": "结果待确认",
+                "error": message,
+                "provider_task_id": provider_task_id,
+                "delivery_status": "pending",
+                "finished_at": "",
+                "node_written_at": "",
+            },
+        )
+    except Exception:
+        # The provider id is also in the independent journal. Preserve the
+        # recoverable node state even if the database write is failing.
+        commit_node_metadata(project_id, node_id, updates)
+        return True
+    if committed.get("committed"):
+        return True
+    if committed.get("reason") == "task_not_found":
+        commit_node_metadata(project_id, node_id, updates)
+        return True
+    return False
 
 
 MAX_MEDIA_VERSIONS = 20
@@ -1974,7 +2138,7 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
             "taskId": task_id,
         },
     })
-    commit_node_metadata(project_id, node_id, {
+    updates = {
         "status": "done",
         "content": generated_url,
         "lastError": "",
@@ -1995,14 +2159,32 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
             "videoVersions": meta["params"].get("videoVersions", []),
             "videoVersionIndex": meta["params"].get("videoVersionIndex", 0),
         },
-    })
-    if generation_task:
-        store.update_generation_task(
-            generation_task["id"], status="succeeded", phase="已完成", progress=100,
-            error="", delivery_status="ready",
-            result_ready_at=generated_at,
-            finished_at=store._now_iso(),
-            lease_owner="", lease_expires_at=None,
+    }
+    committed = commit_generation_terminal(
+        project_id,
+        node_id,
+        updates,
+        task_id=str((generation_task or {}).get("id") or ""),
+        task_updates=(
+            {
+                "status": "succeeded",
+                "phase": "已完成",
+                "progress": 100,
+                "error": "",
+                "delivery_status": "ready",
+                "result_ready_at": generated_at,
+                "finished_at": "",
+                "node_written_at": "",
+                "lease_owner": "",
+                "lease_expires_at": None,
+            }
+            if generation_task
+            else None
+        ),
+    )
+    if not committed.get("committed"):
+        raise RuntimeError(
+            f"恢复视频终态写入失败：{committed.get('reason') or 'unknown'}"
         )
     return True
 
@@ -2080,7 +2262,7 @@ def _recover_persisted_result_to_canvas(project_id, node_id, task):
         "providerTaskPhase": "已完成",
         "generationFinishedAt": generated_at,
     })
-    commit_node_metadata(project_id, node_id, {
+    updates = {
         "status": "done",
         "content": local_url,
         "lastError": "",
@@ -2101,21 +2283,26 @@ def _recover_persisted_result_to_canvas(project_id, node_id, task):
                 else {}
             ),
         },
-    })
-    store.update_generation_task(
-        task.get("id"),
-        status="succeeded",
-        phase="已完成",
-        progress=100,
-        error="",
-        delivery_status="ready",
-        result_ready_at=generated_at,
-        finished_at=store._now_iso(),
-        node_written_at=store._now_iso(),
-        lease_owner="",
-        lease_expires_at=None,
+    }
+    committed = commit_generation_terminal(
+        project_id,
+        node_id,
+        updates,
+        task_id=str(task.get("id") or ""),
+        task_updates={
+            "status": "succeeded",
+            "phase": "已完成",
+            "progress": 100,
+            "error": "",
+            "delivery_status": "ready",
+            "result_ready_at": generated_at,
+            "finished_at": "",
+            "node_written_at": "",
+            "lease_owner": "",
+            "lease_expires_at": None,
+        },
     )
-    return True
+    return bool(committed.get("committed"))
 
 
 def reconcile_pending_generation_deliveries():
@@ -2150,38 +2337,34 @@ def _mark_resumed_task_terminal_query_failure(
 ):
     detail = _provider_query_failure_message(exc, kind)
     finished_at = store._now_iso()
-    updated_task = None
-    if generation_task:
-        updated_task = store.finish_generation_task(
-            generation_task["id"],
-            status="failed",
-            phase="查询失败",
-            error=detail,
-            provider_task_id=provider_task_id,
-            delivery_status="failed",
-            lease_owner=str(generation_task.get("lease_owner") or ""),
-        )
-    if generation_task and (
-        not updated_task or updated_task.get("status") == "succeeded"
-    ):
-        return False
-    commit_node_metadata(project_id, node_id, {
+    updates = {
         "status": "failed",
         "lastError": detail,
         "taskId": provider_task_id,
         "providerTaskStatus": "failed",
         "providerTaskPhase": "查询失败",
         "generationFinishedAt": finished_at,
-    })
-    publish_project_event(project_id, "media", node_id, {
-        "status": "failed",
-        "error": detail,
-        "taskId": provider_task_id,
-        "providerTaskStatus": "failed",
-        "providerTaskPhase": "查询失败",
-        "generationFinishedAt": finished_at,
-    })
-    return True
+    }
+    if not generation_task:
+        commit_node_metadata(project_id, node_id, updates)
+        return True
+    committed = commit_generation_terminal(
+        project_id,
+        node_id,
+        updates,
+        task_id=str(generation_task.get("id") or ""),
+        task_updates={
+            "status": "failed",
+            "phase": "查询失败",
+            "error": detail,
+            "provider_task_id": provider_task_id,
+            "delivery_status": "failed",
+            "finished_at": "",
+            "node_written_at": "",
+        },
+        lease_owner=str(generation_task.get("lease_owner") or ""),
+    )
+    return bool(committed.get("committed"))
 
 
 def _mark_resumed_query_retry(project_id, node_id, generation_task, exc):
@@ -2329,28 +2512,32 @@ def _resume_video_task(project_id, node_id, task_id, provider, model):
                     or (generation_task or {}).get("provider_task_id")
                     or task_id
                 )
-                commit_node_metadata(project_id, node_id, {
+                updates = {
                     "status": "failed",
                     "lastError": failure_detail,
                     "providerTaskStatus": "failed",
                     "providerTaskPhase": "生成失败",
                     "generationFinishedAt": finished_at,
-                })
+                }
                 if generation_task:
-                    store.finish_generation_task(
-                        generation_task["id"], status="failed", phase="生成失败",
-                        error=failure_detail,
-                        delivery_status="failed",
+                    commit_generation_terminal(
+                        project_id,
+                        node_id,
+                        updates,
+                        task_id=str(generation_task.get("id") or ""),
+                        task_updates={
+                            "status": "failed",
+                            "phase": "生成失败",
+                            "error": failure_detail,
+                            "provider_task_id": task_id_value,
+                            "delivery_status": "failed",
+                            "finished_at": "",
+                            "node_written_at": "",
+                        },
                         lease_owner=lease_owner,
                     )
-                publish_project_event(project_id, "media", node_id, {
-                    "status": "failed",
-                    "error": failure_detail,
-                    "providerTaskStatus": "failed",
-                    "providerTaskPhase": "生成失败",
-                    "generationFinishedAt": finished_at,
-                    "taskId": task_id_value,
-                })
+                else:
+                    commit_node_metadata(project_id, node_id, updates)
                 return
             time.sleep(8)
     finally:
@@ -2414,7 +2601,7 @@ def _finalize_resumed_image(project_id, node_id, state, provider, model):
             "taskId": task_id,
         },
     })
-    commit_node_metadata(project_id, node_id, {
+    updates = {
         "status": "done",
         "content": generated_url,
         "lastError": "",
@@ -2431,14 +2618,32 @@ def _finalize_resumed_image(project_id, node_id, state, provider, model):
             "mediaVersions": meta["params"].get("mediaVersions", []),
             "mediaVersionIndex": meta["params"].get("mediaVersionIndex", 0),
         },
-    })
-    if generation_task:
-        store.update_generation_task(
-            generation_task["id"], status="succeeded", phase="已完成", progress=100,
-            error="", delivery_status="ready",
-            result_ready_at=generated_at,
-            finished_at=store._now_iso(),
-            lease_owner="", lease_expires_at=None,
+    }
+    committed = commit_generation_terminal(
+        project_id,
+        node_id,
+        updates,
+        task_id=str((generation_task or {}).get("id") or ""),
+        task_updates=(
+            {
+                "status": "succeeded",
+                "phase": "已完成",
+                "progress": 100,
+                "error": "",
+                "delivery_status": "ready",
+                "result_ready_at": generated_at,
+                "finished_at": "",
+                "node_written_at": "",
+                "lease_owner": "",
+                "lease_expires_at": None,
+            }
+            if generation_task
+            else None
+        ),
+    )
+    if not committed.get("committed"):
+        raise RuntimeError(
+            f"恢复图片终态写入失败：{committed.get('reason') or 'unknown'}"
         )
     return True
 
@@ -2538,28 +2743,32 @@ def _resume_image_task(project_id, node_id, task_id, provider, model):
                     or (generation_task or {}).get("provider_task_id")
                     or task_id
                 )
-                commit_node_metadata(project_id, node_id, {
+                updates = {
                     "status": "failed",
                     "lastError": failure_detail,
                     "providerTaskStatus": "failed",
                     "providerTaskPhase": "生成失败",
                     "generationFinishedAt": finished_at,
-                })
+                }
                 if generation_task:
-                    store.finish_generation_task(
-                        generation_task["id"], status="failed", phase="生成失败",
-                        error=failure_detail,
-                        delivery_status="failed",
+                    commit_generation_terminal(
+                        project_id,
+                        node_id,
+                        updates,
+                        task_id=str(generation_task.get("id") or ""),
+                        task_updates={
+                            "status": "failed",
+                            "phase": "生成失败",
+                            "error": failure_detail,
+                            "provider_task_id": task_id_value,
+                            "delivery_status": "failed",
+                            "finished_at": "",
+                            "node_written_at": "",
+                        },
                         lease_owner=lease_owner,
                     )
-                publish_project_event(project_id, "media", node_id, {
-                    "status": "failed",
-                    "error": failure_detail,
-                    "providerTaskStatus": "failed",
-                    "providerTaskPhase": "生成失败",
-                    "generationFinishedAt": finished_at,
-                    "taskId": task_id_value,
-                })
+                else:
+                    commit_node_metadata(project_id, node_id, updates)
                 return
             time.sleep(8)
     finally:
@@ -3137,12 +3346,30 @@ def reconcile_interrupted_generation_nodes():
                 # a misleading interrupted task on the next restart.
                 pass
             elif task:
-                store.finish_generation_task(
-                    task["id"], status="interrupted", phase=task_phase,
-                    error=task_error,
-                    provider_task_id=provider_task_id,
-                    delivery_status="pending",
+                terminal = commit_generation_terminal(
+                    project["id"],
+                    node["id"],
+                    {
+                        "status": "failed",
+                        "providerTaskStatus": "interrupted",
+                        "providerTaskPhase": task_phase,
+                        "lastError": task_error,
+                        "generationFinishedAt": store._now_iso(),
+                    },
+                    task_id=str(task.get("id") or ""),
+                    task_updates={
+                        "status": "interrupted",
+                        "phase": task_phase,
+                        "error": task_error,
+                        "provider_task_id": provider_task_id,
+                        "delivery_status": "pending",
+                        "finished_at": "",
+                        "node_written_at": "",
+                    },
                 )
+                if terminal.get("committed"):
+                    reconciled += 1
+                    continue
             commit_node_metadata(project["id"], node["id"], {
                 "status": "failed",
                 "providerTaskStatus": "interrupted",
@@ -3293,7 +3520,14 @@ class Handler(BaseHTTPRequestHandler):
     def _cors_headers(self):
         origin = str(self.headers.get("Origin", "")).strip().rstrip("/")
         allowed = _frontend_origins()
-        if not origin or origin.lower() not in allowed:
+        origin_host = urllib.parse.urlparse(origin).netloc.lower()
+        request_host = str(self.headers.get("Host", "")).strip().lower()
+        local_origin = (
+            _auth_mode() != "accounts"
+            and _normalized_host(origin_host) in {"127.0.0.1", "localhost", "::1"}
+            and _normalized_host(request_host) in {"127.0.0.1", "localhost", "::1"}
+        )
+        if not origin or (origin.lower() not in allowed and not local_origin):
             return {}
         return {
             "Access-Control-Allow-Origin": origin,
@@ -6125,8 +6359,12 @@ class Handler(BaseHTTPRequestHandler):
                     "taskId": task_id,
                 })
             store.update_generation_task(
-                task_id, phase="正在连接供应商",
-                progress=0, error="", finished_at="",
+                task_id,
+                phase="正在连接供应商",
+                progress=0,
+                error="",
+                finished_at="",
+                **({"_lease_owner": lease_owner} if lease_owner else {}),
             )
         try:
             return self._generate_once(
@@ -6873,29 +7111,40 @@ class Handler(BaseHTTPRequestHandler):
                     else {}
                 ),
             }
-        commit_node_metadata(pid, node["id"], generated_updates)
-        node_written_at = store._now_iso()
-        publish_project_event(pid, "media", node["id"], {
-            "status": str(meta.get("status") or "done"),
-            "url": str(meta.get("content") or ""),
-            "finalizePending": bool(meta.get("finalizePending")),
-            "text": meta.get("prompt") if ntype == "text" else None,
-            "providerTaskStatus": str(meta.get("providerTaskStatus") or "completed"),
-            "providerTaskPhase": str(meta.get("providerTaskPhase") or "已完成"),
-            "providerTaskProgress": 100,
-            "generationFinishedAt": str(meta.get("generationFinishedAt") or node_written_at),
-            "mediaVersions": (meta.get("params") or {}).get("mediaVersions") or [],
-            "mediaVersionIndex": (meta.get("params") or {}).get("mediaVersionIndex") or 0,
-        })
-        if task_id:
-            store.update_generation_task(
-                task_id, status="succeeded", phase="已完成", progress=100,
-                error="", provider_task_id=str(result.get("taskId") or ""),
-                delivery_status="ready",
-                result_ready_at=str(meta.get("generationFinishedAt") or node_written_at),
-                finished_at=store._now_iso(), node_written_at=node_written_at,
-                _lease_owner=lease_owner,
-            )
+        if ntype == "text":
+            generated_updates["text"] = meta.get("prompt")
+        terminal_result = commit_generation_terminal(
+            pid,
+            node["id"],
+            generated_updates,
+            task_id=task_id,
+            task_updates=(
+                {
+                    "status": "succeeded",
+                    "phase": "已完成",
+                    "progress": 100,
+                    "error": "",
+                    "provider_task_id": str(result.get("taskId") or ""),
+                    "delivery_status": "ready",
+                    "result_ready_at": str(meta.get("generationFinishedAt") or ""),
+                    "finished_at": "",
+                    "node_written_at": "",
+                }
+                if task_id
+                else None
+            ),
+            lease_owner=lease_owner if task_id else None,
+        )
+        if not terminal_result.get("committed"):
+            reason = str(terminal_result.get("reason") or "")
+            if reason == "lease_lost":
+                return self._send(409, {
+                    "code": "GENERATION_LEASE_LOST",
+                    "error": "生成结果已落盘，但执行租约已失效，系统将从原任务恢复",
+                    "taskId": task_id,
+                })
+            raise RuntimeError(f"生成终态提交失败：{reason or 'unknown'}")
+        node_written_at = str(terminal_result.get("nodeWrittenAt") or "")
         store.record_audit_event(
             "generation.complete",
             target_type="generation_task",

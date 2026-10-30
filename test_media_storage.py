@@ -4,6 +4,7 @@ import os
 import json
 import tempfile
 import unittest
+import hashlib
 from unittest import mock
 
 import media_storage
@@ -21,6 +22,12 @@ class FakeOssBucket:
         self.signed = None
 
     def put_object(self, key, data, headers=None):
+        self.put = (key, data, headers)
+        return FakeResponse()
+
+    def put_object_from_file(self, key, filename, headers=None):
+        with open(filename, "rb") as handle:
+            data = handle.read()
         self.put = (key, data, headers)
         return FakeResponse()
 
@@ -134,6 +141,41 @@ class MediaStorageTests(unittest.TestCase):
         self.assertEqual(descriptor["provider"], "qiniu")
         self.assertTrue(descriptor["key"].startswith("drama-canvas/audio/"))
         self.assertTrue(url.startswith("https://cdn.example.com/"))
+
+    def test_local_video_upload_uses_streaming_sdk_and_keeps_hash(self):
+        config = {
+            "enabled": True,
+            "provider": "aliyun_oss",
+            "bucket": "media-bucket",
+            "endpoint": "oss-cn-beijing.aliyuncs.com",
+            "access_key": "ak",
+            "secret_key": "sk",
+            "prefix": "drama-canvas/",
+            "url_ttl_seconds": 3600,
+        }
+        raw = b"video-stream" * 10000
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "video.mp4")
+            with open(path, "wb") as handle:
+                handle.write(raw)
+            bucket = FakeOssBucket()
+            with (
+                mock.patch.object(media_storage, "_config", return_value=config),
+                mock.patch.object(media_storage, "_oss_client", return_value=bucket),
+                mock.patch.object(
+                    media_storage.tenant_context,
+                    "current_upload_dir",
+                    return_value=tmp,
+                ),
+            ):
+                descriptor = media_storage.persist_local_url(
+                    "/uploads/video.mp4",
+                    kind="video",
+                    fallback_ext=".mp4",
+                )
+        self.assertEqual(descriptor["size"], len(raw))
+        self.assertEqual(descriptor["sha256"], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(bucket.put[1], raw)
 
     def test_storage_config_accepts_oss_and_qiniu(self):
         with tempfile.TemporaryDirectory() as tmp:

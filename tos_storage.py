@@ -106,6 +106,16 @@ def _safe_prefix(value: str) -> str:
 def _object_key(data: bytes, fallback_ext: str, mime: str, kind: str) -> str:
     cfg = _config()
     digest = hashlib.sha256(data).hexdigest()
+    return _object_key_from_digest(digest, fallback_ext, mime, kind, cfg)
+
+
+def _object_key_from_digest(
+    digest: str,
+    fallback_ext: str,
+    mime: str,
+    kind: str,
+    cfg: dict[str, Any],
+) -> str:
     now = datetime.now(timezone.utc)
     return (
         f"{_safe_prefix(cfg.get('prefix') or '')}"
@@ -191,16 +201,169 @@ def persist_local_url(
     path = os.path.join(str(tenant_context.current_upload_dir()), name)
     if not os.path.isfile(path):
         raise TosStorageError("本地原始文件不存在")
-    with open(path, "rb") as fh:
-        data = fh.read()
-    mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
-    return persist_bytes(
-        data,
-        mime=mime,
+    return persist_local_path(
+        path,
         fallback_ext=fallback_ext or os.path.splitext(name)[1],
         kind=kind,
         source=source,
+        display_name=name,
     )
+
+
+def persist_local_path(
+    path: str,
+    *,
+    kind: str,
+    fallback_ext: str,
+    source: dict[str, Any] | None = None,
+    mime: str = "",
+    display_name: str = "",
+) -> dict[str, Any]:
+    """Upload a local file without loading the whole media into memory."""
+    cfg = _config()
+    if not is_ready(cfg):
+        raise TosStorageError("TOS 尚未启用或配置不完整")
+    if not os.path.isfile(path):
+        raise TosStorageError("本地原始文件不存在")
+    size = os.path.getsize(path)
+    if size <= 0:
+        raise TosStorageError("不能把空文件写入 TOS")
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    sha256 = digest.hexdigest()
+    mime = mime or mimetypes.guess_type(display_name or path)[0] or "application/octet-stream"
+    object_key = _object_key_from_digest(
+        sha256,
+        fallback_ext,
+        mime,
+        kind,
+        cfg,
+    )
+    source = source or {}
+    meta = {
+        "original-bytes": "1",
+        "sha256": sha256,
+        "source-provider": str(source.get("provider") or ""),
+        "source-model": str(source.get("model") or ""),
+        "source-task-id": str(source.get("taskId") or ""),
+        "source-url": str(source.get("url") or ""),
+    }
+    tos = _tos()
+    try:
+        result = _client().put_object_from_file(
+            cfg["bucket"],
+            object_key,
+            path,
+            content_length=size,
+            content_type=mime,
+            acl=tos.ACLType.ACL_Private,
+            meta=meta,
+        )
+    except Exception as exc:
+        raise _tos_error(exc, "TOS 原始文件上传") from exc
+    return {
+        "status": "stored",
+        "provider": "tos",
+        "bucket": cfg["bucket"],
+        "key": object_key,
+        "region": cfg.get("region") or "cn-beijing",
+        "endpoint": cfg.get("endpoint"),
+        "internalEndpoint": cfg.get("internal_endpoint"),
+        "size": size,
+        "mime": mime,
+        "sha256": sha256,
+        "crc64": str(getattr(result, "hash_crc64_ecma", "") or ""),
+        "etag": str(getattr(result, "etag", "") or ""),
+        "requestId": str(getattr(result, "request_id", "") or ""),
+        "storedAt": datetime.now(timezone.utc).isoformat(),
+        "originalBytes": True,
+        "source": {
+            "provider": meta["source-provider"],
+            "model": meta["source-model"],
+            "taskId": meta["source-task-id"],
+            "generatedAt": str(source.get("generatedAt") or ""),
+            "url": meta["source-url"],
+        },
+    }
+
+
+def upload_local_path_to_key(
+    path: str,
+    *,
+    object_key: str,
+    mime: str = "",
+    source: dict[str, Any] | None = None,
+    display_name: str = "",
+) -> dict[str, Any]:
+    """Upload to an already computed key, used by the object-storage adapter."""
+    cfg = _config()
+    if not is_ready(cfg):
+        raise TosStorageError("TOS 尚未启用或配置不完整")
+    if not os.path.isfile(path):
+        raise TosStorageError("本地原始文件不存在")
+    size = os.path.getsize(path)
+    if size <= 0:
+        raise TosStorageError("不能把空文件写入 TOS")
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    sha256 = digest.hexdigest()
+    mime = mime or mimetypes.guess_type(display_name or path)[0] or "application/octet-stream"
+    source = source or {}
+    meta = {
+        "original-bytes": "1",
+        "sha256": sha256,
+        "source-provider": str(source.get("provider") or ""),
+        "source-model": str(source.get("model") or ""),
+        "source-task-id": str(source.get("taskId") or ""),
+        "source-url": str(source.get("url") or ""),
+    }
+    tos = _tos()
+    try:
+        result = _client().put_object_from_file(
+            cfg["bucket"],
+            object_key,
+            path,
+            content_length=size,
+            content_type=mime,
+            acl=tos.ACLType.ACL_Private,
+            meta=meta,
+        )
+    except Exception as exc:
+        raise _tos_error(exc, "TOS 原始文件上传") from exc
+    return {
+        "status": "stored",
+        "provider": "tos",
+        "bucket": cfg["bucket"],
+        "key": object_key,
+        "region": cfg.get("region") or "cn-beijing",
+        "endpoint": cfg.get("endpoint"),
+        "internalEndpoint": cfg.get("internal_endpoint"),
+        "size": size,
+        "mime": mime,
+        "sha256": sha256,
+        "crc64": str(getattr(result, "hash_crc64_ecma", "") or ""),
+        "etag": str(getattr(result, "etag", "") or ""),
+        "requestId": str(getattr(result, "request_id", "") or ""),
+        "storedAt": datetime.now(timezone.utc).isoformat(),
+        "originalBytes": True,
+        "source": {
+            "provider": meta["source-provider"],
+            "model": meta["source-model"],
+            "taskId": meta["source-task-id"],
+            "generatedAt": str(source.get("generatedAt") or ""),
+            "url": meta["source-url"],
+        },
+    }
 
 
 def internal_presigned_url(

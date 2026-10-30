@@ -153,6 +153,22 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
   const pidRef = useRef(pid);
   useEffect(() => { pidRef.current = pid; }, [pid]);
 
+  const selectProject = (projectId: string) => {
+    setPid(projectId);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('ep');
+      url.hash = projectId;
+      window.history.replaceState(
+        null,
+        '',
+        `${url.pathname}${url.search}${url.hash}`,
+      );
+    } catch {
+      window.location.hash = projectId;
+    }
+  };
+
   const reconcileSelectedProject = (list: {id: string}[]) => {
     const hashId = decodeURIComponent(window.location.hash.replace(/^#/, ''));
     const nextPid = reconcileSelectedProjectId(
@@ -162,8 +178,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
     );
     if (nextPid === pidRef.current) return;
     pidRef.current = nextPid;
-    setPid(nextPid);
-    window.location.hash = nextPid;
+    selectProject(nextPid);
   };
 
   const loadProjects = async () => {
@@ -509,7 +524,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
                   <button
                     type="button"
                     className="canvas-project-item-main"
-                    onClick={() => { setProjectOpen(false); setProjectActionMenu(null); setPid(p.id); window.location.hash = p.id; }}
+                    onClick={() => { setProjectOpen(false); setProjectActionMenu(null); selectProject(p.id); }}
                     title={p.title}
                   >
                     <span className="canvas-project-thumb" aria-hidden="true">

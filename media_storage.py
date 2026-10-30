@@ -6,6 +6,7 @@ import hashlib
 import mimetypes
 import os
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,6 +17,12 @@ import tos_storage
 
 class MediaStorageError(RuntimeError):
     pass
+
+
+_HASH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, int(os.environ.get("CANVAS_STORAGE_HASH_WORKERS", "2"))),
+    thread_name_prefix="media-hash",
+)
 
 
 def _config() -> dict[str, Any]:
@@ -125,6 +132,32 @@ def _read_local(url: str) -> tuple[bytes, str, str]:
     mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
     ext = os.path.splitext(name)[1].lower()
     return data, mime, ext
+
+
+def _local_path(url: str) -> tuple[str, str, str]:
+    raw = str(url or "").strip()
+    if not raw.startswith("/uploads/"):
+        raise MediaStorageError("只有 /uploads/ 本地文件可以上传到对象存储")
+    name = urllib.parse.unquote(raw[len("/uploads/"):])
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        raise MediaStorageError("本地素材路径非法")
+    path = os.path.join(str(tenant_context.current_upload_dir()), name)
+    if not os.path.isfile(path):
+        raise MediaStorageError("本地素材不存在")
+    mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    ext = os.path.splitext(name)[1].lower()
+    return path, mime, ext
+
+
+def _file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _oss_client(config: dict[str, Any]):
@@ -326,14 +359,112 @@ def persist_local_url(
     fallback_ext: str,
     source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    data, mime, ext = _read_local(url)
-    return persist_bytes(
-        data,
-        mime=mime,
-        fallback_ext=ext or fallback_ext,
-        kind=kind,
-        source=source,
+    cfg = _config()
+    provider = _provider(cfg)
+    if not _profile_ready(cfg):
+        raise MediaStorageError(f"对象存储尚未启用或配置不完整：{provider}")
+    path, mime, ext = _local_path(url)
+    ext = ext or os.path.splitext(str(fallback_ext or ""))[1].lower() or ".bin"
+    size = os.path.getsize(path)
+    if size <= 0:
+        raise MediaStorageError("不能上传空文件")
+    sha_future = _HASH_EXECUTOR.submit(_file_sha256, path)
+    sha256 = sha_future.result()
+    key = (
+        "_".join(
+            part
+            for part in (
+                _public_prefix(cfg).replace("/", "_"),
+                kind or "media",
+            )
+            if part
+        )
+        + f"_{datetime.now(timezone.utc):%Y%m}_{sha256}{ext}"
     )
+    if provider == "tos":
+        return tos_storage.upload_local_path_to_key(
+            path,
+            object_key=key,
+            mime=mime,
+            source=source,
+            display_name=os.path.basename(path),
+        )
+    if provider == "aliyun_oss":
+        try:
+            result = _oss_client(cfg).put_object_from_file(
+                key,
+                path,
+                headers={"Content-Type": mime or "application/octet-stream"},
+            )
+        except Exception as exc:
+            detail = str(exc)
+            if "SignatureDoesNotMatch" in detail:
+                raise MediaStorageError(
+                    "阿里云 OSS 鉴权失败：AccessKeySecret 与 AccessKeyId 不匹配。"
+                    "请重新复制同一对 AccessKey ID / Secret，确认没有空格、换行或混用了 RAM 子账号与主账号密钥。"
+                ) from exc
+            if "InvalidAccessKeyId" in detail:
+                raise MediaStorageError(
+                    "阿里云 OSS 鉴权失败：AccessKeyId 不存在、已删除或填错。"
+                ) from exc
+            if "NoSuchBucket" in detail:
+                raise MediaStorageError(
+                    f"阿里云 OSS Bucket 不存在：{cfg.get('bucket') or ''}。"
+                    "请核对 Bucket 名和 Endpoint 所属地域。"
+                ) from exc
+            raise MediaStorageError(f"阿里云 OSS 上传失败：{detail}") from exc
+        return {
+            "status": "stored",
+            "provider": provider,
+            "bucket": str(cfg.get("bucket") or ""),
+            "key": key,
+            "size": size,
+            "mime": mime,
+            "sha256": sha256,
+            "etag": str(getattr(result, "etag", "") or ""),
+            "requestId": str(getattr(result, "request_id", "") or ""),
+            "storedAt": datetime.now(timezone.utc).isoformat(),
+            "source": source or {},
+        }
+    if provider == "qiniu":
+        try:
+            from qiniu import put_file
+
+            token = _qiniu_auth(cfg).upload_token(
+                str(cfg.get("bucket") or ""),
+                key,
+                int(cfg.get("url_ttl_seconds") or 3600),
+            )
+            ret, info = put_file(
+                token,
+                key,
+                path,
+                mime_type=mime or "application/octet-stream",
+            )
+            if getattr(info, "status_code", 0) != 200:
+                raise MediaStorageError(
+                    f"七牛云上传失败 HTTP {getattr(info, 'status_code', 0)}："
+                    f"{getattr(info, 'error', '')}"
+                )
+        except MediaStorageError:
+            raise
+        except Exception as exc:
+            raise MediaStorageError(f"七牛云上传失败：{exc}") from exc
+        origin = _public_origin(cfg)
+        return {
+            "status": "stored",
+            "provider": provider,
+            "bucket": str(cfg.get("bucket") or ""),
+            "key": key,
+            "url": f"{origin}/{urllib.parse.quote(key)}",
+            "size": size,
+            "mime": mime,
+            "sha256": sha256,
+            "etag": str((ret or {}).get("hash") or ""),
+            "storedAt": datetime.now(timezone.utc).isoformat(),
+            "source": source or {},
+        }
+    raise MediaStorageError(f"不支持的存储类型：{provider}")
 
 
 def public_url(descriptor: dict[str, Any], *, expires: int | None = None) -> str:

@@ -107,6 +107,86 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(args[3]["url"], "/uploads/event.png")
         self.assertEqual(args[3]["status"], "done")
 
+    def test_terminal_generation_commit_updates_node_task_and_event_together(self):
+        project_id = canvas_store.create_project(
+            "atomic-terminal-project",
+            payload={
+                "nodes": [{
+                    "id": "atomic-node",
+                    "type": "video",
+                    "title": "原子终态节点",
+                    "metadata": {
+                        "status": "generating",
+                        "providerTaskStatus": "running",
+                    },
+                }],
+                "connections": [],
+            },
+        )
+        task = canvas_store.create_generation_task(
+            project_id,
+            "atomic-node",
+            kind="video",
+            provider="new-apl",
+            model="004-sd2.0",
+        )
+        lease_owner = "atomic-owner"
+        self.assertTrue(
+            canvas_store.claim_generation_task(task["id"], lease_owner, 45)
+        )
+        result = server.commit_generation_terminal(
+            project_id,
+            "atomic-node",
+            {
+                "status": "done",
+                "content": "/uploads/atomic.mp4",
+                "providerTaskStatus": "completed",
+                "providerTaskPhase": "已完成",
+                "generationFinishedAt": "2026-10-31T00:00:01Z",
+                "_paramsPatch": {
+                    "mediaVersions": [{
+                        "url": "/uploads/atomic.mp4",
+                        "taskId": "provider-atomic",
+                    }],
+                    "mediaVersionIndex": 0,
+                    "videoVersions": [{
+                        "url": "/uploads/atomic.mp4",
+                        "taskId": "provider-atomic",
+                    }],
+                    "videoVersionIndex": 0,
+                },
+            },
+            task_id=task["id"],
+            task_updates={
+                "status": "succeeded",
+                "phase": "已完成",
+                "progress": 100,
+                "delivery_status": "ready",
+                "result_ready_at": "2026-10-31T00:00:01Z",
+                "finished_at": "",
+                "node_written_at": "",
+            },
+            lease_owner=lease_owner,
+        )
+
+        self.assertTrue(result["committed"])
+        project = canvas_store.get_project(project_id)
+        node = project["payload"]["nodes"][0]
+        task_row = canvas_store.get_generation_task(task["id"])
+        events = canvas_store.list_events(project_id, 0, 10)
+
+        self.assertEqual(node["metadata"]["status"], "done")
+        self.assertEqual(
+            node["metadata"]["content"],
+            "/uploads/atomic.mp4",
+        )
+        self.assertEqual(task_row["status"], "succeeded")
+        self.assertEqual(task_row["delivery_status"], "ready")
+        self.assertEqual(task_row["lease_owner"], "")
+        self.assertEqual(events[-1]["kind"], "media")
+        self.assertEqual(events[-1]["payload"]["url"], "/uploads/atomic.mp4")
+        self.assertEqual(events[-1]["payload"]["taskStatus"], "succeeded")
+
     def test_failed_node_accepts_new_model_operation_but_replays_same_operation(self):
         first = canvas_store.create_generation_task(
             "project-model-switch",
@@ -356,6 +436,46 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(meta["params"]["mediaVersionIndex"], 2)
         self.assertEqual(meta["params"]["videoVersionIndex"], 2)
         self.assertEqual(meta["params"]["mediaVersions"], versions)
+
+    def test_user_version_selection_survives_stale_autosave(self):
+        meta = {
+            "content": "/uploads/video-3.mp4",
+            "status": "done",
+            "params": {
+                "mediaVersions": [
+                    {"url": "/uploads/video-1.mp4"},
+                    {"url": "/uploads/video-2.mp4"},
+                    {"url": "/uploads/video-3.mp4"},
+                ],
+                "mediaVersionIndex": 2,
+                "videoVersions": [
+                    {"url": "/uploads/video-1.mp4"},
+                    {"url": "/uploads/video-2.mp4"},
+                    {"url": "/uploads/video-3.mp4"},
+                ],
+                "videoVersionIndex": 2,
+            },
+        }
+        incoming = {
+            "content": "/uploads/video-1.mp4",
+            "status": "done",
+            "source": {"type": "generated"},
+            "params": {
+                "mediaVersions": [{"url": "/uploads/video-1.mp4"}],
+                "mediaVersionIndex": 0,
+                "videoVersions": [{"url": "/uploads/video-1.mp4"}],
+                "videoVersionIndex": 0,
+                "ratio": "9:16",
+            },
+            "_mediaVersionSelection": True,
+        }
+        server.merge_node_metadata(meta, incoming)
+
+        self.assertEqual(meta["content"], "/uploads/video-1.mp4")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 0)
+        self.assertEqual(meta["params"]["videoVersionIndex"], 0)
+        self.assertEqual(len(meta["params"]["videoVersions"]), 3)
+        self.assertEqual(meta["params"]["ratio"], "9:16")
 
     def test_duplicate_provider_progress_does_not_refresh_change_time(self):
         meta = {
@@ -620,7 +740,9 @@ class GenerationQueueTests(unittest.TestCase):
                 },
             },
         }
-        project = {"id": "project-same-result", "payload": {"nodes": [node]}}
+        project_id = canvas_store.create_project("image-download-failure")
+        project = {"id": project_id, "payload": {"nodes": [node]}}
+        canvas_store.update_project(project_id, payload=project["payload"])
         provider = {
             "id": "agnes-ai",
             "api_key": "test-key",
@@ -637,7 +759,7 @@ class GenerationQueueTests(unittest.TestCase):
         handler = object.__new__(server.Handler)
         handler._send = lambda status, payload: sent.append((status, payload)) or payload
         canvas_store.create_generation_task(
-            project["id"],
+            project_id,
             node["id"],
             kind="video",
         )
@@ -1266,6 +1388,7 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
 
     def test_image_generation_returns_local_preview_before_remote_mirror(self):
+        project_id = canvas_store.create_project("image-local-preview")
         node = {
             "id": "image-1",
             "type": "image",
@@ -1276,7 +1399,8 @@ class GenerationQueueTests(unittest.TestCase):
                 "params": {"provider": "ark", "model": "seedream"},
             },
         }
-        project = {"payload": {"nodes": [node]}}
+        project = {"id": project_id, "payload": {"nodes": [node]}}
+        canvas_store.update_project(project_id, payload=project["payload"])
         provider = {"id": "ark", "api_key": "test-key", "base_url": "https://ark.example/api/v3"}
         model = {
             "id": "seedream",
@@ -1304,13 +1428,20 @@ class GenerationQueueTests(unittest.TestCase):
             patch.object(server, "persist_generated_media", return_value="/uploads/generated.png"),
             patch.object(server, "archive_generated_image", return_value=None),
             patch.object(server, "queue_generated_image_tos_archive"),
-            patch.object(server, "commit_node_metadata", side_effect=lambda *args: committed.append(args)),
+            patch.object(
+                server,
+                "commit_generation_terminal",
+                side_effect=lambda *args, **kwargs: (
+                    committed.append((args, kwargs))
+                    or {"committed": True, "nodeWrittenAt": "2026-10-31T00:00:00Z"}
+                ),
+            ),
         ):
             handler._generate_once("project-1", project, node)
 
         self.assertEqual(sent[-1][1]["url"], "/uploads/generated.png")
         self.assertEqual(node["metadata"]["content"], "/uploads/generated.png")
-        self.assertEqual(committed[-1][2]["content"], "/uploads/generated.png")
+        self.assertEqual(committed[-1][0][2]["content"], "/uploads/generated.png")
 
     def test_missing_local_reference_is_rejected_before_provider_call(self):
         source = {
@@ -1339,7 +1470,9 @@ class GenerationQueueTests(unittest.TestCase):
                 },
             },
         }
-        project = {"payload": {"nodes": [source, node]}}
+        project_id = canvas_store.create_project("missing-local-reference")
+        project = {"id": project_id, "payload": {"nodes": [source, node]}}
+        canvas_store.update_project(project_id, payload=project["payload"])
         provider = {
             "id": "ark",
             "api_key": "test-key",
@@ -1364,12 +1497,13 @@ class GenerationQueueTests(unittest.TestCase):
             patch.object(server, "ensure_provider_auth"),
             patch.object(server.provider_client, "generate_image") as generate,
         ):
-            handler._generate_once("project-1", project, node)
+            handler._generate_once(project_id, project, node)
         self.assertEqual(sent[-1][0], 400)
         self.assertIn("参考媒体文件已丢失", sent[-1][1]["error"])
         generate.assert_not_called()
 
     def test_image_tos_archive_runs_after_local_success(self):
+        project_id = canvas_store.create_project("image-tos-finalize")
         node = {
             "id": "image-tos",
             "type": "image",
@@ -1381,7 +1515,8 @@ class GenerationQueueTests(unittest.TestCase):
                 "params": {"provider": "ark", "model": "seedream"},
             },
         }
-        project = {"id": "project-image-tos", "payload": {"nodes": [node]}}
+        project = {"id": project_id, "payload": {"nodes": [node]}}
+        canvas_store.update_project(project_id, payload=project["payload"])
         provider = {
             "id": "ark",
             "name": "Ark",
@@ -1412,13 +1547,22 @@ class GenerationQueueTests(unittest.TestCase):
                 "queue_generated_image_tos_archive",
                 side_effect=lambda *args: archived.append(args),
             ),
-            patch.object(server, "commit_node_metadata"),
+            patch.object(
+                server,
+                "commit_generation_terminal",
+                side_effect=lambda project_id, node_id, updates, **kwargs: (
+                    node["metadata"].update(updates)
+                    or {"committed": True, "nodeWrittenAt": "2026-10-31T00:00:00Z"}
+                ),
+            ),
         ):
             handler._generate_once(project["id"], project, node)
 
         self.assertEqual(sent[-1][0], 200)
         self.assertEqual(sent[-1][1]["status"], "done")
         self.assertEqual(archived[0][2], "/uploads/generated.png")
+        self.assertEqual(node["metadata"]["status"], "done")
+        self.assertEqual(node["metadata"]["content"], "/uploads/generated.png")
 
     def test_provider_success_with_download_failure_is_pending_not_failed(self):
         node = {
@@ -1525,6 +1669,8 @@ class GenerationQueueTests(unittest.TestCase):
         queued = []
         handler = object.__new__(server.Handler)
         handler._send = lambda status, payload: sent.append((status, payload)) or payload
+        project_id = canvas_store.create_project("video-provider-success")
+        canvas_store.update_project(project_id, payload=project["payload"])
         canvas_store.create_generation_task(
             project["id"],
             node["id"],
@@ -1560,7 +1706,14 @@ class GenerationQueueTests(unittest.TestCase):
                 "queue_generated_video_finalize",
                 side_effect=lambda *args: queued.append(args),
             ),
-            patch.object(server, "commit_node_metadata"),
+            patch.object(
+                server,
+                "commit_generation_terminal",
+                side_effect=lambda project_id, node_id, updates, **kwargs: (
+                    node["metadata"].update(updates)
+                    or {"committed": True, "nodeWrittenAt": "2026-10-31T00:00:00Z"}
+                ),
+            ),
         ):
             handler._generate_once(
                 project["id"],

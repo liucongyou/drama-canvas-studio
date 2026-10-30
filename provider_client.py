@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import io
 import json
 import mimetypes
@@ -521,6 +522,11 @@ def _submit_multipart(
 
 
 MEDIA_DOWNLOAD_TIMEOUT_SECONDS = 300
+MEDIA_DOWNLOAD_MAX_BYTES = max(
+    24 * 1024 * 1024,
+    int(os.environ.get("CANVAS_MEDIA_DOWNLOAD_MAX_BYTES", str(2 * 1024 * 1024 * 1024))),
+)
+MEDIA_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 def _download_bytes(url: str, timeout: int = MEDIA_DOWNLOAD_TIMEOUT_SECONDS) -> tuple[bytes, str]:
@@ -561,6 +567,82 @@ def _download_bytes_with_key(
         raise RuntimeError(f"下载生成结果失败：{exc.reason}") from exc
 
 
+def _download_to_upload(
+    url: str,
+    fallback_ext: str,
+    *,
+    key: str = "",
+    timeout: int = MEDIA_DOWNLOAD_TIMEOUT_SECONDS,
+) -> tuple[str, str, int, str]:
+    """Stream one generated result into an atomically published local file."""
+    raw = str(url or "").strip()
+    if not raw:
+        raise RuntimeError("生成结果地址为空")
+    headers = {"User-Agent": "drama-canvas-studio/1.0"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    request = urllib.request.Request(raw, headers=headers)
+    upload_dir = _upload_dir()
+    os.makedirs(upload_dir, exist_ok=True)
+    temp_path = ""
+    try:
+        with network_security.safe_urlopen(request, timeout=timeout) as response:
+            mime = response.headers.get("Content-Type", "").split(";")[0].strip()
+            declared_length = response.headers.get("Content-Length")
+            try:
+                expected_bytes = int(declared_length or 0)
+            except (TypeError, ValueError):
+                expected_bytes = 0
+            if expected_bytes > MEDIA_DOWNLOAD_MAX_BYTES:
+                raise RuntimeError(
+                    f"生成结果超过本地保存上限 "
+                    f"{MEDIA_DOWNLOAD_MAX_BYTES // (1024 * 1024)}MB"
+                )
+            ext = _extension_for_mime(mime, fallback_ext)
+            if ext == ".jpe":
+                ext = ".jpg"
+            name = f"generated-{int(time.time())}-{secrets.token_hex(5)}{ext}"
+            final_path = os.path.join(upload_dir, name)
+            temp_path = f"{final_path}.part-{secrets.token_hex(4)}"
+            digest = hashlib.sha256()
+            size = 0
+            with open(temp_path, "wb") as handle:
+                while True:
+                    chunk = response.read(MEDIA_DOWNLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MEDIA_DOWNLOAD_MAX_BYTES:
+                        raise RuntimeError(
+                            f"生成结果超过本地保存上限 "
+                            f"{MEDIA_DOWNLOAD_MAX_BYTES // (1024 * 1024)}MB"
+                        )
+                    digest.update(chunk)
+                    handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if size <= 0:
+                raise RuntimeError("供应商返回了空文件")
+            if expected_bytes and size != expected_bytes:
+                raise RuntimeError(
+                    f"生成结果下载不完整：期望 {expected_bytes} 字节，实际 {size} 字节"
+                )
+            os.replace(temp_path, final_path)
+            temp_path = ""
+            return f"/uploads/{name}", mime, size, digest.hexdigest()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"下载生成结果失败 HTTP {exc.code}：{detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"下载生成结果失败：{exc.reason}") from exc
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
 def _extension_for_mime(mime: str, fallback: str) -> str:
     return mimetypes.guess_extension(mime or "") or fallback
 
@@ -574,18 +656,39 @@ def save_generated_bytes(data: bytes, mime: str, fallback_ext: str) -> str:
     if ext == ".jpe":
         ext = ".jpg"
     name = f"generated-{int(time.time())}-{secrets.token_hex(5)}{ext}"
-    with open(os.path.join(upload_dir, name), "wb") as fh:
-        fh.write(data)
+    final_path = os.path.join(upload_dir, name)
+    temp_path = f"{final_path}.part-{secrets.token_hex(4)}"
+    try:
+        with open(temp_path, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_path, final_path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
     return f"/uploads/{name}"
 
 
-def save_generated_url(url: str, fallback_ext: str = ".bin") -> str:
+def save_generated_url(
+    url: str,
+    fallback_ext: str = ".bin",
+    *,
+    key: str = "",
+) -> str:
     if not str(url or "").strip():
         return ""
     if str(url).startswith("/uploads/"):
         return str(url)
-    data, mime = _download_bytes(str(url))
-    return save_generated_bytes(data, mime, fallback_ext)
+    local_url, _mime, _size, _sha256 = _download_to_upload(
+        str(url),
+        fallback_ext,
+        key=key,
+    )
+    return local_url
 
 
 def _trim_wav_bytes(data: bytes, max_seconds: float) -> bytes:
@@ -1428,8 +1531,7 @@ def _persist_auth_url(url: str, base: str, key: str, fallback_ext: str) -> str:
         return ""
     if raw.startswith("/"):
         raw = base + raw
-    data, mime = _download_bytes_with_key(raw, key)
-    return save_generated_bytes(data, mime, fallback_ext)
+    return save_generated_url(raw, fallback_ext, key=key)
 
 
 def _ark_image(
@@ -1977,9 +2079,8 @@ def _newapi_video(
                 if not url.startswith(("http://", "https://", "/")):
                     raise RuntimeError(f"即梦视频返回了无效地址：{url[:200]}")
                 full_url = url if url.startswith("http") else base + url
-                data, mime = _download_bytes_with_key(full_url, key)
                 return {
-                    "url": save_generated_bytes(data, mime, ".mp4"),
+                    "url": save_generated_url(full_url, ".mp4", key=key),
                     "raw": task,
                     "taskId": task_id,
                 }
@@ -2090,9 +2191,8 @@ def _newapi_aistars_video(
                 raise RuntimeError("即梦视频已完成，但没有返回视频制品")
             raw_url = str(artifact.get("content_url") or artifact.get("url"))
             url = raw_url if raw_url.startswith("http") else base + raw_url
-            data, mime = _download_bytes_with_key(url, key)
             return {
-                "url": save_generated_bytes(data, mime, ".mp4"),
+                "url": save_generated_url(url, ".mp4", key=key),
                 "raw": task,
                 "taskId": task_id,
             }

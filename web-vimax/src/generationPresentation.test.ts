@@ -5,7 +5,9 @@ import {
   generationPhaseLabel,
   generationProgressLabel,
   hasTrustedProviderProgress,
+  isGenerationTaskActive,
   latestTaskByNode,
+  liveGenerationCount,
   projectGenerationState,
   retainOptimisticGenerationIds,
 } from './generationPresentation';
@@ -109,6 +111,33 @@ describe('generation presentation', () => {
 
     expect([...activeGenerationNodeIds([running, failed])]).toEqual(['node-a']);
     expect([...activeGenerationNodeIds([failed])]).toEqual([]);
+  });
+
+  it('keeps a live provider task active while local recovery is interrupted', () => {
+    const recovering: GenerationTask = {
+      id: 'recovering',
+      project_id: 'project',
+      node_id: 'node-recovering',
+      title: '段A',
+      status: 'interrupted',
+      phase: '结果待确认',
+      provider_task_id: 'provider-live-1',
+      delivery_status: 'pending',
+      outcome: {
+        phase: 'running',
+        regenerate: 'blocked',
+        reason: 'provider_task_running',
+        providerAccepted: true,
+      },
+      created_at: '2026-10-30T15:00:00.000Z',
+      updated_at: '2026-10-30T15:01:00.000Z',
+    };
+
+    expect([...activeGenerationNodeIds([recovering])]).toEqual([
+      'node-recovering',
+    ]);
+    expect(isGenerationTaskActive(recovering)).toBe(true);
+    expect(liveGenerationCount([recovering])).toBe(1);
   });
 
   it('keeps a submitted node active until its persisted task appears', () => {

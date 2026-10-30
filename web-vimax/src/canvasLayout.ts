@@ -556,3 +556,13 @@ export function pickDefaultEpisode(episodes: CanvasEpisodeMetaLike[] | null | un
     return epIdCompare(b.ep_id, a.ep_id) < 0 ? b : a;
   }).ep_id;
 }
+
+export function workspaceScopeMatches(
+  requested: {session: string; episode: string | null},
+  active: {session: string; episode: string | null},
+): boolean {
+  return (
+    requested.session === active.session
+    && (requested.episode || null) === (active.episode || null)
+  );
+}

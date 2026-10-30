@@ -50,7 +50,10 @@ export function taskOutcomePresentation(
     && UNCERTAIN_RE.test(errorText);
   const liveProviderTask =
     (task.status === 'failed' || task.status === 'interrupted')
-    && backendOutcome?.reason === 'provider_task_running'
+    && (
+      backendOutcome?.reason === 'provider_task_running'
+      || /供应商任务仍在执行|执行租约已过期/.test(errorText)
+    )
     && backendPhase === 'running'
     && backendRegenerate === 'blocked'
     && !localBlocked;

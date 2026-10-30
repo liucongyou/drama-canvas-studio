@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {absolutePositionOf, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections} from './canvasLayout';
+import {absolutePositionOf, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches} from './canvasLayout';
 
 describe('resolveInitialEpisode', () => {
   it('URL 中的集号优先，支持刷新和分享链接', () => {
@@ -206,6 +206,29 @@ describe('pickDefaultEpisode', () => {
       {ep_id: 'ep02', shot_count: 4, keyframes: 4, clips: 4, updated_at: null},
     ];
     expect(pickDefaultEpisode(eps)).toBe('ep02');
+  });
+});
+
+describe('workspaceScopeMatches', () => {
+  it('drops a refresh response after a project switch', () => {
+    expect(workspaceScopeMatches(
+      {session: 'project-a', episode: 'EP001'},
+      {session: 'project-b', episode: 'EP001'},
+    )).toBe(false);
+  });
+
+  it('drops a refresh response after an episode switch', () => {
+    expect(workspaceScopeMatches(
+      {session: 'project-a', episode: 'EP001'},
+      {session: 'project-a', episode: 'EP002'},
+    )).toBe(false);
+  });
+
+  it('accepts the active project and episode', () => {
+    expect(workspaceScopeMatches(
+      {session: 'project-a', episode: 'EP001'},
+      {session: 'project-a', episode: 'EP001'},
+    )).toBe(true);
   });
 });
 

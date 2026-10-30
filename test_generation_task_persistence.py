@@ -1606,7 +1606,11 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
                 phase="结果待确认",
             )
 
-            with patch.object(server, "commit_node_metadata") as commit_meta:
+            with patch.object(
+                server,
+                "commit_generation_terminal",
+                return_value={"committed": True},
+            ) as commit_terminal:
                 server._mark_generation_outcome_uncertain(
                     task["id"],
                     project_id,
@@ -1619,9 +1623,12 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(saved["status"], "interrupted")
         self.assertEqual(saved["phase"], "结果待确认")
         self.assertEqual(saved["provider_task_id"], "provider-video-1")
-        self.assertEqual(commit_meta.call_args.args[2]["providerTaskStatus"], "uncertain")
         self.assertEqual(
-            commit_meta.call_args.args[2]["providerTaskPhase"],
+            commit_terminal.call_args.args[2]["providerTaskStatus"],
+            "uncertain",
+        )
+        self.assertEqual(
+            commit_terminal.call_args.args[2]["providerTaskPhase"],
             "结果待确认",
         )
 

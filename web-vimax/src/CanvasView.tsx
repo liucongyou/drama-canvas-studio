@@ -107,7 +107,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, projectEventsUrl, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -130,7 +130,8 @@ import {
   generationPhaseLabel,
   generationProgressLabel,
   hasTrustedProviderProgress,
-  latestTaskByNode,
+  isGenerationTaskActive,
+  liveGenerationCount,
   projectGenerationState,
 } from './generationPresentation';
 import {
@@ -146,7 +147,7 @@ import {
   modelMaxRefs,
   type BatchGenerationCandidate,
 } from './batchGeneration';
-import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
+import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
 import {
   CANVAS_VIEWPORT_POLICY_VERSION,
   filterMediaNodesInBounds,
@@ -2332,14 +2333,40 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   useEffect(() => { if (!isText) setEditingText(false); }, [isText]);
   // finalizePending：供应商已经出结果、后端还在落盘归档。此时遮罩会把画面挡住，
   // 而用户要看的正是这张画面，所以只要已有地址就不再盖一层「生成中」。
+  const opaqueMeta = node as CanvasMediaNode & {
+    providerTaskStatusRaw?: string;
+    providerTaskId?: string;
+  };
   const liveProviderGeneration = isLiveProviderGeneration(node);
   const busy = (node.status === 'generating' || liveProviderGeneration || !!generationBusy)
     && !(node.finalizePending && !!node.mediaUrl);
+  const resumableInBackground = !!node.mediaUrl
+    && node.status === 'done'
+    && !!generationBusy
+    && !node.finalizePending;
   const done = node.status === 'done' && !liveProviderGeneration;
   const failed = node.status === 'failed'
     && !liveProviderGeneration
     && !node.mediaUrl;
   const mediaMissing = !isText && !!node.mediaUrl && mediaLoadFailed;
+  const taskOutcome = taskOutcomePresentation({
+    status: node.status === 'generating'
+      ? 'running'
+      : node.status === 'done'
+        ? 'succeeded'
+        : 'failed',
+    phase: node.providerTaskPhase,
+    error: node.lastError,
+    delivery_status: node.finalizePending ? 'materializing' : undefined,
+    outcome: opaqueMeta.providerTaskStatusRaw === 'interrupted'
+      ? {
+          phase: 'running',
+          regenerate: 'blocked',
+          reason: 'provider_task_running',
+          providerAccepted: Boolean(opaqueMeta.providerTaskId),
+        }
+      : undefined,
+  });
   useEffect(() => {
     if (!busy) return;
     setBusyClock(Date.now());
@@ -3061,10 +3088,16 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
         {busy && (
           <div className="canvas-media-busy-mask">
             <span className="canvas-media-spin is-lg" />
-            <span>{busyLabel}</span>
+            <span>{taskOutcome.statusLabel === '生成中' ? busyLabel : taskOutcome.statusLabel}</span>
             {generationElapsedSeconds > 0 && (
               <small>已等待 {generationElapsedLabel}</small>
             )}
+          </div>
+        )}
+        {!busy && resumableInBackground && (
+          <div className="canvas-media-background-chip" role="status">
+            <span className="canvas-media-spin" />
+            <span>新版本生成中</span>
           </div>
         )}
         <div className="canvas-media-card-menu">
@@ -3167,7 +3200,18 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
                 </button>
               )}
               <button type="button" className="nodrag" onClick={(e) => { e.stopPropagation(); setMenu(false); onEdit(node); }}>编辑提示词</button>
-              <button type="button" className="nodrag" onClick={(e) => { e.stopPropagation(); setMenu(false); onGenerate(node); }}>{isText ? 'AI 生成/改写' : '重新生成'}</button>
+              <button
+                type="button"
+                className="nodrag"
+                disabled={busy}
+                title={busy ? '供应商任务尚未结束，不能重复提交' : undefined}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (busy) return;
+                  setMenu(false);
+                  onGenerate(node);
+                }}
+              >{busy ? '生成中' : isText ? 'AI 生成/改写' : '重新生成'}</button>
               <button type="button" className="nodrag is-del" onClick={(e) => { e.stopPropagation(); setMenu(false); onDelete(node.id); }}>删除节点</button>
             </div>
           )}
@@ -3253,7 +3297,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const addMenuRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLDivElement>(null);
   // ★ 所有 hook 必须在条件 return 之前调用（曾在此处踩坑：整树崩溃）
-  const busy = node?.status === 'generating';
+  const busy = Boolean(node?.status === 'generating' || isLiveProviderGeneration(node));
   const p = node?.params || {};
   const isImg = node?.kind === 'image';
   const isVid = node?.kind === 'video';
@@ -7273,9 +7317,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [taskCenterOpen, setTaskCenterOpen] = useState(false);
   const [generationTasks, setGenerationTasks] = useState<GenerationTask[]>([]);
   const taskLoadGenerationRef = useRef(0);
-  const activeGenerationTaskCount = generationTasks.filter(
-    (task) => ['queued', 'submitting', 'running'].includes(task.status),
-  ).length;
+  const activeGenerationTaskCount = liveGenerationCount(generationTasks);
   const [textReader, setTextReader] = useState<CanvasMediaNode | null>(null);
   // 顶部栏下拉菜单（状态 / 工具）与全局搜索聚焦态
   const [openMenu, setOpenMenu] = useState<'status' | 'tools' | null>(null);
@@ -7342,11 +7384,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const finishSave = useCallback((ok: boolean) => {
     pendingSavesRef.current = Math.max(0, pendingSavesRef.current - 1);
     if (!ok) {
-      setSaveState('error');
       return;
     }
     if (pendingSavesRef.current === 0) setSaveState('saved');
   }, []);
+  useEffect(() => {
+    if (saveError) setSaveState('error');
+  }, [saveError]);
   // 资产详情面板（点击资产节点弹出：类型/名称/描述词/大图/音频）
   const [assetDetail, setAssetDetail] = useState<{kind: string; item: CanvasAssetItem} | null>(null);
   // 一集一画布：多集项目按集切换（避免几十集节点同屏卡死）
@@ -7592,6 +7636,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }>>([]);
   const connectionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectionSaveInFlightRef = useRef(false);
+  const savedLayoutScopeRef = useRef('');
   const pendingConnectionsRef = useRef<Array<{
     id: string;
     fromNodeId: string;
@@ -7937,9 +7982,91 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // 事件流是否在线：在线时轮询降级成兜底对账，离线时恢复 1.5s 的密集轮询。
   const [eventsConnected, setEventsConnected] = useState(false);
   const mediaNodesRef = useRef<CanvasMediaNode[]>([]);
+  const workspaceRefreshInFlightRef = useRef<Promise<void> | null>(null);
+  const workspaceRefreshQueuedRef = useRef(false);
+  const workspaceScopeRef = useRef({session, episode: currentEp});
+  workspaceScopeRef.current = {session, episode: currentEp};
   const workspaceLoadEpochRef = useRef(0);
   const optimisticGenerationStartsRef = useRef<Map<string, string>>(new Map());
   useEffect(() => { mediaNodesRef.current = mediaNodes; }, [mediaNodes]);
+  const refreshWorkspaceFacts = useCallback(() => {
+    if (workspaceRefreshInFlightRef.current) {
+      workspaceRefreshQueuedRef.current = true;
+      return workspaceRefreshInFlightRef.current;
+    }
+    const run = async (): Promise<void> => {
+      const loadEpoch = workspaceLoadEpochRef.current;
+      const scope = workspaceScopeRef.current;
+      const workspace = await getCanvasWorkspace(scope.session, scope.episode);
+      if (loadEpoch !== workspaceLoadEpochRef.current) return;
+      const activeScope = workspaceScopeRef.current;
+      if (!workspaceScopeMatches(scope, activeScope)) return;
+      if (document.visibilityState === 'hidden') {
+        workspaceRefreshQueuedRef.current = true;
+        return;
+      }
+      const localById = new Map(
+        mediaNodesRef.current.map((node) => [node.id, node]),
+      );
+      taskLoadGenerationRef.current += 1;
+      setGenerationTasks(workspace.tasks);
+      if (!('empty' in workspace.canvas)) setCanvas(workspace.canvas);
+      setMediaNodes(workspace.mediaNodes.map((remote) => {
+        const local = localById.get(remote.id);
+        // Workspace reconciliation updates generation-owned facts only. The
+        // debounced prompt/refs editor may still hold a newer local value than
+        // the server snapshot; replacing the whole node would silently undo it.
+        if (!local) return remote;
+        const remoteParams = remote.params || {};
+        const localParams = local.params || {};
+        return {
+          ...local,
+          ...remote,
+          prompt: local.prompt,
+          params: {
+            ...remoteParams,
+            ...localParams,
+            ...(remoteParams.mediaVersions
+              ? {
+                  mediaVersions: remoteParams.mediaVersions,
+                  mediaVersionIndex: remoteParams.mediaVersionIndex,
+                }
+              : {}),
+            ...(remoteParams.videoVersions
+              ? {
+                  videoVersions: remoteParams.videoVersions,
+                  videoVersionIndex: remoteParams.videoVersionIndex,
+                }
+              : {}),
+          },
+          x: local.x,
+          y: local.y,
+          updatedAt: remote.updatedAt || local.updatedAt,
+          positionUpdatedAt: local.positionUpdatedAt,
+        };
+      }));
+      projectConnectionsRef.current = workspace.connections;
+    };
+    workspaceRefreshQueuedRef.current = false;
+    let failed = false;
+    const task: Promise<void> = run()
+      .catch(() => {
+        failed = true;
+      })
+      .finally(() => {
+        if (workspaceRefreshInFlightRef.current === task) {
+          workspaceRefreshInFlightRef.current = null;
+        }
+        if (workspaceRefreshQueuedRef.current && !failed) {
+          workspaceRefreshQueuedRef.current = false;
+          void refreshWorkspaceFacts();
+        } else if (failed) {
+          workspaceRefreshQueuedRef.current = false;
+        }
+      });
+    workspaceRefreshInFlightRef.current = task;
+    return task;
+  }, []);
   useEffect(() => {
     if (mediaNodes.length === 0) return;
     const key = currentEp || '__project__';
@@ -8073,35 +8200,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     terminalRefreshRef.current = terminalSignatures;
     if (!newlyTerminal) return;
 
-    let alive = true;
-    void Promise.all([
-      getCanvasMediaNodes(session, currentEp),
-      getGenerationTasks(session, 80, currentEp),
-    ]).then(([remoteNodes, tasks]) => {
-      if (!alive) return;
-      setGenerationTasks(tasks);
-      const remoteById = new Map(
-        remoteNodes.map((node) => [node.id, node]),
-      );
-      setMediaNodes((prev) => prev.map((node) => {
-        const remote = remoteById.get(node.id);
-        if (!remote) return node;
-        return remote;
-      }));
-      void getCanvas(session, currentEp)
-        .then((refreshed) => {
-          if (alive && !('empty' in refreshed)) setCanvas(refreshed);
-        })
-        .catch(() => {});
-    }).catch(() => {
+    void refreshWorkspaceFacts().catch(() => {
       // Keep the signatures unchanged so the next task poll retries the
       // terminal refresh instead of depending on a manual browser refresh.
       terminalRefreshRef.current.clear();
     });
-    return () => {
-      alive = false;
-    };
-  }, [generationTasks, loading, session, currentEp]);
+  }, [generationTasks, loading, refreshWorkspaceFacts]);
 
   /**
    * A succeeded generation task is authoritative, even when an earlier
@@ -8115,36 +8219,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       (task) => task.status === 'succeeded',
     );
     if (succeededTasks.length === 0) return;
-    let alive = true;
-    void getCanvasMediaNodes(session, currentEp)
-      .then((remoteNodes) => {
-        if (!alive) return;
-        const remoteById = new Map(remoteNodes.map((node) => [node.id, node]));
-        setMediaNodes((prev) => {
-          let changed = false;
-          const next = prev.map((node) => {
-            const task = succeededTasks.find((item) => item.node_id === node.id);
-            if (!task) return node;
-            const remote = remoteById.get(node.id);
-            if (!remote) return node;
-            const reconciled = reconcileSucceededNode(node, task, remote);
-            if (!reconciled) return node;
-            changed = true;
-            return reconciled as CanvasMediaNode;
-          });
-          return changed ? next : prev;
-        });
-        void getCanvas(session, currentEp)
-          .then((refreshed) => { if (alive && !('empty' in refreshed)) setCanvas(refreshed); })
-          .catch(() => {});
-      })
-      .catch(() => {
-        // Keep the task unmarked so the next poll retries the reconciliation.
-      });
-    return () => {
-      alive = false;
-    };
-  }, [generationTasks, loading, session, currentEp]);
+    void refreshWorkspaceFacts().catch(() => {
+      // Keep the task unmarked so the next poll retries the reconciliation.
+    });
+  }, [generationTasks, loading, refreshWorkspaceFacts]);
   const mediaSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaBatchSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaBatchSaveInFlightRef = useRef<Promise<void> | null>(null);
@@ -8588,6 +8666,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     setSavedFlash({});
     setSelectedId(null);
     setSaveError('');
+    workspaceRefreshQueuedRef.current = false;
+    workspaceRefreshInFlightRef.current = null;
+    savedLayoutScopeRef.current = '';
     didInitialLayoutRef.current = false; // 切集后允许重新恢复该集自己的布局
     getCanvasWorkspace(session, currentEp)
       .then(({
@@ -8889,6 +8970,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             pendingMediaPatchesRef.current.clear();
             if (snapshots.length === 0) return;
             beginSave();
+            setSaveError('');
             void patchMediaNodesFields(session, snapshots)
               .then(() => {
                 finishSave(true);
@@ -9644,6 +9726,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     let source: EventSource | null = null;
     let disposed = false;
     let terminalRefreshTimer: number | null = null;
+    let reconnectTimer: number | null = null;
+    let reconnectAttempts = 0;
 
     const refreshAfterTerminalEvent = () => {
       if (terminalRefreshTimer !== null) {
@@ -9652,27 +9736,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       terminalRefreshTimer = window.setTimeout(() => {
         terminalRefreshTimer = null;
         if (disposed) return;
-        void getCanvasMediaNodes(session, currentEp)
-          .then((remoteNodes) => {
-            if (disposed) return;
-            const remoteById = new Map(
-              remoteNodes.map((item) => [item.id, item]),
-            );
-            setMediaNodes((prev) => prev.map((node) => (
-              remoteById.get(node.id) || node
-            )));
-          })
-          .catch(() => {});
-        void getGenerationTasks(session, 80, currentEp)
-          .then((tasks) => {
-            if (!disposed) setGenerationTasks(tasks);
-          })
-          .catch(() => {});
-        void getCanvas(session, currentEp)
-          .then((refreshed) => {
-            if (!disposed && !('empty' in refreshed)) setCanvas(refreshed);
-          })
-          .catch(() => {});
+        void refreshWorkspaceFacts().catch(() => {});
       }, 120);
     };
 
@@ -9682,6 +9746,16 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         data = JSON.parse(raw) as Record<string, unknown>;
       } catch {
         return;
+      }
+      if (typeof data.eventId === 'number' && data.eventId > 0) {
+        try {
+          window.localStorage.setItem(
+            projectCursorStorageKey(session),
+            String(data.eventId),
+          );
+        } catch {
+          // Event replay still works through the current EventSource.
+        }
       }
       const nodeId = typeof data.nodeId === 'string' ? data.nodeId : '';
       if (!nodeId) return;
@@ -9698,7 +9772,18 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         const progress = typeof data.providerTaskProgress === 'number'
           ? data.providerTaskProgress
           : node.providerTaskProgress;
-        if (!nextStatus && phase === node.providerTaskPhase && progress === node.providerTaskProgress) {
+        const mediaVersions = Array.isArray(data.mediaVersions)
+          ? data.mediaVersions as NonNullable<CanvasMediaParams['mediaVersions']>
+          : undefined;
+        const mediaVersionIndex = typeof data.mediaVersionIndex === 'number'
+          ? data.mediaVersionIndex
+          : undefined;
+        if (
+          !nextStatus
+          && phase === node.providerTaskPhase
+          && progress === node.providerTaskProgress
+          && !mediaVersions
+        ) {
           return prev;
         }
         const updated: CanvasMediaNode = {
@@ -9707,8 +9792,27 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           ...(url ? { mediaUrl: url } : {}),
           ...(typeof data.finalizePending === 'boolean' ? { finalizePending: data.finalizePending } : {}),
           ...(typeof data.providerTaskStatus === 'string' ? { providerTaskStatus: data.providerTaskStatus } : {}),
+          ...(typeof data.taskPhase === 'string' ? { providerTaskPhase: data.taskPhase } : {}),
+          ...(typeof data.taskStatus === 'string' ? { providerTaskStatusRaw: data.taskStatus } : {}),
           providerTaskPhase: phase,
           providerTaskProgress: progress,
+          ...(mediaVersions
+            ? {
+                params: {
+                  ...(node.params || {}),
+                  mediaVersions,
+                  ...(mediaVersionIndex !== undefined ? {mediaVersionIndex} : {}),
+                  ...(node.kind === 'video'
+                    ? {
+                        videoVersions: mediaVersions,
+                        ...(mediaVersionIndex !== undefined
+                          ? {videoVersionIndex: mediaVersionIndex}
+                          : {}),
+                      }
+                    : {}),
+                },
+              }
+            : {}),
           ...(typeof data.generationFinishedAt === 'string' && data.generationFinishedAt
             ? { generationFinishedAt: data.generationFinishedAt }
             : {}),
@@ -9758,9 +9862,35 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
 
     const open = () => {
       if (disposed) return;
-      source = new EventSource(projectEventsUrl(session));
-      source.onopen = () => { if (!disposed) setEventsConnected(true); };
-      source.onerror = () => { if (!disposed) setEventsConnected(false); };
+      let since = 0;
+      try {
+        since = Number(
+          window.localStorage.getItem(projectCursorStorageKey(session)) || 0,
+        ) || 0;
+      } catch {
+        since = 0;
+      }
+      source = new EventSource(projectEventsUrl(session, since));
+      source.onopen = () => {
+        if (disposed) return;
+        reconnectAttempts = 0;
+        setEventsConnected(true);
+        void refreshWorkspaceFacts().catch(() => {});
+      };
+      source.onerror = () => {
+        if (disposed) return;
+        setEventsConnected(false);
+        source?.close();
+        source = null;
+        if (reconnectTimer !== null) return;
+        const delay = Math.min(30_000, 1_000 * (2 ** reconnectAttempts));
+        reconnectAttempts += 1;
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          open();
+          void refreshWorkspaceFacts().catch(() => {});
+        }, delay);
+      };
       source.addEventListener('media', (event) => applyEvent((event as MessageEvent<string>).data));
       source.addEventListener('media.progress', (event) => applyEvent((event as MessageEvent<string>).data));
     };
@@ -9772,11 +9902,34 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         window.clearTimeout(terminalRefreshTimer);
         terminalRefreshTimer = null;
       }
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       setEventsConnected(false);
       source?.close();
       source = null;
     };
-  }, [session, currentEp]);
+  }, [session, currentEp, refreshWorkspaceFacts]);
+
+  useEffect(() => {
+    let lastRefreshAt = 0;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'hidden') return;
+      const now = Date.now();
+      if (now - lastRefreshAt < 250) return;
+      lastRefreshAt = now;
+      void refreshWorkspaceFacts().catch(() => {});
+    };
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    window.addEventListener('focus', refreshWhenVisible);
+    window.addEventListener('online', refreshWhenVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      window.removeEventListener('focus', refreshWhenVisible);
+      window.removeEventListener('online', refreshWhenVisible);
+    };
+  }, [refreshWorkspaceFacts]);
 
   // 用户手动连线：把来源媒体节点写进目标节点的 params.refs / voiceRef，
   // 让连线真正参与生成（生成时还会再次扫描边，但此处让弹窗即时反映连接）
@@ -9942,8 +10095,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // 用户连线 / 删除的自动连线变化 → 写入持久化布局（首次布局恢复完成前禁止写回，避免空状态覆盖历史布局）
   useEffect(() => {
     if (!didInitialLayoutRef.current) return;
+    if (loading) return;
+    if (savedLayoutScopeRef.current !== `${session}:${currentEp ?? 'all'}`) return;
     persistLayout(positionRef.current, userEdges, deletedAutoEdgeIds);
-  }, [userEdges, deletedAutoEdgeIds, persistLayout]);
+  }, [userEdges, deletedAutoEdgeIds, persistLayout, loading, session, currentEp]);
 
   const flushConnectionSave = useCallback(() => {
     if (connectionSaveInFlightRef.current) return;
@@ -9985,6 +10140,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
 
   useEffect(() => {
     if (!didInitialLayoutRef.current) return;
+    if (loading) return;
+    if (savedLayoutScopeRef.current !== `${session}:${currentEp ?? 'all'}`) return;
+    if (pendingConnectionsRef.current || connectionSaveInFlightRef.current) return;
     if (connectionSaveTimerRef.current) clearTimeout(connectionSaveTimerRef.current);
     const mediaNodeIds = new Set(mediaNodes.map((node) => node.id));
     const connections = userEdges.flatMap((edge) => {
@@ -10003,7 +10161,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     return () => {
       if (connectionSaveTimerRef.current) clearTimeout(connectionSaveTimerRef.current);
     };
-  }, [flushConnectionSave, mediaNodes, userEdges]);
+  }, [flushConnectionSave, mediaNodes, userEdges, loading, session, currentEp]);
 
   const updateNoteText = useCallback((id: string, text: string) => {
     setNotes((prev) => prev.map((note) => (note.id === id ? {...note, text, updatedAt: new Date().toISOString()} : note)));
@@ -13543,6 +13701,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     let savedViewport: {x: number; y: number; zoom: number} | null = null;
     if (!didInitialLayoutRef.current) {
       didInitialLayoutRef.current = true;
+      savedLayoutScopeRef.current = `${session}:${currentEp ?? 'all'}`;
       const saved = loadPersistedLayoutRef.current();
       const remoteUserEdges = projectConnectionsRef.current
         .filter((connection) => connection.source === 'user')
@@ -14436,6 +14595,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                               : <span className={`canvas-tray-thumb is-placeholder is-${g.key}`}>
                                   <g.Icon size={17} strokeWidth={1.65} aria-hidden="true" />
                                 </span>}
+                            {(mn.status === 'generating'
+                              || generationBusyIds.has(mn.id)
+                              || isLiveProviderGeneration(mn)) && (
+                              <span className="canvas-tray-live-dot" aria-label="生成中" />
+                            )}
                           </span>
                           <span className="canvas-tray-name">
                             <span>{mn.title.replace(/^[^｜|]*[｜|]\s*/, '')}</span>
@@ -15273,7 +15437,29 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                         {mn.mediaUrl ? '从本地添加版本' : '导入本地文件'}
                       </button>
                     )}
-                    {mn && <button type="button" onClick={() => { onGenerateMediaNode(mn); setContextMenu(null); }}><Sparkles size={13} strokeWidth={1.9} aria-hidden="true" />重新生成</button>}
+                    {mn && (() => {
+                      const busy = mn.status === 'generating'
+                        || isLiveProviderGeneration(mn)
+                        || generationBusyIds.has(mn.id)
+                        || generationTasks
+                          .filter((item) => item.node_id === mn.id)
+                          .some(isGenerationTaskActive);
+                      return (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          title={busy ? '供应商任务尚未结束，不能重复提交' : undefined}
+                          onClick={() => {
+                            if (busy) return;
+                            onGenerateMediaNode(mn);
+                            setContextMenu(null);
+                          }}
+                        >
+                          <Sparkles size={13} strokeWidth={1.9} aria-hidden="true" />
+                          {busy ? '生成中' : '重新生成'}
+                        </button>
+                      );
+                    })()}
                     {mn?.mediaUrl && (
                       <button type="button" onClick={() => { void downloadMediaBatch([mn]); setContextMenu(null); }}>
                         <Download size={13} strokeWidth={1.9} aria-hidden="true" />下载当前版本
@@ -15410,9 +15596,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   )}
                   {generationTasks.map((task) => {
                     const node = mediaNodes.find((item) => item.id === task.node_id);
+                    const taskOutcome = taskOutcomePresentation(task);
                     const taskError = ['queued', 'submitting', 'running'].includes(task.status)
                       ? ''
-                      : friendlyTaskError(task.error);
+                      : taskOutcome.outcomePending
+                        ? ''
+                        : friendlyTaskError(task.error);
                     const {
                       localBlocked,
                       outcomeUncertain,
@@ -15421,7 +15610,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                       canRegenerate,
                     } = taskOutcomePresentation(task);
                     return (
-                      <article key={task.id} className={`canvas-task-item is-${task.status}`}>
+                      <article
+                        key={task.id}
+                        className={`canvas-task-item is-${task.status}${taskOutcome.outcomePending ? ' is-active' : ''}`}
+                      >
                         <div className="canvas-task-item-head">
                           <strong title={task.title}>{task.title || node?.title || '生成任务'}</strong>
                           <span>{statusLabel || task.status}</span>
@@ -15443,7 +15635,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                           <span>{generationDurationLabel(task)}</span>
                         </div>
                         <div className="canvas-task-item-phase">
-                          <i style={{width: `${task.status === 'succeeded' ? 100 : Math.max(2, Math.min(100, Number(task.progress || 6)))}%`}} />
+                          <i className={taskOutcome.outcomePending && task.status !== 'succeeded' ? 'is-indeterminate' : ''} style={{width: taskOutcome.outcomePending && task.status !== 'succeeded' ? '36%' : `${task.status === 'succeeded' ? 100 : Math.max(2, Math.min(100, Number(task.progress || 6)))}%`}} />
                           <span>
                             {task.status === 'succeeded' && <Check size={11} strokeWidth={2.5} aria-hidden="true" />}
                             {task.status === 'succeeded'

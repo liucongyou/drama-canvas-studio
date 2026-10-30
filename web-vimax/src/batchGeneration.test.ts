@@ -83,6 +83,35 @@ describe('batch generation evaluation', () => {
     expect(result[0].cost).toBe(0.2);
   });
 
+  it('keeps a live provider task blocked while local recovery is interrupted', () => {
+    const recovering: GenerationTask = {
+      id: 'task-recovering',
+      project_id: 'project-1',
+      node_id: 'node-2',
+      title: 'node-2',
+      kind: 'image',
+      status: 'interrupted',
+      phase: '结果待确认',
+      provider_task_id: 'provider-live-1',
+      delivery_status: 'pending',
+      outcome: {
+        phase: 'running',
+        regenerate: 'blocked',
+        reason: 'provider_task_running',
+        providerAccepted: true,
+      },
+      created_at: '2026-10-27T00:00:00Z',
+      updated_at: '2026-10-27T00:00:01Z',
+    };
+    const result = evaluateBatchGeneration(
+      [node('node-1'), node('node-2')],
+      [node('node-1'), node('node-2')],
+      catalog,
+      [recovering],
+    );
+    expect(result.map((item) => item.state)).toEqual(['ready', 'running']);
+  });
+
   it('blocks nodes whose referenced asset has not been generated', () => {
     const source = node('source', {status: 'idle', mediaUrl: undefined});
     const target = node('target', {

@@ -294,6 +294,94 @@ class CanvasStoreConcurrencyTests(unittest.TestCase):
         self.assertTrue(all(item["provider_task_id"] for item in saved))
         self.assertTrue(all(item["progress"] == 40 for item in saved))
 
+    def test_many_atomic_terminal_commits_keep_task_node_and_event_in_sync(self):
+        with tenant_context.use_context(self.context):
+            nodes = [
+                {
+                    "id": f"terminal-node-{index}",
+                    "type": "video",
+                    "metadata": {
+                        "status": "generating",
+                        "providerTaskStatus": "running",
+                    },
+                }
+                for index in range(24)
+            ]
+            project_id = canvas_store.create_project(
+                "terminal-commit-stress",
+                payload={"nodes": nodes, "connections": []},
+            )
+            tasks = [
+                canvas_store.create_generation_task(
+                    project_id,
+                    node["id"],
+                    kind="video",
+                )
+                for node in nodes
+            ]
+            for index, task in enumerate(tasks):
+                self.assertTrue(
+                    canvas_store.claim_generation_task(
+                        task["id"],
+                        f"terminal-owner-{index}",
+                        45,
+                    )
+                )
+
+        def commit(index):
+            with tenant_context.use_context(self.context):
+                node_id = nodes[index]["id"]
+                url = f"/uploads/terminal-{index}.mp4"
+                result = server.commit_generation_terminal(
+                    project_id,
+                    node_id,
+                    {
+                        "status": "done",
+                        "content": url,
+                        "providerTaskStatus": "completed",
+                        "providerTaskPhase": "已完成",
+                        "generationFinishedAt": "2026-10-31T00:00:00Z",
+                        "_paramsPatch": {
+                            "mediaVersions": [{"url": url}],
+                            "mediaVersionIndex": 0,
+                            "videoVersions": [{"url": url}],
+                            "videoVersionIndex": 0,
+                        },
+                    },
+                    task_id=tasks[index]["id"],
+                    task_updates={
+                        "status": "succeeded",
+                        "phase": "已完成",
+                        "progress": 100,
+                        "delivery_status": "ready",
+                        "finished_at": "",
+                        "node_written_at": "",
+                    },
+                    lease_owner=f"terminal-owner-{index}",
+                )
+                return result["committed"]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            committed = list(pool.map(commit, range(len(tasks))))
+
+        with tenant_context.use_context(self.context):
+            project = canvas_store.get_project(project_id)
+            saved_tasks = canvas_store.list_generation_tasks(project_id, 100)
+            events = canvas_store.list_events(project_id, 0, 100)
+
+        self.assertTrue(all(committed))
+        self.assertTrue(all(
+            node["metadata"]["status"] == "done"
+            and node["metadata"]["content"].startswith("/uploads/terminal-")
+            for node in project["payload"]["nodes"]
+        ))
+        self.assertTrue(all(task["status"] == "succeeded" for task in saved_tasks))
+        self.assertTrue(all(task["delivery_status"] == "ready" for task in saved_tasks))
+        self.assertEqual(
+            len([event for event in events if event["kind"] == "media"]),
+            len(tasks),
+        )
+
     def test_reads_and_writes_under_parallel_load(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("read-write-stress")

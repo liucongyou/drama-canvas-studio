@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import canvas_store
 import provider_catalog
@@ -79,6 +81,85 @@ class TenantIsolationTests(unittest.TestCase):
             self.assertTrue(alpha_path.is_file())
         with tenant_context.use_tenant("beta", "beta"):
             self.assertNotEqual(Path(provider_client._upload_dir()), alpha_path.parent)
+
+    def test_generated_download_is_streamed_to_atomic_file(self):
+        class FakeResponse:
+            headers = {
+                "Content-Type": "video/mp4",
+                "Content-Length": "11",
+            }
+
+            def __init__(self):
+                self.chunks = [b"video", b"-bytes"]
+
+            def read(self, amount=-1):
+                return self.chunks.pop(0) if self.chunks else b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+        with tenant_context.use_tenant("alpha", "alpha"):
+            with mock.patch.object(
+                provider_client.network_security,
+                "safe_urlopen",
+                return_value=FakeResponse(),
+            ):
+                url = provider_client.save_generated_url(
+                    "https://provider.example/video.mp4",
+                    ".mp4",
+                )
+            path = Path(provider_client._upload_dir()) / url.split("/")[-1]
+            payload = path.read_bytes()
+            leftovers = list(path.parent.glob("*.part-*"))
+
+        self.assertEqual(payload, b"video-bytes")
+        self.assertEqual(
+            hashlib.sha256(payload).hexdigest(),
+            hashlib.sha256(b"video-bytes").hexdigest(),
+        )
+        self.assertEqual(leftovers, [])
+
+    def test_truncated_generated_download_keeps_no_partial_final_file(self):
+        class TruncatedResponse:
+            headers = {
+                "Content-Type": "video/mp4",
+                "Content-Length": "100",
+            }
+
+            def __init__(self):
+                self.chunks = [b"partial"]
+
+            def read(self, amount=-1):
+                return self.chunks.pop(0) if self.chunks else b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+        with tenant_context.use_tenant("alpha", "alpha"):
+            upload_dir = Path(provider_client._upload_dir())
+            before = set(upload_dir.glob("*"))
+            with (
+                mock.patch.object(
+                    provider_client.network_security,
+                    "safe_urlopen",
+                    return_value=TruncatedResponse(),
+                ),
+                self.assertRaisesRegex(RuntimeError, "下载不完整"),
+            ):
+                provider_client.save_generated_url(
+                    "https://provider.example/truncated.mp4",
+                    ".mp4",
+                )
+            after = set(upload_dir.glob("*"))
+
+        self.assertEqual(after, before)
+        self.assertFalse(list(upload_dir.glob("*.part-*")))
 
     def test_tenant_secrets_are_encrypted_and_not_shared(self):
         with tenant_context.use_tenant("alpha", "alpha"):

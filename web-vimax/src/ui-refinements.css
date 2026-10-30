@@ -1882,6 +1882,16 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 .canvas-media-placeholder-tip{font-size:11px;color:var(--v-text-5);letter-spacing:.5px}
 /* 生成中蒙层 */
 .canvas-media-busy-mask{position:absolute;inset:5px;border-radius:10px;background:rgba(10,13,18,.74);backdrop-filter:blur(2px);display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--v-warn);font-size:11.5px;letter-spacing:.5px}
+.canvas-media-background-chip{
+  position:absolute;right:10px;bottom:56px;z-index:5;
+  display:inline-flex;align-items:center;gap:2px;
+  padding:5px 8px;border-radius:999px;
+  color:#e2c28a;background:rgba(18,18,20,.88);
+  border:1px solid rgba(224,180,106,.28);
+  box-shadow:0 4px 12px rgba(0,0,0,.26);
+  font-size:9.5px;white-space:nowrap;pointer-events:none;
+}
+.canvas-media-background-chip .canvas-media-spin{width:7px;height:7px;border-width:1.5px;margin-right:3px}
 /* 图上快捷菜单（hover 显现） */
 .canvas-media-card-menu{position:absolute;top:9px;right:9px;display:flex;gap:4px;opacity:0;transition:opacity .15s;z-index:6}
 .canvas-media-card:hover .canvas-media-card-menu,.canvas-media-node.is-active .canvas-media-card-menu{opacity:1}
@@ -7167,6 +7177,16 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 .canvas-tray-item.is-active{border-color:var(--v-accent-line)!important;background:var(--v-accent-soft)!important;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--v-accent) 9%,transparent)}
 .canvas-tray-thumb-wrap{position:relative;width:44px;height:52px;flex:0 0 44px;overflow:hidden;border-radius:8px;border:1px solid var(--v-border);background:linear-gradient(180deg,rgba(255,255,255,.025),transparent),var(--v-surface-sunken);box-shadow:0 3px 9px rgba(0,0,0,.16)}
 .canvas-tray-thumb-wrap::after{content:'';position:absolute;inset:0;pointer-events:none;border-radius:inherit;box-shadow:inset 0 0 0 1px rgba(255,255,255,.035)}
+.canvas-tray-live-dot{
+  position:absolute;right:4px;top:4px;width:7px;height:7px;border-radius:50%;
+  background:var(--v-warn,#e0b46a);
+  box-shadow:0 0 0 2px rgba(16,16,18,.74),0 0 9px rgba(224,180,106,.68);
+  animation:canvas-tray-live-pulse 1.5s ease-in-out infinite;
+}
+@keyframes canvas-tray-live-pulse{
+  0%,100%{opacity:.62;transform:scale(.86)}
+  50%{opacity:1;transform:scale(1.12)}
+}
 .canvas-tray-item.is-active .canvas-tray-thumb-wrap{border-color:var(--v-accent-line);box-shadow:0 0 0 2px var(--v-accent-glow),0 3px 10px rgba(0,0,0,.2)}
 .canvas-tray-thumb{width:100%;height:100%;object-fit:contain;border-radius:7px;background:var(--v-surface-sunken);transition:transform 170ms ease}
 .canvas-tray-item:hover .canvas-tray-thumb{transform:scale(1.035)}
@@ -8724,9 +8744,18 @@ body,
 .canvas-task-item.is-succeeded .canvas-task-item-head>span{color:#9fc7a8}
 .canvas-task-item.is-failed .canvas-task-item-head>span,
 .canvas-task-item.is-interrupted .canvas-task-item-head>span{color:#dd9999}
+.canvas-task-item.is-active .canvas-task-item-head>span{color:#a8c7ee}
 .canvas-task-item-meta{display:flex;flex-wrap:wrap;gap:5px 9px;margin-top:5px;color:#85858b;font-size:9.5px}
 .canvas-task-item-phase{position:relative;height:18px;margin-top:8px;border-radius:5px;overflow:hidden;background:#141416;display:flex;align-items:center}
 .canvas-task-item-phase i{position:absolute;left:0;top:0;bottom:0;background:#35353a;transition:width .3s ease}
+.canvas-task-item-phase i.is-indeterminate{
+  background:linear-gradient(90deg,transparent,var(--v-accent,#4d9fff),transparent);
+  animation:canvas-task-indeterminate 1.4s ease-in-out infinite;
+}
+@keyframes canvas-task-indeterminate{
+  0%{transform:translateX(-110%)}
+  100%{transform:translateX(300%)}
+}
 .canvas-task-item-phase span{position:relative;z-index:1;padding:0 6px;color:#bdbdc2;font-size:9.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .canvas-task-item.is-succeeded .canvas-task-item-phase{
   height:22px;

@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import server
 import tenant_bootstrap
@@ -192,6 +193,22 @@ class AccountAuthTests(unittest.TestCase):
         )
         self.assertEqual(status, 204)
         self.assertNotIn("Access-Control-Allow-Origin", headers)
+
+    def test_local_frontend_can_write_when_accounts_are_bound_to_local_api(self):
+        headers = {
+            "Origin": "http://127.0.0.1:4175",
+            "Host": "127.0.0.1:8890",
+        }
+        handler = object.__new__(server.Handler)
+        handler.headers = headers
+        with patch.dict(
+            os.environ,
+            {
+                "CANVAS_AUTH_MODE": "host",
+                "CANVAS_ALLOWED_ORIGINS": "http://127.0.0.1:8890",
+            },
+        ):
+            self.assertTrue(handler._origin_allowed())
 
     def test_change_password_invalidates_old_password_and_renews_session(self):
         status, headers, _ = self.request(

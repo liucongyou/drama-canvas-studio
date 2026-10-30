@@ -8,6 +8,10 @@ import {
   type ModelSpec,
 } from './api';
 import {generationCostAmount, generationCostHint} from './modelPricing';
+import {
+  isGenerationTaskActive,
+  latestTaskByNode,
+} from './generationPresentation';
 
 export type BatchGenerationState = 'ready' | 'running' | 'blocked';
 export type BatchGenerationBlocker = 'reference_limit' | null;
@@ -203,8 +207,10 @@ export function activeBatchGenerationNodeIds(
   busyNodeIds: Iterable<string> = [],
 ): Set<string> {
   const active = new Set(busyNodeIds);
-  for (const task of tasks) {
-    if (['queued', 'submitting', 'running'].includes(task.status)) active.add(task.node_id);
+  for (const task of latestTaskByNode(tasks).values()) {
+    if (isGenerationTaskActive(task)) {
+      active.add(task.node_id);
+    }
   }
   return active;
 }

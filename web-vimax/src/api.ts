@@ -31,6 +31,10 @@ export function projectEventsUrl(sessionId: string, since?: number): string {
   return apiUrl(`/api/projects/${encodeURIComponent(sessionId)}/events${suffix}`);
 }
 
+export function projectCursorStorageKey(sessionId: string): string {
+  return `vimax.canvas.event-cursor.${sessionId}`;
+}
+
 /**
  * Browser-facing media URL. Uploaded and generated assets stay stored as
  * canonical `/uploads/...` paths, but native <img>/<video>/<audio> requests
@@ -460,6 +464,8 @@ export type CanvasMediaNode = {
   providerTaskPhase?: string;
   providerTaskProgress?: number;
   providerTaskProgressChangedAt?: string;
+  providerTaskId?: string;
+  providerTaskStatusRaw?: string;
   providerSubmittedAt?: string;
   // 供应商已出结果、本机还没落盘归档：此时卡片已可显示，但任务行仍是 running
   finalizePending?: boolean;
@@ -1085,14 +1091,15 @@ type PayloadNode = {
     promptStale?: boolean; promptStaleReason?: string; sourcePromptUpdatedAt?: string;
     generationStartedAt?: string; generationFinishedAt?: string;
     providerTaskStatus?: string; providerTaskPhase?: string; providerTaskProgress?: number; providerTaskProgressChangedAt?: string;
+    providerTaskId?: string; providerTaskStatusRaw?: string;
     actualDuration?: number; videoValidation?: Record<string, unknown>;
     episodeId?: string;
   };
 };
 
-type ProjectResponse = {id: string; payload: Payload; title?: string};
+export type ProjectResponse = {id: string; payload: Payload; title?: string};
 
-async function getProject(pid: string): Promise<ProjectResponse> {
+export async function getProject(pid: string): Promise<ProjectResponse> {
   const project = await request<ProjectResponse>(
     `/api/projects/${encodeURIComponent(pid)}`,
   );
@@ -1257,6 +1264,8 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
     providerTaskPhase: typeof m.providerTaskPhase === 'string' ? m.providerTaskPhase : undefined,
     providerTaskProgress: Number.isFinite(Number(m.providerTaskProgress)) ? Number(m.providerTaskProgress) : undefined,
     providerTaskProgressChangedAt: typeof m.providerTaskProgressChangedAt === 'string' ? m.providerTaskProgressChangedAt : undefined,
+    providerTaskId: typeof m.providerTaskId === 'string' ? m.providerTaskId : undefined,
+    providerTaskStatusRaw: typeof m.providerTaskStatusRaw === 'string' ? m.providerTaskStatusRaw : undefined,
     providerSubmittedAt: typeof m.providerSubmittedAt === 'string' ? m.providerSubmittedAt : undefined,
     finalizePending: m.finalizePending === true,
     episodeId: typeof m.episodeId === 'string' ? m.episodeId : undefined,
@@ -1780,6 +1789,10 @@ export async function getCanvasWorkspace(
       providerTaskStatus: task.status,
       providerTaskPhase: task.phase || '生成中',
       providerTaskProgress: Number(task.progress || node.providerTaskProgress || 0),
+      providerTaskProgressChangedAt:
+        task.updated_at || task.created_at || node.providerTaskProgressChangedAt,
+      providerTaskId: String(task.provider_task_id || node.providerTaskId || ''),
+      providerTaskStatusRaw: task.status,
     };
   });
   return {
@@ -1964,10 +1977,14 @@ async function pollProjectOnce(sessionId: string) {
   if (!pollSessions.has(sessionId)) return;
   let proj: Payload | null = null;
   try {
-    proj = (await getProject(sessionId)).payload;
+    const project = await getProject(sessionId);
+    proj = project?.payload && typeof project.payload === 'object'
+      ? project.payload
+      : null;
   } catch {
     return;
   }
+  if (!proj) return;
   const generating = (proj.nodes || []).find((node) => {
     // Media nodes are submitted exactly once by generateCanvasNodeNow. The
     // old recovery poller only sees a persisted "generating" flag and cannot

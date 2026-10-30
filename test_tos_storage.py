@@ -30,9 +30,14 @@ class FakeHeadResult:
 class FakeTosClient:
     def __init__(self):
         self.put_args = None
+        self.put_file_args = None
 
     def put_object(self, *args, **kwargs):
         self.put_args = (args, kwargs)
+        return FakePutResult()
+
+    def put_object_from_file(self, *args, **kwargs):
+        self.put_file_args = (args, kwargs)
         return FakePutResult()
 
     def pre_signed_url(self, *args, **kwargs):
@@ -124,6 +129,25 @@ class TosStorageTests(unittest.TestCase):
         self.assertEqual(storage["sha256"], hashlib.sha256(raw).hexdigest())
         self.assertTrue(storage["originalBytes"])
         self.assertEqual(storage["source"]["model"], "doubao-seedream-5-0-pro")
+
+    def test_local_original_uploads_without_reading_whole_file(self):
+        raw = b"video-bytes" * 1000
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "video.mp4")
+            with open(path, "wb") as handle:
+                handle.write(raw)
+            storage = tos_storage.persist_local_path(
+                path,
+                mime="video/mp4",
+                fallback_ext=".mp4",
+                kind="video",
+                source={"provider": "new-apl", "taskId": "task-video"},
+            )
+        args, kwargs = self.client.put_file_args
+        self.assertIn(hashlib.sha256(raw).hexdigest(), args[1])
+        self.assertEqual(args[2], path)
+        self.assertEqual(kwargs["content_length"], len(raw))
+        self.assertEqual(storage["sha256"], hashlib.sha256(raw).hexdigest())
 
     def test_internal_presigned_url_uses_internal_client(self):
         url = tos_storage.internal_presigned_url({
