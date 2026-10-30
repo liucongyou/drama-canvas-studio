@@ -3561,6 +3561,14 @@ class Handler(BaseHTTPRequestHandler):
             limit = int((query.get("limit") or ["80"])[0])
             tasks = store.list_generation_tasks(project_id, limit)
             for task in tasks:
+                if (
+                    task.get("status") == "succeeded"
+                    and not str(task.get("result_ready_at") or "").strip()
+                    and not str(task.get("local_result_url") or "").strip()
+                ):
+                    # Historical rows predate delivery receipts. Their node state is
+                    # already the authoritative completion evidence.
+                    task["delivery_status"] = "ready"
                 if task.get("status") == "failed":
                     task["error_kind"] = (
                         "local_validation"
@@ -6133,6 +6141,15 @@ def main():
     except Exception as exc:
         print(f"[tenant] 初始化失败：{exc}", file=sys.stderr)
         raise
+    try:
+        migrated_tenants = store.migrate_active_tenant_schemas()
+        if migrated_tenants:
+            print(
+                f"[schema] migrated {len(migrated_tenants)} tenant databases",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        print(f"[schema] tenant migration failed: {exc}", file=sys.stderr)
     try:
         recovered = _run_for_active_tenants(store.backfill_video_version_history)
         if recovered:

@@ -1222,6 +1222,24 @@ def interrupt_orphan_generation_tasks():
     con.close()
 
 
+def migrate_active_tenant_schemas():
+    """Open every known tenant database so all schemas reach the current version."""
+    migrated = []
+    import tenant_registry
+
+    for tenant in tenant_registry.list_tenants(include_disabled=True):
+        try:
+            with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+                _connect()
+                migrated.append(tenant["slug"])
+        except Exception as exc:
+            print(
+                f"[schema] tenant migration failed: {tenant.get('slug')} {exc}",
+                file=__import__("sys").stderr,
+            )
+    return migrated
+
+
 # 每个画布保留的快照条数上限。
 #
 # ★ 为什么必须限制（2026-10-25 第二次踩同一个坑）：
