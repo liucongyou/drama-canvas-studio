@@ -75,7 +75,17 @@ class ProviderCatalogTests(unittest.TestCase):
 
         with patch.object(provider_client, "_request_json", side_effect=fake_request), \
                 patch.object(provider_client, "_download_bytes_with_key", side_effect=fake_download), \
-                patch.object(provider_client, "save_generated_bytes", return_value="/uploads/result.png"), \
+                patch.object(
+                    provider_client,
+                    "_persist_auth_url",
+                    side_effect=lambda url, base, key, _ext: (
+                        fake_download(
+                            url if str(url).startswith("http") else base + url,
+                            key,
+                        ),
+                        "/uploads/result.png",
+                    )[1],
+                ), \
                 patch.object(provider_client.time, "sleep"):
             result = provider_client.generate_image(
                 provider,
@@ -128,16 +138,7 @@ class ProviderCatalogTests(unittest.TestCase):
 
         with (
             patch.object(provider_client, "_request_json", side_effect=fake_request),
-            patch.object(
-                provider_client,
-                "_download_bytes_with_key",
-                return_value=(b"image", "image/png"),
-            ),
-            patch.object(
-                provider_client,
-                "save_generated_bytes",
-                return_value="/uploads/persisted.png",
-            ),
+            patch.object(provider_client, "_persist_auth_url", return_value="/uploads/persisted.png"),
             patch.object(provider_client.time, "sleep"),
         ):
             provider_client.generate_image(
@@ -359,12 +360,7 @@ class ProviderCatalogTests(unittest.TestCase):
             patch.object(provider_client, "_request_json", side_effect=fake_request),
             patch.object(
                 provider_client,
-                "_download_bytes_with_key",
-                return_value=(b"image-bytes", "image/png"),
-            ),
-            patch.object(
-                provider_client,
-                "save_generated_bytes",
+                "_persist_auth_url",
                 return_value="/uploads/recovered.png",
             ),
             patch.object(provider_client.time, "sleep"),
@@ -422,7 +418,25 @@ class ProviderCatalogTests(unittest.TestCase):
 
         with patch.object(provider_client, "_request_json", side_effect=fake_request), \
                 patch.object(provider_client, "_download_bytes_with_key", side_effect=fake_download), \
-                patch.object(provider_client, "save_generated_bytes", return_value="/uploads/result.mp4"), \
+                patch.object(
+                    provider_client,
+                    "_persist_auth_url",
+                    side_effect=lambda url, base, key, _ext: (
+                        fake_download(
+                            url if str(url).startswith("http") else base + url,
+                            key,
+                        ),
+                        "/uploads/result.mp4",
+                    )[1],
+                ), \
+                patch.object(
+                    provider_client,
+                    "save_generated_url",
+                    side_effect=lambda url, *args, **kwargs: (
+                        fake_download(url, kwargs.get("key", "")),
+                        "/uploads/result.mp4",
+                    )[1],
+                ), \
                 patch.object(provider_client.time, "sleep"):
             result = provider_client.generate_video(
                 provider,

@@ -1443,6 +1443,60 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(node["metadata"]["content"], "/uploads/generated.png")
         self.assertEqual(committed[-1][0][2]["content"], "/uploads/generated.png")
 
+    def test_image_archive_starts_only_after_terminal_commit(self):
+        project_id = canvas_store.create_project("image-archive-order")
+        node = {
+            "id": "image-order",
+            "type": "image",
+            "title": "角色｜测试（图1）",
+            "metadata": {
+                "prompt": "test image",
+                "status": "generating",
+                "params": {"provider": "ark", "model": "seedream"},
+            },
+        }
+        project = {"id": project_id, "payload": {"nodes": [node]}}
+        canvas_store.update_project(project_id, payload=project["payload"])
+        provider = {
+            "id": "ark",
+            "api_key": "test-key",
+            "base_url": "https://ark.example/api/v3",
+        }
+        model = {
+            "id": "seedream",
+            "remoteModel": "doubao-seedream",
+            "defaultParams": {},
+            "limits": {},
+        }
+        timeline = []
+        handler = object.__new__(server.Handler)
+        handler._send = lambda status, payload: payload
+        with (
+            patch.object(server.provider_catalog, "resolve_model", return_value=(provider, model, {})),
+            patch.object(server, "ensure_provider_auth"),
+            patch.object(
+                server.provider_client,
+                "generate_image",
+                return_value={"url": "https://provider/result.png"},
+            ),
+            patch.object(server, "persist_generated_media", return_value="/uploads/generated.png"),
+            patch.object(
+                server,
+                "commit_generation_terminal",
+                side_effect=lambda *args, **kwargs: (
+                    timeline.append("terminal")
+                    or {"committed": True, "nodeWrittenAt": "2026-10-31T00:00:00Z"}
+                ),
+            ),
+            patch.object(
+                server,
+                "queue_generated_image_tos_archive",
+                side_effect=lambda *args: timeline.append("archive"),
+            ),
+        ):
+            handler._generate_once(project_id, project, node)
+        self.assertEqual(timeline, ["terminal", "archive"])
+
     def test_missing_local_reference_is_rejected_before_provider_call(self):
         source = {
             "id": "missing-source",
@@ -1794,6 +1848,79 @@ class GenerationQueueTests(unittest.TestCase):
             phase="已完成",
             lease_owner=lease_owner,
         )
+
+    def test_video_finalize_starts_only_after_terminal_commit(self):
+        project_id = canvas_store.create_project("video-finalize-order")
+        node = {
+            "id": "video-order",
+            "type": "video",
+            "title": "段1",
+            "metadata": {
+                "prompt": "test video",
+                "status": "generating",
+                "params": {"provider": "agnes-ai", "model": "agnes-video"},
+            },
+        }
+        project = {"id": project_id, "payload": {"nodes": [node]}}
+        canvas_store.update_project(project_id, payload=project["payload"])
+        task = canvas_store.create_generation_task(
+            project_id,
+            node["id"],
+            kind="video",
+        )
+        lease_owner = "video-finalize-order"
+        self.assertTrue(
+            canvas_store.claim_generation_task(task["id"], lease_owner, 45)
+        )
+        provider = {
+            "id": "agnes-ai",
+            "name": "Agnes",
+            "api_key": "test-key",
+            "base_url": "https://api.agnes-ai.cn/v1",
+        }
+        model = {
+            "id": "agnes-video",
+            "remoteModel": "agnes-video-2.5-flash",
+            "defaultParams": {},
+            "limits": {},
+        }
+        timeline = []
+        handler = object.__new__(server.Handler)
+        handler._send = lambda status, payload: payload
+        with (
+            patch.object(server.provider_catalog, "resolve_model", return_value=(provider, model, {})),
+            patch.object(server, "ensure_provider_auth"),
+            patch.object(
+                server.provider_client,
+                "generate_video",
+                return_value={
+                    "url": "https://provider.example/video.mp4",
+                    "taskId": "provider-video-order",
+                },
+            ),
+            patch.object(server, "persist_generated_media", return_value="/uploads/video.mp4"),
+            patch.object(
+                server,
+                "commit_generation_terminal",
+                side_effect=lambda *args, **kwargs: (
+                    timeline.append("terminal")
+                    or {"committed": True, "nodeWrittenAt": "2026-10-31T00:00:00Z"}
+                ),
+            ),
+            patch.object(
+                server,
+                "queue_generated_video_finalize",
+                side_effect=lambda *args: timeline.append("finalize"),
+            ),
+        ):
+            handler._generate_once(
+                project_id,
+                project,
+                node,
+                task_id=task["id"],
+                lease_owner=lease_owner,
+            )
+        self.assertEqual(timeline, ["terminal", "finalize"])
 
     def test_video_finalize_stores_tos_original_bytes(self):
         run = []
