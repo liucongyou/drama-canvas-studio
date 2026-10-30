@@ -1,5 +1,6 @@
 import unittest
 import json
+import sqlite3
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -807,6 +808,138 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(
             [item["url"] for item in versions],
             ["/uploads/pending.mp4"],
+        )
+
+    def test_failure_chain_queries_same_task_and_recovers_after_restart(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("failure-chain")
+            project = canvas_store.get_project(project_id)
+            project["payload"]["nodes"] = [{
+                "id": "node-video",
+                "type": "video",
+                "title": "段1",
+                "metadata": {"status": "generating", "params": {}},
+            }]
+            canvas_store.update_project(project_id, payload=project["payload"])
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+                provider="new-apl",
+                model="004-sd2.0",
+                client_operation_id="failure-chain-operation",
+            )
+            owner = "worker:failure-chain"
+            self.assertTrue(canvas_store.claim_generation_task(task["id"], owner, 45))
+            canvas_store.update_generation_task(
+                task["id"],
+                provider_task_id="provider-same-task",
+            )
+
+            query_calls = []
+            query_results = [
+                provider_client.ProviderHTTPError(503, "temporary"),
+                {
+                    "taskId": "provider-same-task",
+                    "status": "completed",
+                    "url": "https://provider.example/final.mp4",
+                    "rawStatus": "completed",
+                },
+            ]
+
+            def query_step(*_args, **_kwargs):
+                query_calls.append("query")
+                result = query_results.pop(0)
+                if isinstance(result, Exception):
+                    raise result
+                return result
+
+            upload_dir = Path(self.context.upload_dir)
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            (upload_dir / "final.mp4").write_bytes(b"final-video")
+
+            with (
+                patch.object(
+                    server.provider_client,
+                    "check_video_task",
+                    side_effect=query_step,
+                ),
+                patch.object(
+                    server,
+                    "persist_generated_media",
+                    return_value="/uploads/final.mp4",
+                ),
+                patch.object(
+                    server,
+                    "validate_generated_video",
+                    return_value={"status": "valid", "duration": 12},
+                ),
+                patch.object(server.time, "sleep"),
+            ):
+                server._resume_video_task(
+                    project_id,
+                    "node-video",
+                    "provider-same-task",
+                    {"id": "new-apl"},
+                    {"id": "004-sd2.0"},
+                )
+
+            saved = canvas_store.get_generation_task(task["id"])
+            refreshed = canvas_store.get_project(project_id)
+            # Simulate a restart after the file was persisted but before the
+            # node projection was acknowledged. Reconstruct the exact durable
+            # fault state instead of rewinding the already-successful projection.
+            raw = sqlite3.connect(str(self.context.db_path))
+            raw.execute(
+                "UPDATE generation_tasks SET "
+                "status='interrupted',phase='结果待确认',delivery_status='pending',"
+                "local_result_url='/uploads/final.mp4' "
+                "WHERE id=?",
+                (task["id"],),
+            )
+            payload = json.loads(
+                raw.execute(
+                    "SELECT payload_json FROM canvas_projects WHERE id=?",
+                    (project_id,),
+                ).fetchone()[0]
+            )
+            for node in payload["nodes"]:
+                if node["id"] == "node-video":
+                    node["metadata"].update({
+                        "status": "error",
+                        "content": "",
+                        "lastError": "结果待确认",
+                        "generationFinishedAt": "",
+                    })
+                    node["metadata"].setdefault("params", {}).pop("mediaVersions", None)
+                    node["metadata"].setdefault("params", {}).pop("mediaVersionIndex", None)
+            raw.execute(
+                "UPDATE canvas_projects SET payload_json=? WHERE id=?",
+                (json.dumps(payload, ensure_ascii=False), project_id),
+            )
+            raw.commit()
+            raw.close()
+            with (
+                patch.object(server.provider_client, "generate_video") as submit,
+                patch.object(server.provider_client, "check_video_task") as query,
+            ):
+                recovered = server.reconcile_pending_generation_deliveries()
+            recovered_task = canvas_store.get_generation_task(task["id"])
+            recovered_project = canvas_store.get_project(project_id)
+
+        submit.assert_not_called()
+        query.assert_not_called()
+        self.assertEqual(query_calls, ["query", "query"])
+        self.assertEqual(saved["status"], "succeeded")
+        self.assertEqual(
+            refreshed["payload"]["nodes"][0]["metadata"]["content"],
+            "/uploads/final.mp4",
+        )
+        self.assertEqual(recovered, 1)
+        self.assertEqual(recovered_task["delivery_status"], "ready")
+        self.assertEqual(
+            recovered_project["payload"]["nodes"][0]["metadata"]["content"],
+            "/uploads/final.mp4",
         )
 
     def test_missing_persisted_result_stops_without_resubmit(self):
