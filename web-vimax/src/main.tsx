@@ -7,6 +7,7 @@ import {ModelSettingsDialog} from './ModelSettings';
 import {TosSettingsDialog} from './TosSettings';
 import {ErrorBoundary, ToastHost, installGlobalErrorHandlers} from './ErrorBoundary';
 import {applyTheme, readStoredTheme, resolveTheme, storeTheme, THEMES, type Theme} from './theme';
+import {reconcileSelectedProjectId} from './projectSelection';
 // ★ 全局对话框：替换原生 prompt/confirm/alert（2026-10-25）
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
 import {DialogHost, dialog} from './GDialog';
@@ -149,19 +150,32 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
     }
   };
 
+  const pidRef = useRef(pid);
+  useEffect(() => { pidRef.current = pid; }, [pid]);
+
+  const reconcileSelectedProject = (list: {id: string}[]) => {
+    const hashId = decodeURIComponent(window.location.hash.replace(/^#/, ''));
+    const nextPid = reconcileSelectedProjectId(
+      pidRef.current,
+      list.map((item) => item.id),
+      hashId,
+    );
+    if (nextPid === pidRef.current) return;
+    pidRef.current = nextPid;
+    setPid(nextPid);
+    window.location.hash = nextPid;
+  };
+
   const loadProjects = async () => {
     try {
       const d = await fetch(apiUrl('/api/projects'), {credentials: 'include'}).then(r => r.json());
       const list = d.projects || [];
       setProjects(list);
-      if (!pid && list.length) {
-        const hashId = decodeURIComponent(window.location.hash.replace(/^#/, ''));
-        setPid(list.some((item: {id: string}) => item.id === hashId) ? hashId : list[0].id);
-      }
+      reconcileSelectedProject(list);
     } catch { /* 后端未启动 */ }
   };
-  useEffect(() => { void loadProjects(); }, []);
   useEffect(() => {
+    void loadProjects();
     const timer = window.setInterval(() => { void loadProjects(); }, 8000);
     return () => window.clearInterval(timer);
   }, []);
