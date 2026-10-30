@@ -1116,7 +1116,8 @@ def list_generation_tasks(project_id=None, limit=80, episode_id=None):
     normalized_episode = str(episode_id or "").strip().upper()
     if not project_id:
         rows = con.execute(
-            "SELECT * FROM generation_tasks ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM generation_tasks "
+            "ORDER BY created_at DESC, updated_at DESC, rowid DESC LIMIT ?",
             (max(1, min(int(limit or 80), 300)),),
         ).fetchall()
     elif normalized_episode:
@@ -1124,7 +1125,7 @@ def list_generation_tasks(project_id=None, limit=80, episode_id=None):
             "SELECT * FROM generation_tasks "
             "WHERE project_id=? AND UPPER(COALESCE(episode_id,''))=? "
             "AND COALESCE(episode_id,'')!='__UNSCOPED__' "
-            "ORDER BY created_at DESC LIMIT ?",
+            "ORDER BY created_at DESC, updated_at DESC, rowid DESC LIMIT ?",
             (
                 project_id,
                 normalized_episode,
@@ -1133,7 +1134,8 @@ def list_generation_tasks(project_id=None, limit=80, episode_id=None):
         ).fetchall()
     else:
         rows = con.execute(
-            "SELECT * FROM generation_tasks WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM generation_tasks WHERE project_id=? "
+            "ORDER BY created_at DESC, updated_at DESC, rowid DESC LIMIT ?",
             (project_id, max(1, min(int(limit or 80), 300))),
         ).fetchall()
     con.close()

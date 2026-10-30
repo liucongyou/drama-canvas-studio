@@ -4,6 +4,7 @@ import {
   generationPhaseLabel,
   generationProgressLabel,
   hasTrustedProviderProgress,
+  latestTaskByNode,
 } from './generationPresentation';
 import type {GenerationTask} from './api';
 
@@ -53,5 +54,33 @@ describe('generation presentation', () => {
       finished_at: '2026-10-30T00:01:10.000Z',
     };
     expect(generationDurationLabel(task)).toBe('完成于 1:00');
+  });
+
+  it('selects the newest task for a node regardless of API array order', () => {
+    const tasks: GenerationTask[] = [
+      {
+        id: 'new',
+        project_id: 'project',
+        node_id: 'node',
+        title: '段1',
+        kind: 'video',
+        status: 'succeeded',
+        created_at: '2026-10-30T15:24:05.714Z',
+        updated_at: '2026-10-30T16:01:26.574Z',
+      },
+      {
+        id: 'old',
+        project_id: 'project',
+        node_id: 'node',
+        title: '段1',
+        kind: 'video',
+        status: 'failed',
+        created_at: '2026-10-30T15:00:00.000Z',
+        updated_at: '2026-10-30T15:01:00.000Z',
+      },
+    ];
+
+    expect(latestTaskByNode(tasks).get('node')?.id).toBe('new');
+    expect(latestTaskByNode([...tasks].reverse()).get('node')?.id).toBe('new');
   });
 });

@@ -69,3 +69,37 @@ export function generationDurationLabel(task: GenerationTask): string {
   const label = task.finished_at ? '完成于' : waiting ? '等待' : '运行';
   return `${label} ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
+
+function taskTimestamp(task: GenerationTask): number {
+  const value = Date.parse(
+    String(task.updated_at || task.created_at || ''),
+  );
+  return Number.isFinite(value) ? value : 0;
+}
+
+export function latestTaskByNode(
+  tasks: GenerationTask[],
+): Map<string, GenerationTask> {
+  const latest = new Map<string, GenerationTask>();
+  for (const task of tasks) {
+    const nodeId = String(task.node_id || '').trim();
+    if (!nodeId) continue;
+    const current = latest.get(nodeId);
+    if (!current) {
+      latest.set(nodeId, task);
+      continue;
+    }
+    const taskTime = taskTimestamp(task);
+    const currentTime = taskTimestamp(current);
+    if (
+      taskTime > currentTime
+      || (
+        taskTime === currentTime
+        && String(task.id) > String(current.id)
+      )
+    ) {
+      latest.set(nodeId, task);
+    }
+  }
+  return latest;
+}

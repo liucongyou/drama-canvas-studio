@@ -130,6 +130,7 @@ import {
   generationPhaseLabel,
   generationProgressLabel,
   hasTrustedProviderProgress,
+  latestTaskByNode,
 } from './generationPresentation';
 import {
   inheritedGenerationParams,
@@ -7900,10 +7901,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     setLargeCanvasOverview(mediaNodes.length > 400);
   }, [currentEp, mediaNodes.length]);
   useEffect(() => {
-    const latestByNode = new Map<string, GenerationTask>();
-    for (const task of generationTasks) {
-      if (!latestByNode.has(task.node_id)) latestByNode.set(task.node_id, task);
-    }
+    const latestByNode = latestTaskByNode(generationTasks);
     const activeByNode = new Map(
       [...latestByNode.values()]
         .filter((task) => ['queued', 'submitting', 'running'].includes(task.status))
