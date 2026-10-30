@@ -24,6 +24,11 @@ describe('friendlyMediaError', () => {
       lastError: '供应商明确返回任务不存在（HTTP 404）',
     })).toBe(false);
     expect(isLiveProviderGeneration({
+      status: 'failed',
+      providerTaskStatus: 'uncertain',
+      lastError: '供应商请求已发出，但未收到可确认结果',
+    })).toBe(false);
+    expect(isLiveProviderGeneration({
       status: 'done',
       mediaUrl: '/uploads/completed.mp4',
       providerTaskStatus: 'running',

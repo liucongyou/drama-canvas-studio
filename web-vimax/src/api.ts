@@ -554,12 +554,18 @@ export function isLiveProviderGeneration(
   if (!node) return false;
   if (node.status === 'done' && node.mediaUrl) return false;
   if (node.finalizePending && node.mediaUrl) return false;
+  // A terminal card status is stronger than a provider phase string. The
+  // persisted error/uncertain state is final from the UI's perspective and must
+  // not be turned back into an infinite spinner by the status pairing below.
+  if (node.status === 'failed' && String(node.providerTaskStatus || '').toLowerCase() !== 'failed') {
+    return false;
+  }
   const status = String(node.providerTaskStatus || '').trim().toLowerCase();
-  if (['queued', 'pending', 'created', 'submitted', 'running', 'processing', 'retrying', 'in_progress', 'uncertain'].includes(status)) {
+  if (['queued', 'pending', 'created', 'submitted', 'running', 'processing', 'retrying', 'in_progress'].includes(status)) {
     return true;
   }
   const error = String(node.lastError || '');
-  return /执行租约已过期|供应商任务仍在执行|结果待确认/.test(error);
+  return /执行租约已过期|供应商任务仍在执行/.test(error);
 }
 
 /**
