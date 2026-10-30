@@ -1700,9 +1700,45 @@ export async function getCanvasWorkspace(
       .filter((task) => ['queued', 'submitting', 'running'].includes(task.status))
       .map((task) => [task.node_id, task]),
   );
+  const latestByNode = latestTaskByNode(tasks);
   const currentNodes = mediaNodes.map((node) => {
     const task = activeByNode.get(node.id);
-    if (!task || (node.status === 'done' && node.mediaUrl)) return node;
+    if (node.status === 'done' && node.mediaUrl) return node;
+    if ((node.status as string) === 'error' && !activeByNode.has(node.id)) {
+      return {
+        ...node,
+        status: 'failed' as const,
+        providerTaskStatus: node.providerTaskStatus || 'failed',
+        providerTaskPhase: node.providerTaskPhase || '结果待确认',
+        lastError: node.lastError || '供应商结果待确认，请重新生成或联系供应商核对',
+      };
+    }
+    if (!task) {
+      const terminal = latestByNode.get(node.id);
+      if (
+        node.status === 'generating'
+        && !node.finalizePending
+        && (
+          !terminal
+          || ['failed', 'interrupted', 'succeeded'].includes(terminal.status)
+        )
+      ) {
+        return {
+          ...node,
+          status: terminal?.status === 'succeeded' ? 'done' as const : 'failed' as const,
+          lastError: terminal?.status === 'succeeded'
+            ? undefined
+            : String(terminal?.error || node.lastError || '生成任务已结束'),
+          generationFinishedAt: terminal?.finished_at || node.generationFinishedAt,
+          providerTaskStatus: terminal?.status || 'interrupted',
+          providerTaskPhase: terminal?.phase || '任务已结束',
+          providerTaskProgress: terminal?.status === 'succeeded'
+            ? 100
+            : node.providerTaskProgress,
+        };
+      }
+      return node;
+    }
     return {
       ...node,
       status: 'generating' as const,

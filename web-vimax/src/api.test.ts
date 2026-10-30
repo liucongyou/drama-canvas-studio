@@ -530,6 +530,89 @@ describe('api request recovery', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('turns a stale generating node into a terminal card in the initial read', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const body = String(url).includes('/api/generation-tasks')
+        ? {
+            tasks: [{
+              id: 'failed-1',
+              project_id: 'project-1',
+              node_id: 'image-1',
+              status: 'failed',
+              phase: '执行失联',
+              error: '执行线程已失联且没有供应商任务号；本次可安全重新生成。',
+              created_at: '2026-10-31T00:00:00Z',
+              updated_at: '2026-10-31T00:01:00Z',
+              finished_at: '2026-10-31T00:01:00Z',
+            }],
+          }
+        : {
+            id: 'project-1',
+            title: '测试项目',
+            payload: {
+              nodes: [{
+                id: 'image-1',
+                type: 'image',
+                title: '失联图片',
+                metadata: {status: 'generating'},
+              }],
+              connections: [],
+              episodeImports: [{id: 'EP001', nodeIds: ['image-1'], videoNodeIds: []}],
+            },
+          };
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const workspace = await getCanvasWorkspace('project-1', 'EP001');
+
+    expect(workspace.mediaNodes[0]).toMatchObject({
+      status: 'failed',
+      lastError: '执行线程已失联且没有供应商任务号；本次可安全重新生成。',
+      providerTaskStatus: 'failed',
+    });
+  });
+
+  it('projects a persisted uncertain node as a visible terminal result', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+      const body = String(url).includes('/api/generation-tasks')
+        ? {tasks: []}
+        : {
+            id: 'project-1',
+            title: '测试项目',
+            payload: {
+              nodes: [{
+                id: 'image-1',
+                type: 'image',
+                title: '待确认图片',
+                metadata: {
+                  status: 'error',
+                  providerTaskStatus: 'uncertain',
+                  lastError: '供应商请求已发出，但未收到可确认结果',
+                },
+              }],
+              connections: [],
+              episodeImports: [{id: 'EP001', nodeIds: ['image-1'], videoNodeIds: []}],
+            },
+          };
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    }));
+
+    const workspace = await getCanvasWorkspace('project-1', 'EP001');
+
+    expect(workspace.mediaNodes[0]).toMatchObject({
+      status: 'failed',
+      providerTaskStatus: 'uncertain',
+      providerTaskPhase: '结果待确认',
+    });
+  });
+
   it('does not use another project episode when switching projects', async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
       const body = String(url).includes('/api/generation-tasks')
