@@ -17,4 +17,8 @@ describe('reconcileSelectedProjectId', () => {
   it('clears selection when no projects remain', () => {
     expect(reconcileSelectedProjectId('deleted', [], '')).toBe('');
   });
+
+  it('selects the first project after refreshing with no current selection', () => {
+    expect(reconcileSelectedProjectId('', ['a', 'b'], '')).toBe('a');
+  });
 });

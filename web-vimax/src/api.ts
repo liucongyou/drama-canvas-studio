@@ -2,6 +2,8 @@
 // 数据映射：payload(nodes/connections) ↔ Canvas / CanvasMediaNode
 // 生成：轮询器检测 generating 节点 → POST generate → done/error 事件
 
+import {latestTaskByNode} from './generationPresentation';
+
 declare global {
   interface Window {
     __CANVAS_API_BASE__?: string;
@@ -1453,6 +1455,8 @@ export async function saveCanvasMediaNodes(
         refs: n.params?.refs || [],
         params: normalizeParamsForStorage(n.params) || {},
         source: n.source,
+        storage: n.storage,
+        storageError: n.storageError,
         ...(n._mediaImport === true ? {_mediaImport: true} : {}),
         ...(n._mediaVersionSelection === true ? {_mediaVersionSelection: true} : {}),
         generationStartedAt: n.generationStartedAt,
@@ -1598,6 +1602,8 @@ export async function patchMediaNodesFields(
         refs: node.params?.refs || [],
         params: normalizeParamsForStorage(node.params) || {},
         source: node.source,
+        storage: node.storage,
+        storageError: node.storageError,
         ...(node._mediaImport === true ? {_mediaImport: true} : {}),
         ...(node._mediaVersionSelection === true ? {_mediaVersionSelection: true} : {}),
         generationStartedAt: node.generationStartedAt,
@@ -1661,12 +1667,58 @@ export async function getCanvasWorkspace(
     toNodeId: string;
     source?: string;
   }>;
+  tasks: GenerationTask[];
 }> {
   const project = await getProject(sessionId).catch(() => null);
+  const requestedEpisode = String(epId || '').trim().toUpperCase();
+  const projectEpisodes = new Set(
+    Array.isArray(project?.payload?.episodeImports)
+      ? project.payload.episodeImports.map((group) => String(group?.id || '').toUpperCase())
+      : [],
+  );
+  // A project switch can inherit the previous project's episode from the URL.
+  // Querying that stale episode makes media loading fall back to the whole
+  // project, then a second load runs after the episode is corrected.
+  const effectiveEpisode = requestedEpisode && projectEpisodes.has(requestedEpisode)
+    ? requestedEpisode
+    : '';
+  const currentEpisode = effectiveEpisode
+    || String(
+      project?.payload?.episodeId
+      || project?.payload?.episodeImports?.[0]?.id
+      || '',
+    ).trim().toUpperCase()
+    || null;
+  const [canvas, notes, mediaNodes, tasks] = await Promise.all([
+    getCanvas(sessionId, currentEpisode, project),
+    getCanvasNotes(sessionId, project),
+    getCanvasMediaNodes(sessionId, currentEpisode, project),
+    getGenerationTasks(sessionId, 80, currentEpisode),
+  ]);
+  const activeByNode = new Map(
+    [...latestTaskByNode(tasks).values()]
+      .filter((task) => ['queued', 'submitting', 'running'].includes(task.status))
+      .map((task) => [task.node_id, task]),
+  );
+  const currentNodes = mediaNodes.map((node) => {
+    const task = activeByNode.get(node.id);
+    if (!task || (node.status === 'done' && node.mediaUrl)) return node;
+    return {
+      ...node,
+      status: 'generating' as const,
+      lastError: undefined,
+      generationStartedAt: task.started_at || task.created_at || node.generationStartedAt,
+      generationFinishedAt: undefined,
+      providerTaskStatus: task.status,
+      providerTaskPhase: task.phase || '生成中',
+      providerTaskProgress: Number(task.progress || node.providerTaskProgress || 0),
+    };
+  });
   return {
-    canvas: await getCanvas(sessionId, epId, project),
-    notes: await getCanvasNotes(sessionId, project),
-    mediaNodes: await getCanvasMediaNodes(sessionId, epId, project),
+    canvas,
+    notes,
+    mediaNodes: currentNodes,
+    tasks,
     connections: Array.isArray(project?.payload?.connections)
       ? project.payload.connections
       : [],

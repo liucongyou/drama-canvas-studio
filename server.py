@@ -3160,6 +3160,75 @@ def backfill_project_asset_isolation():
     return updated
 
 
+def backfill_local_media_storage():
+    """Move legacy local-only uploads into the tenant's configured object store.
+
+    Uploads made before the storage receipt reached node metadata still have a
+    valid local file and source=local. This is idempotent: stored nodes are
+    skipped, and a provider failure leaves the node untouched for the next boot.
+    """
+    storage_cfg = provider_catalog.storage_config()
+    if not media_storage.is_ready(storage_cfg):
+        return 0
+    updated = 0
+    for project_row in store.list_projects():
+        project = store.get_project(project_row.get("id"))
+        if not project:
+            continue
+        payload = project["payload"]
+        changed = 0
+        for node in payload.get("nodes", []):
+            if not isinstance(node, dict):
+                continue
+            meta = node.get("metadata")
+            if not isinstance(meta, dict):
+                continue
+            source = meta.get("source")
+            content = str(meta.get("content") or "")
+            storage = meta.get("storage")
+            if (
+                not isinstance(source, dict)
+                or source.get("type") != "local"
+                or not content.startswith("/uploads/")
+                or (isinstance(storage, dict) and storage.get("status") == "stored")
+            ):
+                continue
+            try:
+                descriptor = media_storage.persist_local_url(
+                    content,
+                    kind=str(node.get("type") or "media"),
+                    fallback_ext=os.path.splitext(content)[1],
+                    source={
+                        "type": "legacy-local-upload",
+                        "fileName": source.get("fileName") or os.path.basename(content),
+                        "mime": source.get("mime") or "",
+                        "sha256": source.get("sha256") or "",
+                    },
+                )
+            except Exception as exc:
+                meta["storageError"] = str(exc)
+                print(
+                    f"[storage] legacy upload migration failed {content[:120]}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            meta["storage"] = descriptor
+            meta["storageError"] = ""
+            params = meta.get("params")
+            if isinstance(params, dict):
+                for version in params.get("mediaVersions") or []:
+                    if (
+                        isinstance(version, dict)
+                        and version.get("url") == content
+                    ):
+                        version["storage"] = descriptor
+            changed += 1
+        if changed:
+            store.update_project(project["id"], payload=payload)
+            updated += 1
+    return updated
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stdout.write("[%s] %s\n" % (self.server.server_address, fmt % args))
@@ -7030,6 +7099,14 @@ def main():
             print(f"已补齐 {linked_projects} 个项目的跨集资产连线")
     except Exception as exc:
         print(f"[episode-import] 跨集资产连线失败：{exc}", file=sys.stderr)
+    try:
+        archived_projects = _run_for_active_tenants(
+            backfill_local_media_storage
+        )
+        if archived_projects:
+            print(f"已转存 {archived_projects} 个项目的本地素材到对象存储")
+    except Exception as exc:
+        print(f"[storage] 本地素材转存失败：{exc}", file=sys.stderr)
     try:
         validated = _run_for_active_tenants(backfill_generated_video_validation)
         if validated:

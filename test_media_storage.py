@@ -164,6 +164,38 @@ class MediaStorageTests(unittest.TestCase):
                 qiniu = provider_catalog.activate_storage_provider("qiniu")
                 self.assertTrue(qiniu["ready"])
 
+    def test_storage_runtime_uses_active_provider_profile(self):
+        storage = {
+            "enabled": True,
+            "provider": "aliyun_oss",
+            "active_provider": "aliyun_oss",
+            "bucket": "",
+            "endpoint": "api.imgbb.com",
+            "access_key": "",
+            "secret_key": "",
+            "providers": {
+                "aliyun_oss": {
+                    "bucket": "active-bucket",
+                    "region": "cn-beijing",
+                    "endpoint": "oss-cn-beijing.aliyuncs.com",
+                    "access_key": "profile-ak",
+                    "secret_key": "profile-sk",
+                },
+            },
+        }
+        with mock.patch.object(
+            provider_catalog,
+            "load_config",
+            return_value={"storage": storage},
+        ):
+            resolved = provider_catalog.storage_config()
+
+        self.assertEqual(resolved["bucket"], "active-bucket")
+        self.assertEqual(resolved["endpoint"], "oss-cn-beijing.aliyuncs.com")
+        self.assertEqual(resolved["access_key"], "profile-ak")
+        self.assertEqual(resolved["secret_key"], "profile-sk")
+        self.assertTrue(media_storage.is_ready(resolved))
+
     def test_storage_test_failure_is_persisted_without_exposing_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "config.local.json")

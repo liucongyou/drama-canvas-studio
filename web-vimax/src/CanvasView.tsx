@@ -131,6 +131,7 @@ import {
   generationProgressLabel,
   hasTrustedProviderProgress,
   latestTaskByNode,
+  activeGenerationNodeIds,
 } from './generationPresentation';
 import {
   inheritedGenerationParams,
@@ -7228,6 +7229,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [helpOpen, setHelpOpen] = useState(false);
   const [taskCenterOpen, setTaskCenterOpen] = useState(false);
   const [generationTasks, setGenerationTasks] = useState<GenerationTask[]>([]);
+  const taskLoadGenerationRef = useRef(0);
   const activeGenerationTaskCount = generationTasks.filter(
     (task) => ['queued', 'submitting', 'running'].includes(task.status),
   ).length;
@@ -7892,6 +7894,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // 事件流是否在线：在线时轮询降级成兜底对账，离线时恢复 1.5s 的密集轮询。
   const [eventsConnected, setEventsConnected] = useState(false);
   const mediaNodesRef = useRef<CanvasMediaNode[]>([]);
+  const workspaceLoadEpochRef = useRef(0);
   useEffect(() => { mediaNodesRef.current = mediaNodes; }, [mediaNodes]);
   useEffect(() => {
     if (mediaNodes.length === 0) return;
@@ -7908,11 +7911,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         .map((task) => [task.node_id, task]),
     );
     setGenerationBusyIds((prev) => {
-      const next = new Set(prev);
-      for (const [nodeId, task] of latestByNode) {
-        if (['queued', 'submitting', 'running'].includes(task.status)) next.add(nodeId);
-        else next.delete(nodeId);
-      }
+      // This set must be projected from the current task snapshot. Mutating a
+      // previous set by only adding active tasks leaves stale node ids forever
+      // after a task dies without a completion event.
+      const next = activeGenerationNodeIds(generationTasks);
       return next.size === prev.size && [...next].every((id) => prev.has(id)) ? prev : next;
     });
     setMediaNodes((prev) => {
@@ -7922,6 +7924,24 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         // snapshot. Never paint a media card as "generating" when the file is
         // already on this canvas.
         if (node.status === 'done' && node.mediaUrl) return node;
+        // A missing task is terminal evidence for a stale "generating" node.
+        // The task row is authoritative; a node flag with no queued/running
+        // task is left over from a dead worker or interrupted browser request.
+        if (
+          node.status === 'generating'
+          && !latestByNode.has(node.id)
+          && !node.finalizePending
+        ) {
+          changed = true;
+          return {
+            ...node,
+            status: 'failed' as const,
+            lastError: node.lastError || '生成任务已失去执行记录，请重新生成',
+            providerTaskStatus: 'interrupted',
+            providerTaskPhase: '任务已结束',
+            generationFinishedAt: node.generationFinishedAt || new Date().toISOString(),
+          };
+        }
         const task = activeByNode.get(node.id);
         if (task) {
           // A completion event is authoritative. An older task-list snapshot
@@ -7973,6 +7993,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
 
   const terminalRefreshRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
+    // The initial workspace read includes tasks. Those records are a snapshot,
+    // not a new completion event, so they must not trigger another full reload.
+    if (loading) return;
     const terminalSignatures = new Map<string, string>();
     for (const task of generationTasks) {
       if (
@@ -8022,7 +8045,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     return () => {
       alive = false;
     };
-  }, [generationTasks, session, currentEp]);
+  }, [generationTasks, loading, session, currentEp]);
 
   /**
    * A succeeded generation task is authoritative, even when an earlier
@@ -8031,6 +8054,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
    * URL back into the local node instead of leaving a stale failure card.
    */
   useEffect(() => {
+    if (loading) return;
     const succeededTasks = generationTasks.filter(
       (task) => task.status === 'succeeded',
     );
@@ -8064,7 +8088,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     return () => {
       alive = false;
     };
-  }, [generationTasks, session, currentEp]);
+  }, [generationTasks, loading, session, currentEp]);
   const mediaSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaBatchSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaBatchSaveInFlightRef = useRef<Promise<void> | null>(null);
@@ -8278,13 +8302,27 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
 
   useEffect(() => {
     let alive = true;
+    const loadGeneration = taskLoadGenerationRef.current;
+    let pollingStarted = false;
     const refreshTasks = () => {
+      if (!pollingStarted) return;
       void getGenerationTasks(session, 80, currentEp)
-        .then((tasks) => { if (alive) setGenerationTasks(tasks); })
+        .then((tasks) => {
+          if (
+            alive
+            && loadGeneration === taskLoadGenerationRef.current
+          ) {
+            setGenerationTasks(tasks);
+          }
+        })
         .catch(() => {});
     };
-    setGenerationTasks([]);
-    refreshTasks();
+    // The workspace read already contains the initial task snapshot. Delay the
+    // first duplicate read so a project switch does not contend with itself.
+    const startTimer = window.setTimeout(() => {
+      pollingStarted = true;
+      refreshTasks();
+    }, 800);
     // Only poll quickly while there is active work. Closed task center with no
     // active workments still gets a low-frequency reconciliation, not 1.2s churn.
     const interval = taskCenterOpen && activeGenerationTaskCount > 0
@@ -8295,6 +8333,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const timer = window.setInterval(refreshTasks, interval);
     return () => {
       alive = false;
+      window.clearTimeout(startTimer);
       window.clearInterval(timer);
     };
   }, [activeGenerationTaskCount, currentEp, session, taskCenterOpen]);
@@ -8473,9 +8512,19 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [beginSave, finishSave, session]);
 
   useEffect(() => {
-    let alive = true;
+    const loadEpoch = workspaceLoadEpochRef.current + 1;
+    workspaceLoadEpochRef.current = loadEpoch;
     setLoading(true);
     setError('');
+    // A project switch is a new data epoch. Do not let the previous project's
+    // cards, task badges, or layout session leak through while the new payload
+    // is loading. Paint the loading state from a blank canvas first.
+    setCanvas(null);
+    setMediaNodes([]);
+    setNotes([]);
+    setGenerationTasks([]);
+    setGenerationBusyIds(new Set());
+    taskLoadGenerationRef.current += 1;
     // 一集一画布：切集后重置镜头草稿与选中态（备注为项目级，保留）
     if (shotSaveTimer.current) { clearTimeout(shotSaveTimer.current); shotSaveTimer.current = null; }
     setDrafts({});
@@ -8489,9 +8538,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         canvas: data,
         notes: noteList,
         mediaNodes: mediaList,
+        tasks: initialTasks,
         connections: projectConnections,
       }) => {
-        if (!alive) return;
+        if (loadEpoch !== workspaceLoadEpochRef.current) return;
+        taskLoadGenerationRef.current += 1;
         projectConnectionsRef.current = projectConnections;
         startTransition(() => {
           if ('empty' in data) {
@@ -8522,16 +8573,21 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             setLargeCanvasVisibleBounds(null);
           }
           setMediaNodes(mediaList);
+          setGenerationTasks(initialTasks);
         });
       })
       .catch((err: unknown) => {
-        if (alive) setError(err instanceof Error ? err.message : String(err));
+        if (loadEpoch === workspaceLoadEpochRef.current) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
       })
       .finally(() => {
-        if (alive) setLoading(false);
+        if (loadEpoch === workspaceLoadEpochRef.current) setLoading(false);
       });
     return () => {
-      alive = false;
+      if (loadEpoch === workspaceLoadEpochRef.current) {
+        workspaceLoadEpochRef.current += 1;
+      }
     };
   }, [session, currentEp]);
 

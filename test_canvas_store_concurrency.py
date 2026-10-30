@@ -125,6 +125,67 @@ class CanvasStoreConcurrencyTests(unittest.TestCase):
             }],
         )
 
+    def test_legacy_local_upload_backfill_is_idempotent(self):
+        uploads = Path(self.temp.name) / "uploads"
+        uploads.mkdir()
+        image = uploads / "legacy.jpg"
+        image.write_bytes(b"\xff\xd8\xfflegacy")
+        stored = {
+            "status": "stored",
+            "provider": "aliyun_oss",
+            "bucket": "bucket",
+            "key": "legacy.jpg",
+        }
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project(
+                "legacy-storage",
+                payload={
+                    "nodes": [{
+                        "id": "legacy-image",
+                        "type": "image",
+                        "metadata": {
+                            "content": "/uploads/legacy.jpg",
+                            "source": {
+                                "type": "local",
+                                "fileName": "legacy.jpg",
+                                "mime": "image/jpeg",
+                                "sha256": "legacy-sha",
+                            },
+                        },
+                    }],
+                },
+            )
+            with (
+                patch.object(server, "_upload_dir", return_value=str(uploads)),
+                patch.object(
+                    server.tenant_context,
+                    "current_upload_dir",
+                    return_value=str(uploads),
+                ),
+                patch.object(
+                    server.provider_catalog,
+                    "storage_config",
+                    return_value={"enabled": True, "provider": "aliyun_oss"},
+                ),
+                patch.object(server.media_storage, "is_ready", return_value=True),
+                patch.object(
+                    server.media_storage,
+                    "persist_local_url",
+                    return_value=stored,
+                ) as persist,
+            ):
+                first = server.backfill_local_media_storage()
+                second = server.backfill_local_media_storage()
+            saved = canvas_store.get_project(project_id)
+
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0)
+        self.assertEqual(
+            saved["payload"]["nodes"][0]["metadata"]["storage"],
+            stored,
+        )
+        persist.assert_called_once()
+
     def test_concurrent_writes_to_different_projects_succeed(self):
         with tenant_context.use_context(self.context):
             project_ids = [
@@ -262,6 +323,39 @@ class CanvasStoreConcurrencyTests(unittest.TestCase):
 
         self.assertEqual(outcomes.count("read"), 40)
         self.assertEqual(outcomes.count("write"), 80)
+
+    def test_legacy_storage_backfill_waits_for_storage_when_remote_is_missing(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project(
+                "legacy-storage-missing",
+                payload={
+                    "nodes": [{
+                        "id": "legacy-image",
+                        "type": "image",
+                        "metadata": {
+                            "content": "/uploads/missing.jpg",
+                            "source": {"type": "local"},
+                        },
+                    }],
+                },
+            )
+            with patch.object(
+                server.provider_catalog,
+                "storage_config",
+                return_value={"enabled": True, "provider": "aliyun_oss"},
+            ), patch.object(
+                server.media_storage,
+                "is_ready",
+                return_value=False,
+            ):
+                migrated = server.backfill_local_media_storage()
+            saved = canvas_store.get_project(project_id)
+
+        self.assertEqual(migrated, 0)
+        self.assertNotIn(
+            "storage",
+            saved["payload"]["nodes"][0]["metadata"],
+        )
 
 
 if __name__ == "__main__":

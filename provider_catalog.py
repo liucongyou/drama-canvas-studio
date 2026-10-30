@@ -1435,7 +1435,37 @@ def save_budget_config(input_data: dict[str, Any]) -> dict[str, Any]:
 def storage_config() -> dict[str, Any]:
     cfg = load_config()
     storage = cfg.get("storage")
-    return copy.deepcopy(storage if isinstance(storage, dict) else DEFAULT_STORAGE)
+    resolved = copy.deepcopy(storage if isinstance(storage, dict) else DEFAULT_STORAGE)
+    provider = str(
+        resolved.get("active_provider") or resolved.get("provider") or "tos"
+    ).strip().lower()
+    profiles = resolved.get("providers")
+    profile = (
+        profiles.get(provider)
+        if isinstance(profiles, dict)
+        and isinstance(profiles.get(provider), dict)
+        else None
+    )
+    if profile:
+        # The flat fields are a runtime projection, not the source of truth.
+        # Older configurations kept stale top-level fields after switching
+        # providers while the selected provider profile remained complete.
+        for key in (
+            "bucket",
+            "region",
+            "endpoint",
+            "internal_endpoint",
+            "public_domain",
+            "prefix",
+            "access_key",
+            "secret_key",
+            "url_ttl_seconds",
+        ):
+            if key in profile:
+                resolved[key] = copy.deepcopy(profile[key])
+        resolved["provider"] = provider
+        resolved["active_provider"] = provider
+    return resolved
 
 
 def public_storage_config() -> dict[str, Any]:

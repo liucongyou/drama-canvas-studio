@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, isLiveProviderGeneration, loginAccount, mediaVersionList, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
 
 describe('friendlyMediaError', () => {
   it('translates persisted write/read timeout errors before rendering', () => {
@@ -206,42 +206,48 @@ describe('api request recovery', () => {
     });
   });
 
-  it('loads canvas, notes and media nodes from one project snapshot', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      id: 'project-1',
-      title: '测试项目',
-      payload: {
-        title: '测试项目',
-        extras: {
-          notes: [{id: 'note-1', text: '备注', x: 0, y: 0, updatedAt: '2026-10-28T00:00:00Z'}],
-        },
-        nodes: [{
-          id: 'video-1',
-          type: 'video',
-          title: '段1',
-          position: {x: 10, y: 20},
-          metadata: {prompt: '第一段', status: 'idle', params: {ratio: '9:16'}},
-        }],
-        connections: [],
-        episodeImports: [{
-          id: 'EP001',
-          title: '第01集',
-          nodeIds: ['video-1'],
-          videoNodeIds: ['video-1'],
-        }],
-      },
-    }), {
-      status: 200,
-      headers: {'Content-Type': 'application/json'},
-    }));
+  it('loads project snapshot and task truth together for the initial canvas', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const body = String(url).includes('/api/generation-tasks')
+        ? {tasks: []}
+        : {
+            id: 'project-1',
+            title: '测试项目',
+            payload: {
+              title: '测试项目',
+              extras: {
+                notes: [{id: 'note-1', text: '备注', x: 0, y: 0, updatedAt: '2026-10-28T00:00:00Z'}],
+              },
+              nodes: [{
+                id: 'video-1',
+                type: 'video',
+                title: '段1',
+                position: {x: 10, y: 20},
+                metadata: {prompt: '第一段', status: 'idle', params: {ratio: '9:16'}},
+              }],
+              connections: [],
+              episodeImports: [{
+                id: 'EP001',
+                title: '第01集',
+                nodeIds: ['video-1'],
+                videoNodeIds: ['video-1'],
+              }],
+            },
+          };
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     const workspace = await getCanvasWorkspace('project-1', 'EP001');
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(workspace.canvas).not.toHaveProperty('empty');
     expect(workspace.notes).toHaveLength(1);
     expect(workspace.mediaNodes).toMatchObject([{id: 'video-1', x: 10, y: 20}]);
+    expect(workspace.tasks).toEqual([]);
   });
 
   it('keeps the last usable video visible while the node is regenerating', async () => {
@@ -443,6 +449,157 @@ describe('api request recovery', () => {
     const nodes = await getCanvasMediaNodes('project-1', 'EP007');
     const current = nodes.find((node) => node.id === 'video-2');
     expect(current?.params?.refs ?? []).toEqual([]);
+  });
+
+  it('persists the storage receipt on local media nodes', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const storage = {
+      status: 'stored',
+      provider: 'aliyun_oss',
+      bucket: 'yjhuabu',
+      key: 'drama-canvas/image/hash.jpg',
+    };
+
+    await patchMediaNodesFields('project-1', [{
+      id: 'image-1',
+      kind: 'image',
+      title: '本地图片',
+      prompt: '',
+      status: 'done',
+      mediaUrl: '/uploads/hash.jpg',
+      storage,
+      storageError: '',
+      x: 0,
+      y: 0,
+      updatedAt: '2026-10-31T01:00:00Z',
+    }]);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.nodes[0].metadata.storage).toEqual(storage);
+    expect(body.nodes[0].metadata.storageError).toBe('');
+  });
+
+  it('projects an active task onto the initial media snapshot atomically', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const body = String(url).includes('/api/generation-tasks')
+        ? {
+            tasks: [{
+              id: 'task-1',
+              project_id: 'project-1',
+              node_id: 'image-1',
+              status: 'running',
+              phase: '生成中',
+              progress: 20,
+              created_at: '2026-10-31T01:00:00Z',
+              updated_at: '2026-10-31T01:00:01Z',
+            }],
+          }
+        : {
+            id: 'project-1',
+            title: '测试项目',
+            payload: {
+              nodes: [{
+                id: 'image-1',
+                type: 'image',
+                title: '图片',
+                metadata: {status: 'generating'},
+              }],
+              connections: [],
+              episodeImports: [{id: 'EP001', nodeIds: ['image-1'], videoNodeIds: []}],
+              extras: {notes: []},
+            },
+          };
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const workspace = await getCanvasWorkspace('project-1', 'EP001');
+
+    expect(workspace.mediaNodes).toHaveLength(1);
+    expect(workspace.tasks).toHaveLength(1);
+    expect(workspace.mediaNodes[0].status).toBe('generating');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not use another project episode when switching projects', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const body = String(url).includes('/api/generation-tasks')
+        ? {tasks: []}
+        : {
+            id: 'project-2',
+            title: '新项目',
+            payload: {
+              nodes: [{
+                id: 'image-new',
+                type: 'image',
+                title: '新项目图片',
+                metadata: {
+                  status: 'done',
+                  content: '/uploads/new.png',
+                  episodeId: 'EP001',
+                },
+              }],
+              connections: [],
+              episodeImports: [{
+                id: 'EP001',
+                nodeIds: ['image-new'],
+                videoNodeIds: [],
+              }],
+            },
+          };
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const workspace = await getCanvasWorkspace('project-2', 'EP010');
+
+    expect(workspace.mediaNodes.map((node) => node.id)).toEqual(['image-new']);
+    expect(workspace.canvas).not.toHaveProperty('empty');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1][0])).toContain('episodeId=EP001');
+  });
+
+  it('falls back to the first project episode when no episode is selected', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const body = String(url).includes('/api/generation-tasks')
+        ? {tasks: []}
+        : {
+            id: 'project-empty',
+            title: '空项目',
+            payload: {
+              nodes: [{
+                id: 'image-1',
+                type: 'image',
+                title: '图片',
+                metadata: {status: 'done'},
+              }],
+              connections: [],
+              episodeImports: [{id: 'EP001', nodeIds: ['image-1'], videoNodeIds: []}],
+            },
+          };
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const workspace = await getCanvasWorkspace('project-empty', '');
+
+    expect(workspace.mediaNodes.map((node) => node.id)).toEqual(['image-1']);
+    expect(String(fetchMock.mock.calls[1][0])).toContain('episodeId=EP001');
   });
 
   it('uses one media version list for image, audio and video', () => {

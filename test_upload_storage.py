@@ -141,6 +141,52 @@ class UploadStorageTests(unittest.TestCase):
         self.assertEqual(self.sent[0][0], 200)
         self.assertEqual(self.sent[0][1]["storage"], storage)
 
+    def test_stream_upload_uses_resolved_active_storage_profile(self):
+        image = b"\x89PNG\r\n\x1a\n" + b"d" * 32
+        self.handler.headers = {
+            "X-File-Name": "role.png",
+            "X-File-Type": "image/png",
+            "Content-Length": str(len(image)),
+        }
+        self.handler.rfile = io.BytesIO(image)
+        storage = {
+            "status": "stored",
+            "provider": "aliyun_oss",
+            "bucket": "active-bucket",
+            "key": "drama-canvas/image/role.png",
+        }
+        with (
+            mock.patch.object(server, "_upload_dir", return_value=self.temp.name),
+            mock.patch.object(
+                server.provider_catalog,
+                "storage_config",
+                return_value={
+                    "enabled": True,
+                    "provider": "aliyun_oss",
+                    "bucket": "active-bucket",
+                    "endpoint": "oss-cn-beijing.aliyuncs.com",
+                    "access_key": "ak",
+                    "secret_key": "sk",
+                },
+            ),
+            mock.patch.object(
+                server.media_storage,
+                "persist_local_url",
+                return_value=storage,
+            ) as persist,
+            mock.patch.object(
+                server.media_storage,
+                "public_url",
+                return_value="https://bucket.example/key",
+            ),
+            mock.patch.object(server.Handler, "_send", side_effect=self.send),
+        ):
+            server.Handler._handle_stream_upload(self.handler)
+
+        self.assertEqual(self.sent[0][0], 200)
+        self.assertEqual(self.sent[0][1]["storage"], storage)
+        persist.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

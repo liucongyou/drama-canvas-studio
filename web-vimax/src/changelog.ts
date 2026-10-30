@@ -7,10 +7,22 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.30.14';
+export const APP_VERSION = '2026.10.31.1';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.31.1',
+    date: '2026-10-31',
+    title: '项目切换、任务终态与对象存储修复',
+    changes: [
+      '刷新后项目列表返回时会自动进入有效项目，不再停在“还没有项目”的空状态。',
+      '切换项目或集数时先隔离上一轮数据，旧响应不能覆盖新项目；首屏不再重复加载整包项目数据。',
+      '生成任务以最新持久化记录为准；执行线程失联或任务已失败时，卡片自动结束“生成中”并显示真实结果。',
+      '对象存储启用时统一读取当前服务商的有效配置；阿里云 OSS、七牛云和火山 TOS 不再被旧的扁平配置误判为未启用。',
+      '本地上传成功后会完整保存存储回执；服务启动时只对仍存在且未转存的历史本地素材做幂等补传，失败不覆盖原素材。',
+    ],
+  },
   {
     version: '2026.10.30.14',
     date: '2026-10-30',

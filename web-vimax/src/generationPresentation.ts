@@ -103,3 +103,16 @@ export function latestTaskByNode(
   }
   return latest;
 }
+
+export function activeGenerationNodeIds(
+  tasks: GenerationTask[],
+): Set<string> {
+  // Project the set from the current task snapshot instead of merging task
+  // snapshots forever. A worker crash or a late missing terminal event would
+  // otherwise leave an active node id cached in the UI indefinitely.
+  return new Set(
+    [...latestTaskByNode(tasks).entries()]
+      .filter(([, task]) => ['queued', 'submitting', 'running'].includes(task.status))
+      .map(([nodeId]) => nodeId),
+  );
+}

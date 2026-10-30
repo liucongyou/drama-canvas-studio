@@ -1,5 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {
+  activeGenerationNodeIds,
   generationDurationLabel,
   generationPhaseLabel,
   generationProgressLabel,
@@ -82,5 +83,29 @@ describe('generation presentation', () => {
 
     expect(latestTaskByNode(tasks).get('node')?.id).toBe('new');
     expect(latestTaskByNode([...tasks].reverse()).get('node')?.id).toBe('new');
+  });
+
+  it('drops stale active node ids when the task is terminal or absent', () => {
+    const running: GenerationTask = {
+      id: 'running',
+      project_id: 'project',
+      node_id: 'node-a',
+      title: '段A',
+      status: 'running',
+      created_at: '2026-10-30T15:00:00.000Z',
+      updated_at: '2026-10-30T15:01:00.000Z',
+    };
+    const failed: GenerationTask = {
+      id: 'failed',
+      project_id: 'project',
+      node_id: 'node-b',
+      title: '段B',
+      status: 'failed',
+      created_at: '2026-10-30T15:02:00.000Z',
+      updated_at: '2026-10-30T15:03:00.000Z',
+    };
+
+    expect([...activeGenerationNodeIds([running, failed])]).toEqual(['node-a']);
+    expect([...activeGenerationNodeIds([failed])]).toEqual([]);
   });
 });

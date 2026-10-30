@@ -3,7 +3,7 @@ export function reconcileSelectedProjectId(
   projectIds: readonly string[],
   hashProjectId = '',
 ): string {
-  if (!currentProjectId || projectIds.includes(currentProjectId)) {
+  if (currentProjectId && projectIds.includes(currentProjectId)) {
     return currentProjectId;
   }
   if (hashProjectId && projectIds.includes(hashProjectId)) {

@@ -171,6 +171,15 @@ def _profile_ready(cfg: dict[str, Any]) -> bool:
     provider = _provider(cfg)
     if not cfg.get("enabled"):
         return False
+    profiles = cfg.get("providers")
+    profile = (
+        profiles.get(provider)
+        if isinstance(profiles, dict)
+        and isinstance(profiles.get(provider), dict)
+        else None
+    )
+    if profile:
+        cfg = {**cfg, **profile}
     if provider == "tos":
         return bool(tos_storage.is_ready(cfg))
     if provider == "aliyun_oss":
