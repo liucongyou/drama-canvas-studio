@@ -133,10 +133,37 @@ export function retainOptimisticGenerationIds(
     }
     const latestTask = latestByNode.get(nodeId);
     if (latestTask && taskTimestamp(latestTask) >= startedMs) {
-      // A persisted task now owns this node. It may be active or terminal, but
-      // the optimistic submission lock is no longer needed.
+      // A persisted task now owns this node. Terminal failure must win over a
+      // local optimistic lock; an active task is projected separately.
       retained.delete(nodeId);
     }
   }
   return retained;
+}
+
+export function projectGenerationState(
+  tasks: GenerationTask[],
+  optimistic: ReadonlyMap<string, string>,
+  now = Date.now(),
+  ttlMs = 5 * 60 * 1000,
+): {
+  activeNodeIds: Set<string>;
+  latestByNode: Map<string, GenerationTask>;
+  retainedOptimistic: Map<string, string>;
+} {
+  const retainedOptimistic = retainOptimisticGenerationIds(
+    tasks,
+    optimistic,
+    now,
+    ttlMs,
+  );
+  const activeNodeIds = activeGenerationNodeIds(tasks);
+  for (const nodeId of retainedOptimistic.keys()) {
+    activeNodeIds.add(nodeId);
+  }
+  return {
+    activeNodeIds,
+    latestByNode: latestTaskByNode(tasks),
+    retainedOptimistic,
+  };
 }

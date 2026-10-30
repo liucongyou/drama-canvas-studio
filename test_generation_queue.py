@@ -1281,6 +1281,63 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(node["metadata"]["content"], "/uploads/generated.png")
         self.assertEqual(committed[-1][2]["content"], "/uploads/generated.png")
 
+    def test_missing_local_reference_is_rejected_before_provider_call(self):
+        source = {
+            "id": "missing-source",
+            "type": "image",
+            "title": "角色｜文件丢失（图1）",
+            "metadata": {
+                "status": "done",
+                "content": "/uploads/does-not-exist.png",
+            },
+        }
+        node = {
+            "id": "image-target",
+            "type": "image",
+            "title": "新图片",
+            "metadata": {
+                "prompt": "参考角色生成新图片",
+                "status": "generating",
+                "params": {
+                    "provider": "ark",
+                    "model": "seedream",
+                    "refs": [{
+                        "nodeId": "missing-source",
+                        "label": "角色｜文件丢失（图1）",
+                    }],
+                },
+            },
+        }
+        project = {"payload": {"nodes": [source, node]}}
+        provider = {
+            "id": "ark",
+            "api_key": "test-key",
+            "base_url": "https://ark.example/api/v3",
+        }
+        model = {
+            "id": "seedream",
+            "remoteModel": "doubao-seedream",
+            "defaultParams": {},
+            "limits": {},
+        }
+        handler = object.__new__(server.Handler)
+        sent = []
+        handler._send = lambda status, payload: sent.append((status, payload)) or payload
+        with (
+            patch.object(server, "_upload_dir", return_value=self.temp_dir.name),
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(provider, model, {}),
+            ),
+            patch.object(server, "ensure_provider_auth"),
+            patch.object(server.provider_client, "generate_image") as generate,
+        ):
+            handler._generate_once("project-1", project, node)
+        self.assertEqual(sent[-1][0], 400)
+        self.assertIn("参考媒体文件已丢失", sent[-1][1]["error"])
+        generate.assert_not_called()
+
     def test_image_tos_archive_runs_after_local_success(self):
         node = {
             "id": "image-tos",

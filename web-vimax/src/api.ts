@@ -450,6 +450,8 @@ export type CanvasMediaNode = {
   title: string;
   prompt: string;
   mediaUrl?: string;
+  /** Runtime readiness of the stored URL; not persisted as generation state. */
+  mediaAvailability?: 'unknown' | 'available' | 'missing';
   status?: 'idle' | 'generating' | 'done' | 'failed';
   lastError?: string;
   generationStartedAt?: string;

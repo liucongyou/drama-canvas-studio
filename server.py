@@ -6195,6 +6195,23 @@ class Handler(BaseHTTPRequestHandler):
                         "reason": f"素材地址不可用（{url[:32]}）",
                     })
                     continue
+                if url.startswith("/uploads/"):
+                    local_name = urllib.parse.unquote(
+                        url[len("/uploads/"):]
+                    )
+                    local_path = os.path.join(_upload_dir(), local_name)
+                    if (
+                        not local_name
+                        or "/" in local_name
+                        or "\\" in local_name
+                        or not os.path.isfile(local_path)
+                    ):
+                        missing.append({
+                            "nodeId": ref_id,
+                            "label": label,
+                            "reason": "参考媒体文件已丢失，请重新生成或导入本地文件",
+                        })
+                        continue
                 kind = "audio" if source_type == "audio" else "video" if source_type == "video" else "image"
                 source_model = str(
                     source_meta.get("remoteModel")

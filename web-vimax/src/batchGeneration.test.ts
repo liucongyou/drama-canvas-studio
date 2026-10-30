@@ -97,6 +97,24 @@ describe('batch generation evaluation', () => {
     expect(candidate.reason).toContain('引用未就绪');
   });
 
+  it('blocks nodes whose referenced media file is confirmed missing', () => {
+    const source = node('source', {
+      status: 'done',
+      mediaUrl: '/uploads/missing.png',
+      mediaAvailability: 'missing',
+    });
+    const target = node('target', {
+      params: {
+        provider: 'provider-1',
+        model: 'image-model',
+        refs: [{nodeId: 'source', label: '角色｜赵铁柱（图1）'}],
+      },
+    });
+    const [candidate] = evaluateBatchGeneration([target], [source, target], catalog, []);
+    expect(candidate.state).toBe('blocked');
+    expect(candidate.reason).toContain('尚未生成');
+  });
+
   it('blocks a model whose provider has no API key', () => {
     const [candidate] = evaluateBatchGeneration(
       [node('node-1')],

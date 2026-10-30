@@ -173,6 +173,7 @@ export function evaluateReferenceLimits(
 function mediaOutputReady(node: CanvasMediaNode): boolean {
   if (node.kind === 'text') return Boolean(node.prompt.trim());
   if ((node.kind === 'image' || node.kind === 'audio') && node.promptStale) return false;
+  if (node.mediaAvailability === 'missing') return false;
   return Boolean(String(node.mediaUrl || '').trim());
 }
 

@@ -6,6 +6,7 @@ import {
   generationProgressLabel,
   hasTrustedProviderProgress,
   latestTaskByNode,
+  projectGenerationState,
   retainOptimisticGenerationIds,
 } from './generationPresentation';
 import type {GenerationTask} from './api';
@@ -137,5 +138,34 @@ describe('generation presentation', () => {
       Date.parse('2026-10-31T00:00:05.000Z'),
     );
     expect(retained.size).toBe(0);
+  });
+
+  it('lets an explicitly failed persisted task end a stale local submission', () => {
+    const startedAt = '2026-10-31T00:00:00.000Z';
+    const failed: GenerationTask = {
+      id: 'failed-a',
+      project_id: 'project',
+      node_id: 'node-a',
+      title: '段A',
+      status: 'failed',
+      created_at: '2026-10-31T00:00:01.000Z',
+      updated_at: '2026-10-31T00:00:02.000Z',
+    };
+    const retained = retainOptimisticGenerationIds(
+      [failed],
+      new Map([['node-a', startedAt]]),
+      Date.parse('2026-10-31T00:00:05.000Z'),
+    );
+    expect(retained.size).toBe(0);
+  });
+
+  it('projects submitted nodes as active until their task arrives', () => {
+    const startedAt = '2026-10-31T00:00:00.000Z';
+    const projection = projectGenerationState(
+      [],
+      new Map([['node-a', startedAt]]),
+      Date.parse('2026-10-31T00:00:05.000Z'),
+    );
+    expect([...projection.activeNodeIds]).toEqual(['node-a']);
   });
 });

@@ -131,8 +131,7 @@ import {
   generationProgressLabel,
   hasTrustedProviderProgress,
   latestTaskByNode,
-  activeGenerationNodeIds,
-  retainOptimisticGenerationIds,
+  projectGenerationState,
 } from './generationPresentation';
 import {
   inheritedGenerationParams,
@@ -1353,6 +1352,7 @@ type MediaNodeData = {
   ) => Promise<void>;
   suppressNodeOpen: () => void;
   isNodeOpenSuppressed: () => boolean;
+  onMediaAvailability?: (nodeId: string, availability: 'available' | 'missing') => void;
 };
 
 // ---- 生成参数面板（详细属性：模型/清晰度/比例/推理强度/引用资产/音色） ----
@@ -1526,6 +1526,7 @@ function mediaOutputReady(node?: CanvasMediaNode | null): boolean {
   if (!node) return false;
   if (node.kind === 'text') return Boolean(node.prompt.trim());
   if ((node.kind === 'image' || node.kind === 'audio') && node.promptStale) return false;
+  if (node.mediaAvailability === 'missing') return false;
   return Boolean(String(node.mediaUrl || '').trim());
 }
 
@@ -2012,7 +2013,7 @@ async function inspectLocalMedia(file: File): Promise<{
 }
 
 function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
-  const {node, renderMode = 'full', onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed} = data;
+  const {node, renderMode = 'full', onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed, onMediaAvailability} = data;
   const [menu, setMenu] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoShellRef = useRef<HTMLDivElement>(null);
@@ -2035,6 +2036,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   const [localUploadPercent, setLocalUploadPercent] = useState(0);
   const [localUploadError, setLocalUploadError] = useState('');
   const [localDragOver, setLocalDragOver] = useState(false);
+  const [mediaLoadFailed, setMediaLoadFailed] = useState(false);
   const meta = MEDIA_KIND_META[node.kind];
   const isText = node.kind === 'text';
   const localAccept = node.kind === 'image'
@@ -2155,6 +2157,9 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
     setAudioCurrentTime(0);
     setAudioWaveBars(AUDIO_WAVE_BARS);
   }, [node.mediaUrl]);
+  useEffect(() => {
+    setMediaLoadFailed(node.mediaAvailability === 'missing');
+  }, [node.id, node.mediaUrl, node.mediaAvailability]);
   useEffect(() => {
     if (node.kind !== 'audio' || !node.mediaUrl || node.mediaUrl.startsWith('data:')) return;
     if (node.source?.type === 'local' && Number(node.source.size || 0) > 16 * 1024 * 1024) {
@@ -2334,6 +2339,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   const failed = node.status === 'failed'
     && !liveProviderGeneration
     && !node.mediaUrl;
+  const mediaMissing = !isText && !!node.mediaUrl && mediaLoadFailed;
   useEffect(() => {
     if (!busy) return;
     setBusyClock(Date.now());
@@ -2481,17 +2487,23 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
       : node.kind === 'audio'
         ? (p.ttsMode === 'speech' ? `音色 ${p.voiceId || p.ttsVoice || '未设置'}` : '音色设计')
         : `${(node.prompt || '').trim().length} / ${cardPromptLimit} 字`;
-  const footSubText = failed && node.lastError ? friendlyTaskError(node.lastError) : footMeta;
+  const footSubText = mediaMissing
+    ? '原文件已不存在，请重新生成或导入本地文件'
+    : failed && node.lastError ? friendlyTaskError(node.lastError) : footMeta;
   // 文本节点现在也支持 AI 生成（用户要求），所以状态条同样要有「生成中/失败」语义；
   // 只有 idle 时显示「文本」而不是「待生成」—— 手写的文本本来就算完成。
-  const statusText = localUploading
+  const statusText = mediaMissing
+    ? '媒体文件丢失'
+    : localUploading
     ? `上传 ${localUploadPercent}%`
     : busy && node.providerTaskStatus === 'retrying'
       ? '查询重试中'
     : isText
     ? (busy ? '生成中' : failed ? '生成失败' : done ? '已生成' : '文本')
     : busy ? '生成中' : done ? '已生成' : failed ? '生成失败' : '待生成';
-  const statusCls = localUploading || busy ? 'is-busy' : done ? 'is-done' : failed ? 'is-failed' : 'is-idle';
+  const statusCls = mediaMissing
+    ? 'is-failed'
+    : localUploading || busy ? 'is-busy' : done ? 'is-done' : failed ? 'is-failed' : 'is-idle';
   if (renderMode === 'overview' && !active) {
     return (
       <div
@@ -2740,10 +2752,24 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
               {(node.prompt || '').trim() ? node.prompt : '双击输入文本…'}
             </div>
           )
-        ) : node.mediaUrl ? (
+        ) : node.mediaUrl && !mediaMissing ? (
           node.kind === 'image'
             // Image cards fill the content area; rounded clipping stays on the card.
-            ? <img className="canvas-media-preview is-photo" src={node.mediaUrl} alt={node.title} loading="lazy" decoding="async" />
+            ? <img
+                className="canvas-media-preview is-photo"
+                src={node.mediaUrl}
+                alt={node.title}
+                loading="lazy"
+                decoding="async"
+                onLoad={() => {
+                  setMediaLoadFailed(false);
+                  if (node.mediaAvailability !== 'available') onMediaAvailability?.(node.id, 'available');
+                }}
+                onError={() => {
+                  setMediaLoadFailed(true);
+                  if (node.mediaAvailability !== 'missing') onMediaAvailability?.(node.id, 'missing');
+                }}
+              />
             : node.kind === 'video'
               ? <div
                   ref={videoShellRef}
@@ -2765,6 +2791,12 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
                     aria-label={node.title}
                     onLoadedMetadata={(event) => {
                       setVideoDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
+                      setMediaLoadFailed(false);
+                      if (node.mediaAvailability !== 'available') onMediaAvailability?.(node.id, 'available');
+                    }}
+                    onError={() => {
+                      setMediaLoadFailed(true);
+                      if (node.mediaAvailability !== 'missing') onMediaAvailability?.(node.id, 'missing');
                     }}
                     onDurationChange={(event) => {
                       setVideoDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
@@ -2889,6 +2921,12 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
                       preload="metadata"
                       onLoadedMetadata={(event) => {
                         setAudioDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
+                        setMediaLoadFailed(false);
+                        if (node.mediaAvailability !== 'available') onMediaAvailability?.(node.id, 'available');
+                      }}
+                      onError={() => {
+                        setMediaLoadFailed(true);
+                        if (node.mediaAvailability !== 'missing') onMediaAvailability?.(node.id, 'missing');
                       }}
                       onDurationChange={(event) => {
                         setAudioDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
@@ -2949,11 +2987,15 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
         ) : (
           <div
             className="canvas-media-placeholder is-ai-ready"
-            title="单击设置提示词并使用 AI 生成；右键或拖入文件可导入本地素材"
+            title={mediaMissing
+              ? '原媒体文件已不存在，请重新生成或导入本地文件'
+              : '单击设置提示词并使用 AI 生成；右键或拖入文件可导入本地素材'}
           >
             <KindIcon kind={node.kind} className="canvas-media-placeholder-ico" />
-            <span className="canvas-media-placeholder-tip">点击设置提示词</span>
-            <small>右键可导入本地素材</small>
+            <span className="canvas-media-placeholder-tip">
+              {mediaMissing ? '媒体文件丢失' : '点击设置提示词'}
+            </span>
+            <small>{mediaMissing ? '请重新生成或重新导入' : '右键可导入本地素材'}</small>
           </div>
         )}
         {!isText && (
@@ -3079,7 +3121,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
         <KindIcon kind={node.kind} className="canvas-media-foot-ico" />
         <span className="canvas-media-foot-text">
           <span className={`canvas-media-foot-main ${statusCls}`}><i className="canvas-media-dot" />{statusText}</span>
-          <span className={`canvas-media-foot-sub${failed && node.lastError ? ' is-error' : ''}`} title={footSubText}>{footSubText}</span>
+          <span className={`canvas-media-foot-sub${mediaMissing || (failed && node.lastError) ? ' is-error' : ''}`} title={footSubText}>{footSubText}</span>
         </span>
         {!isText && mediaVersions.length > 1 && (
           <div
@@ -3121,7 +3163,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
             <div className="canvas-media-foot-pop">
               {!isText && (
                 <button type="button" className="nodrag" onClick={(e) => { e.stopPropagation(); setMenu(false); openLocalPicker(); }}>
-                  {node.mediaUrl ? '从本地添加版本' : '导入本地文件'}
+                  {node.mediaUrl && !mediaMissing ? '从本地添加版本' : '导入本地文件'}
                 </button>
               )}
               <button type="button" className="nodrag" onClick={(e) => { e.stopPropagation(); setMenu(false); onEdit(node); }}>编辑提示词</button>
@@ -7906,7 +7948,16 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     setLargeCanvasOverview(mediaNodes.length > 400);
   }, [currentEp, mediaNodes.length]);
   useEffect(() => {
-    const latestByNode = latestTaskByNode(generationTasks);
+    const projection = projectGenerationState(
+      generationTasks,
+      optimisticGenerationStartsRef.current,
+    );
+    const {
+      activeNodeIds: projectedBusyIds,
+      latestByNode,
+      retainedOptimistic: retainedOptimisticStarts,
+    } = projection;
+    optimisticGenerationStartsRef.current = retainedOptimisticStarts;
     const activeByNode = new Map(
       [...latestByNode.values()]
         .filter((task) => ['queued', 'submitting', 'running'].includes(task.status))
@@ -7916,14 +7967,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       // This set must be projected from the current task snapshot. Mutating a
       // previous set by only adding active tasks leaves stale node ids forever
       // after a task dies without a completion event.
-      const next = activeGenerationNodeIds(generationTasks);
-      const retained = retainOptimisticGenerationIds(
-        generationTasks,
-        optimisticGenerationStartsRef.current,
-      );
-      optimisticGenerationStartsRef.current = retained;
-      for (const nodeId of retained.keys()) next.add(nodeId);
-      return next.size === prev.size && [...next].every((id) => prev.has(id)) ? prev : next;
+      return projectedBusyIds.size === prev.size
+        && [...projectedBusyIds].every((id) => prev.has(id))
+        ? prev
+        : projectedBusyIds;
     });
     setMediaNodes((prev) => {
       let changed = false;
@@ -7939,6 +7986,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           node.status === 'generating'
           && !latestByNode.has(node.id)
           && !node.finalizePending
+          && !projectedBusyIds.has(node.id)
         ) {
           changed = true;
           return {
@@ -7976,7 +8024,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         const terminal = latestByNode.get(node.id);
         if (
           node.status !== 'generating'
-          || generationBusyIds.has(node.id)
+          || projectedBusyIds.has(node.id)
           || !terminal
           || !['failed', 'interrupted', 'succeeded'].includes(terminal.status)
         ) {
@@ -7997,7 +8045,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       });
       return changed ? next : prev;
     });
-  }, [generationTasks, generationBusyIds]);
+  }, [generationTasks]);
 
   const terminalRefreshRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
@@ -8878,6 +8926,21 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       return next;
     });
   }, [beginSave, broadcastMediaChange, currentEp, finishSave, persistMediaNodes, persistMediaPositions, session, setToast]);
+
+  const updateMediaAvailability = useCallback((
+    nodeId: string,
+    availability: 'available' | 'missing',
+  ) => {
+    setMediaNodes((prev) => {
+      let changed = false;
+      const next = prev.map((node) => {
+        if (node.id !== nodeId || node.mediaAvailability === availability) return node;
+        changed = true;
+        return {...node, mediaAvailability: availability};
+      });
+      return changed ? next : prev;
+    });
+  }, []);
 
   const importLocalFileToNode = useCallback(async (
     target: CanvasMediaNode,
@@ -13136,6 +13199,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           onSelectGroup: selectFlowIds,
           onPressGroup: pressGroup,
           onUploadLocal: importLocalFileToNode,
+          onMediaAvailability: updateMediaAvailability,
           suppressNodeOpen,
           isNodeOpenSuppressed,
         },
