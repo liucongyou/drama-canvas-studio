@@ -1,5 +1,41 @@
 import {describe, expect, it} from 'vitest';
-import {absolutePositionOf, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches} from './canvasLayout';
+import {absolutePositionOf, ALIGN_VISIBLE_PX, applyLayoutPositions, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches} from './canvasLayout';
+
+describe('canvas layout import', () => {
+  it('projects media and note coordinates without losing unchanged nodes', () => {
+    const media = [
+      {id: 'image-1', x: 1, y: 2, title: 'image'},
+      {id: 'video-1', x: 3, y: 4, title: 'video'},
+    ];
+    const notes = [{id: 'note-1', x: 5, y: 6, text: 'note'}];
+    const result = applyLayoutPositions({
+      positions: {
+        'media-image-1': {x: 20, y: 30},
+        'media-video-1': {x: 3, y: 4},
+        'note-note-1': {x: 50, y: 60},
+      },
+      mediaNodes: media,
+      notes,
+    });
+
+    expect(result.mediaNodes).toHaveLength(2);
+    expect(result.mediaNodes[0]).toMatchObject({
+      id: 'image-1',
+      x: 20,
+      y: 30,
+      title: 'image',
+    });
+    expect(result.mediaNodes[1]).toBe(media[1]);
+    expect(result.notes[0]).toMatchObject({
+      id: 'note-1',
+      x: 50,
+      y: 60,
+      text: 'note',
+    });
+    expect(result.changedMedia.map((node) => node.id)).toEqual(['image-1']);
+    expect(result.changedNotes.map((note) => note.id)).toEqual(['note-1']);
+  });
+});
 
 describe('resolveInitialEpisode', () => {
   it('URL 中的集号优先，支持刷新和分享链接', () => {

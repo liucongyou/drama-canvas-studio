@@ -583,3 +583,35 @@ export function layoutPositionsForExport(input: {
   }
   return positions;
 }
+
+export function applyLayoutPositions<
+  Media extends {id: string; x: number; y: number},
+  Note extends {id: string; x: number; y: number},
+>(input: {
+  positions: Record<string, {x: number; y: number}>;
+  mediaNodes: Media[];
+  notes: Note[];
+}): {
+  mediaNodes: Media[];
+  notes: Note[];
+  changedMedia: Media[];
+  changedNotes: Note[];
+} {
+  const changedMedia: Media[] = [];
+  const changedNotes: Note[] = [];
+  const mediaNodes = input.mediaNodes.map((node) => {
+    const position = input.positions[`media-${node.id}`];
+    if (!position || (node.x === position.x && node.y === position.y)) return node;
+    const next = {...node, x: position.x, y: position.y};
+    changedMedia.push(next);
+    return next;
+  });
+  const notes = input.notes.map((note) => {
+    const position = input.positions[`note-${note.id}`];
+    if (!position || (note.x === position.x && note.y === position.y)) return note;
+    const next = {...note, x: position.x, y: position.y};
+    changedNotes.push(next);
+    return next;
+  });
+  return {mediaNodes, notes, changedMedia, changedNotes};
+}

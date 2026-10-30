@@ -147,7 +147,7 @@ import {
   modelMaxRefs,
   type BatchGenerationCandidate,
 } from './batchGeneration';
-import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
+import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, applyLayoutPositions, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
 import {
   CANVAS_VIEWPORT_POLICY_VERSION,
   filterMediaNodesInBounds,
@@ -5385,6 +5385,7 @@ const CANVAS_SNAP_GRID: [number, number] = [12, 12];
 // 放在模块级是为了让任何位置的回调都能引用，不受组件内声明顺序影响。
 const NOTE_PREFIX = 'note-';
 const MEDIA_PREFIX = 'media-';
+type CanvasGroup = {id: string; name: string; members: string[]};
 
 const KIND_LABEL: Record<CanvasMediaNodeKind, string> = {text: '文本', image: '图片', audio: '音频', video: '视频'};
 
@@ -7783,7 +7784,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   //   与既有的 ep-box / asset-group 父子链冲突，且拖动/连线端点换算全要跟着改，风险极高。
   //   这里用「选中扩散」实现同等体验：点组内任一卡 → 整组一起选中；
   //   而多选拖动本来就是整片位移（React Flow 原生行为），于是"按组拖动"自然成立。
-  type CanvasGroup = {id: string; name: string; members: string[]};
   const [groups, setGroups] = useState<CanvasGroup[]>([]);
   const groupsRef = useRef<CanvasGroup[]>([]);
   groupsRef.current = groups;   // persistLayout 里要读最新值（不能挂 deps，会连锁重建回调）
@@ -7823,7 +7823,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     positions: Record<string, {x: number; y: number}>,
     edges: Edge[],
     deleted: Set<string>,
-    options?: {connectionSynced?: boolean},
+    options?: {
+      connectionSynced?: boolean;
+      groups?: CanvasGroup[];
+    },
   ) => {
     try {
       // 资产卡子节点位置跟随分组框整体拖动，不单独持久化（索引可能因资产增删变化）；
@@ -7840,7 +7843,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         viewportPolicyVersion: CANVAS_VIEWPORT_POLICY_VERSION,
         connectionPersistenceVersion: options?.connectionSynced ? 1 : previousVersion,
         // 编组也随布局一起存：换集/刷新后组关系不能丢（用户编的组是他的工作成果）
-        groups: groupsRef.current,
+        // Import must persist the supplied groups explicitly. Reading the ref
+        // here is stale in the same event because React state has not committed.
+        groups: options?.groups ?? groupsRef.current,
       }));
     } catch {
       /* localStorage 不可用时静默 */
@@ -8360,7 +8365,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     if (mediaBatchSaveTimer.current) clearTimeout(mediaBatchSaveTimer.current);
     mediaBatchSaveTimer.current = setTimeout(flushMediaNodeSaves, 600);
   }, [flushMediaNodeSaves]);
-  const persistMediaPositions = useCallback((_next: CanvasMediaNode[]) => {
+  const persistMediaPositions = useCallback((
+    _next: CanvasMediaNode[],
+    nodesToSave: CanvasMediaNode[] = [],
+  ) => {
+    for (const node of nodesToSave) {
+      const seq = ++positionMutationSeqRef.current;
+      pendingPositionSavesRef.current.set(node.id, {x: node.x, y: node.y, seq});
+    }
     if (mediaPositionSaveTimer.current) clearTimeout(mediaPositionSaveTimer.current);
     mediaPositionSaveTimer.current = setTimeout(() => {
       const snapshot = new Map(pendingPositionSavesRef.current);
@@ -13779,6 +13791,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       const uniqueUserEdges = [...new Map(
         mergedUserEdges.map((edge) => [`${edge.source}->${edge.target}`, edge]),
       ).values()];
+      const restoredGroups = saved?.groups ?? [];
+      setGroups(restoredGroups);
+      groupsRef.current = restoredGroups;
       if (saved) {
         savedViewport = saved.viewport || null;
         if (
@@ -13790,11 +13805,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         }
         if (saved.positions) positionRef.current = {...positionRef.current, ...saved.positions};
         if (Array.isArray(saved.deletedAuto) && saved.deletedAuto.length > 0) setDeletedAutoEdgeIds(new Set(saved.deletedAuto));
-        // 编组关系随布局恢复（换集/刷新后组不能丢）
-        if (Array.isArray(saved.groups) && saved.groups.length > 0) {
-          setGroups(saved.groups);
-          groupsRef.current = saved.groups;
-        }
       } else {
         autoLayoutRef.current();
       }
@@ -13875,22 +13885,27 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       positions,
       userEdges,
       deletedAuto: [...deletedAutoEdgeIds],
+      viewport: viewportRef.current,
+      viewportPolicyVersion: CANVAS_VIEWPORT_POLICY_VERSION,
+      groups,
       savedAt: new Date().toISOString(),
     }, null, 2), 'application/json');
-  }, [session, currentEp, userEdges, deletedAutoEdgeIds, downloadText, currentLayoutPositions]);
+  }, [session, currentEp, userEdges, deletedAutoEdgeIds, groups, downloadText, currentLayoutPositions]);
 
   // 恢复默认布局：清除该集缓存并重新自动排布
   const resetLayout = useCallback(() => {
     try {
       localStorage.removeItem(layoutKey);
     } catch { /* 忽略 */ }
+    setGroups([]);
+    groupsRef.current = [];
     // 清空所有手动保存的节点位置（含段卡拖拽位置），让 autoLayout 重新计算
     positionRef.current = {};
     setUserEdges([]);
     setDeletedAutoEdgeIds(new Set());
     requestAnimationFrame(() => autoLayout());
     setToast('已恢复默认布局');
-  }, [layoutKey, autoLayout, setUserEdges, setToast]);
+  }, [layoutKey, autoLayout, setGroups, setUserEdges, setToast]);
 
   // 导入布局 JSON（文件）
   const importLayoutJson = useCallback((text: string) => {
@@ -13898,6 +13913,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       const parsed = JSON.parse(text) as {
         kind?: string;
         positions?: Record<string, {x: number; y: number}>;
+        viewport?: {x: number; y: number; zoom: number};
+        viewportPolicyVersion?: number;
+        groups?: {id: string; name: string; members: string[]}[];
         userEdges?: Edge[];
         deletedAuto?: string[];
         asset_prompts?: unknown[];
@@ -13914,39 +13932,50 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         const position = parsed.positions?.[node.id];
         return position ? {...node, position} : node;
       }));
-      const mediaPatches: CanvasMediaNode[] = [];
-      setMediaNodes((prev) => {
-        let changed = false;
-        const next = prev.map((node) => {
-          const position = parsed.positions?.[`${MEDIA_PREFIX}${node.id}`];
-          if (!position) return node;
-          if (node.x === position.x && node.y === position.y) return node;
-          changed = true;
-          const patch = {
-            ...node,
-            x: position.x,
-            y: position.y,
-          };
-          mediaPatches.push(patch);
-          return patch;
-        });
-        return changed ? next : prev;
+      const positioned = applyLayoutPositions({
+        positions: parsed.positions,
+        mediaNodes: mediaNodesRef.current,
+        notes: notesRef.current,
       });
-      mediaNodesRef.current = mediaNodesRef.current.map((node) => {
-        const position = parsed.positions?.[`${MEDIA_PREFIX}${node.id}`];
-        return position ? {...node, x: position.x, y: position.y} : node;
-      });
-      if (mediaPatches.length > 0) {
-        persistMediaPositions(mediaPatches);
+      if (positioned.changedMedia.length > 0) {
+        setMediaNodes(positioned.mediaNodes);
+        mediaNodesRef.current = positioned.mediaNodes;
+        persistMediaPositions(positioned.mediaNodes, positioned.changedMedia);
+      }
+      if (positioned.changedNotes.length > 0) {
+        setNotes(positioned.notes);
+        notesRef.current = positioned.notes;
+        persistNotes(positioned.notes);
       }
       if (Array.isArray(parsed.userEdges)) setUserEdges(parsed.userEdges.map(hydrateUserEdge));
       if (Array.isArray(parsed.deletedAuto)) setDeletedAutoEdgeIds(new Set(parsed.deletedAuto));
-      persistLayout(positionRef.current, parsed.userEdges ?? [], new Set(parsed.deletedAuto ?? []));
+      if (Array.isArray(parsed.groups)) {
+        setGroups(parsed.groups);
+        groupsRef.current = parsed.groups;
+      }
+      if (
+        parsed.viewport
+        && Number.isFinite(parsed.viewport.x)
+        && Number.isFinite(parsed.viewport.y)
+        && Number.isFinite(parsed.viewport.zoom)
+      ) {
+        rf.setViewport(parsed.viewport, {duration: 0});
+      }
+      persistLayout(
+        layoutPositionsForExport({
+          persisted: positionRef.current,
+          mediaNodes: positioned.mediaNodes,
+          notes: positioned.notes,
+        }),
+        parsed.userEdges ?? [],
+        new Set(parsed.deletedAuto ?? []),
+        Array.isArray(parsed.groups) ? {groups: parsed.groups} : undefined,
+      );
       setToast('布局已导入');
     } catch (error) {
       setToast(error instanceof Error ? error.message : '布局文件解析失败');
     }
-  }, [persistLayout, persistMediaPositions, setNodes, setUserEdges, setToast]);
+  }, [persistLayout, persistMediaPositions, persistNotes, rf, setGroups, setNodes, setUserEdges, setToast]);
 
   // 全局搜索结果：段/镜头/备注/资产（资产命中同时过滤画布卡片；点击定位画布）
   const searchResults = useMemo(() => {
@@ -14309,7 +14338,16 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   <button type="button" onClick={() => { setOpenMenu(null); exportStoryboardMd(); }}>导出分镜 Markdown</button>
                   <button type="button" onClick={() => { setOpenMenu(null); exportShotsCsv(); }}>导出镜头清单 CSV</button>
                   <div className="canvas-tools-section">布局</div>
-                  <button type="button" onClick={() => { setOpenMenu(null); persistLayout(positionRef.current, userEdges, deletedAutoEdgeIds); setToast('布局已保存'); }}>保存当前布局</button>
+                  <button type="button" onClick={() => {
+                    setOpenMenu(null);
+                    persistLayout(
+                      currentLayoutPositions(),
+                      userEdges,
+                      deletedAutoEdgeIds,
+                      {groups},
+                    );
+                    setToast('布局已保存');
+                  }}>保存当前布局</button>
                   <button type="button" onClick={() => { setOpenMenu(null); resetLayout(); }}>恢复默认布局</button>
                   <button type="button" title="仅恢复节点位置和连线；技能生成的投喂载荷请用顶部「项目设置 → 导入投喂载荷」" onClick={() => { setOpenMenu(null); layoutFileRef.current?.click(); }}>导入布局 JSON</button>
                   <button type="button" onClick={() => { setOpenMenu(null); exportLayoutJson(); }}>导出布局 JSON</button>
@@ -14705,7 +14743,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               </div>
             )}
           </aside>
-          {episodeMenu && createPortal(
+      {episodeMenu && createPortal(
             <div
               className="canvas-ep-action-menu"
               role="menu"
@@ -14885,6 +14923,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               <div
                 className={`canvas-selbar${selBar.menuDown ? ' menu-down' : ''}`}
                 style={{left: selBar.x, top: selBar.barTop}}
+                role="toolbar"
+                aria-label="多选操作"
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
               >

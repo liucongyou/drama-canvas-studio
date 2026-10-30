@@ -107,6 +107,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
     latest_task_error_kind?: string;
   }[]>([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const [onlineCount, setOnlineCount] = useState(0);
   const [pid, setPid] = useState<string>('');
   const [canvasEpoch, setCanvasEpoch] = useState(0);
   const [feedPath, setFeedPath] = useState('');
@@ -206,6 +207,28 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
       window.removeEventListener('canvas-projects-changed', loadAfterProjectChange);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    const refresh = () => {
+      void getManagedAccounts()
+        .then((snapshot) => {
+          if (!cancelled) setOnlineCount(snapshot.onlineCount);
+        })
+        .catch((error) => {
+          if (!cancelled && (error instanceof Error) && error.message.includes('管理员')) {
+            setOnlineCount(0);
+          }
+        });
+    };
+    const timer = window.setInterval(refresh, 30_000);
+    refresh();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isAdmin]);
 
   // 点外面收起项目与设置弹层（捕获阶段：内部面板会 stopPropagation）
   useEffect(() => {
@@ -617,6 +640,12 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
       )}
 
       <span className="shell-topbar-meta">{projects.length} 个项目</span>
+      {isAdmin && (
+        <span className="shell-online-meta" title="最近 90 秒内活跃的成员账号">
+          <i aria-hidden="true" />
+          {onlineCount > 0 ? `${onlineCount} 人在线` : '在线状态同步中'}
+        </span>
+      )}
       <div id="canvas-topbar-slot" className="shell-canvas-slot" />
 
       <div className="shell-topbar-right">
@@ -943,7 +972,7 @@ function AdminAccountsDialog({onClose}: {onClose: () => void}) {
         <header>
           <div>
             <h2 id="admin-accounts-title">账号管理</h2>
-            <p>创建、重置密码、启用或停用成员账号；当前 {onlineCount} 人在线。</p>
+            <p>创建、重置密码、启用或停用成员账号；当前 {onlineCount} 人在线，每 30 秒刷新。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭"><X size={16} strokeWidth={2} /></button>
         </header>

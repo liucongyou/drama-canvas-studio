@@ -7,10 +7,22 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.31.3';
+export const APP_VERSION = '2026.10.31.4';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.31.4',
+    date: '2026-10-31',
+    title: '画布布局往返与项目切换体验修复',
+    changes: [
+      '修复布局 JSON 导入后媒体卡坐标只在当前画面生效、刷新又回到旧位置的问题；导入坐标现在会直接写入当前集布局并持久化。',
+      '布局 JSON 同步导出和恢复视口、编组与当前媒体/备注坐标；导入失败仍保留明确错误提示，不再静默“看起来保存成功”。',
+      '保存当前布局改为使用最新媒体与备注坐标，避免手动保存时写入过期坐标。',
+      '管理员顶栏显示最近 90 秒活跃人数，账号管理窗口每 30 秒刷新，并继续保留成员上线提醒。',
+      '多选浮动操作条补充工具栏语义与可访问标签，改善键盘和辅助技术识别；项目切换继续清理旧集号并隔离旧项目状态。',
+    ],
+  },
   {
     version: '2026.10.31.3',
     date: '2026-10-31',

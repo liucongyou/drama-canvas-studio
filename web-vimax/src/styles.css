@@ -9300,6 +9300,27 @@ html[data-theme='dark'] .dialog-actions button.primary:hover:not(:disabled) {
   font-size: 12px;
 }
 .shell-topbar-meta { color: var(--faint, #8a8a8f); }
+.shell-online-meta {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--acc) 28%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--acc) 8%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.shell-online-meta i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--acc);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--acc) 18%, transparent);
+}
 .shell-topbar-right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 .shell-topbar-btn {
   position: relative;
