@@ -1246,6 +1246,33 @@ def migrate_active_tenant_schemas():
     return migrated
 
 
+def backfill_generation_delivery_status():
+    """Backfill delivery receipts for historical rows without guessing outcomes."""
+    changed = 0
+
+    def write(con):
+        nonlocal changed
+        ready = con.execute(
+            "UPDATE generation_tasks SET delivery_status='ready' "
+            "WHERE status='succeeded' "
+            "AND (delivery_status IS NULL OR delivery_status='' OR delivery_status='pending') "
+            "AND ("
+            "(local_result_url IS NOT NULL AND local_result_url!='') "
+            "OR (node_written_at IS NOT NULL AND node_written_at!='')"
+            ")"
+        )
+        changed += ready.rowcount
+        failed = con.execute(
+            "UPDATE generation_tasks SET delivery_status='failed' "
+            "WHERE status IN ('failed','interrupted') "
+            "AND (delivery_status IS NULL OR delivery_status='' OR delivery_status='pending')"
+        )
+        changed += failed.rowcount
+
+    _run_write_transaction(write)
+    return changed
+
+
 # 每个画布保留的快照条数上限。
 #
 # ★ 为什么必须限制（2026-10-25 第二次踩同一个坑）：

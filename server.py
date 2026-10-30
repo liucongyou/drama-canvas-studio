@@ -6185,6 +6185,14 @@ def main():
                 f"[schema] migrated {len(migrated_tenants)} tenant databases",
                 file=sys.stderr,
             )
+        delivery_backfilled = _run_for_active_tenants(
+            store.backfill_generation_delivery_status
+        )
+        if delivery_backfilled:
+            print(
+                f"[schema] backfilled {delivery_backfilled} task delivery receipts",
+                file=sys.stderr,
+            )
     except Exception as exc:
         print(f"[schema] tenant migration failed: {exc}", file=sys.stderr)
     try:

@@ -152,6 +152,49 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(outcome["regenerate"], "confirm")
         self.assertEqual(outcome["reason"], "result_delivery_failed")
 
+    def test_historical_delivery_backfill_uses_only_durable_evidence(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("delivery-backfill")
+            completed = canvas_store.create_generation_task(
+                project_id,
+                "node-completed",
+                kind="image",
+            )
+            canvas_store.update_generation_task(
+                completed["id"],
+                status="succeeded",
+                local_result_url="/uploads/completed.png",
+            )
+            failed = canvas_store.create_generation_task(
+                project_id,
+                "node-failed",
+                kind="image",
+            )
+            canvas_store.update_generation_task(
+                failed["id"],
+                status="failed",
+                error="provider failed",
+            )
+            unknown = canvas_store.create_generation_task(
+                project_id,
+                "node-unknown",
+                kind="image",
+            )
+            canvas_store.update_generation_task(
+                unknown["id"],
+                status="succeeded",
+            )
+
+            changed = canvas_store.backfill_generation_delivery_status()
+            completed_saved = canvas_store.get_generation_task(completed["id"])
+            failed_saved = canvas_store.get_generation_task(failed["id"])
+            unknown_saved = canvas_store.get_generation_task(unknown["id"])
+
+        self.assertGreaterEqual(changed, 2)
+        self.assertEqual(completed_saved["delivery_status"], "ready")
+        self.assertEqual(failed_saved["delivery_status"], "failed")
+        self.assertEqual(unknown_saved["delivery_status"], "pending")
+
     def test_expired_lease_without_provider_task_releases_node(self):
         with tenant_context.use_context(self.context):
             task = canvas_store.create_generation_task(
