@@ -7,10 +7,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.30.6';
+export const APP_VERSION = '2026.10.30.7';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.30.7',
+    date: '2026-10-30',
+    title: '生成任务号可靠落库',
+    changes: [
+      '图片任务取得供应商任务号后立即写入任务中心，查询和刷新不再依赖当前请求进程。',
+      '供应商请求超时或连接中断时统一标记“结果待确认”，不再误判为确定失败，也不会自动重复提交。',
+      'New API 图片和视频任务在中断后会进入同一套核对流程，已创建的任务可以继续查询和回收结果。',
+    ],
+  },
   {
     version: '2026.10.30.6',
     date: '2026-10-30',
