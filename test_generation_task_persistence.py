@@ -74,6 +74,30 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(first["id"], replay["id"])
         self.assertIn("first snapshot", replay["request_json"])
 
+    def test_operation_replay_is_scoped_to_project_and_node(self):
+        with tenant_context.use_context(self.context):
+            first = canvas_store.create_generation_task(
+                "project-a",
+                "node-a",
+                kind="image",
+                client_operation_id="operation-a",
+            )
+            second = canvas_store.create_generation_task(
+                "project-b",
+                "node-b",
+                kind="image",
+                client_operation_id="operation-b",
+            )
+            replay = canvas_store.create_generation_task(
+                "project-b",
+                "node-b",
+                kind="image",
+                client_operation_id="operation-b",
+            )
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(replay["id"], second["id"])
+        self.assertTrue(replay["replayed"])
+
     def test_failed_operation_can_create_new_task_with_new_operation_id(self):
         with tenant_context.use_context(self.context):
             original = canvas_store.create_generation_task(

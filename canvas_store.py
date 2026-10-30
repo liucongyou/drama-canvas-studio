@@ -550,18 +550,24 @@ def create_generation_task(
 ):
     client_operation_id = str(client_operation_id or "").strip()
     request_json = json.dumps(request_snapshot or {}, ensure_ascii=False, sort_keys=True)
-    if client_operation_id:
-        existing_for_operation = next(
-            (
-                item
-                for item in list_generation_tasks(None, 300)
-                if item.get("client_operation_id") == client_operation_id
-            ),
-            None,
-        )
-        if existing_for_operation:
-            return {**existing_for_operation, "created_new": False, "replayed": True}
     con = _connect()
+    if client_operation_id:
+        existing_for_operation = con.execute(
+            "SELECT * FROM generation_tasks WHERE client_operation_id=? LIMIT 1",
+            (client_operation_id,),
+        ).fetchone()
+        if existing_for_operation:
+            columns = [
+                item[0] for item in con.execute(
+                    "SELECT * FROM generation_tasks LIMIT 0"
+                ).description
+            ]
+            con.close()
+            return {
+                **dict(zip(columns, existing_for_operation)),
+                "created_new": False,
+                "replayed": True,
+            }
     active = con.execute(
         "SELECT * FROM generation_tasks WHERE project_id=? AND node_id=? "
         "AND status IN ('queued','submitting','running') ORDER BY created_at DESC LIMIT 1",

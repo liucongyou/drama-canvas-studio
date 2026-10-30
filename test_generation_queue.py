@@ -76,6 +76,42 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertTrue(second["created_new"])
         self.assertEqual(second["attempt"], 2)
 
+    def test_failed_node_accepts_new_model_operation_but_replays_same_operation(self):
+        first = canvas_store.create_generation_task(
+            "project-model-switch",
+            "node-model-switch",
+            kind="image",
+            client_operation_id="old-model-operation",
+            request_snapshot={"model": "old-model"},
+        )
+        canvas_store.finish_generation_task(
+            first["id"],
+            status="failed",
+            phase="生成失败",
+            error="old model failed",
+            delivery_status="failed",
+        )
+        replay = canvas_store.create_generation_task(
+            "project-model-switch",
+            "node-model-switch",
+            kind="image",
+            client_operation_id="old-model-operation",
+            request_snapshot={"model": "old-model"},
+        )
+        replacement = canvas_store.create_generation_task(
+            "project-model-switch",
+            "node-model-switch",
+            kind="image",
+            client_operation_id="new-model-operation",
+            request_snapshot={"model": "new-model"},
+        )
+
+        self.assertFalse(replay["created_new"])
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["id"], first["id"])
+        self.assertTrue(replacement["created_new"])
+        self.assertNotEqual(replacement["id"], first["id"])
+
     def test_provider_phase_hides_non_progress_values(self):
         self.assertEqual(server._provider_task_phase("running", 0), "生成中")
         self.assertEqual(server._provider_task_phase("running", 10), "生成中 10%")

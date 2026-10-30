@@ -4368,6 +4368,43 @@ class Handler(BaseHTTPRequestHandler):
                         "estimate": budget_estimate,
                     })
                 reconcile_active_generation_task_for_node(pid, node["id"], node)
+                requested_operation_id = str(body.get("clientOperationId") or "").strip()
+                if requested_operation_id:
+                    existing_operation = next(
+                        (
+                            item
+                            for item in store.list_generation_tasks(pid, 300)
+                            if item.get("client_operation_id") == requested_operation_id
+                        ),
+                        None,
+                    )
+                    if existing_operation:
+                        latest_task = store.get_generation_task(existing_operation["id"]) or existing_operation
+                        current_status = str(latest_task.get("status") or "")
+                        if current_status in {"queued", "submitting", "running", "interrupted"}:
+                            return self._send(202, {
+                                "accepted": True,
+                                "replayed": True,
+                                "taskId": latest_task.get("id"),
+                                "nodeId": node["id"],
+                                "status": "pending",
+                                "code": "GENERATION_TASK_REPLAYED",
+                            })
+                        if current_status == "succeeded":
+                            return self._send(200, {
+                                "replayed": True,
+                                "taskId": latest_task.get("id"),
+                                "nodeId": node["id"],
+                                "status": "done",
+                            })
+                        return self._send(409, {
+                            "replayed": True,
+                            "taskId": latest_task.get("id"),
+                            "nodeId": node["id"],
+                            "status": "failed",
+                            "code": "GENERATION_TASK_REPLAYED_FAILED",
+                            "error": str(latest_task.get("error") or "原生成任务已失败"),
+                        })
                 request_snapshot = {
                     "version": 1,
                     "projectId": pid,
@@ -4388,7 +4425,7 @@ class Handler(BaseHTTPRequestHandler):
                     estimated_cost=(budget_estimate or {}).get("amount") or 0,
                     cost_currency=(budget_estimate or {}).get("currency") or "",
                     request_snapshot=request_snapshot,
-                    client_operation_id=str(body.get("clientOperationId") or ""),
+                    client_operation_id=requested_operation_id,
                 )
                 if (
                     task
