@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {absolutePositionOf, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches} from './canvasLayout';
+import {absolutePositionOf, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches} from './canvasLayout';
 
 describe('resolveInitialEpisode', () => {
   it('URL 中的集号优先，支持刷新和分享链接', () => {
@@ -229,6 +229,24 @@ describe('workspaceScopeMatches', () => {
       {session: 'project-a', episode: 'EP001'},
       {session: 'project-a', episode: 'EP001'},
     )).toBe(true);
+  });
+});
+
+describe('layoutPositionsForExport', () => {
+  it('merges persisted nodes with current media and note coordinates', () => {
+    expect(layoutPositionsForExport({
+      persisted: {
+        'note-persisted': {x: 30, y: 40},
+        'segment-1': {x: 50, y: 60},
+      },
+      mediaNodes: [{id: 'image-1', x: 100, y: 200}],
+      notes: [{id: 'note-1', x: 300, y: 400}],
+    })).toEqual({
+      'note-persisted': {x: 30, y: 40},
+      'segment-1': {x: 50, y: 60},
+      'media-image-1': {x: 100, y: 200},
+      'note-note-1': {x: 300, y: 400},
+    });
   });
 });
 

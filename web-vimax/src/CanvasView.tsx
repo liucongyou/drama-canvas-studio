@@ -147,7 +147,7 @@ import {
   modelMaxRefs,
   type BatchGenerationCandidate,
 } from './batchGeneration';
-import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
+import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
 import {
   CANVAS_VIEWPORT_POLICY_VERSION,
   filterMediaNodesInBounds,
@@ -7811,6 +7811,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     }
   }, [layoutKey]);
 
+  const currentLayoutPositions = useCallback(() => {
+    return layoutPositionsForExport({
+      persisted: positionRef.current,
+      mediaNodes: mediaNodesRef.current,
+      notes: notesRef.current,
+    });
+  }, []);
+
   const persistLayout = useCallback((
     positions: Record<string, {x: number; y: number}>,
     edges: Edge[],
@@ -8383,6 +8391,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             const pending = pendingPositionSavesRef.current.get(nodeId);
             if (pending?.seq === sent.seq) pendingPositionSavesRef.current.delete(nodeId);
           }
+          if (pendingPositionSavesRef.current.size === 0) {
+            // Only clear an older save failure after a later mutation has
+            // actually been accepted. Merely starting a retry is not enough.
+            setSaveError('');
+          }
           const missingIds = new Set(result.missing || []);
           const missingNodes = mediaNodesRef.current.filter((node) => missingIds.has(node.id));
           if (missingNodes.length > 0) {
@@ -8438,13 +8451,39 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       void getCanvasMediaNodes(session, currentEp)
         .then((remoteNodes) => {
           let changed = 0;
+          const localById = new Map(
+            mediaNodesRef.current
+              .filter((node) => requested.size === 0 || requested.has(node.id))
+              .map((node) => [node.id, node]),
+          );
           setMediaNodes((prev) => prev.map((local) => {
             if (requested.size > 0 && !requested.has(local.id)) return local;
             const remote = remoteNodes.find((item) => item.id === local.id);
             if (!remote || remote.updatedAt <= local.updatedAt) return local;
+            const availability = remote.mediaUrl === local.mediaUrl
+              ? local.mediaAvailability
+              : 'unknown';
             changed += 1;
-            return remote;
+            return {
+              ...local,
+              ...remote,
+              ...(availability
+                ? {mediaAvailability: availability}
+                : {mediaAvailability: undefined}),
+            };
           }));
+          mediaNodesRef.current = mediaNodesRef.current.map((local) => {
+            if (requested.size > 0 && !requested.has(local.id)) return local;
+            const remote = remoteNodes.find((item) => item.id === local.id);
+            if (!remote || remote.updatedAt <= local.updatedAt) return local;
+            return {
+              ...localById.get(local.id),
+              ...remote,
+              mediaAvailability: remote.mediaUrl === local.mediaUrl
+                ? local.mediaAvailability
+                : 'unknown',
+            };
+          });
           if (changed > 0) {
             setToast('另一个标签页已更新此节点，当前节点已同步到最新状态');
           }
@@ -13829,15 +13868,16 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
 
   // 导出布局 JSON（当前集）
   const exportLayoutJson = useCallback(() => {
+    const positions = currentLayoutPositions();
     downloadText(`layout-${session}-${currentEp ?? 'all'}.json`, JSON.stringify({
       kind: 'drama-canvas-layout',
       version: 1,
-      positions: positionRef.current,
+      positions,
       userEdges,
       deletedAuto: [...deletedAutoEdgeIds],
       savedAt: new Date().toISOString(),
     }, null, 2), 'application/json');
-  }, [session, currentEp, userEdges, deletedAutoEdgeIds, downloadText]);
+  }, [session, currentEp, userEdges, deletedAutoEdgeIds, downloadText, currentLayoutPositions]);
 
   // 恢复默认布局：清除该集缓存并重新自动排布
   const resetLayout = useCallback(() => {
@@ -13874,6 +13914,31 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         const position = parsed.positions?.[node.id];
         return position ? {...node, position} : node;
       }));
+      const mediaPatches: CanvasMediaNode[] = [];
+      setMediaNodes((prev) => {
+        let changed = false;
+        const next = prev.map((node) => {
+          const position = parsed.positions?.[`${MEDIA_PREFIX}${node.id}`];
+          if (!position) return node;
+          if (node.x === position.x && node.y === position.y) return node;
+          changed = true;
+          const patch = {
+            ...node,
+            x: position.x,
+            y: position.y,
+          };
+          mediaPatches.push(patch);
+          return patch;
+        });
+        return changed ? next : prev;
+      });
+      mediaNodesRef.current = mediaNodesRef.current.map((node) => {
+        const position = parsed.positions?.[`${MEDIA_PREFIX}${node.id}`];
+        return position ? {...node, x: position.x, y: position.y} : node;
+      });
+      if (mediaPatches.length > 0) {
+        persistMediaPositions(mediaPatches);
+      }
       if (Array.isArray(parsed.userEdges)) setUserEdges(parsed.userEdges.map(hydrateUserEdge));
       if (Array.isArray(parsed.deletedAuto)) setDeletedAutoEdgeIds(new Set(parsed.deletedAuto));
       persistLayout(positionRef.current, parsed.userEdges ?? [], new Set(parsed.deletedAuto ?? []));
@@ -13881,7 +13946,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     } catch (error) {
       setToast(error instanceof Error ? error.message : '布局文件解析失败');
     }
-  }, [persistLayout, setNodes, setUserEdges, setToast]);
+  }, [persistLayout, persistMediaPositions, setNodes, setUserEdges, setToast]);
 
   // 全局搜索结果：段/镜头/备注/资产（资产命中同时过滤画布卡片；点击定位画布）
   const searchResults = useMemo(() => {
@@ -14777,6 +14842,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               pannable
               zoomable
               className="canvas-minimap"
+              style={{bottom: 76}}
               nodeClassName={(node) => {
                 // 按节点类型着色（即梦同款）：媒体卡 / 备注 / 分段卡 / 资产卡 一眼可辨
                 if (node.type === 'media') {

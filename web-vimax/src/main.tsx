@@ -106,6 +106,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
     latest_task_phase?: string;
     latest_task_error_kind?: string;
   }[]>([]);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [pid, setPid] = useState<string>('');
   const [canvasEpoch, setCanvasEpoch] = useState(0);
   const [feedPath, setFeedPath] = useState('');
@@ -154,6 +155,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
   useEffect(() => { pidRef.current = pid; }, [pid]);
 
   const selectProject = (projectId: string) => {
+    pidRef.current = projectId;
     setPid(projectId);
     try {
       const url = new URL(window.location.href);
@@ -186,13 +188,23 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
       const d = await fetch(apiUrl('/api/projects'), {credentials: 'include'}).then(r => r.json());
       const list = d.projects || [];
       setProjects(list);
+      if (d.error) {
+        // Keep the initial loading state when project enumeration failed.
+        return;
+      }
       reconcileSelectedProject(list);
+      setProjectsLoaded(true);
     } catch { /* 后端未启动 */ }
   };
   useEffect(() => {
+    const loadAfterProjectChange = () => { void loadProjects(); };
     void loadProjects();
     const timer = window.setInterval(() => { void loadProjects(); }, 8000);
-    return () => window.clearInterval(timer);
+    window.addEventListener('canvas-projects-changed', loadAfterProjectChange);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('canvas-projects-changed', loadAfterProjectChange);
+    };
   }, []);
 
   // 点外面收起项目与设置弹层（捕获阶段：内部面板会 stopPropagation）
@@ -233,8 +245,8 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
       body: JSON.stringify({title}),
     }).then(r => r.json());
     await loadProjects();
-    setPid(d.id);
-    window.location.hash = d.id;
+    selectProject(d.id);
+    window.dispatchEvent(new Event('canvas-projects-changed'));
   };
 
   const openProjectActionMenu = (event: ReactMouseEvent<HTMLButtonElement>, id: string) => {
@@ -263,8 +275,8 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
         return payload;
       });
       await loadProjects();
-      setPid(duplicated.id);
-      window.location.hash = duplicated.id;
+      selectProject(duplicated.id);
+      window.dispatchEvent(new Event('canvas-projects-changed'));
     } catch (error) {
       await dialog.alert({title: '复制项目失败', message: (error as Error).message, tone: 'danger'});
     }
@@ -288,11 +300,11 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
       if (!response.ok) throw new Error(payload.error || `删除失败，HTTP ${response.status}`);
       const fallback = projects.find((item) => item.id !== id);
       if (pid === id) {
-        setPid(fallback?.id || '');
-        window.location.hash = fallback?.id || '';
+        selectProject(fallback?.id || '');
       }
       setProjectOpen(false);
       await loadProjects();
+      window.dispatchEvent(new Event('canvas-projects-changed'));
     } catch (error) {
       await dialog.alert({title: '删除项目失败', message: (error as Error).message, tone: 'danger'});
     }
@@ -302,8 +314,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
     if (!projectId) return;
     setRenameDraft(projects.find(p => p.id === projectId)?.title || '');
     if (projectId !== pid) {
-      setPid(projectId);
-      window.location.hash = projectId;
+      selectProject(projectId);
     }
     setProjectOpen(false);
     setProjectActionMenu(null);
@@ -777,7 +788,13 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
     <div style={{display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--v-canvas)', color: 'var(--v-text)'}}>
       {actions}
       <div style={{flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column'}}>
-        {pid ? (
+        {!projectsLoaded && !pid ? (
+          <div className="canvas-empty-state" aria-live="polite">
+            <div className="app-initializing-spinner" />
+            <h2>正在加载项目</h2>
+            <p>恢复上次打开的画布，请稍候。</p>
+          </div>
+        ) : pid ? (
           // 画布单独一层边界：画布崩了顶栏还在，能直接切项目自救，不用整页重开
           <ErrorBoundary scope="canvas" label="画布" key={pid}>
             <CanvasView key={`${pid}:${canvasEpoch}`} session={pid} />

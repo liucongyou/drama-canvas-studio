@@ -3367,6 +3367,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
     linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);
   background-size:22px 22px;
 }
+.canvas-stage[data-bg='blank']{background-image:none}
 /* 旧提示词弹窗 / 切集进度条：底与边框里的暗蓝一并换掉 */
 .canvas-prompt-overlay{background:rgba(0,0,0,.58)}
 .canvas-prompt-text{background:var(--v-canvas);color:var(--v-text)}

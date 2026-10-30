@@ -566,3 +566,20 @@ export function workspaceScopeMatches(
     && (requested.episode || null) === (active.episode || null)
   );
 }
+
+export function layoutPositionsForExport(input: {
+  persisted?: Record<string, {x: number; y: number}> | null;
+  mediaNodes?: Array<{id: string; x: number; y: number}>;
+  notes?: Array<{id: string; x: number; y: number}>;
+}): Record<string, {x: number; y: number}> {
+  const positions: Record<string, {x: number; y: number}> = {
+    ...(input.persisted || {}),
+  };
+  for (const node of input.mediaNodes || []) {
+    positions[`media-${node.id}`] = {x: node.x, y: node.y};
+  }
+  for (const note of input.notes || []) {
+    positions[`note-${note.id}`] = {x: note.x, y: note.y};
+  }
+  return positions;
+}
