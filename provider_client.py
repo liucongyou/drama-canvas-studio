@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import shutil
+import ssl
 import subprocess
 import tempfile
 import time
@@ -226,10 +227,10 @@ def _request_json(
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:1200]
         raise ProviderHTTPError(exc.code, detail, exc.headers) from exc
-    except (TimeoutError, OSError) as exc:
+    except (TimeoutError, OSError, ssl.SSLError) as exc:
         if method.upper() == "POST":
             raise ProviderOutcomeUncertain(
-                f"供应商请求已发出，但读取结果超时：{exc}"
+                f"供应商请求已发出，但未收到可确认结果：{exc}"
             ) from exc
         raise RuntimeError(f"供应商接口读取失败：{exc}") from exc
     except urllib.error.URLError as exc:
@@ -2250,6 +2251,8 @@ def generate_image(
     prompt: str,
     params: dict[str, Any],
     refs: list[dict[str, Any]],
+    *,
+    on_task_created: TaskEventCallback | None = None,
 ) -> dict[str, Any]:
     adapter = str(model.get("adapter") or "")
     if adapter == "ark_image":
@@ -2257,7 +2260,10 @@ def generate_image(
     if adapter == "openai_image":
         return _openai_image(provider, model, prompt, params, refs)
     if adapter == "newapi_image":
-        return _newapi_image(provider, model, prompt, params, refs)
+        return _newapi_image(
+            provider, model, prompt, params, refs,
+            on_task_created=on_task_created,
+        )
     if adapter == "agnes_image":
         return _agnes_image(provider, model, prompt, params, refs)
     raise RuntimeError(f"图片模型适配器未实现：{adapter}")

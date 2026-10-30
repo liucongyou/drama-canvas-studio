@@ -96,6 +96,93 @@ class ProviderCatalogTests(unittest.TestCase):
             )],
         )
 
+    def test_aistars_image_persists_task_id_before_first_poll(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "65-seedream-5-pro",
+            "remoteModel": "即梦-65-seedream-5-pro",
+            "adapter": "newapi_image",
+            "params": {},
+        }
+        created = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            if method == "POST":
+                return {"id": "task-persisted", "status": "queued"}
+            return {
+                "id": "task-persisted",
+                "status": "completed",
+                "artifacts": [{
+                    "content_url": "/v1/tasks/task-persisted/artifacts/image-0/content",
+                }],
+            }
+
+        with (
+            patch.object(provider_client, "_request_json", side_effect=fake_request),
+            patch.object(
+                provider_client,
+                "_download_bytes_with_key",
+                return_value=(b"image", "image/png"),
+            ),
+            patch.object(
+                provider_client,
+                "save_generated_bytes",
+                return_value="/uploads/persisted.png",
+            ),
+            patch.object(provider_client.time, "sleep"),
+        ):
+            provider_client.generate_image(
+                provider,
+                model,
+                "test",
+                {"ratio": "16:9", "resolution": "2K"},
+                [],
+                on_task_created=created.append,
+            )
+
+        self.assertEqual(created[0]["taskId"], "task-persisted")
+
+    def test_aistars_image_ambiguous_timeout_keeps_recovery_state(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "65-seedream-5-pro",
+            "remoteModel": "即梦-65-seedream-5-pro",
+            "adapter": "newapi_image",
+            "params": {},
+        }
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            raise provider_client.ProviderOutcomeUncertain(
+                "供应商请求已发出，但未收到可确认结果",
+                submitted_at="2026-10-30T00:26:03+00:00",
+            )
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request):
+            with self.assertRaises(provider_client.ProviderOutcomeUncertain) as caught:
+                provider_client.generate_image(
+                    provider,
+                    model,
+                    "test",
+                    {"ratio": "16:9", "resolution": "2K"},
+                    [],
+                )
+
+        self.assertIn("未收到可确认结果", str(caught.exception))
+        self.assertEqual(
+            caught.exception.submitted_at,
+            "2026-10-30T00:26:03+00:00",
+        )
+
     def test_aistars_image_503_without_task_id_is_uncertain_and_not_retried(self):
         provider = {
             "id": "new-apl",

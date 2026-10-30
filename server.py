@@ -1599,7 +1599,7 @@ def reconcile_active_generation_task_for_node(project_id, node_id, node):
             provider_task_id=provider_task_id or task.get("provider_task_id") or "",
             finished_at=store._now_iso(),
         )
-    if node_status == "failed":
+    if node_status in {"failed", "error"}:
         return store.update_generation_task(
             task["id"],
             status="failed",
@@ -1621,9 +1621,14 @@ def reconcile_active_generation_task_for_node(project_id, node_id, node):
         age = (datetime.now(timezone.utc) - updated_at).total_seconds()
     except (TypeError, ValueError):
         age = 999
-    # Only async video tasks require a provider task id. Image/audio calls are
-    # synchronous and legitimately have no task id until they return.
-    if str(task.get("kind") or "") == "video" and not task.get("provider_task_id") and age >= 90:
+    # Async New API image tasks need the same task-id reconciliation as video.
+    # Other image/audio adapters may still be synchronous and have no task id.
+    if (
+        str(task.get("kind") or "") in {"image", "video"}
+        and str(task.get("provider") or "") == "new-apl"
+        and not task.get("provider_task_id")
+        and age >= 90
+    ):
         return store.update_generation_task(
             task["id"],
             status="interrupted",
@@ -4672,7 +4677,7 @@ class Handler(BaseHTTPRequestHandler):
                         finished_at="",
                     )
                 commit_node_metadata(pid, node["id"], {
-                    "status": "failed",
+                    "status": "error",
                     "lastError": str(exc),
                     "providerTaskStatus": "uncertain",
                     "providerTaskPhase": "结果待确认",
@@ -4865,7 +4870,37 @@ class Handler(BaseHTTPRequestHandler):
                 if missing:
                     raise RuntimeError(missing_note(missing))
                 validate_refs(refs)
-                result = provider_client.generate_image(provider, model, prompt, effective, refs)
+                generation_started_at = store._now_iso()
+                generation_task_id = task_id
+
+                def on_image_task_created(task):
+                    provider_task_id = str(task.get("taskId") or "")
+                    commit_node_metadata(pid, node["id"], {
+                        "taskId": provider_task_id,
+                        "providerTaskStatus": "queued",
+                        "providerTaskPhase": "排队中",
+                        "providerTaskProgress": 0,
+                        "generationStartedAt": generation_started_at,
+                    })
+                    if generation_task_id:
+                        store.update_generation_task(
+                            generation_task_id,
+                            provider_task_id=provider_task_id,
+                            status="running",
+                            phase="排队中",
+                            progress=20,
+                            error="",
+                            finished_at="",
+                        )
+
+                result = provider_client.generate_image(
+                    provider,
+                    model,
+                    prompt,
+                    effective,
+                    refs,
+                    on_task_created=on_image_task_created,
+                )
                 provider_ready_at = store._now_iso()
                 provider_url = str(result.get("url") or "")
                 if not provider_url:
@@ -5154,6 +5189,15 @@ class Handler(BaseHTTPRequestHandler):
                     meta["params"]["videoVersions"] = [dict(item) for item in version_list]
         except Exception as exc:
             if isinstance(exc, provider_client.ProviderOutcomeUncertain):
+                meta["status"] = "error"
+                meta["lastError"] = str(exc)
+                commit_node_metadata(pid, node["id"], {
+                    "status": "error",
+                    "lastError": str(exc),
+                    "providerTaskStatus": "uncertain",
+                    "providerTaskPhase": "结果待确认",
+                    "generationFinishedAt": "",
+                })
                 raise
             meta["status"] = "failed"
             meta["lastError"] = str(exc)
