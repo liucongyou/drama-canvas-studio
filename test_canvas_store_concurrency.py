@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import concurrent.futures
 import os
+import sqlite3
 import tempfile
 import threading
 import time
@@ -92,6 +93,37 @@ class CanvasStoreConcurrencyTests(unittest.TestCase):
             revisions = list(pool.map(update, project_ids))
 
         self.assertEqual(revisions, [2] * len(project_ids))
+
+    def test_generation_task_write_retries_transient_database_lock(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("retry-lock")
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-retry",
+                kind="image",
+            )
+            original_connect = canvas_store._connect
+            calls = {"count": 0}
+
+            def flaky_connect():
+                connection = original_connect()
+                if calls["count"] == 0:
+                    calls["count"] += 1
+                    connection.close()
+                    raise sqlite3.OperationalError("database is locked")
+                return connection
+
+            with patch.object(canvas_store, "_connect", side_effect=flaky_connect), \
+                    patch.object(canvas_store.time, "sleep"):
+                updated = canvas_store.update_generation_task(
+                    task["id"],
+                    provider_task_id="task-after-retry",
+                    status="running",
+                )
+
+        self.assertGreaterEqual(calls["count"], 1)
+        self.assertEqual(updated["provider_task_id"], "task-after-retry")
+        self.assertEqual(updated["status"], "running")
 
     def test_generation_cost_reservations_are_summed_for_budget_checks(self):
         with tenant_context.use_context(self.context):

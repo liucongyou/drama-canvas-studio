@@ -147,6 +147,48 @@ class ProviderCatalogTests(unittest.TestCase):
 
         self.assertEqual(created[0]["taskId"], "task-persisted")
 
+    def test_task_creation_callback_failure_stops_before_polling(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "65-seedream-5-pro",
+            "remoteModel": "即梦-65-seedream-5-pro",
+            "adapter": "newapi_image",
+            "params": {},
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url))
+            if method == "POST":
+                return {"id": "task-db-failure", "status": "queued"}
+            raise AssertionError("polling must not start when task id persistence fails")
+
+        def fail_to_persist(_task):
+            raise RuntimeError("database is locked")
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request):
+            with self.assertRaises(provider_client.ProviderOutcomeUncertain) as caught:
+                provider_client.generate_image(
+                    provider,
+                    model,
+                    "test",
+                    {"ratio": "16:9", "resolution": "2K"},
+                    [],
+                    on_task_created=fail_to_persist,
+                )
+
+        self.assertEqual([method for method, _url in calls], ["POST"])
+        self.assertIn("task-db-failure", str(caught.exception))
+        self.assertEqual(
+            caught.exception.response.get("taskId"),
+            "task-db-failure",
+        )
+
     def test_aistars_image_ambiguous_timeout_keeps_recovery_state(self):
         provider = {
             "id": "new-apl",
@@ -351,6 +393,52 @@ class ProviderCatalogTests(unittest.TestCase):
                 "test-key",
             )],
         )
+
+    def test_check_image_task_recovers_completed_newapi_image(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "65-seedream-5-pro",
+            "remoteModel": "即梦-65-seedream-5-pro",
+            "adapter": "newapi_image",
+            "params": {},
+        }
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            self.assertEqual(method, "GET")
+            self.assertEqual(
+                url,
+                "https://api.canvasproai.com/aistars/v1/tasks/task-recover",
+            )
+            return {
+                "id": "task-recover",
+                "status": "completed",
+                "artifacts": [{
+                    "content_url": "/v1/tasks/task-recover/artifacts/image-0/content",
+                }],
+            }
+
+        with (
+            patch.object(provider_client, "_request_json", side_effect=fake_request),
+            patch.object(
+                provider_client,
+                "_persist_auth_url",
+                return_value="/uploads/recovered.png",
+            ),
+        ):
+            state = provider_client.check_image_task(
+                provider,
+                model,
+                "task-recover",
+            )
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["url"], "/uploads/recovered.png")
+        self.assertEqual(state["taskId"], "task-recover")
 
     def test_newapi_video_result_fields_are_provider_specific(self):
         self.assertEqual(

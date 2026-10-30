@@ -1806,6 +1806,144 @@ def _resume_video_task(project_id, node_id, task_id, provider, model):
             RESUMED_VIDEO_TASKS.discard(key)
 
 
+def _finalize_resumed_image(project_id, node_id, state, provider, model):
+    project = store.get_project(project_id)
+    if not project:
+        return False
+    node = next(
+        (item for item in project["payload"].get("nodes", [])
+         if item.get("id") == node_id),
+        None,
+    )
+    if not node:
+        return False
+    meta = node.get("metadata") or {}
+    task_id = str(state.get("taskId") or "")
+    generated_url = persist_generated_media(str(state.get("url") or ""), ".png")
+    if not generated_url.startswith("/uploads/"):
+        raise RuntimeError("恢复的图片任务完成，但未能保存本地新文件")
+    generated_at = store._now_iso()
+    _record_media_version(meta, "image", generated_url, task_id, generated_at)
+    meta.update({
+        "status": "done",
+        "content": generated_url,
+        "lastError": "",
+        "taskId": task_id,
+        "generatedAt": generated_at,
+        "generationFinishedAt": generated_at,
+        "providerTaskStatus": "completed",
+        "providerTaskPhase": "已完成",
+        "provider": provider.get("id"),
+        "model": model.get("id"),
+        "remoteModel": model.get("remoteModel"),
+        "production": {
+            "provider": provider.get("id"),
+            "providerName": provider.get("name"),
+            "model": model.get("id"),
+            "remoteModel": model.get("remoteModel"),
+            "adapter": model.get("adapter"),
+            "generatedAt": generated_at,
+            "taskId": task_id,
+        },
+    })
+    commit_node_metadata(project_id, node_id, {
+        "status": "done",
+        "content": generated_url,
+        "lastError": "",
+        "taskId": task_id,
+        "generatedAt": generated_at,
+        "generationFinishedAt": generated_at,
+        "providerTaskStatus": "completed",
+        "providerTaskPhase": "已完成",
+        "provider": provider.get("id"),
+        "model": model.get("id"),
+        "remoteModel": model.get("remoteModel"),
+        "production": meta["production"],
+        "_paramsPatch": {
+            "mediaVersions": meta["params"].get("mediaVersions", []),
+            "mediaVersionIndex": meta["params"].get("mediaVersionIndex", 0),
+        },
+    })
+    generation_task = _find_generation_task(project_id, node_id, task_id)
+    if generation_task:
+        store.update_generation_task(
+            generation_task["id"], status="succeeded", phase="已完成", progress=100,
+            error="", finished_at=store._now_iso(),
+        )
+    return True
+
+
+def _resume_image_task(project_id, node_id, task_id, provider, model):
+    key = (project_id, node_id)
+    generation_task = _find_generation_task(project_id, node_id, task_id)
+    try:
+        deadline = time.time() + 900
+        while time.time() < deadline:
+            try:
+                state = provider_client.check_image_task(provider, model, task_id)
+            except Exception as exc:
+                commit_node_metadata(project_id, node_id, {
+                    "providerTaskStatus": "retrying",
+                    "providerTaskPhase": "查询重试中",
+                    "lastError": str(exc),
+                })
+                if generation_task:
+                    store.update_generation_task(
+                        generation_task["id"], status="running", phase="查询重试中",
+                        error=str(exc),
+                    )
+                time.sleep(8)
+                continue
+            progress = state.get("progress")
+            commit_node_metadata(project_id, node_id, {
+                "providerTaskStatus": state.get("rawStatus") or state.get("status"),
+                "providerTaskPhase": _provider_task_phase(state.get("rawStatus") or state.get("status"), progress),
+                "providerTaskProgress": progress,
+                "lastError": "" if state.get("status") != "failed" else str(state.get("error") or "生成失败"),
+            })
+            if generation_task:
+                store.update_generation_task(
+                    generation_task["id"], status="running",
+                    phase=_provider_task_phase(state.get("rawStatus") or state.get("status"), progress),
+                    progress=int(progress) if isinstance(progress, (int, float)) else None,
+                )
+            if state.get("status") == "completed":
+                _finalize_resumed_image(project_id, node_id, state, provider, model)
+                return
+            if state.get("status") == "failed":
+                commit_node_metadata(project_id, node_id, {
+                    "status": "failed",
+                    "lastError": str(state.get("error") or "图片生成失败"),
+                    "providerTaskStatus": "failed",
+                    "providerTaskPhase": "生成失败",
+                    "generationFinishedAt": store._now_iso(),
+                })
+                if generation_task:
+                    store.update_generation_task(
+                        generation_task["id"], status="failed", phase="生成失败",
+                        error=str(state.get("error") or "图片生成失败"),
+                        finished_at=store._now_iso(),
+                    )
+                return
+            time.sleep(5)
+        commit_node_metadata(project_id, node_id, {
+            "status": "failed",
+            "lastError": "恢复供应商图片任务超时（900s）",
+            "providerTaskStatus": "timeout",
+            "providerTaskPhase": "生成超时",
+            "generationFinishedAt": store._now_iso(),
+        })
+        if generation_task:
+            store.update_generation_task(
+                generation_task["id"], status="failed", phase="生成超时",
+                error="恢复供应商图片任务超时（900s）",
+                finished_at=store._now_iso(),
+            )
+    finally:
+        with RESUMED_VIDEO_TASKS_LOCK:
+            RESUMED_VIDEO_TASKS.discard(key)
+
+
 def reconcile_generation_task_records():
     """Align persisted task rows with the authoritative canvas node state."""
     projects = {}
@@ -1943,7 +2081,8 @@ def start_pending_video_resumers():
                     meta = node.get("metadata") or {}
                     task_id = str(meta.get("taskId") or "").strip()
                     provider_status = str(meta.get("providerTaskStatus") or "").strip().lower()
-                    if (node.get("type") != "video"
+                    node_type = str(node.get("type") or "")
+                    if (node_type not in {"image", "video"}
                             or meta.get("status") != "generating"
                             or not task_id
                             or provider_status not in {"queued", "pending", "created", "submitted", "running", "processing", "retrying"}):
@@ -1953,12 +2092,14 @@ def start_pending_video_resumers():
                         provider, model, _ = provider_catalog.resolve_model(
                             params.get("provider") or meta.get("provider"),
                             params.get("model") or meta.get("model"),
-                            "video",
+                            node_type,
                         )
+                        if node_type == "image" and str(model.get("adapter") or "") != "newapi_image":
+                            continue
                     except Exception as exc:
                         commit_node_metadata(project["id"], node["id"], {
                             "status": "failed",
-                            "lastError": f"无法恢复视频任务：{exc}",
+                            "lastError": f"无法恢复{node_type}任务：{exc}",
                             "providerTaskPhase": "恢复失败",
                         })
                         continue
@@ -1974,7 +2115,7 @@ def start_pending_video_resumers():
                         args=(
                             tenant_id,
                             tenant_slug,
-                            _resume_video_task,
+                            _resume_image_task if node_type == "image" else _resume_video_task,
                             project["id"],
                             node["id"],
                             task_id,
@@ -1989,6 +2130,55 @@ def start_pending_video_resumers():
         else:
             with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
                 resume_tenant(tenant)
+
+
+def reconcile_provider_task_journal():
+    """Restore task ids from the durable journal before provider task resume."""
+    recovered = 0
+    for entry in store.list_provider_task_journal():
+        task_id = str(entry.get("taskId") or "").strip()
+        provider_task_id = str(entry.get("providerTaskId") or "").strip()
+        project_id = str(entry.get("projectId") or "").strip()
+        node_id = str(entry.get("nodeId") or "").strip()
+        if not provider_task_id:
+            continue
+        task = store.get_generation_task(task_id) if task_id else None
+        if task and not task.get("provider_task_id"):
+            store.update_generation_task(
+                task_id,
+                provider_task_id=provider_task_id,
+                status="running",
+                phase="等待恢复",
+                error="",
+                finished_at="",
+            )
+            recovered += 1
+        if project_id and node_id:
+            project = store.get_project(project_id)
+            node = next(
+                (
+                    item for item in (project or {}).get("payload", {}).get("nodes", [])
+                    if item.get("id") == node_id
+                ),
+                None,
+            )
+            meta = (node or {}).get("metadata") or {}
+            if node and (
+                str(meta.get("taskId") or "") != provider_task_id
+                or str(meta.get("providerTaskStatus") or "").lower()
+                in {"uncertain", "interrupted", "failed"}
+            ):
+                commit_node_metadata(project_id, node_id, {
+                    "taskId": provider_task_id,
+                    "status": "generating",
+                    "lastError": "",
+                    "providerTaskStatus": "queued",
+                    "providerTaskPhase": "等待恢复",
+                    "providerTaskProgress": 0,
+                    "generationFinishedAt": "",
+                })
+                recovered += 1
+    return recovered
 
 
 def reconcile_interrupted_generation_nodes():
@@ -4875,7 +5065,15 @@ class Handler(BaseHTTPRequestHandler):
 
                 def on_image_task_created(task):
                     provider_task_id = str(task.get("taskId") or "")
-                    commit_node_metadata(pid, node["id"], {
+                    store.remember_provider_task(
+                        generation_task_id,
+                        provider_task_id,
+                        project_id=pid,
+                        node_id=node["id"],
+                        provider=provider.get("id"),
+                        model=model.get("id"),
+                    )
+                    meta.update({
                         "taskId": provider_task_id,
                         "providerTaskStatus": "queued",
                         "providerTaskPhase": "排队中",
@@ -4892,6 +5090,13 @@ class Handler(BaseHTTPRequestHandler):
                             error="",
                             finished_at="",
                         )
+                    commit_node_metadata(pid, node["id"], {
+                        "taskId": provider_task_id,
+                        "providerTaskStatus": "queued",
+                        "providerTaskPhase": "排队中",
+                        "providerTaskProgress": 0,
+                        "generationStartedAt": generation_started_at,
+                    })
 
                 result = provider_client.generate_image(
                     provider,
@@ -5007,17 +5212,15 @@ class Handler(BaseHTTPRequestHandler):
 
                 def on_task_created(task):
                     provider_task_id = str(task.get("taskId") or "")
+                    store.remember_provider_task(
+                        generation_task_id,
+                        provider_task_id,
+                        project_id=pid,
+                        node_id=node["id"],
+                        provider=provider.get("id"),
+                        model=model.get("id"),
+                    )
                     meta.update({
-                        "taskId": provider_task_id,
-                        "providerTaskStatus": "queued",
-                        "providerTaskPhase": "排队中",
-                        "providerTaskProgress": 0,
-                        "generationStartedAt": generation_started_at,
-                        "provider": provider.get("id"),
-                        "model": model.get("id"),
-                        "remoteModel": model.get("remoteModel"),
-                    })
-                    commit_node_metadata(pid, node["id"], {
                         "taskId": provider_task_id,
                         "providerTaskStatus": "queued",
                         "providerTaskPhase": "排队中",
@@ -5033,6 +5236,16 @@ class Handler(BaseHTTPRequestHandler):
                             status="running", phase="排队中", progress=20,
                             error="", finished_at="",
                         )
+                    commit_node_metadata(pid, node["id"], {
+                        "taskId": provider_task_id,
+                        "providerTaskStatus": "queued",
+                        "providerTaskPhase": "排队中",
+                        "providerTaskProgress": 0,
+                        "generationStartedAt": generation_started_at,
+                        "provider": provider.get("id"),
+                        "model": model.get("id"),
+                        "remoteModel": model.get("remoteModel"),
+                    })
 
                 # 轮询已经加密到 1.5s，若每次都重写整份 payload，一个 5 分钟的视频
                 # 会多出上百次全量写。进度文字晚 3 秒无所谓，状态机不能因此抖动。
@@ -5391,6 +5604,14 @@ def main():
         _run_for_active_tenants(store.interrupt_orphan_generation_tasks)
     except Exception as exc:
         print(f"[generation-tasks] 清理中断任务失败：{exc}", file=sys.stderr)
+    try:
+        recovered_provider_tasks = _run_for_active_tenants(
+            reconcile_provider_task_journal
+        )
+        if recovered_provider_tasks:
+            print(f"已恢复 {recovered_provider_tasks} 条供应商任务号记录")
+    except Exception as exc:
+        print(f"[generation-tasks] 恢复供应商任务号失败：{exc}", file=sys.stderr)
     try:
         reconciled = _run_for_active_tenants(reconcile_interrupted_generation_nodes)
         if reconciled:

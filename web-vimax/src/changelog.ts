@@ -7,10 +7,21 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.30.7';
+export const APP_VERSION = '2026.10.30.8';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.30.8',
+    date: '2026-10-30',
+    title: '统一异步任务持久化约束',
+    changes: [
+      '所有异步供应商统一要求先保存任务号再轮询；任务号写入失败时立即进入“结果待确认”，不会继续查询或重复提交。',
+      '任务号同时写入数据库和本地恢复日志；数据库短暂锁竞争会自动重试，避免一次锁冲突就丢失任务。',
+      '刷新或服务重启后，已保存任务号的图片与视频任务都会继续恢复，不再只恢复视频。',
+      '系统新增回归测试，覆盖任务号缺失、数据库锁重试、恢复日志和图片任务恢复四类关键场景。',
+    ],
+  },
   {
     version: '2026.10.30.7',
     date: '2026-10-30',

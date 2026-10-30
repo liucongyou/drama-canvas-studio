@@ -27,6 +27,8 @@ _SCHEMA_READY = False
 _SCHEMA_READY_PATHS: set[str] = set()
 _SCHEMA_LOCK = __import__("threading").RLock()
 _WAL_READY_PATHS: set[str] = set()
+_WRITE_RETRY_SECONDS = 35.0
+_WRITE_RETRY_MAX_DELAY = 0.5
 
 
 class RevisionConflictError(RuntimeError):
@@ -38,6 +40,15 @@ def _db_path() -> str:
     if context is not None:
         return str(context.db_path)
     return str(DB_PATH)
+
+
+def _tenant_data_dir() -> str:
+    # Use the same tenant root resolver as DB and upload paths. The current
+    # ContextVar is also present in worker threads, so prefer its root.
+    context = tenant_context.current()
+    if context is not None:
+        return str(context.data_root)
+    return os.path.dirname(DB_PATH)
 
 
 def _connect():
@@ -193,6 +204,44 @@ def _connect():
             _SCHEMA_READY_PATHS.add(path)
             _SCHEMA_READY = True
     return con
+
+
+def _is_retryable_write_error(exc: sqlite3.OperationalError) -> bool:
+    message = str(exc).lower()
+    return "database is locked" in message or "database is busy" in message
+
+
+def _run_write_transaction(callback):
+    """Retry SQLite writer contention beyond a single busy_timeout window."""
+    deadline = time.monotonic() + _WRITE_RETRY_SECONDS
+    delay = 0.05
+    while True:
+        try:
+            con = _connect()
+        except sqlite3.OperationalError as exc:
+            if not _is_retryable_write_error(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(_WRITE_RETRY_MAX_DELAY, delay * 2)
+            continue
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            result = callback(con)
+            con.commit()
+            return result
+        except sqlite3.OperationalError as exc:
+            if con.in_transaction:
+                con.rollback()
+            if not _is_retryable_write_error(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(_WRITE_RETRY_MAX_DELAY, delay * 2)
+        except Exception:
+            if con.in_transaction:
+                con.rollback()
+            raise
+        finally:
+            con.close()
 
 
 def list_projects():
@@ -424,31 +473,39 @@ def create_generation_task(
         "SELECT COUNT(*) FROM generation_tasks WHERE project_id=? AND node_id=?",
         (project_id, node_id),
     ).fetchone()[0] or 0) + 1
-    try:
-        con.execute(
-            "INSERT INTO generation_tasks("
-            "id,project_id,node_id,title,kind,status,phase,progress,provider,model,"
-            "provider_task_id,attempt,estimated_cost,cost_currency,error,"
-            "created_at,started_at,updated_at,finished_at"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                task_id, project_id, node_id, title, kind, "queued", "等待调度", 0,
-                provider, model, "", attempt, float(estimated_cost or 0),
-                str(cost_currency or ""), "", now, "", now, "",
-            ),
-        )
-    except sqlite3.IntegrityError:
-        con.rollback()
-        row = con.execute(
-            "SELECT * FROM generation_tasks WHERE project_id=? AND node_id=? "
-            "AND status IN ('queued','submitting','running') ORDER BY created_at DESC LIMIT 1",
-            (project_id, node_id),
-        ).fetchone()
-        columns = [item[0] for item in con.execute("SELECT * FROM generation_tasks LIMIT 0").description]
-        con.close()
-        return ({**dict(zip(columns, row)), "created_new": False} if row else None)
-    con.commit()
     con.close()
+
+    def insert(connection):
+        try:
+            connection.execute(
+                "INSERT INTO generation_tasks("
+                "id,project_id,node_id,title,kind,status,phase,progress,provider,model,"
+                "provider_task_id,attempt,estimated_cost,cost_currency,error,"
+                "created_at,started_at,updated_at,finished_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    task_id, project_id, node_id, title, kind, "queued", "等待调度", 0,
+                    provider, model, "", attempt, float(estimated_cost or 0),
+                    str(cost_currency or ""), "", now, "", now, "",
+                ),
+            )
+        except sqlite3.IntegrityError:
+            row = connection.execute(
+                "SELECT * FROM generation_tasks WHERE project_id=? AND node_id=? "
+                "AND status IN ('queued','submitting','running') ORDER BY created_at DESC LIMIT 1",
+                (project_id, node_id),
+            ).fetchone()
+            columns = [
+                item[0] for item in connection.execute(
+                    "SELECT * FROM generation_tasks LIMIT 0"
+                ).description
+            ]
+            return {**dict(zip(columns, row)), "created_new": False} if row else None
+        return {"created": True}
+
+    result = _run_write_transaction(insert)
+    if result and not result.get("created"):
+        return result
     return {**(get_generation_task(task_id) or {}), "created_new": True}
 
 
@@ -465,14 +522,76 @@ def update_generation_task(task_id, **fields):
     if not updates:
         return get_generation_task(task_id)
     updates["updated_at"] = _now_iso()
-    con = _connect()
-    con.execute(
-        "UPDATE generation_tasks SET " + ",".join(f"{key}=?" for key in updates) + " WHERE id=?",
-        (*updates.values(), task_id),
-    )
-    con.commit()
-    con.close()
+    def write(con):
+        con.execute(
+            "UPDATE generation_tasks SET " + ",".join(f"{key}=?" for key in updates) + " WHERE id=?",
+            (*updates.values(), task_id),
+        )
+    _run_write_transaction(write)
     return get_generation_task(task_id)
+
+
+def remember_provider_task(
+    task_id,
+    provider_task_id,
+    *,
+    project_id="",
+    node_id="",
+    provider="",
+    model="",
+):
+    """Persist a recovery journal entry independently from SQLite."""
+    provider_task_id = str(provider_task_id or "").strip()
+    if not provider_task_id:
+        raise ValueError("供应商任务号为空")
+    journal_dir = os.path.join(_tenant_data_dir(), "generation-journal")
+    os.makedirs(journal_dir, exist_ok=True)
+    payload = {
+        "taskId": str(task_id or ""),
+        "providerTaskId": provider_task_id,
+        "projectId": str(project_id or ""),
+        "nodeId": str(node_id or ""),
+        "provider": str(provider or ""),
+        "model": str(model or ""),
+        "savedAt": _now_iso(),
+    }
+    safe_name = "".join(
+        ch for ch in provider_task_id
+        if ch.isalnum() or ch in {"-", "_", "."}
+    )[:180]
+    if not safe_name:
+        safe_name = _rid(24)
+    path = os.path.join(journal_dir, safe_name + ".json")
+    temp_path = path + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp_path, path)
+    return payload
+
+
+def list_provider_task_journal():
+    """Return durable provider-task journal entries for startup reconciliation."""
+    journal_dir = os.path.join(_tenant_data_dir(), "generation-journal")
+    if not os.path.isdir(journal_dir):
+        return []
+    entries = []
+    for name in sorted(os.listdir(journal_dir)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(journal_dir, name)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if not str(payload.get("providerTaskId") or "").strip():
+            continue
+        entries.append(payload)
+    return entries
 
 
 def list_generation_tasks(project_id=None, limit=80):

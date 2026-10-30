@@ -69,6 +69,32 @@ def _emit_task_event(callback: TaskEventCallback | None, payload: dict[str, Any]
         pass
 
 
+def _emit_task_created(
+    callback: TaskEventCallback | None,
+    payload: dict[str, Any],
+) -> None:
+    """Require the task id to be persisted before any polling starts."""
+    task_id = str(payload.get("taskId") or "").strip()
+    if not task_id:
+        # Provider adapters validate their task field before reaching here.
+        # This guards against adding a new adapter without task extraction.
+        raise ProviderOutcomeUncertain(
+            "供应商已受理任务，但没有解析出任务号；系统不会自动重新提交。",
+            submitted_at=datetime.now(timezone.utc).isoformat(),
+        )
+    if callback is None:
+        return
+    try:
+        callback(payload)
+    except Exception as exc:
+        raise ProviderOutcomeUncertain(
+            f"供应商已创建任务 {task_id}，但任务号未能写入本地数据库："
+            f"{exc}。系统不会自动重新提交，请保留该任务号继续核对。",
+            submitted_at=datetime.now(timezone.utc).isoformat(),
+            response=payload,
+        ) from exc
+
+
 class ProviderHTTPError(RuntimeError):
     def __init__(self, status_code: int, detail: str, headers: Any = None):
         super().__init__(f"供应商接口 HTTP {status_code}：{detail}")
@@ -1120,7 +1146,7 @@ def _newapi_image(
             f"New API 图片任务未返回 {task_field}："
             f"{json.dumps(response, ensure_ascii=False)[:500]}"
         )
-    _emit_task_event(on_task_created, {
+    _emit_task_created(on_task_created, {
         "taskId": task_id,
         "status": "queued",
         "progress": 0,
@@ -1423,7 +1449,7 @@ def _agnes_video(
         f"{_agnes_api_origin(provider['base_url'])}/agnesapi?"
         + urllib.parse.urlencode({"video_id": video_id, "model_name": model["remoteModel"]})
     )
-    _emit_task_event(on_task_created, {
+    _emit_task_created(on_task_created, {
         "taskId": video_id,
         "status": "queued",
         "progress": 0,
@@ -1614,7 +1640,7 @@ def _newapi_video(
         on_task_update=on_task_update,
     )
     task_id = _task_id(response)
-    _emit_task_event(on_task_created, {
+    _emit_task_created(on_task_created, {
         "taskId": task_id,
         "status": "queued",
         "progress": response.get("progress") or 0,
@@ -1709,7 +1735,7 @@ def _newapi_aistars_video(
         raise RuntimeError(
             f"即梦视频未返回任务号：{json.dumps(response, ensure_ascii=False)[:500]}"
         )
-    _emit_task_event(on_task_created, {
+    _emit_task_created(on_task_created, {
         "taskId": task_id,
         "status": "queued",
         "progress": 0,
@@ -1807,7 +1833,7 @@ def _newapi_hc_video(
     task_id = _task_id(response)
     if not task_id:
         raise RuntimeError(f"官转视频未返回 task_id：{json.dumps(response, ensure_ascii=False)[:500]}")
-    _emit_task_event(on_task_created, {
+    _emit_task_created(on_task_created, {
         "taskId": task_id,
         "status": "queued",
         "progress": 0,
@@ -1887,7 +1913,7 @@ def _newapi_suanli_video(
     task_id = _task_id(response)
     if not task_id:
         raise RuntimeError(f"特价视频未返回任务号：{json.dumps(response, ensure_ascii=False)[:500]}")
-    _emit_task_event(on_task_created, {
+    _emit_task_created(on_task_created, {
         "taskId": task_id,
         "status": "queued",
         "progress": 0,
@@ -1988,7 +2014,7 @@ def _ark_video(
         on_task_update=on_task_update,
     )
     task_id = _task_id(response)
-    _emit_task_event(on_task_created, {
+    _emit_task_created(on_task_created, {
         "taskId": task_id,
         "status": "queued",
         "progress": 0,
@@ -2359,6 +2385,58 @@ def check_video_task(
         )
         if not url:
             raise RuntimeError(f"视频任务完成但没有视频地址：{json.dumps(task, ensure_ascii=False)[:500]}")
+        state = "completed"
+    elif raw_status in {"failed", "error", "cancelled", "canceled"}:
+        state = "failed"
+    else:
+        state = "running"
+    error = task.get("error")
+    detail = error.get("message") if isinstance(error, dict) else error
+    return {
+        "taskId": task_id,
+        "status": state,
+        "rawStatus": raw_status,
+        "progress": task.get("progress"),
+        "url": url,
+        "error": detail or "",
+        "raw": task,
+    }
+
+
+def check_image_task(
+    provider: dict[str, Any],
+    model: dict[str, Any],
+    task_id: str,
+) -> dict[str, Any]:
+    """Read an async image task without creating or charging a new one."""
+    task_id = str(task_id or "").strip()
+    if not task_id:
+        raise RuntimeError("图片任务 ID 为空")
+    if str(model.get("adapter") or "") != "newapi_image":
+        raise RuntimeError(f"不支持恢复的图片适配器：{model.get('adapter')}")
+    remote_model = str(model.get("remoteModel") or model.get("id") or "")
+    _, poll_prefix, _, source = _newapi_image_route(remote_model)
+    base = _newapi_api_origin(provider["base_url"])
+    key = provider_catalog.provider_key(provider)
+    poll_url = f"{base}{poll_prefix}{urllib.parse.quote(task_id, safe='')}"
+    task = _request_json("GET", poll_url, key, timeout=30)
+    raw_status = str(task.get("status") or "").lower()
+    url = ""
+    if raw_status in {"succeeded", "completed", "success", "done"}:
+        result = _newapi_image_result(
+            task,
+            source=source,
+            provider=provider,
+            key=key,
+        )
+        url = str(result.get("url") or "")
+        if result.get("authUrl"):
+            url = _persist_auth_url(url, base, key, ".png")
+        if not url:
+            raise RuntimeError(
+                "图片任务完成但没有图片地址："
+                f"{json.dumps(task, ensure_ascii=False)[:500]}"
+            )
         state = "completed"
     elif raw_status in {"failed", "error", "cancelled", "canceled"}:
         state = "failed"
