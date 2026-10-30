@@ -786,9 +786,33 @@ export type ManagedAccount = {
   lockedUntil?: string;
 };
 
-export async function getManagedAccounts(): Promise<ManagedAccount[]> {
-  const payload = await request<{accounts: ManagedAccount[]}>('/api/admin/accounts');
-  return payload.accounts || [];
+export type ManagedAccountsSnapshot = {
+  accounts: ManagedAccount[];
+  onlineCount: number;
+  onlineUsers: Array<{
+    id: string;
+    username: string;
+    lastSeenAt?: string;
+  }>;
+  generatedAt: string;
+};
+
+export async function getManagedAccounts(): Promise<ManagedAccountsSnapshot> {
+  const payload = await request<{
+    accounts: ManagedAccount[];
+    onlineCount?: number;
+    onlineUsers?: ManagedAccountsSnapshot['onlineUsers'];
+    generatedAt?: string;
+  }>('/api/admin/accounts');
+  const accounts = payload.accounts || [];
+  return {
+    accounts,
+    onlineCount: Number(payload.onlineCount || accounts.filter((item) => item.online).length),
+    onlineUsers: payload.onlineUsers || accounts
+      .filter((item) => item.online)
+      .map((item) => ({id: item.id, username: item.username, lastSeenAt: item.lastSeenAt})),
+    generatedAt: payload.generatedAt || new Date().toISOString(),
+  };
 }
 
 export async function createManagedAccount(username: string, password: string): Promise<{

@@ -389,10 +389,14 @@ class AccountAuthTests(unittest.TestCase):
 
         status, _, body = self.request("GET", "/api/admin/accounts", cookie=admin_cookie)
         self.assertEqual(status, 200)
-        accounts = {item["username"]: item for item in json.loads(body)["accounts"]}
+        snapshot = json.loads(body)
+        accounts = {item["username"]: item for item in snapshot["accounts"]}
         self.assertTrue(accounts["alice"]["online"])
         self.assertTrue(accounts["bob"]["online"])
         self.assertTrue(accounts["bob"]["lastSeenAt"])
+        self.assertGreaterEqual(snapshot["onlineCount"], 2)
+        online_names = {item["username"] for item in snapshot["onlineUsers"]}
+        self.assertTrue({"alice", "bob"}.issubset(online_names))
 
         status, _, _ = self.request("POST", "/api/auth/logout", "{}", cookie=bob_cookie)
         self.assertEqual(status, 200)

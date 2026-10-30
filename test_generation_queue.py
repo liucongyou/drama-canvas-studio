@@ -76,6 +76,37 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertTrue(second["created_new"])
         self.assertEqual(second["attempt"], 2)
 
+    def test_terminal_metadata_commit_publishes_canvas_event(self):
+        project_id = canvas_store.create_project(
+            "event-project",
+            payload={
+                "nodes": [{
+                    "id": "event-node",
+                    "type": "image",
+                    "title": "事件节点",
+                    "metadata": {"status": "generating"},
+                }],
+                "connections": [],
+            },
+        )
+        with patch.object(server, "publish_project_event") as publish:
+            committed = server.commit_node_metadata(
+                project_id,
+                "event-node",
+                {
+                    "status": "done",
+                    "content": "/uploads/event.png",
+                    "providerTaskStatus": "completed",
+                    "providerTaskPhase": "已完成",
+                },
+            )
+        self.assertTrue(committed)
+        publish.assert_called_once()
+        args = publish.call_args.args
+        self.assertEqual(args[:3], (project_id, "media", "event-node"))
+        self.assertEqual(args[3]["url"], "/uploads/event.png")
+        self.assertEqual(args[3]["status"], "done")
+
     def test_failed_node_accepts_new_model_operation_but_replays_same_operation(self):
         first = canvas_store.create_generation_task(
             "project-model-switch",

@@ -7,6 +7,12 @@ export type ReconcileNodeLike = {
   providerTaskStatus?: string;
   providerTaskPhase?: string;
   providerTaskProgress?: number;
+  params?: {
+    mediaVersions?: Array<{url?: string}>;
+    mediaVersionIndex?: number;
+    videoVersions?: Array<{url?: string}>;
+    videoVersionIndex?: number;
+  };
 };
 
 export type ReconcileTaskLike = {
@@ -37,6 +43,21 @@ export function reconcileSucceededNode<T extends ReconcileNodeLike>(
     ...node,
     status: 'done',
     mediaUrl: nextUrl,
+    ...(remote.params ? {params: {
+      ...(node.params || {}),
+      ...(remote.params.mediaVersions
+        ? {mediaVersions: remote.params.mediaVersions}
+        : {}),
+      ...(remote.params.mediaVersionIndex !== undefined
+        ? {mediaVersionIndex: remote.params.mediaVersionIndex}
+        : {}),
+      ...(remote.params.videoVersions
+        ? {videoVersions: remote.params.videoVersions}
+        : {}),
+      ...(remote.params.videoVersionIndex !== undefined
+        ? {videoVersionIndex: remote.params.videoVersionIndex}
+        : {}),
+    }} : {}),
     lastError: undefined,
     generationFinishedAt: remote.generationFinishedAt || task.finished_at,
     providerTaskStatus: 'completed',

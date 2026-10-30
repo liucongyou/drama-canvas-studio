@@ -36,4 +36,44 @@ describe('generation reconcile', () => {
       {id: 'node-1', status: 'generating'},
     )).toBeNull();
   });
+
+  it('copies the completed media version list from the remote node', () => {
+    const reconciled = reconcileSucceededNode(
+      {
+        id: 'node-1',
+        status: 'generating',
+        mediaUrl: undefined,
+        params: {mediaVersions: [{url: '/uploads/old.png'}]},
+      },
+      {
+        id: 'task-1',
+        node_id: 'node-1',
+        status: 'succeeded',
+        finished_at: '2026-10-31T02:00:00Z',
+      },
+      {
+        id: 'node-1',
+        status: 'done',
+        mediaUrl: '/uploads/new.png',
+        params: {
+          mediaVersions: [
+            {url: '/uploads/old.png'},
+            {url: '/uploads/new.png'},
+          ],
+          mediaVersionIndex: 1,
+        },
+      },
+    );
+    expect(reconciled).toMatchObject({
+      status: 'done',
+      mediaUrl: '/uploads/new.png',
+      params: {
+        mediaVersions: [
+          {url: '/uploads/old.png'},
+          {url: '/uploads/new.png'},
+        ],
+        mediaVersionIndex: 1,
+      },
+    });
+  });
 });

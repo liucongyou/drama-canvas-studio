@@ -1096,6 +1096,61 @@ def backfill_generated_video_validation():
             })
             updated += 1
     return updated
+def _publish_node_metadata_event(project_id, node_id, updates):
+    """Project a persisted node update into the canvas event stream.
+
+    Every terminal writer, including recovery and reconciliation paths, must
+    notify open canvases. Publishing from the commit boundary avoids the
+    historical gap where a result existed on disk but the browser kept showing
+    the stale node until a manual reload.
+    """
+    if not isinstance(updates, dict):
+        return
+    status = str(updates.get("status") or "").strip().lower()
+    changed_fields = {
+        "content",
+        "lastError",
+        "providerTaskStatus",
+        "providerTaskPhase",
+        "providerTaskProgress",
+        "generationFinishedAt",
+        "finalizePending",
+        "storage",
+        "storageError",
+        "videoValidation",
+        "actualDuration",
+    }
+    if status not in {"done", "failed", "generating"} and not any(
+        key in updates for key in changed_fields
+    ):
+        return
+    payload = {
+        key: updates[key]
+        for key in (
+            "status", "content", "lastError", "providerTaskStatus",
+            "providerTaskPhase", "providerTaskProgress", "generationFinishedAt",
+            "finalizePending", "storage", "storageError", "videoValidation",
+            "actualDuration",
+        )
+        if key in updates
+    }
+    if "content" in updates:
+        payload["url"] = updates.get("content") or ""
+    if "lastError" in updates and "error" not in payload:
+        payload["error"] = updates.get("lastError") or ""
+    params_patch = updates.get("_paramsPatch")
+    if isinstance(params_patch, dict):
+        if "mediaVersions" in params_patch:
+            payload["mediaVersions"] = params_patch["mediaVersions"]
+        if "mediaVersionIndex" in params_patch:
+            payload["mediaVersionIndex"] = params_patch["mediaVersionIndex"]
+    # Avoid a duplicate event when the caller explicitly publishes its own
+    # richer terminal payload after this commit.
+    if not payload:
+        return
+    publish_project_event(project_id, "media", node_id, payload)
+
+
 def commit_node_metadata(project_id, node_id, updates):
     """Merge generated fields into the current node without overwriting peers."""
     with project_write_lock(project_id):
@@ -1120,6 +1175,7 @@ def commit_node_metadata(project_id, node_id, updates):
             meta["params"] = {**(meta.get("params") or {}), **params_patch}
         current_node["updatedAt"] = store._now_iso()
         store.update_project(project_id, payload=current["payload"])
+        _publish_node_metadata_event(project_id, node_id, updates)
         return True
 
 
@@ -4062,12 +4118,14 @@ class Handler(BaseHTTPRequestHandler):
         if self._admin_session() is None:
             return
         rows = []
+        online_accounts = []
         accounts = tenant_registry.list_accounts()
         activity = tenant_registry.account_activity([account["id"] for account in accounts])
         for account in accounts:
             tenant = tenant_registry.get_tenant_by_id(account["tenant_id"]) or {}
             state = activity.get(account["id"]) or {}
-            rows.append({
+            online = bool(state.get("online")) and account["status"] == "active"
+            row = {
                 "id": account["id"],
                 "username": account["username"],
                 "role": account["role"],
@@ -4077,10 +4135,22 @@ class Handler(BaseHTTPRequestHandler):
                 "createdAt": account["created_at"],
                 "lastLoginAt": account["last_login_at"],
                 "lastSeenAt": state.get("lastSeenAt") or "",
-                "online": bool(state.get("online")) and account["status"] == "active",
+                "online": online,
                 "lockedUntil": account["locked_until"],
-            })
-        return self._send(200, {"accounts": rows})
+            }
+            rows.append(row)
+            if online:
+                online_accounts.append({
+                    "id": account["id"],
+                    "username": account["username"],
+                    "lastSeenAt": state.get("lastSeenAt") or "",
+                })
+        return self._send(200, {
+            "accounts": rows,
+            "onlineCount": len(online_accounts),
+            "onlineUsers": online_accounts,
+            "generatedAt": store._now_iso(),
+        })
 
     def _handle_auth_logout(self):
         cookie = SimpleCookie()

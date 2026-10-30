@@ -790,6 +790,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
 
 function AdminAccountsDialog({onClose}: {onClose: () => void}) {
   const [accounts, setAccounts] = useState<ManagedAccount[]>([]);
+  const [onlineCount, setOnlineCount] = useState(0);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [resetTarget, setResetTarget] = useState<ManagedAccount | null>(null);
@@ -798,10 +799,29 @@ function AdminAccountsDialog({onClose}: {onClose: () => void}) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
+  const knownOnlineRef = useRef<Set<string>>(new Set());
+  const onlineInitializedRef = useRef(false);
 
   const load = async () => {
     try {
-      setAccounts(await getManagedAccounts());
+      const snapshot = await getManagedAccounts();
+      setAccounts(snapshot.accounts);
+      setOnlineCount(snapshot.onlineCount);
+      const current = new Set(snapshot.onlineUsers.map((account) => account.id));
+      if (onlineInitializedRef.current) {
+        const joined = snapshot.onlineUsers.filter(
+          (account) => !knownOnlineRef.current.has(account.id),
+        );
+        if (joined.length > 0) {
+          setNotice(
+            joined.length === 1
+              ? `${joined[0].username} 已上线`
+              : `${joined.map((account) => account.username).join('、')} 已上线`,
+          );
+        }
+      }
+      knownOnlineRef.current = current;
+      onlineInitializedRef.current = true;
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : '读取账号失败');
     }
@@ -891,7 +911,7 @@ function AdminAccountsDialog({onClose}: {onClose: () => void}) {
         <header>
           <div>
             <h2 id="admin-accounts-title">账号管理</h2>
-            <p>创建、重置密码、启用或停用成员账号；每个账号使用独立空间和配置。</p>
+            <p>创建、重置密码、启用或停用成员账号；当前 {onlineCount} 人在线。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭"><X size={16} strokeWidth={2} /></button>
         </header>
