@@ -9826,8 +9826,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     connectionSaveInFlightRef.current = true;
     beginSave();
     void saveCanvasConnections(session, connections, currentEp)
-      .then(() => {
+      .then((result) => {
         finishSave(true);
+        if ((result.droppedInvalid || 0) > 0) {
+          setToast(`已忽略 ${result.droppedInvalid} 条失效连线`);
+        }
         persistLayout(
           positionRef.current,
           userEdgesRef.current,
@@ -9851,7 +9854,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           connectionSaveTimerRef.current = setTimeout(flushConnectionSave, 80);
         }
       });
-  }, [beginSave, currentEp, finishSave, persistLayout, session]);
+  }, [beginSave, currentEp, finishSave, persistLayout, session, setToast]);
 
   useEffect(() => {
     if (!didInitialLayoutRef.current) return;
