@@ -138,6 +138,67 @@ class ProviderCatalogTests(unittest.TestCase):
             "https://api.canvasproai.com/aistars/v1/images/generations",
         )
 
+    def test_aistars_image_503_with_task_id_recovers_by_polling_same_task(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "65-seedream-5-pro",
+            "remoteModel": "即梦-65-seedream-5-pro",
+            "adapter": "newapi_image",
+            "params": {},
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            if method == "POST":
+                raise provider_client.ProviderHTTPError(
+                    503,
+                    '{"error":{"code":"server_error","message":"Task request failed"},'
+                    '"id":"image-task-503"}',
+                )
+            return {
+                "id": "image-task-503",
+                "status": "succeeded",
+                "artifacts": [{
+                    "content_url": "/v1/tasks/image-task-503/artifacts/image-0/content",
+                }],
+            }
+
+        with (
+            patch.object(provider_client, "_request_json", side_effect=fake_request),
+            patch.object(
+                provider_client,
+                "_download_bytes_with_key",
+                return_value=(b"image-bytes", "image/png"),
+            ),
+            patch.object(
+                provider_client,
+                "save_generated_bytes",
+                return_value="/uploads/recovered.png",
+            ),
+            patch.object(provider_client.time, "sleep"),
+        ):
+            result = provider_client.generate_image(
+                provider,
+                model,
+                "test",
+                {"ratio": "9:16", "clarity": "2K"},
+                [],
+            )
+
+        self.assertEqual(result["taskId"], "image-task-503")
+        self.assertEqual(result["url"], "/uploads/recovered.png")
+        self.assertEqual([item[0] for item in calls], ["POST", "GET"])
+        self.assertEqual(
+            calls[1][1],
+            "https://api.canvasproai.com/aistars/v1/tasks/image-task-503",
+        )
+
     def test_newapi_video_adapter_dispatches_aistars_model_protocol(self):
         provider = {
             "id": "new-apl",

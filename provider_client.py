@@ -79,9 +79,16 @@ class ProviderHTTPError(RuntimeError):
 class ProviderOutcomeUncertain(RuntimeError):
     """The paid request may have been accepted, but no usable response arrived."""
 
-    def __init__(self, message: str, *, submitted_at: str = ""):
+    def __init__(
+        self,
+        message: str,
+        *,
+        submitted_at: str = "",
+        response: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.submitted_at = submitted_at
+        self.response = response or {}
 
 
 _GUIDANCE_WORDS = {
@@ -1070,14 +1077,39 @@ def _newapi_image(
             )
         except ProviderHTTPError as exc:
             if exc.status_code in {500, 502, 503, 504}:
-                raise ProviderOutcomeUncertain(
-                    f"供应商请求已发出，但异步图片任务没有返回任务号；"
-                    f"HTTP {exc.status_code}：{str(exc.detail or '')[:500]}。"
-                    f"提交时间 {submitted_at}。"
-                    "请先到供应商账单/任务记录核对，确认前不要重复提交。",
-                    submitted_at=submitted_at,
-                ) from exc
-            raise
+                # Some relays return a payment-side 5xx while still exposing a
+                # task id in the body. Retain it so polling can recover the
+                # already-created task instead of treating it as lost.
+                detail = str(exc.detail or "").strip()
+                recovered: dict[str, Any] = {}
+                try:
+                    parsed = json.loads(detail)
+                    if isinstance(parsed, dict):
+                        recovered = parsed
+                except json.JSONDecodeError:
+                    recovered = {}
+                recovered_task_id = str(
+                    recovered.get("id")
+                    or recovered.get("task_id")
+                    or (
+                        recovered.get("data", {}).get("id")
+                        if isinstance(recovered.get("data"), dict)
+                        else ""
+                    )
+                    or ""
+                ).strip()
+                if recovered_task_id:
+                    response = recovered
+                else:
+                    raise ProviderOutcomeUncertain(
+                        f"供应商请求已发出，但异步图片任务没有返回任务号；"
+                        f"HTTP {exc.status_code}：{detail[:500]}。"
+                        f"提交时间 {submitted_at}。"
+                        "请先到供应商账单/任务记录核对，确认前不要重复提交。",
+                        submitted_at=submitted_at,
+                    ) from exc
+            else:
+                raise
     else:
         raise RuntimeError(f"New API 图片线路未实现：{route}")
 

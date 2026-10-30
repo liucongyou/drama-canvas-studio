@@ -4656,12 +4656,19 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             if isinstance(exc, provider_client.ProviderOutcomeUncertain):
                 submitted_at = str(getattr(exc, "submitted_at", "") or "")
+                provider_response = getattr(exc, "response", {}) or {}
+                provider_task_id = str(
+                    provider_response.get("id")
+                    or provider_response.get("task_id")
+                    or ""
+                ).strip()
                 if task_id:
                     store.update_generation_task(
                         task_id,
                         status="interrupted",
                         phase="结果待确认",
                         error=str(exc),
+                        provider_task_id=provider_task_id,
                         finished_at="",
                     )
                 commit_node_metadata(pid, node["id"], {
@@ -4670,6 +4677,7 @@ class Handler(BaseHTTPRequestHandler):
                     "providerTaskStatus": "uncertain",
                     "providerTaskPhase": "结果待确认",
                     "providerSubmittedAt": submitted_at,
+                    "providerTaskId": provider_task_id,
                 })
                 return self._send(202, {
                     "accepted": True,
