@@ -8190,6 +8190,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [generationTasks]);
 
   const terminalRefreshRef = useRef<Map<string, string>>(new Map());
+  const succeededRefreshRef = useRef('');
   useEffect(() => {
     // The initial workspace read includes tasks. Those records are a snapshot,
     // not a new completion event, so they must not trigger another full reload.
@@ -8234,8 +8235,15 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       (task) => task.status === 'succeeded',
     );
     if (succeededTasks.length === 0) return;
+    const succeededSignature = succeededTasks
+      .map((task) => `${task.id}:${task.finished_at || task.updated_at || ''}`)
+      .sort()
+      .join('|');
+    if (succeededRefreshRef.current === succeededSignature) return;
+    succeededRefreshRef.current = succeededSignature;
     void refreshWorkspaceFacts().catch(() => {
       // Keep the task unmarked so the next poll retries the reconciliation.
+      succeededRefreshRef.current = '';
     });
   }, [generationTasks, loading, refreshWorkspaceFacts]);
   const mediaSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -8681,6 +8689,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     setSavedFlash({});
     setSelectedId(null);
     setSaveError('');
+    succeededRefreshRef.current = '';
     workspaceRefreshQueuedRef.current = false;
     workspaceRefreshInFlightRef.current = null;
     savedLayoutScopeRef.current = '';
