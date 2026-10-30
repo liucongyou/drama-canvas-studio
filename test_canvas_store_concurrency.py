@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import concurrent.futures
+import io
+import json
 import os
 import sqlite3
 import tempfile
@@ -7,6 +9,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 
 import canvas_store
@@ -69,6 +72,58 @@ class CanvasStoreConcurrencyTests(unittest.TestCase):
             list(pool.map(lambda _index: worker(), range(12)))
 
         self.assertEqual(maximum, 1)
+
+    def test_connections_save_drops_stale_and_reverse_duplicate_edges(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project(
+                "connections-contract",
+                payload={
+                    "nodes": [{"id": "a"}, {"id": "b"}],
+                    "connections": [{
+                        "id": "edge-auto",
+                        "fromNodeId": "a",
+                        "toNodeId": "b",
+                        "source": "import",
+                    }],
+                },
+            )
+            handler = object.__new__(server.Handler)
+            handler.path = f"/api/projects/{project_id}/connections"
+            handler.send_response = mock.Mock()
+            handler.send_header = mock.Mock()
+            handler.end_headers = mock.Mock()
+            handler.wfile = mock.Mock()
+            handler._cors_headers = mock.Mock(return_value={})
+            handler.command = "PUT"
+            body = json.dumps({
+                "connections": [
+                    {"id": "stale", "fromNodeId": "a", "toNodeId": "missing"},
+                    {
+                        "id": "reverse-duplicate",
+                        "fromNodeId": "b",
+                        "toNodeId": "a",
+                    },
+                ],
+            }).encode("utf-8")
+            handler.headers = {"Content-Length": str(len(body))}
+            handler.rfile = io.BytesIO(body)
+
+            handler._do_put_locked()
+
+            saved = canvas_store.get_project(project_id)
+
+        response = json.loads(handler.wfile.write.call_args.args[0])
+        self.assertEqual(response["droppedInvalid"], 1)
+        self.assertEqual(response["total"], 1)
+        self.assertEqual(
+            saved["payload"]["connections"],
+            [{
+                "id": "edge-auto",
+                "fromNodeId": "a",
+                "toNodeId": "b",
+                "source": "import",
+            }],
+        )
 
     def test_concurrent_writes_to_different_projects_succeed(self):
         with tenant_context.use_context(self.context):

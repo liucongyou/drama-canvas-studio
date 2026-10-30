@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {absolutePositionOf, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap} from './canvasLayout';
+import {absolutePositionOf, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections} from './canvasLayout';
 
 describe('resolveInitialEpisode', () => {
   it('URL 中的集号优先，支持刷新和分享链接', () => {
@@ -122,6 +122,31 @@ describe('createUserEdgeIdFactory', () => {
   it('前缀可定制', () => {
     const next = createUserEdgeIdFactory('e-ref');
     expect(next().startsWith('e-ref-')).toBe(true);
+  });
+});
+
+describe('validUserConnections', () => {
+  it('drops stale endpoints, self loops, duplicates, and reverse duplicates', () => {
+    const connections = [
+      {id: 'keep', fromNodeId: 'a', toNodeId: 'b'},
+      {id: 'stale-target', fromNodeId: 'a', toNodeId: 'deleted'},
+      {id: 'self', fromNodeId: 'a', toNodeId: 'a'},
+      {id: 'duplicate', fromNodeId: 'a', toNodeId: 'b'},
+      {id: 'reverse', fromNodeId: 'b', toNodeId: 'a'},
+    ];
+
+    expect(validUserConnections(connections, ['a', 'b'])).toEqual([
+      {id: 'keep', fromNodeId: 'a', toNodeId: 'b'},
+    ]);
+  });
+
+  it('trims endpoint ids without mutating the source edge', () => {
+    const connection = {id: 'trim', fromNodeId: ' a ', toNodeId: ' b '};
+
+    expect(validUserConnections([connection], ['a', 'b'])).toEqual([
+      {id: 'trim', fromNodeId: 'a', toNodeId: 'b'},
+    ]);
+    expect(connection).toEqual({id: 'trim', fromNodeId: ' a ', toNodeId: ' b '});
   });
 });
 

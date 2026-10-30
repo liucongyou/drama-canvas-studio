@@ -479,6 +479,32 @@ export function createUserEdgeIdFactory(prefix = 'e-user'): () => string {
   };
 }
 
+export function validUserConnections<T extends {
+  id?: string;
+  fromNodeId: string;
+  toNodeId: string;
+}>(connections: readonly T[], nodeIds: Iterable<string>): T[] {
+  const validNodeIds = new Set(nodeIds);
+  const seen = new Set<string>();
+  const result: T[] = [];
+  const pairKey = (fromNodeId: string, toNodeId: string) => (
+    fromNodeId < toNodeId
+      ? `${fromNodeId}\u0000${toNodeId}`
+      : `${toNodeId}\u0000${fromNodeId}`
+  );
+  for (const connection of connections) {
+    const fromNodeId = String(connection.fromNodeId || '').trim();
+    const toNodeId = String(connection.toNodeId || '').trim();
+    if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) continue;
+    if (!validNodeIds.has(fromNodeId) || !validNodeIds.has(toNodeId)) continue;
+    const pair = pairKey(fromNodeId, toNodeId);
+    if (seen.has(pair)) continue;
+    seen.add(pair);
+    result.push({...connection, fromNodeId, toNodeId});
+  }
+  return result;
+}
+
 export type CanvasEpisodeMetaLike = {
   ep_id: string;
   shot_count?: number | null;

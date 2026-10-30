@@ -1523,7 +1523,13 @@ export async function saveCanvasConnections(
   connections: Array<{id: string; fromNodeId: string; toNodeId: string}>,
   episodeId?: string | null,
 ) {
-  return request<{ok: boolean; total: number; manual: number; removed: number}>(
+  return request<{
+    ok: boolean;
+    total: number;
+    manual: number;
+    removed: number;
+    droppedInvalid?: number;
+  }>(
     `/api/projects/${encodeURIComponent(sessionId)}/connections`,
     {
       method: 'PUT',

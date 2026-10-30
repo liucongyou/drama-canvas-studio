@@ -145,7 +145,7 @@ import {
   modelMaxRefs,
   type BatchGenerationCandidate,
 } from './batchGeneration';
-import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
+import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
 import {
   CANVAS_VIEWPORT_POLICY_VERSION,
   filterMediaNodesInBounds,
@@ -9856,7 +9856,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   useEffect(() => {
     if (!didInitialLayoutRef.current) return;
     if (connectionSaveTimerRef.current) clearTimeout(connectionSaveTimerRef.current);
-    pendingConnectionsRef.current = userEdges.flatMap((edge) => {
+    const mediaNodeIds = new Set(mediaNodes.map((node) => node.id));
+    const connections = userEdges.flatMap((edge) => {
       if (!edge.source.startsWith(MEDIA_PREFIX) || !edge.target.startsWith(MEDIA_PREFIX)) return [];
       return [{
         id: edge.id,
@@ -9864,6 +9865,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         toNodeId: edge.target.slice(MEDIA_PREFIX.length),
       }];
     });
+    pendingConnectionsRef.current = validUserConnections(connections, mediaNodeIds);
     connectionSaveTimerRef.current = setTimeout(() => {
       connectionSaveTimerRef.current = null;
       flushConnectionSave();
@@ -9871,7 +9873,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     return () => {
       if (connectionSaveTimerRef.current) clearTimeout(connectionSaveTimerRef.current);
     };
-  }, [flushConnectionSave, userEdges]);
+  }, [flushConnectionSave, mediaNodes, userEdges]);
 
   const updateNoteText = useCallback((id: string, text: string) => {
     setNotes((prev) => prev.map((note) => (note.id === id ? {...note, text, updatedAt: new Date().toISOString()} : note)));

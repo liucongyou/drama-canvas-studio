@@ -3350,7 +3350,15 @@ class Handler(BaseHTTPRequestHandler):
                 chunk = stream.read(min(1024 * 1024, remaining))
                 if not chunk:
                     break
-                self.wfile.write(chunk)
+                try:
+                    self.wfile.write(chunk)
+                except OSError as exc:
+                    if not is_client_disconnect_error(exc):
+                        raise
+                    # Browsers cancel range requests while seeking or switching
+                    # cards. Stop only this response; disk/protocol errors remain fatal.
+                    self.close_connection = True
+                    return
                 remaining -= len(chunk)
 
     # ---------- 文件上传 ----------
@@ -5265,6 +5273,19 @@ class Handler(BaseHTTPRequestHandler):
                 manual = []
                 manual_pairs = set()
                 invalid = []
+
+                def pair_key(from_id: str, to_id: str) -> tuple[str, str]:
+                    return (
+                        (from_id, to_id)
+                        if from_id < to_id
+                        else (to_id, from_id)
+                    )
+
+                automatic_pair_keys = {
+                    pair_key(from_id, to_id)
+                    for from_id, to_id in automatic_pairs
+                    if from_id and to_id
+                }
                 for item in incoming:
                     if not isinstance(item, dict):
                         continue
@@ -5275,8 +5296,8 @@ class Handler(BaseHTTPRequestHandler):
                     if from_id not in node_ids or to_id not in node_ids:
                         invalid.append({"fromNodeId": from_id, "toNodeId": to_id})
                         continue
-                    pair = (from_id, to_id)
-                    if pair in automatic_pairs or pair in manual_pairs:
+                    pair = pair_key(from_id, to_id)
+                    if pair in automatic_pair_keys or pair in manual_pairs:
                         continue
                     manual_pairs.add(pair)
                     manual.append({
@@ -5284,12 +5305,6 @@ class Handler(BaseHTTPRequestHandler):
                         "fromNodeId": from_id,
                         "toNodeId": to_id,
                         "source": "user",
-                    })
-                if invalid:
-                    return self._send(400, {
-                        "error": f"连线引用不存在节点：{len(invalid)} 条",
-                        "code": "CONNECTION_NODE_MISSING",
-                        "invalid": invalid[:20],
                     })
                 old_manual_count = len(existing) - len(automatic)
                 next_connections = [*automatic, *manual]
@@ -5299,6 +5314,7 @@ class Handler(BaseHTTPRequestHandler):
                         "total": len(next_connections),
                         "manual": len(manual),
                         "removed": max(0, old_manual_count - len(manual)),
+                        "droppedInvalid": len(invalid),
                     })
                 payload = proj["payload"]
                 payload["connections"] = next_connections
@@ -5315,6 +5331,7 @@ class Handler(BaseHTTPRequestHandler):
                     "total": len(next_connections),
                     "manual": len(manual),
                     "removed": max(0, old_manual_count - len(manual)),
+                    "droppedInvalid": len(invalid),
                 })
             return self._send(409, {
                 "error": "项目正在被其他操作更新，请稍后重试连线保存",
