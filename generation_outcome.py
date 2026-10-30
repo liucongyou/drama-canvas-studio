@@ -65,6 +65,7 @@ def task_outcome(task: dict[str, Any] | None) -> dict[str, Any]:
     phase = _text(task.get("phase"))
     error = _text(task.get("error"))
     provider_task_id = _text(task.get("provider_task_id"))
+    delivery_status = _text(task.get("delivery_status")).lower()
     local_blocked = is_local_validation_error(error)
     accepted = bool(provider_task_id)
     protocol = provider_protocols.for_adapter(str(task.get("adapter") or ""))
@@ -127,6 +128,26 @@ def task_outcome(task: dict[str, Any] | None) -> dict[str, Any]:
             "retentionExpiresAt": retention_expires_at,
         }
     if status == "succeeded":
+        if delivery_status in {"pending", "materializing"}:
+            return {
+                "phase": "fetching",
+                "regenerate": "blocked",
+                "reason": "result_fetching",
+                "requiresConfirmation": False,
+                "providerTaskId": provider_task_id,
+                "providerAccepted": accepted,
+                "retentionExpiresAt": retention_expires_at,
+            }
+        if delivery_status == "failed":
+            return {
+                "phase": "failed",
+                "regenerate": "confirm",
+                "reason": "result_delivery_failed",
+                "requiresConfirmation": True,
+                "providerTaskId": provider_task_id,
+                "providerAccepted": accepted,
+                "retentionExpiresAt": retention_expires_at,
+            }
         return {
             "phase": "ready",
             "regenerate": "allowed",

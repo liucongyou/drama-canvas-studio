@@ -426,6 +426,8 @@ export type GenerationTask = {
   queue_position?: number | null;
   error?: string;
   error_kind?: 'local_validation' | 'provider' | '';
+  delivery_status?: 'pending' | 'materializing' | 'ready' | 'failed' | string;
+  leaseHealthy?: boolean;
   outcome?: {
     phase?: 'running' | 'unknown' | 'ready' | 'failed' | string;
     regenerate?: 'allowed' | 'confirm' | 'blocked' | string;
@@ -1720,6 +1722,7 @@ export async function generateCanvasNodeNow(
   payload?: {
     prompt?: string;
     params?: CanvasMediaParams;
+    clientOperationId?: string;
   },
 ) {
   const key = `${sessionId}::${nodeId}`;
@@ -1732,10 +1735,24 @@ export async function generateCanvasNodeNow(
     const result = await request(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/generate`, {
       method: 'POST',
       body: JSON.stringify(payload || {}),
-    }) as {accepted?: boolean; taskId?: string; url?: string; text?: string; params?: CanvasMediaParams};
+    }) as {
+      accepted?: boolean;
+      taskId?: string;
+      url?: string;
+      text?: string;
+      params?: CanvasMediaParams;
+      status?: string;
+      code?: string;
+      replayed?: boolean;
+    };
     if (result.accepted) {
       startPolling(sessionId);
-      return {deferred: true, accepted: true, taskId: result.taskId, reason: '生成请求已受理'};
+      return {
+        deferred: true,
+        accepted: true,
+        taskId: result.taskId,
+        reason: result.replayed ? '原生成任务已找回' : '生成请求已受理',
+      };
     }
     emit({
       type: 'done',

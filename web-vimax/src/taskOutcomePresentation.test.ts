@@ -72,4 +72,33 @@ describe('task outcome presentation', () => {
     });
     expect(result.canRegenerate).toBe(false);
   });
+
+  it('does not call a succeeded task ready before result delivery', () => {
+    const result = taskOutcomePresentation({
+      status: 'succeeded',
+      delivery_status: 'materializing',
+      outcome: {
+        phase: 'fetching',
+        regenerate: 'blocked',
+        reason: 'result_fetching',
+      },
+    });
+    expect(result.statusLabel).toBe('正在取回结果');
+    expect(result.outcomePending).toBe(true);
+    expect(result.canRegenerate).toBe(false);
+  });
+
+  it('does not hide a failed result delivery', () => {
+    const result = taskOutcomePresentation({
+      status: 'succeeded',
+      delivery_status: 'failed',
+      outcome: {
+        phase: 'failed',
+        regenerate: 'confirm',
+        reason: 'result_delivery_failed',
+      },
+    });
+    expect(result.statusLabel).toBe('结果保存失败');
+    expect(result.canRegenerate).toBe(true);
+  });
 });

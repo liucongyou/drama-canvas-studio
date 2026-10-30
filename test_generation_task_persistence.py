@@ -1,11 +1,13 @@
 import unittest
 import json
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 from unittest.mock import patch
 
 import canvas_store
+import generation_outcome
 import provider_client
 import server
 import tenant_context
@@ -47,6 +49,131 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             provider_client._emit_task_created(callback, {"taskId": ""})
 
         callback.assert_not_called()
+
+    def test_client_operation_id_replays_existing_task_without_new_insert(self):
+        with tenant_context.use_context(self.context):
+            first = canvas_store.create_generation_task(
+                "project-operation",
+                "node-operation",
+                kind="video",
+                client_operation_id="operation-1",
+                request_snapshot={"prompt": "first snapshot"},
+            )
+            replay = canvas_store.create_generation_task(
+                "project-operation",
+                "node-operation",
+                kind="video",
+                client_operation_id="operation-1",
+                request_snapshot={"prompt": "changed snapshot"},
+            )
+
+        self.assertTrue(first["created_new"])
+        self.assertFalse(replay["created_new"])
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(first["id"], replay["id"])
+        self.assertIn("first snapshot", replay["request_json"])
+
+    def test_failed_operation_can_create_new_task_with_new_operation_id(self):
+        with tenant_context.use_context(self.context):
+            original = canvas_store.create_generation_task(
+                "project-retry",
+                "node-retry",
+                kind="image",
+                client_operation_id="operation-failed",
+                request_snapshot={"model": "old-model"},
+            )
+            canvas_store.update_generation_task(
+                original["id"],
+                status="failed",
+                phase="生成失败",
+                error="old model rejected",
+                finished_at=canvas_store._now_iso(),
+            )
+            replacement = canvas_store.create_generation_task(
+                "project-retry",
+                "node-retry",
+                kind="image",
+                client_operation_id="operation-new-model",
+                request_snapshot={"model": "new-model"},
+            )
+
+        self.assertTrue(replacement["created_new"])
+        self.assertNotEqual(replacement["id"], original["id"])
+        self.assertIn("new-model", replacement["request_json"])
+
+    def test_success_with_pending_delivery_is_not_reported_ready(self):
+        outcome = generation_outcome.task_outcome({
+            "status": "succeeded",
+            "phase": "已完成",
+            "delivery_status": "materializing",
+            "provider_task_id": "provider-delivery-1",
+            "adapter": "newapi_video",
+        })
+
+        self.assertEqual(outcome["phase"], "fetching")
+        self.assertEqual(outcome["regenerate"], "blocked")
+        self.assertEqual(outcome["reason"], "result_fetching")
+
+    def test_success_with_failed_delivery_is_not_reported_ready(self):
+        outcome = generation_outcome.task_outcome({
+            "status": "succeeded",
+            "phase": "已完成",
+            "delivery_status": "failed",
+            "provider_task_id": "provider-delivery-2",
+            "adapter": "newapi_video",
+        })
+
+        self.assertEqual(outcome["phase"], "failed")
+        self.assertEqual(outcome["regenerate"], "confirm")
+        self.assertEqual(outcome["reason"], "result_delivery_failed")
+
+    def test_expired_lease_without_provider_task_releases_node(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-expired",
+                "node-expired",
+                kind="video",
+            )
+            owner = "observer:one"
+            claimed = canvas_store.claim_generation_task(task["id"], owner, 45)
+            expired_at = datetime.now(timezone.utc) + timedelta(seconds=60)
+            expired_rows = canvas_store.expire_stale_generation_tasks(expired_at)
+            saved = canvas_store.get_generation_task(task["id"])
+            replacement = canvas_store.create_generation_task(
+                "project-expired",
+                "node-expired",
+                kind="video",
+            )
+
+        self.assertTrue(claimed)
+        self.assertEqual([item["id"] for item in expired_rows], [task["id"]])
+        self.assertEqual(saved["status"], "failed")
+        self.assertEqual(saved["phase"], "执行失联")
+        self.assertEqual(saved["lease_owner"], "")
+        self.assertTrue(replacement["created_new"])
+        self.assertNotEqual(replacement["id"], task["id"])
+
+    def test_expired_lease_with_provider_task_stays_recoverable(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-recoverable",
+                "node-recoverable",
+                kind="video",
+            )
+            owner = "observer:two"
+            self.assertTrue(canvas_store.claim_generation_task(task["id"], owner, 45))
+            canvas_store.update_generation_task(
+                task["id"],
+                provider_task_id="provider-task-still-live",
+            )
+            canvas_store.expire_stale_generation_tasks(
+                datetime.now(timezone.utc) + timedelta(seconds=60)
+            )
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertEqual(saved["status"], "interrupted")
+        self.assertEqual(saved["phase"], "结果待确认")
+        self.assertEqual(saved["provider_task_id"], "provider-task-still-live")
 
     def test_provider_task_journal_survives_database_failure(self):
         with tenant_context.use_context(self.context):
@@ -622,9 +749,64 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         submit.assert_not_called()
         download.assert_not_called()
         self.assertEqual(saved["status"], "succeeded")
+        self.assertEqual(saved["delivery_status"], "ready")
         self.assertEqual(
             refreshed["payload"]["nodes"][0]["metadata"]["content"],
             "/uploads/result.mp4",
+        )
+
+    def test_pending_delivery_reconciles_without_provider_resubmit(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("pending-delivery")
+            project = canvas_store.get_project(project_id)
+            project["payload"]["nodes"] = [{
+                "id": "node-video",
+                "type": "video",
+                "title": "段1",
+                "metadata": {"status": "error", "params": {}},
+            }]
+            canvas_store.update_project(project_id, payload=project["payload"])
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+                provider="new-apl",
+                model="004-sd2.0",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="interrupted",
+                provider_task_id="provider-delivery-pending",
+                local_result_url="/uploads/pending.mp4",
+                delivery_status="pending",
+            )
+            upload_dir = Path(self.context.upload_dir)
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            (upload_dir / "pending.mp4").write_bytes(b"pending-video")
+
+            with (
+                patch.object(server.provider_client, "generate_video") as submit,
+                patch.object(server.provider_client, "check_video_task") as query,
+                patch.object(
+                    server,
+                    "validate_generated_video",
+                    return_value={"status": "valid"},
+                ),
+            ):
+                recovered = server.reconcile_pending_generation_deliveries()
+
+            saved = canvas_store.get_generation_task(task["id"])
+            refreshed = canvas_store.get_project(project_id)
+            versions = refreshed["payload"]["nodes"][0]["metadata"]["params"]["mediaVersions"]
+
+        submit.assert_not_called()
+        query.assert_not_called()
+        self.assertEqual(recovered, 1)
+        self.assertEqual(saved["status"], "succeeded")
+        self.assertEqual(saved["delivery_status"], "ready")
+        self.assertEqual(
+            [item["url"] for item in versions],
+            ["/uploads/pending.mp4"],
         )
 
     def test_missing_persisted_result_stops_without_resubmit(self):

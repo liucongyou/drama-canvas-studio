@@ -6,7 +6,7 @@ import secrets
 import sqlite3
 import string
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import tenant_context
 
@@ -121,7 +121,15 @@ def _connect():
                 provider_finished_at TEXT,
                 node_written_at TEXT,
                 local_result_url TEXT,
-                provider_result_url TEXT
+                provider_result_url TEXT,
+                request_json TEXT,
+                client_operation_id TEXT,
+                lease_owner TEXT,
+                lease_expires_at TEXT,
+                heartbeat_at TEXT,
+                delivery_status TEXT DEFAULT 'pending',
+                delivery_attempts INTEGER DEFAULT 0,
+                result_ready_at TEXT
             )"""
             )
             con.execute(
@@ -203,6 +211,43 @@ def _connect():
                 con.execute(
                     "ALTER TABLE generation_tasks ADD COLUMN provider_result_url TEXT"
                 )
+            if "request_json" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN request_json TEXT"
+                )
+            if "client_operation_id" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN client_operation_id TEXT"
+                )
+            if "lease_owner" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN lease_owner TEXT"
+                )
+            if "lease_expires_at" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN lease_expires_at TEXT"
+                )
+            if "heartbeat_at" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN heartbeat_at TEXT"
+                )
+            if "delivery_status" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN delivery_status TEXT DEFAULT 'pending'"
+                )
+            if "delivery_attempts" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN delivery_attempts INTEGER DEFAULT 0"
+                )
+            if "result_ready_at" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN result_ready_at TEXT"
+                )
+            con.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_tasks_operation "
+                "ON generation_tasks(client_operation_id) "
+                "WHERE client_operation_id IS NOT NULL AND client_operation_id != ''"
+            )
             snapshot_columns = {
                 row[1] for row in con.execute("PRAGMA table_info(canvas_snapshots)")
             }
@@ -405,6 +450,8 @@ _TASK_FIELDS = {
     "error", "started_at", "finished_at", "title", "kind",
     "estimated_cost", "cost_currency", "provider_finished_at", "node_written_at",
     "local_result_url", "provider_result_url",
+    "request_json", "client_operation_id", "lease_owner", "lease_expires_at",
+    "heartbeat_at", "delivery_status", "delivery_attempts", "result_ready_at",
 }
 
 _ACTIVE_TASK_STATUSES = {"queued", "submitting", "running"}
@@ -498,7 +545,22 @@ def create_generation_task(
     model="",
     estimated_cost=0,
     cost_currency="",
+    request_snapshot=None,
+    client_operation_id="",
 ):
+    client_operation_id = str(client_operation_id or "").strip()
+    request_json = json.dumps(request_snapshot or {}, ensure_ascii=False, sort_keys=True)
+    if client_operation_id:
+        existing_for_operation = next(
+            (
+                item
+                for item in list_generation_tasks(None, 300)
+                if item.get("client_operation_id") == client_operation_id
+            ),
+            None,
+        )
+        if existing_for_operation:
+            return {**existing_for_operation, "created_new": False, "replayed": True}
     con = _connect()
     active = con.execute(
         "SELECT * FROM generation_tasks WHERE project_id=? AND node_id=? "
@@ -526,15 +588,32 @@ def create_generation_task(
                 "id,project_id,node_id,title,kind,status,phase,progress,provider,model,"
                 "provider_task_id,attempt,estimated_cost,cost_currency,error,"
                 "created_at,started_at,updated_at,finished_at,local_result_url,"
-                "provider_result_url"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "provider_result_url,request_json,client_operation_id,delivery_status"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     task_id, project_id, node_id, title, kind, "queued", "等待调度", 0,
                     provider, model, "", attempt, float(estimated_cost or 0),
                     str(cost_currency or ""), "", now, "", now, "", "", "",
+                    request_json, client_operation_id, "pending",
                 ),
             )
         except sqlite3.IntegrityError:
+            if client_operation_id:
+                row = connection.execute(
+                    "SELECT * FROM generation_tasks WHERE client_operation_id=? LIMIT 1",
+                    (client_operation_id,),
+                ).fetchone()
+                if row:
+                    columns = [
+                        item[0] for item in connection.execute(
+                            "SELECT * FROM generation_tasks LIMIT 0"
+                        ).description
+                    ]
+                    return {
+                        **dict(zip(columns, row)),
+                        "created_new": False,
+                        "replayed": True,
+                    }
             row = connection.execute(
                 "SELECT * FROM generation_tasks WHERE project_id=? AND node_id=? "
                 "AND status IN ('queued','submitting','running') ORDER BY created_at DESC LIMIT 1",
@@ -587,6 +666,205 @@ def update_generation_task(task_id, **fields):
         )
     _run_write_transaction(write)
     return get_generation_task(task_id)
+
+
+def finish_generation_task(
+    task_id,
+    *,
+    status,
+    phase,
+    error="",
+    progress=None,
+    provider_task_id=None,
+    local_result_url=None,
+    provider_result_url=None,
+    delivery_status=None,
+    result_ready_at=None,
+    lease_owner=None,
+):
+    """Write a terminal state and release the active slot in one transaction."""
+    updates = {
+        "status": str(status),
+        "phase": str(phase or ""),
+        "error": str(error or ""),
+        "finished_at": _now_iso(),
+        "lease_owner": "",
+    }
+    updates["lease_expires_at"] = None
+    if progress is not None:
+        updates["progress"] = int(progress)
+    if provider_task_id is not None:
+        updates["provider_task_id"] = str(provider_task_id or "")
+    if local_result_url is not None:
+        updates["local_result_url"] = str(local_result_url or "")
+    if provider_result_url is not None:
+        updates["provider_result_url"] = str(provider_result_url or "")
+    if delivery_status is not None:
+        updates["delivery_status"] = str(delivery_status or "")
+    if result_ready_at is not None:
+        updates["result_ready_at"] = str(result_ready_at or "")
+
+    def write(con):
+        row = con.execute(
+            "SELECT * FROM generation_tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        columns = [
+            item[0] for item in con.execute(
+                "SELECT * FROM generation_tasks LIMIT 0"
+            ).description
+        ]
+        current = dict(zip(columns, row)) if row else None
+        merged = _merge_generation_task_update(current, updates)
+        if not merged:
+            return
+        if lease_owner is not None:
+            owner = str(lease_owner or "")
+            merged.pop("lease_owner", None)
+            merged["lease_expires_at"] = None
+            con.execute(
+                "UPDATE generation_tasks SET "
+                + ",".join(f"{key}=?" for key in merged)
+                + " WHERE id=? AND lease_owner=?",
+                (*merged.values(), task_id, owner),
+            )
+            return
+        con.execute(
+            "UPDATE generation_tasks SET "
+            + ",".join(f"{key}=?" for key in merged)
+            + " WHERE id=?",
+            (*merged.values(), task_id),
+        )
+
+    _run_write_transaction(write)
+    return get_generation_task(task_id)
+
+
+def claim_generation_task(task_id, owner, lease_seconds=45):
+    owner = str(owner or "").strip()
+    if not owner:
+        raise ValueError("任务执行者不能为空")
+    now = datetime.now(timezone.utc)
+    lease_expires_at = (now + timedelta(seconds=max(5, int(lease_seconds)))).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    )[:-3] + "Z"
+    claimed = {"value": False}
+
+    def write(con):
+        result = con.execute(
+            "UPDATE generation_tasks SET status='running', phase='已领取执行租约',"
+            "lease_owner=?,lease_expires_at=?,heartbeat_at=?,updated_at=?,"
+            "started_at=CASE WHEN started_at IS NULL OR started_at='' THEN ? ELSE started_at END,"
+            "error='',finished_at='' "
+            "WHERE id=? AND status='queued' "
+            "AND (lease_owner IS NULL OR lease_owner='' OR lease_expires_at IS NULL OR lease_expires_at<=?)",
+            (
+                owner,
+                lease_expires_at,
+                now.isoformat(),
+                now.isoformat(),
+                now.isoformat(),
+                task_id,
+                now.isoformat(),
+            ),
+        )
+        claimed["value"] = result.rowcount == 1
+
+    _run_write_transaction(write)
+    return claimed["value"]
+
+
+def renew_generation_task_lease(task_id, owner, lease_seconds=45):
+    owner = str(owner or "").strip()
+    now = datetime.now(timezone.utc)
+    lease_expires_at = (now + timedelta(seconds=max(5, int(lease_seconds)))).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    )[:-3] + "Z"
+    renewed = {"value": False}
+
+    def write(con):
+        result = con.execute(
+            "UPDATE generation_tasks SET lease_expires_at=?,heartbeat_at=?,updated_at=? "
+            "WHERE id=? AND status='running' AND lease_owner=? "
+            "AND lease_expires_at IS NOT NULL AND lease_expires_at>?",
+            (
+                lease_expires_at,
+                now.isoformat(),
+                now.isoformat(),
+                task_id,
+                owner,
+                now.isoformat(),
+            ),
+        )
+        renewed["value"] = result.rowcount == 1
+
+    _run_write_transaction(write)
+    return renewed["value"]
+
+
+def release_generation_task_lease(task_id, owner):
+    owner = str(owner or "").strip()
+    if not owner:
+        return
+
+    def write(con):
+        con.execute(
+            "UPDATE generation_tasks SET lease_owner='',lease_expires_at=NULL,updated_at=? "
+            "WHERE id=? AND status='running' AND lease_owner=?",
+            (_now_iso(), task_id, owner),
+        )
+
+    _run_write_transaction(write)
+
+
+def expire_stale_generation_tasks(now=None):
+    current = now or datetime.now(timezone.utc)
+    now_iso = current.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    expired = []
+
+    def write(con):
+        rows = con.execute(
+            "SELECT id,status,phase,provider_task_id,lease_owner FROM generation_tasks "
+            "WHERE status IN ('queued','submitting','running') "
+            "AND (lease_expires_at IS NULL OR lease_expires_at='' OR lease_expires_at<=?) "
+            "ORDER BY created_at ASC",
+            (now_iso,),
+        ).fetchall()
+        for row in rows:
+            task_id, status, phase, provider_task_id, lease_owner = row
+            has_provider_task = bool(str(provider_task_id or "").strip())
+            next_status = "interrupted" if has_provider_task else "failed"
+            next_phase = "结果待确认" if has_provider_task else "执行失联"
+            detail = (
+                "执行租约已过期，但已有供应商任务号；系统会继续查询原任务，不会自动重新提交。"
+                if has_provider_task
+                else "执行线程已失联且没有供应商任务号；本次可安全重新生成。"
+            )
+            con.execute(
+                "UPDATE generation_tasks SET status=?,phase=?,error=?,"
+                "lease_owner='',lease_expires_at=NULL,finished_at=?,updated_at=? "
+                "WHERE id=? AND status=? AND lease_owner=?",
+                (
+                    next_status,
+                    next_phase,
+                    detail,
+                    now_iso,
+                    now_iso,
+                    task_id,
+                    status,
+                    lease_owner,
+                ),
+            )
+            expired.append(
+                {
+                    "id": task_id,
+                    "status": next_status,
+                    "phase": next_phase,
+                    "error": detail,
+                }
+            )
+
+    _run_write_transaction(write)
+    return expired
 
 
 def remember_provider_task(
@@ -665,6 +943,20 @@ def list_generation_tasks(project_id=None, limit=80):
             "SELECT * FROM generation_tasks ORDER BY created_at DESC LIMIT ?",
             (max(1, min(int(limit or 80), 300)),),
         ).fetchall()
+    con.close()
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def list_delivery_pending_tasks(limit=100):
+    con = _connect()
+    columns = [item[0] for item in con.execute("SELECT * FROM generation_tasks LIMIT 0").description]
+    rows = con.execute(
+        "SELECT * FROM generation_tasks "
+        "WHERE status IN ('running','interrupted') "
+        "AND delivery_status IN ('pending','materializing') "
+        "ORDER BY updated_at DESC LIMIT ?",
+        (max(1, min(int(limit or 100), 500)),),
+    ).fetchall()
     con.close()
     return [dict(zip(columns, row)) for row in rows]
 

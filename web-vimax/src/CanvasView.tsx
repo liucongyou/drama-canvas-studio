@@ -12561,6 +12561,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       return false;
     }
     const generationStartedAt = new Date().toISOString();
+    const clientOperationId = (
+      globalThis.crypto?.randomUUID?.()
+      || `canvas-operation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    );
     // This action sends the latest prompt/params atomically with /generate.
     // Drop any older debounced patch for the same node so it cannot race that
     // request with a stale baseUpdatedAt.
@@ -12595,6 +12599,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         const generationPromise = generateCanvasNodeNow(session, node.id, {
           prompt: node.prompt,
           params,
+          clientOperationId,
         });
         window.setTimeout(() => {
           void getGenerationTasks(session, 80)

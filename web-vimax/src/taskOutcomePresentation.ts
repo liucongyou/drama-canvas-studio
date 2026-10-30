@@ -3,6 +3,7 @@ export type TaskOutcomeLike = {
   phase?: string;
   error?: string;
   error_kind?: string;
+  delivery_status?: string;
   outcome?: {
     phase?: string;
     regenerate?: string;
@@ -32,6 +33,7 @@ export function taskOutcomePresentation(
   const backendOutcome = task.outcome;
   const backendRegenerate = backendOutcome?.regenerate;
   const backendPhase = backendOutcome?.phase;
+  const deliveryStatus = String(task.delivery_status || '').toLowerCase();
   const localBlocked =
     backendOutcome?.reason === 'local_validation'
     || task.error_kind === 'local_validation'
@@ -51,13 +53,20 @@ export function taskOutcomePresentation(
     || failedUncertain;
   const outcomePending =
     interruptedUncertain
+    || deliveryStatus === 'pending'
+    || deliveryStatus === 'materializing'
+    || backendPhase === 'fetching'
     || (
       task.status === 'interrupted'
       && task.outcome?.phase === 'unknown'
     );
   const terminal = task.status === 'failed' || task.status === 'interrupted';
   const statusLabel = task.status === 'succeeded'
-    ? '已完成'
+    ? deliveryStatus === 'pending' || deliveryStatus === 'materializing'
+      ? '正在取回结果'
+      : deliveryStatus === 'failed'
+        ? '结果保存失败'
+        : '已完成'
     : task.status === 'running'
       ? '生成中'
       : task.status === 'queued'

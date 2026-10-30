@@ -77,6 +77,8 @@ PROJECT_LOCKS_GUARD = canvas_repository.PROJECT_LOCKS_GUARD
 GENERATION_BUDGET_LOCK = threading.RLock()
 GENERATION_INFLIGHT: set[tuple[str, str]] = set()
 GENERATION_INFLIGHT_LOCK = threading.Lock()
+TASK_LEASE_SECONDS = 45
+TASK_HEARTBEAT_SECONDS = 15
 _PROVIDER_AUTH_CACHE: dict[tuple[str, str, str], tuple[float, str]] = {}
 _PROVIDER_AUTH_CACHE_LOCK = threading.Lock()
 RESUMED_VIDEO_TASKS: set[tuple[str, str]] = set()
@@ -492,12 +494,11 @@ def acquire_generation_slot(task_id, provider_id, model_id=None, kind=None):
                 }
             if time.monotonic() - started >= GENERATION_QUEUE_WAIT_TIMEOUT:
                 if task_id:
-                    store.update_generation_task(
+                    store.finish_generation_task(
                         task_id,
                         status="failed",
                         phase="排队超时",
                         error="生成任务排队超时，请稍后重新提交",
-                        finished_at=store._now_iso(),
                     )
                 raise RuntimeError("生成任务排队超时，请稍后重新提交")
             if task_id:
@@ -1210,19 +1211,67 @@ def _submitted_provider_task_id(task_id):
         return ""
 
 
+def _start_generation_task_heartbeat(task_id, lease_owner):
+    if not task_id or not lease_owner:
+        return None, None
+    stop_event = threading.Event()
+
+    def run():
+        while not stop_event.wait(TASK_HEARTBEAT_SECONDS):
+            try:
+                if not store.renew_generation_task_lease(
+                    task_id,
+                    lease_owner,
+                    TASK_LEASE_SECONDS,
+                ):
+                    print(
+                        f"[generation] task lease lost: task={task_id}",
+                        file=sys.stderr,
+                    )
+                    return
+            except Exception as exc:
+                print(
+                    f"[generation] heartbeat failed: task={task_id} error={exc}",
+                    file=sys.stderr,
+                )
+
+    thread = threading.Thread(
+        target=run,
+        name=f"generation-heartbeat-{task_id}",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
+
+
+def _finish_generation_task_lease(task_id, lease_owner, heartbeat):
+    stop_event, thread = heartbeat if heartbeat else (None, None)
+    if stop_event:
+        stop_event.set()
+    if thread and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=1)
+    try:
+        store.release_generation_task_lease(task_id, lease_owner)
+    except Exception as exc:
+        print(
+            f"[generation] release lease failed: task={task_id} error={exc}",
+            file=sys.stderr,
+        )
+
+
 def _mark_generation_outcome_uncertain(task_id, project_id, node_id, exc, provider_task_id=""):
     """Keep an accepted paid task recoverable instead of calling it a failure."""
     provider_task_id = str(provider_task_id or _submitted_provider_task_id(task_id)).strip()
     message = str(exc)
     if task_id:
         try:
-            store.update_generation_task(
+            store.finish_generation_task(
                 task_id,
                 status="interrupted",
                 phase="结果待确认",
                 error=message,
                 provider_task_id=provider_task_id,
-                finished_at="",
+                delivery_status="pending",
             )
         except Exception:
             # The provider id is also in the independent journal. Preserve the
@@ -1485,23 +1534,23 @@ def reconcile_active_generation_task_for_node(project_id, node_id, node):
     node_status = str(meta.get("status") or "")
     provider_task_id = str(meta.get("taskId") or "").strip()
     if node_status == "done":
-        return store.update_generation_task(
+        return store.finish_generation_task(
             task["id"],
             status="succeeded",
             phase="已完成",
             progress=100,
             error="",
             provider_task_id=provider_task_id or task.get("provider_task_id") or "",
-            finished_at=store._now_iso(),
+            delivery_status="ready",
         )
     if node_status in {"failed", "error"}:
-        return store.update_generation_task(
+        return store.finish_generation_task(
             task["id"],
             status="failed",
             phase=str(meta.get("providerTaskPhase") or "生成失败"),
             error=str(meta.get("lastError") or "生成失败"),
             provider_task_id=provider_task_id or task.get("provider_task_id") or "",
-            finished_at=store._now_iso(),
+            delivery_status="failed",
         )
     if provider_task_id and not task.get("provider_task_id"):
         return store.update_generation_task(task["id"], provider_task_id=provider_task_id)
@@ -1524,12 +1573,12 @@ def reconcile_active_generation_task_for_node(project_id, node_id, node):
         and not task.get("provider_task_id")
         and age >= 90
     ):
-        return store.update_generation_task(
+        return store.finish_generation_task(
             task["id"],
             status="interrupted",
             phase="任务已中断",
             error="任务在取得供应商任务 ID 前已停止，请重新生成",
-            finished_at=store._now_iso(),
+            delivery_status="failed",
         )
     return task
 
@@ -1731,10 +1780,34 @@ def _recover_persisted_result_to_canvas(project_id, node_id, task):
         phase="已完成",
         progress=100,
         error="",
+        delivery_status="ready",
+        result_ready_at=generated_at,
         finished_at=store._now_iso(),
         node_written_at=store._now_iso(),
     )
     return True
+
+
+def reconcile_pending_generation_deliveries():
+    """Finish results already downloaded but not yet projected onto their nodes."""
+    recovered = 0
+    for task in store.list_delivery_pending_tasks(200):
+        local_url = str(task.get("local_result_url") or "").strip()
+        if not local_url.startswith("/uploads/"):
+            continue
+        project_id = str(task.get("project_id") or "")
+        node_id = str(task.get("node_id") or "")
+        if not project_id or not node_id:
+            continue
+        try:
+            if _recover_persisted_result_to_canvas(project_id, node_id, task):
+                recovered += 1
+        except Exception as exc:
+            print(
+                f"[generation-delivery] deferred: task={task.get('id')} error={exc}",
+                file=sys.stderr,
+            )
+    return recovered
 
 
 def _mark_resumed_task_terminal_query_failure(
@@ -1756,13 +1829,13 @@ def _mark_resumed_task_terminal_query_failure(
         "generationFinishedAt": finished_at,
     })
     if generation_task:
-        store.update_generation_task(
+        store.finish_generation_task(
             generation_task["id"],
             status="failed",
             phase="查询失败",
             error=detail,
             provider_task_id=provider_task_id,
-            finished_at=finished_at,
+            delivery_status="failed",
         )
     publish_project_event(project_id, "media", node_id, {
         "status": "failed",
@@ -1863,10 +1936,10 @@ def _resume_video_task(project_id, node_id, task_id, provider, model):
                     "generationFinishedAt": finished_at,
                 })
                 if generation_task:
-                    store.update_generation_task(
+                    store.finish_generation_task(
                         generation_task["id"], status="failed", phase="生成失败",
                         error=failure_detail,
-                        finished_at=finished_at,
+                        delivery_status="failed",
                     )
                 publish_project_event(project_id, "media", node_id, {
                     "status": "failed",
@@ -2022,10 +2095,10 @@ def _resume_image_task(project_id, node_id, task_id, provider, model):
                     "generationFinishedAt": finished_at,
                 })
                 if generation_task:
-                    store.update_generation_task(
+                    store.finish_generation_task(
                         generation_task["id"], status="failed", phase="生成失败",
                         error=failure_detail,
-                        finished_at=finished_at,
+                        delivery_status="failed",
                     )
                 publish_project_event(project_id, "media", node_id, {
                     "status": "failed",
@@ -2160,6 +2233,21 @@ def start_generation_task_reconciler():
     def run():
         while True:
             try:
+                expired = _run_for_active_tenants(store.expire_stale_generation_tasks)
+                for item in expired or []:
+                    print(
+                        f"[generation-tasks] stale task converged: "
+                        f"task={item.get('id')} status={item.get('status')}",
+                        file=sys.stderr,
+                    )
+                delivered = _run_for_active_tenants(
+                    reconcile_pending_generation_deliveries
+                )
+                if delivered:
+                    print(
+                        f"[generation-delivery] projected {delivered} persisted results",
+                        file=sys.stderr,
+                    )
                 _run_for_active_tenants(reconcile_generation_task_records)
             except Exception as exc:
                 print(f"[generation-tasks] 定时对账失败：{exc}", file=sys.stderr)
@@ -2394,11 +2482,11 @@ def reconcile_interrupted_generation_nodes():
                 # a misleading interrupted task on the next restart.
                 pass
             elif task:
-                store.update_generation_task(
+                store.finish_generation_task(
                     task["id"], status="interrupted", phase=task_phase,
                     error=task_error,
                     provider_task_id=provider_task_id,
-                    finished_at=store._now_iso(),
+                    delivery_status="pending",
                 )
             commit_node_metadata(project["id"], node["id"], {
                 "status": "failed",
@@ -3480,6 +3568,11 @@ class Handler(BaseHTTPRequestHandler):
                         else "provider"
                     )
                 task["outcome"] = generation_outcome.task_outcome(task)
+                task["leaseHealthy"] = bool(
+                    task.get("status") in {"queued", "submitting", "running"}
+                    and task.get("lease_expires_at")
+                    and str(task.get("lease_expires_at")) > store._now_iso()
+                )
             queued = sorted(
                 (
                     task for task in tasks
@@ -4267,12 +4360,27 @@ class Handler(BaseHTTPRequestHandler):
                         "estimate": budget_estimate,
                     })
                 reconcile_active_generation_task_for_node(pid, node["id"], node)
+                request_snapshot = {
+                    "version": 1,
+                    "projectId": pid,
+                    "nodeId": node["id"],
+                    "kind": node.get("type") or "",
+                    "provider": params.get("provider") or meta.get("provider") or "",
+                    "model": params.get("model") or meta.get("model") or "",
+                    "prompt": str(body.get("prompt") if "prompt" in body else meta.get("prompt") or ""),
+                    "params": dict(params),
+                    "refs": list(meta.get("refs") or []),
+                    "voiceRefs": list(params.get("voiceRefs") or meta.get("voiceRefs") or []),
+                    "createdAt": store._now_iso(),
+                }
                 task = store.create_generation_task(
                     pid, node["id"], title=node.get("title", ""), kind=node.get("type", ""),
                     provider=params.get("provider") or meta.get("provider") or "",
                     model=params.get("model") or meta.get("model") or "",
                     estimated_cost=(budget_estimate or {}).get("amount") or 0,
                     cost_currency=(budget_estimate or {}).get("currency") or "",
+                    request_snapshot=request_snapshot,
+                    client_operation_id=str(body.get("clientOperationId") or ""),
                 )
                 if (
                     task
@@ -4284,6 +4392,33 @@ class Handler(BaseHTTPRequestHandler):
                         "code": "GENERATION_IN_PROGRESS",
                         "taskId": task.get("id"),
                         "providerTaskId": task.get("provider_task_id"),
+                    })
+                if task and task.get("replayed"):
+                    latest_task = store.get_generation_task(task["id"]) or task
+                    status = str(latest_task.get("status") or "")
+                    if status in {"queued", "submitting", "running", "interrupted"}:
+                        return self._send(202, {
+                            "accepted": True,
+                            "replayed": True,
+                            "taskId": latest_task.get("id"),
+                            "nodeId": node["id"],
+                            "status": "pending",
+                            "code": "GENERATION_TASK_REPLAYED",
+                        })
+                    if status == "succeeded":
+                        return self._send(200, {
+                            "replayed": True,
+                            "taskId": latest_task.get("id"),
+                            "nodeId": node["id"],
+                            "status": "done",
+                        })
+                    return self._send(409, {
+                        "replayed": True,
+                        "taskId": latest_task.get("id"),
+                        "nodeId": node["id"],
+                        "status": "failed",
+                        "code": "GENERATION_TASK_REPLAYED_FAILED",
+                        "error": str(latest_task.get("error") or "原生成任务已失败"),
                     })
                 store.record_audit_event(
                     "generation.submit",
@@ -4314,18 +4449,50 @@ class Handler(BaseHTTPRequestHandler):
                     task.get("kind") or node.get("type"),
                 )
             except GenerationQueueCancelled as exc:
+                store.finish_generation_task(
+                    task["id"],
+                    status="failed",
+                    phase="排队已取消",
+                    error=str(exc),
+                )
                 return self._send(409, {
                     "error": str(exc),
                     "code": "GENERATION_QUEUE_CANCELLED",
                     "taskId": task.get("id"),
                 })
             except Exception as exc:
+                store.finish_generation_task(
+                    task["id"],
+                    status="failed",
+                    phase="排队失败",
+                    error=str(exc),
+                )
                 return self._send(503, {
                     "error": str(exc),
                     "code": "GENERATION_QUEUE_TIMEOUT",
                     "taskId": task.get("id"),
                 })
             generation_started_at = store._now_iso()
+            lease_owner = f"generation:{secrets.token_hex(12)}"
+            if not store.claim_generation_task(
+                task["id"],
+                lease_owner,
+                TASK_LEASE_SECONDS,
+            ):
+                store.update_generation_task(
+                    task["id"],
+                    status="failed",
+                    phase="执行领取失败",
+                    error="任务未能取得执行租约，请重新提交",
+                    finished_at=store._now_iso(),
+                )
+                release_generation_slot(slot)
+                return self._send(409, {
+                    "error": "任务未能取得执行租约，请重新提交",
+                    "code": "GENERATION_LEASE_CONFLICT",
+                    "taskId": task.get("id"),
+                })
+            heartbeat = _start_generation_task_heartbeat(task["id"], lease_owner)
             start_updates = {
                 "status": "generating",
                 "lastError": None,
@@ -4341,8 +4508,24 @@ class Handler(BaseHTTPRequestHandler):
                 start_updates["prompt"] = body["prompt"]
             commit_node_metadata(pid, nid, start_updates)
             try:
-                return self._generate(pid, proj, node, task_id=task["id"])
+                pending_result = self._generate(
+                    pid,
+                    proj,
+                    node,
+                    task_id=task["id"],
+                    lease_owner=lease_owner,
+                )
+                latest_task = store.get_generation_task(task["id"]) or {}
+                if latest_task.get("status") in {"queued", "submitting", "running"}:
+                    store.finish_generation_task(
+                        task["id"],
+                        status="failed",
+                        phase="任务异常结束",
+                        error="生成执行结束但未形成终态，本次未更新画布",
+                    )
+                return pending_result
             finally:
+                _finish_generation_task_lease(task["id"], lease_owner, heartbeat)
                 release_generation_slot(slot)
         m = re.match(r"^/api/generation-tasks/([^/]+)/cancel$", path)
         if m:
@@ -4356,12 +4539,11 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "GENERATION_ALREADY_SUBMITTED",
                 })
             finished_at = store._now_iso()
-            store.update_generation_task(
+            store.finish_generation_task(
                 task_id,
                 status="interrupted",
                 phase="已取消",
                 error="用户取消了排队任务",
-                finished_at=finished_at,
             )
             commit_node_metadata(task["project_id"], task["node_id"], {
                 "status": "failed",
@@ -5078,7 +5260,7 @@ class Handler(BaseHTTPRequestHandler):
             result["text"] = meta.get("prompt")
         return self._send(200, result)
 
-    def _generate(self, pid, proj, node, task_id=None):
+    def _generate(self, pid, proj, node, task_id=None, lease_owner=""):
         key = (str(pid), str(node.get("id") or ""))
         with GENERATION_INFLIGHT_LOCK:
             if key in GENERATION_INFLIGHT:
@@ -5096,10 +5278,68 @@ class Handler(BaseHTTPRequestHandler):
                 })
             GENERATION_INFLIGHT.add(key)
         if task_id:
+            current_task = store.get_generation_task(task_id) or {}
+            current_owner = str(current_task.get("lease_owner") or "").strip()
+            if not current_task:
+                current_task = {
+                    "id": task_id,
+                    "status": "queued",
+                    "lease_owner": "",
+                }
+            if not lease_owner and not current_owner:
+                lease_owner = f"generation:{secrets.token_hex(12)}"
+                if current_task.get("id") == task_id and current_task.get("status") != "queued":
+                    lease_owner = ""
+                elif not store.claim_generation_task(
+                    task_id,
+                    lease_owner,
+                    TASK_LEASE_SECONDS,
+                ):
+                    if not store.get_generation_task(task_id):
+                        current_task = {
+                            "id": task_id,
+                            "status": "running",
+                            "lease_owner": lease_owner,
+                        }
+                    else:
+                        lease_owner = ""
+            if (
+                str(current_task.get("status") or "") not in {"queued", "submitting", "running"}
+                or (
+                    lease_owner
+                    and str(current_task.get("lease_owner") or "") not in {"", str(lease_owner)}
+                )
+                or (not lease_owner and current_owner)
+            ):
+                latest_task = store.get_generation_task(task_id) or {}
+                if latest_task.get("status") == "succeeded":
+                    return self._send(200, {
+                        "taskId": task_id,
+                        "nodeId": node["id"],
+                        "status": "done",
+                        "replayed": True,
+                    })
+                if latest_task.get("status") in {"failed", "interrupted"}:
+                    return self._send(202, {
+                        "taskId": task_id,
+                        "nodeId": node["id"],
+                        "status": "pending",
+                        "code": "PROVIDER_OUTCOME_UNCERTAIN"
+                        if latest_task.get("provider_task_id")
+                        else "GENERATION_TASK_TERMINAL",
+                        "error": str(latest_task.get("error") or "原任务已结束"),
+                        "replayed": True,
+                    })
+                with GENERATION_INFLIGHT_LOCK:
+                    GENERATION_INFLIGHT.discard(key)
+                return self._send(409, {
+                    "error": "生成任务执行租约已失效，本次未提交供应商",
+                    "code": "GENERATION_LEASE_LOST",
+                    "taskId": task_id,
+                })
             store.update_generation_task(
-                task_id, status="running", phase="正在连接供应商",
+                task_id, phase="正在连接供应商",
                 progress=0, error="", finished_at="",
-                started_at=store._now_iso(),
             )
         try:
             return self._generate_once(pid, proj, node, task_id=task_id)
@@ -5162,8 +5402,10 @@ class Handler(BaseHTTPRequestHandler):
                 })
             if task_id:
                 store.update_generation_task(
-                    task_id, status="failed", phase="任务异常", error=str(exc),
-                    finished_at=store._now_iso(),
+                task_id, status="failed", phase="任务异常", error=str(exc),
+                finished_at=store._now_iso(),
+                lease_owner="",
+                lease_expires_at=None,
                 )
             raise
         finally:
@@ -5403,6 +5645,8 @@ class Handler(BaseHTTPRequestHandler):
                         provider_result_url=provider_url,
                         local_result_url=local_generated_url,
                         provider_finished_at=provider_ready_at,
+                        delivery_status="materializing",
+                        result_ready_at=provider_ready_at,
                     )
                 generated_at = provider_ready_at
                 generated_url = local_generated_url
@@ -5611,6 +5855,8 @@ class Handler(BaseHTTPRequestHandler):
                         task_id,
                         provider_result_url=provider_url,
                         local_result_url=local_generated_url,
+                        delivery_status="materializing",
+                        result_ready_at=provider_ready_at,
                     )
                 generated_at = provider_ready_at
                 generated_url = local_generated_url
@@ -5747,9 +5993,12 @@ class Handler(BaseHTTPRequestHandler):
                 "providerTaskPhase": "生成失败",
             })
             if task_id:
-                store.update_generation_task(
-                    task_id, status="failed", phase="生成失败", error=str(exc),
-                    finished_at=store._now_iso(),
+                store.finish_generation_task(
+                    task_id,
+                    status="failed",
+                    phase="生成失败",
+                    error=str(exc),
+                    delivery_status="failed",
                 )
             status = _generation_error_status(exc)
             store.record_audit_event(
@@ -5813,6 +6062,8 @@ class Handler(BaseHTTPRequestHandler):
             store.update_generation_task(
                 task_id, status="succeeded", phase="已完成", progress=100,
                 error="", provider_task_id=str(result.get("taskId") or ""),
+                delivery_status="ready",
+                result_ready_at=str(meta.get("generationFinishedAt") or node_written_at),
                 finished_at=store._now_iso(), node_written_at=node_written_at,
             )
         store.record_audit_event(
