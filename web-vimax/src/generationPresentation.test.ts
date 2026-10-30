@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest';
 import {
   generationDurationLabel,
   generationPhaseLabel,
+  generationProgressLabel,
   hasTrustedProviderProgress,
 } from './generationPresentation';
 import type {GenerationTask} from './api';
@@ -19,6 +20,12 @@ describe('generation presentation', () => {
     expect(generationPhaseLabel('生成中 10%')).toBe('生成中');
     expect(generationPhaseLabel('生成中 58%')).toBe('生成中');
     expect(generationPhaseLabel('正在连接供应商')).toBe('正在连接供应商');
+  });
+
+  it('renders exactly one percentage in progress labels', () => {
+    expect(generationProgressLabel('生成中 10%', 'running', 10)).toBe('生成中 10%');
+    expect(generationProgressLabel('生成中', 'running', 58)).toBe('生成中 58%');
+    expect(generationProgressLabel('排队中 10%', 'queued', 10)).toBe('排队中');
   });
 
   it('uses a terminal label for completed task elapsed time', () => {

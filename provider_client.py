@@ -319,6 +319,33 @@ def _request_multipart(
         raise RuntimeError(f"供应商接口连接失败：{exc.reason}") from exc
 
 
+def _poll_json(
+    url: str,
+    key: str,
+    *,
+    timeout: int = 30,
+    retry_window: int = 90,
+) -> dict[str, Any]:
+    """Retry side-effect-free task polling through transient network failures."""
+    started_at = time.time()
+    deadline = started_at + max(0, int(retry_window))
+    delay = 2.0
+    while True:
+        try:
+            return _request_json("GET", url, key, timeout=timeout)
+        except ProviderHTTPError as exc:
+            if exc.status_code not in {429, 500, 502, 503, 504}:
+                raise
+            if time.time() >= deadline:
+                raise
+            time.sleep(poll_delay(time.time() - started_at))
+        except RuntimeError:
+            if time.time() >= deadline:
+                raise
+            time.sleep(poll_delay(time.time() - started_at))
+            continue
+
+
 def _submit_with_retry(
     attempt: Callable[[], dict[str, Any]],
     *,
@@ -748,21 +775,23 @@ def _newapi_api_origin(base_url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
-def _newapi_image_route(remote_model: str) -> tuple[str, str, str, str]:
+_NEWAPI_IMAGE_PROFILES = {
+    "hc-image": ("/hc/v1/images", "/hc/v1/images/tasks/", "task_id", "data"),
+    "aistars-image": ("/aistars/v1/images", "/aistars/v1/tasks/", "id", "artifacts"),
+    "kr-gemini": ("/kr/gemini/v1/images", "/kr/gemini/v1/images/tasks/", "task_id", "data"),
+    "kr-image": ("/kr/v1/images", "/kr/v1/images/tasks/", "task_id", "data"),
+}
+
+
+def _newapi_image_route(profile: str) -> tuple[str, str, str, str]:
     """Return submit path, poll path, task-id field, and result parser."""
-    name = str(remote_model or "").strip()
-    lowered = name.lower()
-    if lowered.startswith("s-gpt-image"):
-        return "/hc/v1/images", "/hc/v1/images/tasks/", "task_id", "data"
-    if name.startswith("即梦-"):
-        return "/aistars/v1/images", "/aistars/v1/tasks/", "id", "artifacts"
-    if name.startswith("T香蕉"):
-        return "/kr/gemini/v1/images", "/kr/gemini/v1/images/tasks/", "task_id", "data"
-    if lowered == "gpt-image-2":
-        return "/kr/v1/images", "/kr/v1/images/tasks/", "task_id", "data"
-    raise RuntimeError(
-        f"New API 图片线路未实现：{name or '未填写远程模型 ID'}"
-    )
+    key = str(profile or "").strip()
+    route = _NEWAPI_IMAGE_PROFILES.get(key)
+    if not route:
+        raise RuntimeError(
+            f"New API 图片接口档案未实现：{key or '<missing profile>'}"
+        )
+    return route
 
 
 def _newapi_image_result(
@@ -939,7 +968,13 @@ def _newapi_image(
         raise RuntimeError("提示词为空，不能提交生成")
 
     remote_model = str(model.get("remoteModel") or "").strip()
-    route, poll_prefix, task_field, source = _newapi_image_route(remote_model)
+    profile = str(model.get("profile") or "").strip()
+    if not profile:
+        raise RuntimeError(
+            "当前 New API 图片模型缺少接口档案 profile；"
+            "请重新拉取模型或重新保存模型，系统不会按名称猜测接口"
+        )
+    route, poll_prefix, task_field, source = _newapi_image_route(profile)
     base = _newapi_api_origin(provider["base_url"])
     key = provider_catalog.provider_key(provider)
 
@@ -1176,7 +1211,7 @@ def _newapi_image(
                 f"New API 图片生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}"
             )
         time.sleep(poll_delay(time.time() - poll_started))
-        task = _request_json("GET", poll_url, key, timeout=30)
+        task = _poll_json(poll_url, key, timeout=30)
     raise RuntimeError(f"New API 图片任务超时（900s，任务 {task_id}）")
 
 
@@ -1461,7 +1496,7 @@ def _agnes_video(
     last_poll_error = ""
     while time.time() < deadline:
         try:
-            task = _request_json("GET", poll_url, key, timeout=30)
+            task = _poll_json(poll_url, key, timeout=30)
         except ProviderHTTPError as exc:
             if exc.status_code not in {429, 500, 502, 503, 504}:
                 raise
@@ -1584,25 +1619,32 @@ def _newapi_video(
     protocols, so protocol selection happens inside this adapter by exact
     model name instead of leaking one adapter per product line.
     """
-    remote_model = str(model.get("remoteModel") or model.get("id") or "")
-    if remote_model.startswith("即梦-"):
+    profile = str(model.get("profile") or "").strip().lower()
+    if not profile:
+        raise RuntimeError(
+            "当前 New API 视频模型缺少接口档案 profile；"
+            "请重新拉取模型或重新保存模型，系统不会按名称猜测接口"
+        )
+    if profile == "aistars-video":
         return _newapi_aistars_video(
             provider, model, prompt, params, refs, voices,
             on_task_created=on_task_created,
             on_task_update=on_task_update,
         )
-    if remote_model.startswith("官转doubao-"):
+    if profile == "hc-video":
         return _newapi_hc_video(
             provider, model, prompt, params, refs, voices,
             on_task_created=on_task_created,
             on_task_update=on_task_update,
         )
-    if remote_model.startswith(("算力", "特价", "SVIP系列/")):
+    if profile == "suanli-video":
         return _newapi_suanli_video(
             provider, model, prompt, params, refs, voices,
             on_task_created=on_task_created,
             on_task_update=on_task_update,
         )
+    if profile != "openai-video":
+        raise RuntimeError(f"New API 视频接口档案未实现：{profile}")
     text = _reference_prompt(prompt, refs + voices)
     text_refs = _text_refs(refs)
     if text_refs:
@@ -1653,7 +1695,7 @@ def _newapi_video(
     deadline = time.time() + 1800
     poll_started = time.time()
     while time.time() < deadline:
-        task = _request_json("GET", poll_url, key, timeout=30)
+        task = _poll_json(poll_url, key, timeout=30)
         status = str(task.get("status") or "").lower()
         _emit_task_event(on_task_update, {
             "taskId": task_id,
@@ -1781,7 +1823,7 @@ def _newapi_aistars_video(
                 f"即梦视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}"
             )
         time.sleep(max(10.0, poll_delay(time.time() - poll_started)))
-        task = _request_json("GET", poll_url, key, timeout=30)
+        task = _poll_json(poll_url, key, timeout=30)
     raise RuntimeError(f"即梦视频任务超时（3600s，任务 {task_id}）")
 
 
@@ -1843,7 +1885,7 @@ def _newapi_hc_video(
     deadline = time.time() + 3600
     poll_started = time.time()
     while time.time() < deadline:
-        task = _request_json("GET", poll_url, key, timeout=30)
+        task = _poll_json(poll_url, key, timeout=30)
         status = str(task.get("status") or "").lower()
         _emit_task_event(on_task_update, {
             "taskId": task_id,
@@ -1892,7 +1934,7 @@ def _newapi_suanli_video(
         "model": model["remoteModel"],
         "prompt": str(prompt or ""),
         "resolution": str(params.get("resolution") or "720P").lower(),
-        "ratio": str(params.get("ratio") or "16:9"),
+        "aspect_ratio": str(params.get("ratio") or "16:9"),
         "seconds": _safe_int(params.get("duration"), 5, 1, 30),
     }
     if images:
@@ -1923,7 +1965,7 @@ def _newapi_suanli_video(
     deadline = time.time() + 3600
     poll_started = time.time()
     while time.time() < deadline:
-        task = _request_json("GET", poll_url, key, timeout=30)
+        task = _poll_json(poll_url, key, timeout=30)
         status = str(task.get("status") or "").lower()
         _emit_task_event(on_task_update, {
             "taskId": task_id,
@@ -2028,7 +2070,7 @@ def _ark_video(
     deadline = time.time() + 900
     poll_started = time.time()
     while time.time() < deadline:
-        task = _request_json("GET", poll_url, key, timeout=30)
+        task = _poll_json(poll_url, key, timeout=30)
         status = str(task.get("status") or "").lower()
         _emit_task_event(on_task_update, {
             "taskId": task_id,
@@ -2350,31 +2392,38 @@ def check_video_task(
             "/contents/generations/tasks/" + urllib.parse.quote(task_id, safe=""),
         )
     elif adapter == "newapi_video":
-        remote_model = str(model.get("remoteModel") or model.get("id") or "")
+        profile = str(model.get("profile") or "").strip().lower()
+        if not profile:
+            raise RuntimeError(
+                "当前 New API 视频模型缺少接口档案 profile；"
+                "请重新拉取模型或重新保存模型，系统不会按名称猜测接口"
+            )
         base = _newapi_api_origin(provider["base_url"])
-        if remote_model.startswith("即梦-"):
+        if profile == "aistars-video":
             poll_url = (
                 f"{base}/aistars/v1/tasks/"
                 + urllib.parse.quote(task_id, safe="")
             )
-        elif remote_model.startswith("官转doubao-"):
+        elif profile == "hc-video":
             poll_url = (
                 f"{base}/hc-cn/v1/video/tasks/"
                 + urllib.parse.quote(task_id, safe="")
             )
-        elif remote_model.startswith(("算力", "特价", "SVIP系列/")):
+        elif profile == "suanli-video":
             poll_url = (
                 f"{base}/suanli/v1/videos/"
                 + urllib.parse.quote(task_id, safe="")
             )
-        else:
+        elif profile == "openai-video":
             poll_url = _join_url(
                 provider["base_url"],
                 "/videos/" + urllib.parse.quote(task_id, safe=""),
             )
+        else:
+            raise RuntimeError(f"New API 视频接口档案未实现：{profile}")
     else:
         raise RuntimeError(f"不支持恢复的视频适配器：{adapter}")
-    task = _request_json("GET", poll_url, key, timeout=30)
+    task = _poll_json(poll_url, key, timeout=30)
     raw_status = str(task.get("status") or "").lower()
     url = ""
     if raw_status in {"completed", "succeeded", "success", "done"}:
@@ -2414,12 +2463,17 @@ def check_image_task(
         raise RuntimeError("图片任务 ID 为空")
     if str(model.get("adapter") or "") != "newapi_image":
         raise RuntimeError(f"不支持恢复的图片适配器：{model.get('adapter')}")
-    remote_model = str(model.get("remoteModel") or model.get("id") or "")
-    _, poll_prefix, _, source = _newapi_image_route(remote_model)
+    profile = str(model.get("profile") or "").strip()
+    if not profile:
+        raise RuntimeError(
+            "当前 New API 图片模型缺少接口档案 profile；"
+            "请重新拉取模型或重新保存模型，系统不会按名称猜测接口"
+        )
+    _, poll_prefix, _, source = _newapi_image_route(profile)
     base = _newapi_api_origin(provider["base_url"])
     key = provider_catalog.provider_key(provider)
     poll_url = f"{base}{poll_prefix}{urllib.parse.quote(task_id, safe='')}"
-    task = _request_json("GET", poll_url, key, timeout=30)
+    task = _poll_json(poll_url, key, timeout=30)
     raw_status = str(task.get("status") or "").lower()
     url = ""
     if raw_status in {"succeeded", "completed", "success", "done"}:

@@ -49,6 +49,7 @@ class ProviderCatalogTests(unittest.TestCase):
             "id": "65-seedream-5-pro",
             "remoteModel": "即梦-65-seedream-5-pro",
             "adapter": "newapi_image",
+            "profile": "aistars-image",
             "params": {},
         }
         calls = []
@@ -107,6 +108,7 @@ class ProviderCatalogTests(unittest.TestCase):
             "id": "65-seedream-5-pro",
             "remoteModel": "即梦-65-seedream-5-pro",
             "adapter": "newapi_image",
+            "profile": "aistars-image",
             "params": {},
         }
         created = []
@@ -158,6 +160,7 @@ class ProviderCatalogTests(unittest.TestCase):
             "id": "65-seedream-5-pro",
             "remoteModel": "即梦-65-seedream-5-pro",
             "adapter": "newapi_image",
+            "profile": "aistars-image",
             "params": {},
         }
         calls = []
@@ -200,6 +203,7 @@ class ProviderCatalogTests(unittest.TestCase):
             "id": "65-seedream-5-pro",
             "remoteModel": "即梦-65-seedream-5-pro",
             "adapter": "newapi_image",
+            "profile": "aistars-image",
             "params": {},
         }
 
@@ -236,6 +240,7 @@ class ProviderCatalogTests(unittest.TestCase):
             "id": "65-seedream-5-pro",
             "remoteModel": "即梦-65-seedream-5-pro",
             "adapter": "newapi_image",
+            "profile": "aistars-image",
             "params": {},
         }
         calls = []
@@ -278,6 +283,7 @@ class ProviderCatalogTests(unittest.TestCase):
             "id": "65-seedream-5-pro",
             "remoteModel": "即梦-65-seedream-5-pro",
             "adapter": "newapi_image",
+            "profile": "aistars-image",
             "params": {},
         }
         calls = []
@@ -339,6 +345,7 @@ class ProviderCatalogTests(unittest.TestCase):
             "id": "47-seedance-2.5",
             "remoteModel": "即梦-47-seedance-2.5",
             "adapter": "newapi_video",
+            "profile": "aistars-video",
             "params": {},
         }
         calls = []
@@ -405,6 +412,7 @@ class ProviderCatalogTests(unittest.TestCase):
             "id": "65-seedream-5-pro",
             "remoteModel": "即梦-65-seedream-5-pro",
             "adapter": "newapi_image",
+            "profile": "aistars-image",
             "params": {},
         }
 
@@ -440,6 +448,78 @@ class ProviderCatalogTests(unittest.TestCase):
         self.assertEqual(state["url"], "/uploads/recovered.png")
         self.assertEqual(state["taskId"], "task-recover")
 
+    def test_high_quality_sd20_uses_documented_suanli_contract(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "high-quality-sd20",
+            "remoteModel": "高质量sd2.0/(全参933原生过真人速度快720P)",
+            "adapter": "newapi_video",
+            "profile": "suanli-video",
+            "params": {},
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            if method == "POST":
+                return {"id": "task-suanli", "status": "queued"}
+            return {
+                "id": "task-suanli",
+                "status": "completed",
+                "content_url": "/v1/tasks/task-suanli/artifacts/video/content",
+            }
+
+        with (
+            patch.object(provider_client, "_request_json", side_effect=fake_request),
+            patch.object(provider_client.time, "sleep"),
+        ):
+            result = provider_client.generate_video(
+                provider,
+                model,
+                "人物走进旧工厂",
+                {
+                    "ratio": "16:9",
+                    "resolution": "720P",
+                    "duration": 15,
+                },
+                [
+                    {
+                        "kind": "image",
+                        "url": "https://example.com/reference.png",
+                        "label": "角色",
+                    },
+                ],
+                [
+                    {
+                        "url": "https://example.com/reference.mp3",
+                        "label": "音色",
+                    },
+                ],
+            )
+
+        self.assertEqual(result["taskId"], "task-suanli")
+        self.assertEqual(calls[0][0], "POST")
+        self.assertEqual(
+            calls[0][1],
+            "https://api.canvasproai.com/suanli/v1/videos",
+        )
+        body = calls[0][2]
+        self.assertEqual(body["seconds"], 15)
+        self.assertEqual(body["resolution"], "720p")
+        self.assertEqual(body["aspect_ratio"], "16:9")
+        self.assertNotIn("duration", body)
+        self.assertNotIn("ratio", body)
+        self.assertEqual(calls[1][0], "GET")
+        self.assertEqual(
+            calls[1][1],
+            "https://api.canvasproai.com/suanli/v1/videos/task-suanli",
+        )
+
     def test_newapi_video_result_fields_are_provider_specific(self):
         self.assertEqual(
             provider_client._newapi_video_url_from_task({
@@ -470,6 +550,7 @@ class ProviderCatalogTests(unittest.TestCase):
             "id": "special-video",
             "remoteModel": "特价视频-v1",
             "adapter": "newapi_video",
+            "profile": "suanli-video",
         }
         with patch.object(
             provider_client,
@@ -716,6 +797,7 @@ class ProviderCatalogTests(unittest.TestCase):
             "remoteModel": "relay-video",
             "capability": "video",
             "adapter": "newapi_video",
+            "profile": "openai-video",
             "params": {},
         }
         with patch.object(provider_client, "_request_json", side_effect=fake_request), \
@@ -852,6 +934,7 @@ class ProviderPayloadTests(unittest.TestCase):
             "remoteModel": "gpt-image-2",
             "capability": "image",
             "adapter": "newapi_image",
+            "profile": "kr-image",
             "params": {},
         }
         with patch.object(provider_client, "_request_json", side_effect=fake_request), \
@@ -904,6 +987,7 @@ class ProviderPayloadTests(unittest.TestCase):
             "remoteModel": "gpt-image-2",
             "capability": "image",
             "adapter": "newapi_image",
+            "profile": "kr-image",
             "params": {},
         }
         with patch.object(provider_client, "_request_multipart", return_value={
@@ -960,6 +1044,7 @@ class ProviderPayloadTests(unittest.TestCase):
             "remoteModel": "gpt-image-2",
             "capability": "image",
             "adapter": "newapi_image",
+            "profile": "kr-image",
             "params": {},
         }
         with patch.object(provider_client, "_asset_url_for_provider", return_value="data:image/png;base64,YWJj"), \
@@ -1010,6 +1095,7 @@ class ProviderPayloadTests(unittest.TestCase):
             "remoteModel": "gpt-image-2",
             "capability": "image",
             "adapter": "newapi_image",
+            "profile": "kr-image",
             "params": {},
         }
         with patch.object(provider_client, "_download_bytes_with_key", side_effect=fake_download), \

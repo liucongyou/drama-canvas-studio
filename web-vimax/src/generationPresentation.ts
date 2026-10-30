@@ -14,6 +14,18 @@ export function generationPhaseLabel(raw: unknown): string {
   return text.replace(/\s*\d+(?:\.\d+)?\s*%\s*$/, '').trim();
 }
 
+export function generationProgressLabel(
+  phase: unknown,
+  status: unknown,
+  progress: unknown,
+): string {
+  const label = generationPhaseLabel(phase) || '生成中';
+  if (!hasTrustedProviderProgress(status, progress)) {
+    return label;
+  }
+  return `${label} ${Math.round(Number(progress))}%`;
+}
+
 export function hasTrustedProviderProgress(
   status: unknown,
   progress: unknown,

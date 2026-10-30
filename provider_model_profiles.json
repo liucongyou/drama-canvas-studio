@@ -1,0 +1,7686 @@
+{
+  "gpt-5.6-sol": {
+    "kind": "text",
+    "profile": "text-reviewed-gpt-5.6-sol"
+  },
+  "gpt-6-astra": {
+    "kind": "text",
+    "profile": "text-reviewed-gpt-6-astra"
+  },
+  "gpt-6-sol": {
+    "kind": "text",
+    "profile": "text-reviewed-gpt-6-sol"
+  },
+  "gpt-6.1-sol": {
+    "kind": "text",
+    "profile": "text-reviewed-gpt-6.1-sol"
+  },
+  "gpt-image-2": {
+    "kind": "image",
+    "profile": "kr-image"
+  },
+  "T香蕉2": {
+    "kind": "image",
+    "profile": "kr-gemini"
+  },
+  "T香蕉2.1": {
+    "kind": "image",
+    "profile": "kr-gemini"
+  },
+  "T香蕉pro": {
+    "kind": "image",
+    "profile": "kr-gemini"
+  },
+  "s-gpt-image-2": {
+    "kind": "image",
+    "profile": "hc-image"
+  },
+  "s-gpt-image-2.5-flare": {
+    "kind": "image",
+    "profile": "hc-image"
+  },
+  "s-gpt-image-2.5-sunburst": {
+    "kind": "image",
+    "profile": "hc-image"
+  },
+  "官转doubao-seedance-2.0": {
+    "kind": "video",
+    "profile": "hc-video"
+  },
+  "官转doubao-seedance-2.0-fast": {
+    "kind": "video",
+    "profile": "hc-video"
+  },
+  "官转doubao-seedance-2.0-mini": {
+    "kind": "video",
+    "profile": "hc-video"
+  },
+  "官转doubao-seedance-2.5": {
+    "kind": "video",
+    "profile": "hc-video"
+  },
+  "002系列/sd2.0(933满血不卡脸1080P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "1080p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.0(933满血不卡脸480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.0(933满血不卡脸720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.0(933原生不卡脸5-15秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.0(933原生不卡脸720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.0(933原生满血720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.0(9图3音频12秒不卡脸720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          12
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.0(9图3音频15秒不卡脸480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.0(9图3音频不卡脸720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.5(10-10-10/4-30秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 10,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.5(10图30秒30秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 10,
+          "videos": 0,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.5(30-0-10原生过人脸480p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 0,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.5(30-0-10原生过人脸720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 0,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.5(30-10-10，满血高质量480p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.5(30-10-10原生过人脸满血720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.5(9图30秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images"
+        ]
+      }
+    ]
+  },
+  "004系列/sd2.0(官渠903原生过真人速度快720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "004系列/sd2.5-Pro(全参4-30秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "004系列/sd2.5(全参过人脸720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官方直连sd2.0(满血全参不排队1080P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "1080p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官方直连sd2.0(满血全参不排队480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官方直连sd2.0(满血全参不排队4K)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "4k",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官方直连sd2.0(满血全参不排队720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官方直连sd2.0(fast全参不排队480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官方直连sd2.0(fast全参不排队720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官方直连sd2.0(mini全参不排队480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官方直连sd2.0(mini全参不排队720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官方直连sd2.5(满血全参不排队1080P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "1080p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官方直连sd2.5(满血全参不排队480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官方直连sd2.5(满血全参不排队720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官转稳定-sd2.5-1080p(30-10-10/4-30秒卡真人无限并发速度极快)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "1080p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官转稳定-sd2.5-480p(30-10-10/4-30秒卡真人无限并发速度极快)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官转稳定-sd2.5-720p(30-10-10/4-30秒卡真人无限并发速度极快)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "全能sd2.0(官转专线满血原生过脸-933-720p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "全能sd2.0(官转专线原生过脸fast-933-720p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "全能sd2.0(满血内置过脸-900-720p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images"
+        ]
+      }
+    ]
+  },
+  "全能sd2.0(满血原生过脸-933-480p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "全能sd2.0(满血原生过脸-933-720p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "全能sd2.0(原生过脸mini-930-480p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos"
+        ]
+      }
+    ]
+  },
+  "全能sd2.0(mini原生过脸933/720p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "推荐稳定sd2.0vip720p(933不卡脸不排队满血)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优惠sd2.5(30图卡真人30秒/720p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 0,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images"
+        ]
+      }
+    ]
+  },
+  "SD2.5-1080p(30-10-10不卡脸/4-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "1080p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官转sd2.0(mini903不卡脸不排队720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "官转sd2.0(903不卡脸不排队720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "高质量sd2.5/(全参30-10-10原生过真人速度快720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官转sd2.5(30图10音不卡脸720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "高质量sd2.0/(全参933原生过真人速度快720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官转sd2.5(30图10音不卡脸1080P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "1080p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "满血sd2.5(30-10-10原生过人脸30秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.0(原生过真人933/5-15秒/720P按秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.0(原生过真人933/5-15秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.5(30图10音/4-30秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 0,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "全能sd2.5(原生过脸900/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images"
+        ]
+      }
+    ]
+  },
+  "004系列/sd2.5(优质/30图10音/5-15秒/480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 0,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "004系列/wan3.0-vedio(优质10图5音/5-30秒/480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16"
+        ],
+        "maxReferences": {
+          "images": 10,
+          "videos": 0,
+          "audios": 5
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "deepseek-v4-flash": {
+    "kind": "text",
+    "profile": "text-reviewed-deepseek-v4-flash"
+  },
+  "deepseek-v4-pro": {
+    "kind": "text",
+    "profile": "text-reviewed-deepseek-v4-pro"
+  },
+  "deepseek-v4-pro-officially": {
+    "kind": "text",
+    "profile": "text-reviewed-deepseek-v4-pro-officially"
+  },
+  "即梦-55-gpt-image-2": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-55-gpt-image-2.5-flare": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-55-gpt-image-2.5-sunburst": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-66-gpt-image-2.5-flare": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-66-gpt-image-2.5-sunburst": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-67-gpt-image-2.5-flare": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-67-gpt-image-2.5-sunburst": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-52-gpt-image-2": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-52-gpt-image-2.5-flare": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-52-gpt-image-2.5-sunburst": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-46-gpt-image-2": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-46-gpt-image-2.5-flare": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-46-gpt-image-2.5-sunburst": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-23-gemini-nano-banana-2.1": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-23-gemini-3-pro-image-preview": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-23-gemini-3.1-flash-image-preview": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-65-seedream-5-pro": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-65-seedream-5-lite": {
+    "kind": "image",
+    "profile": "aistars-image"
+  },
+  "即梦-50-seedance-2.0-fast": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-50-seedance-2.0": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-47-seedance-2.0-fast": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-47-seedance-2.0": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-48-seedance-2.0-fast": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-48-seedance-2.0": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-59-minimax-h3": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-62-wan-3.0": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-62-wan-3.0-prime": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-51-grok-imagine-video-1.0": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-51-grok-imagine-video-1.5": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-56-happyhorse-1.0": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-56-happyhorse-1.1": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-60-kling-v3": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-60-kling-v3-omni": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-21-gemini-omni-flash": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "004系列/sd2.0(mini9图15秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images"
+        ]
+      }
+    ]
+  },
+  "004系列/sd2.0(fast9图15秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images"
+        ]
+      }
+    ]
+  },
+  "004系列/sd2.5(9图/5/10/15/30秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          10,
+          15,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images"
+        ]
+      }
+    ]
+  },
+  "008系列/sd2.5(30-10-10/5-30秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "008系列/sd2.0(原生过真人933/4-15秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "008系列/wan3.0(10图5音/5-30秒/480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 10,
+          "videos": 0,
+          "audios": 5
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "008系列/sd2.0(mini933/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/wan3-video-2(文生图生视频/10-5-5/2-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 10,
+          "videos": 5,
+          "audios": 5
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "720p",
+        "seconds": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 10,
+          "videos": 5,
+          "audios": 5
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "1080p",
+        "seconds": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 10,
+          "videos": 5,
+          "audios": 5
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.0-2(原生过真人933/5-15秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.0(原生过真人933/5-15秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.5(30图10音/480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 0,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.5(30-10-10/480P/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.5(30图10音/480P/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 0,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      },
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 0,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "全能sd2.0(9图3音内置过人脸720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "全能sd2.5(30图10音内置过人脸720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 0,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "deepseek-v4.1-flash-GA": {
+    "kind": "text",
+    "profile": "text-reviewed-deepseek-v4.1-flash-GA"
+  },
+  "claude-opus-5-5": {
+    "kind": "text",
+    "profile": "text-reviewed-claude-opus-5-5"
+  },
+  "高质量sd2.5/(30图10音原生过真人720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "高质量sd2.5/(原生过人脸30-10-10/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "高质量sd2.5/(原生过人脸30-10-10/720P按秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "高质量sd2.5/(30图10音原生过真人/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "高质量sd2.0(满血全参/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          10,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "高质量sd2.5(满血全参/720P/按次)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "高质量sd2.5(满血30-10-10/5-30秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "高质量sd2.5(满血卡真人30-10-10/5-30秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优质特价sd2.5(900/5-10-15-30秒固定/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          10,
+          15,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images"
+        ]
+      }
+    ]
+  },
+  "优质特价sd2.0(fast900/15秒固定/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images"
+        ]
+      }
+    ]
+  },
+  "优质特价sd2.0(mini900/15秒固定/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images"
+        ]
+      }
+    ]
+  },
+  "优质特价/sd2.5(稳定满血版全参720p原生不卡脸5-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优质特价/sd2.5(稳定满血版02全参720p原生不卡脸5-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优质特价/sd2.5(稳定满血版480P全参原生不卡脸5-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优质特价/sd2.5(稳定满血版720P全参原生不卡脸5-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优质特价/sd2.5(稳定02满血版720P全参原生不卡脸5-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优质特价/sd2.5(稳定02满血版1080p全参原生不卡脸5-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "1080p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优质特价/sd2.5(稳定03满血版480p全参原生不卡脸5-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优质特价/sd2.5(稳定03满血版720p全参原生不卡脸5-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优质特价/sd2.0(稳定03满血版720p全参原生不卡脸5/10/15秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          10,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优质特价/sd2.0(稳定03满血版720p全参原生不卡脸4-15秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优质特价/sd2.5(稳定满血版全参480p原生不卡脸5-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "优质特价/sd2.5(稳定满血版02全参480p原生不卡脸5-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "sd2.5-720p(30-10-10不卡脸/4-30秒无限并发)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "SD2.5-720p(30-10-10不卡脸/4-30秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "特价稳定-sd2.5(30图30秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "005系列/sd2.0(原生过真人9-3-3)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "005系列/sd2.5(原生过真人30-10-10)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "005系列/sd2.5(30-10-10/原生过真人)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "1080p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "005系列/sd2.5(30-10-10/5-30秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "005系列/sd2.5(30-10-10原生过真人/5-30秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "005系列/sd2.5(全参/5-30秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.5(满血全参/4-30秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.5(原生过真人/30-10-10/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.5(满血全参/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "全能sd2.5(满血原生过脸30-10-10/480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "全能sd2.5(原生过脸30-10-10超分720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官转长期稳定全能sd2.5(只卡真人30-10-10/480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "官转长期稳定全能sd2.5(只卡真人30-10-10/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "全能sd2.5(原生过脸30-10-10/480p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "全能sd2.5(全参原生过脸30-10-10/720p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "全能sd2.5(mini480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.0(9图不卡脸5/10/15秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          10,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.0(933满血不卡脸5/10/15秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          10,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "004系列/sd2.0(fast933/5-15秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "9:16"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "004系列/sd2.5-Pro(全参过人脸720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "004系列/sd2.5(优质/30-10-10音/5-15秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "004系列/sd2.0(mini933/5-15秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "9:16"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "004系列/sd2.0(933/5-15秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "9:16"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "专享sd2.5(满血30-10-10/4-30秒/720p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "专享sd2.5(满血30-10-10/4-30秒/1080p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "1080p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "即梦-50-seedance-2.5": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-47-seedance-2.5": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "即梦-48-seedance-2.5": {
+    "kind": "video",
+    "profile": "aistars-video"
+  },
+  "deepseek-v4.1-flash": {
+    "kind": "text",
+    "profile": "text-reviewed-deepseek-v4.1-flash"
+  },
+  "002系列/sd2.0(9图不卡脸原生过人脸5/10/15秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          10,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.5(10图4-30秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 10,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.5(30-10-10/4-30秒720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "002系列/sd2.5(30-10-10满血原生5/10/15/30秒不卡脸720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          10,
+          15,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "004系列/sd2.0(933/5/10/15秒/480p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          10,
+          15
+        ],
+        "aspectRatios": [
+          "9:16"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "005系列/sd2.0(原生过真人933/5-15秒)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.5(10图/4-30秒/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 10,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.5(满血全参02按分辨率秒/720P/1080P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "1080p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "007系列/sd2.5(满血全参按分辨率秒/480P/720P/1080P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "1080p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "008系列/sd2.0(fast原生过真人/4-15秒/480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "SVIP系列/官方直连-高质量/SD2.0fast": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "SVIP系列/官方直连-高质量/SD2.0mini": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "SVIP系列/官转-高质量/SD2.0-A": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "1080p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "SVIP系列/官转-高质量/SD2.0-B": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "SVIP系列/官转-高质量/SD2.0fast": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "SVIP系列/官转-高质量/SD2.0mini": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "SVIP系列/官转-高质量/SD2.5": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          20,
+          25,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          20,
+          25,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      },
+      {
+        "resolution": "1080p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          20,
+          25,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "SVIP系列/高质量/SD2.0": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "SVIP系列/高质量/SD2.0fast": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "SVIP系列/高质量/SD2.0mini": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 0,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "audios+images"
+        ]
+      }
+    ]
+  },
+  "全能sd2.0(原生过脸满血930/480p)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 0
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos"
+        ]
+      }
+    ]
+  },
+  "全能sd2.5(原生过脸30-10-10/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "高质量sd2.0/(933/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 9,
+          "videos": 3,
+          "audios": 3
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "高质量sd2.5/(30图10音原生过真人速度快480P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "480p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "高质量快速sd2.5(满血30-10-10/720P)": {
+    "kind": "video",
+    "profile": "suanli-video",
+    "variants": [
+      {
+        "resolution": "720p",
+        "seconds": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferences": {
+          "images": 30,
+          "videos": 10,
+          "audios": 10
+        },
+        "referenceCombinations": [
+          "none",
+          "images",
+          "videos",
+          "images+videos",
+          "audios+images",
+          "audios+images+videos"
+        ]
+      }
+    ]
+  },
+  "gpt-6.1-terra": {
+    "kind": "text",
+    "profile": "text-responses-gpt-6.1-terra"
+  },
+  "gpt-6.1-terra-sale": {
+    "kind": "text",
+    "profile": "text-responses-gpt-6.1-terra-sale"
+  },
+  "gpt-6.1-terra-S": {
+    "kind": "text",
+    "profile": "text-reviewed-gpt-6.1-terra-S"
+  }
+}

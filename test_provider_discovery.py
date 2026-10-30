@@ -207,6 +207,24 @@ class ProviderDiscoveryTests(unittest.TestCase):
         self.assertEqual(result["models"][0]["capability"], "image")
         self.assertEqual(result["models"][0]["adapter"], "newapi_image")
 
+    def test_documented_video_profiles_are_loaded_by_exact_model_id(self):
+        self.assertEqual(
+            provider_catalog._documented_model_profile(
+                "高质量sd2.0/(全参933原生过真人速度快720P)"
+            ),
+            "suanli-video",
+        )
+        self.assertEqual(
+            provider_catalog._documented_model_profile(
+                "即梦-47-seedance-2.5"
+            ),
+            "aistars-video",
+        )
+        self.assertEqual(
+            provider_catalog._documented_model_profile("not-in-document"),
+            "",
+        )
+
     def test_generic_openai_image_keeps_openai_adapter(self):
         result = self.discover(
             '{"data":[{"id":"custom-gpt-image-model","supported_endpoint_types":["openai_image"]}]}'

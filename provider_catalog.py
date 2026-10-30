@@ -24,6 +24,8 @@ import tenant_security
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE, "config.json")
 LOCAL_CONFIG_PATH = os.path.join(BASE, "config.local.json")
+MODEL_PROFILES_PATH = os.path.join(BASE, "provider_model_profiles.json")
+_MODEL_PROFILES: dict[str, dict[str, Any]] | None = None
 
 
 def _local_config_path() -> str:
@@ -446,16 +448,43 @@ def _is_openai_video_relay(provider: dict[str, Any]) -> bool:
     return _is_newapi_relay(provider)
 
 
+def _model_profile_catalog() -> dict[str, dict[str, Any]]:
+    global _MODEL_PROFILES
+    if _MODEL_PROFILES is None:
+        with open(MODEL_PROFILES_PATH, encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        _MODEL_PROFILES = (
+            loaded if isinstance(loaded, dict) else {}
+        )
+    return _MODEL_PROFILES
+
+
+def _documented_model_profile(remote_model: Any) -> str:
+    """Read the exact protocol profile from the generated API catalog."""
+    entry = _model_profile_catalog().get(str(remote_model or "").strip())
+    return str((entry or {}).get("profile") or "").strip()
+
+
+def _documented_model_entry(remote_model: Any) -> dict[str, Any] | None:
+    entry = _model_profile_catalog().get(str(remote_model or "").strip())
+    return entry if isinstance(entry, dict) else None
+
+
+def _video_profile_for_model(model: dict[str, Any], provider: dict[str, Any]) -> str:
+    explicit = str(model.get("profile") or "").strip()
+    if explicit:
+        return explicit
+    if _is_newapi_relay(provider):
+        return _documented_model_profile(
+            model.get("remoteModel") or model.get("id")
+        )
+    return ""
+
+
 def _uses_newapi_image_route(remote_model: Any) -> bool:
-    name = str(remote_model or "").strip()
-    lowered = name.lower()
-    return (
-        lowered.startswith("s-gpt-image")
-        or name.startswith("即梦-")
-        or name.startswith("T香蕉")
-        or name.startswith("t香蕉")
-        or lowered == "gpt-image-2"
-    )
+    """Accept only image models declared by the API machine catalog."""
+    entry = _documented_model_entry(remote_model)
+    return bool(entry and entry.get("kind") == "image" and entry.get("profile"))
 
 
 def _looks_like_image_model(value: Any) -> bool:
@@ -742,11 +771,16 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
         if not isinstance(model, dict) or model.get("capability") != "video":
             continue
         provider = provider_by_id.get(model.get("providerId"))
-        if provider and _is_openai_video_relay(provider) and model.get("adapter") in {
-            "agnes_video",
-            "ark_video",
-        }:
-            model["adapter"] = "newapi_video"
+        if provider and _is_openai_video_relay(provider):
+            profile = _documented_model_profile(
+                model.get("remoteModel") or model.get("id")
+            )
+            if profile:
+                model["profile"] = profile
+            else:
+                model.pop("profile", None)
+            if model.get("adapter") in {"agnes_video", "ark_video", "newapi_video"}:
+                model["adapter"] = "newapi_video"
     for model in models:
         if not isinstance(model, dict):
             continue
@@ -790,6 +824,10 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
             and _uses_newapi_image_route(model.get("remoteModel") or model.get("id"))
         ):
             model["adapter"] = "newapi_image"
+        if _is_newapi_relay(provider):
+            documented = _documented_model_entry(model.get("remoteModel"))
+            if documented and documented.get("profile"):
+                model["profile"] = str(documented["profile"])
     if migrate and merged != cfg:
         save_config(merged)
     return merged
@@ -1040,7 +1078,7 @@ def _public_model(model: dict[str, Any]) -> dict[str, Any]:
         for key in (
             "id", "providerId", "capability", "label", "remoteModel", "adapter",
             "description", "badge", "enabled", "defaultParams", "params", "limits",
-            "pricing",
+            "pricing", "profile",
         )
     }
     result["limits"] = _normalize_model_limits(result.get("limits") or {})
@@ -1226,6 +1264,29 @@ def upsert_model(input_data: dict[str, Any]) -> dict[str, Any]:
     if current is None:
         current = {"id": model_id, "enabled": True}
         models.append(current)
+    provider_record = next(
+        p for p in cfg.get("providers", [])
+        if isinstance(p, dict) and p.get("id") == provider_id
+    )
+    documented_entry = (
+        _documented_model_entry(remote_model)
+        if _is_newapi_relay(provider_record)
+        else None
+    )
+    if _is_newapi_relay(provider_record) and not documented_entry:
+        raise ValueError(
+            f"模型 {remote_model} 不在当前接口文档目录中，"
+            "无法确定 profile、提交字段和查询路径；请先更新接口文档目录"
+        )
+    if (
+        documented_entry
+        and documented_entry.get("kind")
+        and str(documented_entry["kind"]) != capability
+    ):
+        raise ValueError(
+            f"模型 {remote_model} 在接口文档中属于 {documented_entry['kind']}，"
+            f"不能保存为 {capability}"
+        )
     current.update({
         "providerId": provider_id,
         "capability": capability,
@@ -1235,6 +1296,18 @@ def upsert_model(input_data: dict[str, Any]) -> dict[str, Any]:
         "description": str(source.get("description") or "").strip()[:500],
         "badge": str(source.get("badge") or capability[:4]).strip()[:16],
         "enabled": bool(source.get("enabled", current.get("enabled", True))),
+        "profile": str(
+            source.get("profile")
+            or current.get("profile")
+            or (
+                _video_profile_for_model(
+                    {"remoteModel": remote_model},
+                    provider_record,
+                )
+                if capability == "video"
+                else ""
+            )
+        ).strip(),
     })
     defaults = source.get("defaultParams")
     schema = source.get("params")
@@ -1752,6 +1825,14 @@ def _infer_discovered_model(
         "limits": {},
         "pricing": {},
         "discovered": True,
+        "profile": (
+            _video_profile_for_model(
+                {"remoteModel": remote_model},
+                provider,
+            )
+            if capability == "video" and _is_newapi_relay(provider)
+            else ""
+        ),
     }
 
 

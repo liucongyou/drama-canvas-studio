@@ -127,6 +127,7 @@ import {reconcileSucceededNode} from './generationReconcile';
 import {
   generationDurationLabel,
   generationPhaseLabel,
+  generationProgressLabel,
   hasTrustedProviderProgress,
 } from './generationPresentation';
 import {
@@ -2338,9 +2339,11 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   );
   const providerTaskPhase = node.providerTaskPhase
     || (node.providerTaskStatus === 'queued' ? '排队中' : '生成中');
-  const busyLabel = hasProviderProgress
-    ? `${providerTaskPhase} ${Math.round(providerProgress)}%`
-    : generationPhaseLabel(providerTaskPhase);
+  const busyLabel = generationProgressLabel(
+    providerTaskPhase,
+    node.providerTaskStatus,
+    providerProgress,
+  );
   const p = node.params || {};
   const mediaVersions = mediaVersionList(node);
   const matchedMediaVersionIndex = node.mediaUrl

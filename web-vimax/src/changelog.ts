@@ -7,10 +7,21 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.30.8';
+export const APP_VERSION = '2026.10.30.9';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.30.9',
+    date: '2026-10-30',
+    title: '模型接口按文档目录精确路由',
+    changes: [
+      '图片与视频模型接口改为读取官方接口文档的机器目录，按精确模型 ID 获取 profile、提交路径、查询路径和结果字段。',
+      '系统不再根据模型名称前缀猜测协议；文档目录未登记的模型会明确拒绝保存，避免提交到错误接口。',
+      '异步查询遇到网络抖动会重试同一个任务号，不会重新提交或重复扣费。',
+      '生成状态统一由一个进度格式化入口输出，修复“生成中 10% 10%”的重复百分比。',
+    ],
+  },
   {
     version: '2026.10.30.8',
     date: '2026-10-30',
