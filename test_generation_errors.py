@@ -20,6 +20,15 @@ class GenerationErrorStatusTests(unittest.TestCase):
         error = provider_client.ProviderHTTPError(500, "internal error")
         self.assertEqual(_generation_error_status(error), 502)
 
+    def test_provider_payment_required_preserves_402_and_detail(self):
+        error = provider_client.ProviderHTTPError(
+            402,
+            '{"error":"insufficient balance"}',
+        )
+        self.assertEqual(_generation_error_status(error), 402)
+        mapped = provider_client._provider_submit_error(error)
+        self.assertIn("insufficient balance", str(mapped))
+
 
 if __name__ == "__main__":
     unittest.main()
