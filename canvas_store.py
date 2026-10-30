@@ -843,13 +843,13 @@ def claim_generation_task(task_id, owner, lease_seconds=45, allow_recover=False)
                 return
         if allow_recover:
             status_clause = (
-                "(status IN ('queued','interrupted') "
+                "(status IN ('queued','submitting','interrupted') "
                 "OR (status='running' AND "
                 "(lease_owner IS NULL OR lease_owner='' OR lease_expires_at IS NULL OR lease_expires_at<=?)))"
             )
             status_params = (now.isoformat(),)
         else:
-            status_clause = "status='queued'"
+            status_clause = "status IN ('queued','submitting')"
             status_params = ()
         result = con.execute(
             "UPDATE generation_tasks SET status='running', phase='已领取执行租约',"

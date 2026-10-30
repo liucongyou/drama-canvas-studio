@@ -99,6 +99,29 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(replay["id"], second["id"])
         self.assertTrue(replay["replayed"])
 
+    def test_submitting_task_can_claim_normal_execution_lease(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-submitting",
+                "node-submitting",
+                kind="video",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="submitting",
+                phase="已获得执行槽位",
+            )
+            claimed = canvas_store.claim_generation_task(
+                task["id"],
+                "worker:agnes-video",
+                45,
+            )
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertTrue(claimed)
+        self.assertEqual(saved["status"], "running")
+        self.assertEqual(saved["lease_owner"], "worker:agnes-video")
+
     def test_failed_operation_can_create_new_task_with_new_operation_id(self):
         with tenant_context.use_context(self.context):
             original = canvas_store.create_generation_task(
