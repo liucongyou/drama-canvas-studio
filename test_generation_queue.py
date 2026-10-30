@@ -326,6 +326,245 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(meta["params"]["videoVersionIndex"], 2)
         self.assertEqual(meta["params"]["mediaVersions"], versions)
 
+    def test_duplicate_provider_progress_does_not_refresh_change_time(self):
+        meta = {
+            "providerTaskProgress": 10,
+            "providerTaskProgressChangedAt": "2026-10-30T00:00:00.000Z",
+        }
+        with patch.object(
+            server.store,
+            "_now_iso",
+            return_value="2026-10-30T00:10:00.000Z",
+        ):
+            server._with_progress_changed_at(meta, "running", 10)
+        self.assertEqual(
+            meta["providerTaskProgressChangedAt"],
+            "2026-10-30T00:00:00.000Z",
+        )
+
+        with patch.object(
+            server.store,
+            "_now_iso",
+            return_value="2026-10-30T00:11:00.000Z",
+        ):
+            server._with_progress_changed_at(meta, "running", 20)
+        self.assertEqual(
+            meta["providerTaskProgressChangedAt"],
+            "2026-10-30T00:11:00.000Z",
+        )
+
+    def test_provider_terminal_failure_is_never_reopened(self):
+        task = canvas_store.create_generation_task(
+            "project-terminal",
+            "node-terminal",
+            kind="video",
+        )
+        canvas_store.finish_generation_task(
+            task["id"],
+            status="failed",
+            phase="查询失败",
+            error=(
+                "供应商明确返回任务不存在（HTTP 404）。"
+                "系统已停止查询该任务。"
+            ),
+            provider_task_id="provider-task-dead",
+            delivery_status="failed",
+        )
+
+        reopened = canvas_store.reopen_generation_task_for_provider(
+            task["id"],
+            "provider-task-dead",
+            message="供应商任务仍在执行",
+        )
+
+        self.assertIsNone(reopened)
+        self.assertEqual(
+            canvas_store.get_generation_task(task["id"])["status"],
+            "failed",
+        )
+
+    def test_journal_does_not_reopen_provider_terminal_failure(self):
+        project_id = "project-journal-dead"
+        node_id = "node-journal-dead"
+        task = canvas_store.create_generation_task(
+            project_id,
+            node_id,
+            kind="video",
+        )
+        canvas_store.finish_generation_task(
+            task["id"],
+            status="failed",
+            phase="查询失败",
+            error="供应商明确返回任务不存在（HTTP 404）",
+            provider_task_id="provider-task-journal-dead",
+            delivery_status="failed",
+        )
+        project = {
+            "id": project_id,
+            "payload": {
+                "nodes": [{
+                    "id": node_id,
+                    "type": "video",
+                    "metadata": {
+                        "status": "generating",
+                        "taskId": "provider-task-journal-dead",
+                        "providerTaskStatus": "running",
+                    },
+                }],
+                "episodeImports": [],
+            },
+        }
+        entry = {
+            "taskId": task["id"],
+            "providerTaskId": "provider-task-journal-dead",
+            "projectId": project_id,
+            "nodeId": node_id,
+        }
+        update = unittest.mock.Mock()
+        commit = unittest.mock.Mock()
+        with patch.object(
+            server.store,
+            "list_provider_task_journal",
+            return_value=[entry],
+        ), patch.object(
+            server.store,
+            "get_generation_task",
+            return_value=canvas_store.get_generation_task(task["id"]),
+        ), patch.object(
+            server.store,
+            "get_project",
+            return_value=project,
+        ), patch.object(
+            server.store,
+            "update_generation_task",
+            update,
+        ), patch.object(
+            server,
+            "commit_node_metadata",
+            commit,
+        ):
+            recovered = server.reconcile_provider_task_journal()
+
+        self.assertEqual(recovered, 0)
+        update.assert_not_called()
+        commit.assert_not_called()
+        self.assertEqual(
+            canvas_store.get_generation_task(task["id"])["status"],
+            "failed",
+        )
+
+    def test_task_filter_keeps_only_selected_episode_nodes(self):
+        project = {
+            "id": "project-episode-scope",
+            "payload": {
+                "nodes": [],
+                "episodeImports": [
+                    {"id": "EP009", "nodeIds": ["node-old"]},
+                    {"id": "EP010", "nodeIds": ["node-current"]},
+                ],
+            },
+        }
+        tasks = [
+            {"id": "task-old", "node_id": "node-old"},
+            {"id": "task-current", "node_id": "node-current"},
+        ]
+        with patch.object(server.store, "get_project", return_value=project):
+            filtered = server._filter_generation_tasks_for_episode(
+                "project-episode-scope",
+                tasks,
+                "EP010",
+            )
+
+        self.assertEqual([task["id"] for task in filtered], ["task-current"])
+
+    def test_generation_task_rows_are_queried_by_episode_id(self):
+        current = canvas_store.create_generation_task(
+            "project-task-episode",
+            "node-current",
+            kind="video",
+            episode_id="EP010",
+        )
+        old = canvas_store.create_generation_task(
+            "project-task-episode",
+            "node-old",
+            kind="video",
+            episode_id="EP009",
+        )
+
+        tasks = canvas_store.list_generation_tasks(
+            "project-task-episode",
+            80,
+            episode_id="EP010",
+        )
+
+        self.assertEqual([task["id"] for task in tasks], [current["id"]])
+        self.assertNotIn(old["id"], [task["id"] for task in tasks])
+
+    def test_generation_worker_does_not_need_http_request_thread(self):
+        task = canvas_store.create_generation_task(
+            "project-worker",
+            "node-worker",
+            kind="video",
+            episode_id="EP010",
+        )
+        project = {
+            "id": "project-worker",
+            "payload": {
+                "nodes": [{
+                    "id": "node-worker",
+                    "type": "video",
+                    "metadata": {"params": {}},
+                }],
+                "episodeImports": [],
+            },
+        }
+        finished = []
+        with patch.object(
+            server.store,
+            "get_generation_task",
+            side_effect=[
+                task,
+                {**task, "status": "failed", "phase": "测试终态"},
+            ],
+        ), patch.object(
+            server.store,
+            "get_project",
+            return_value=project,
+        ), patch.object(
+            server,
+            "acquire_generation_slot",
+            return_value={"tenant": "legacy"},
+        ), patch.object(
+            server.store,
+            "claim_generation_task",
+            return_value=True,
+        ), patch.object(
+            server,
+            "_start_generation_task_heartbeat",
+            return_value=None,
+        ), patch.object(
+            server,
+            "commit_node_metadata",
+        ), patch.object(
+            server,
+            "_finish_generation_task_lease",
+        ), patch.object(
+            server,
+            "release_generation_slot",
+        ), patch.object(
+            server.Handler,
+            "_generate",
+            side_effect=lambda *args, **kwargs: finished.append((args, kwargs)),
+        ):
+            server._run_generation_task_worker(
+                task["id"],
+                None,
+                "local",
+            )
+
+        self.assertEqual(len(finished), 1)
+        self.assertEqual(finished[0][1]["task_id"], task["id"])
+
     def test_image_download_failure_does_not_create_fake_version(self):
         node = {
             "id": "image-same-result",

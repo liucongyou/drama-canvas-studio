@@ -455,6 +455,7 @@ export type CanvasMediaNode = {
   providerTaskStatus?: string;
   providerTaskPhase?: string;
   providerTaskProgress?: number;
+  providerTaskProgressChangedAt?: string;
   providerSubmittedAt?: string;
   // 供应商已出结果、本机还没落盘归档：此时卡片已可显示，但任务行仍是 running
   finalizePending?: boolean;
@@ -545,8 +546,12 @@ export function friendlyMediaError(raw?: string): string {
   return text;
 }
 
-export function isLiveProviderGeneration(node?: Pick<CanvasMediaNode, 'providerTaskStatus' | 'lastError'> | null): boolean {
+export function isLiveProviderGeneration(
+  node?: Pick<CanvasMediaNode, 'providerTaskStatus' | 'lastError' | 'mediaUrl' | 'status' | 'finalizePending'> | null,
+): boolean {
   if (!node) return false;
+  if (node.status === 'done' && node.mediaUrl) return false;
+  if (node.finalizePending && node.mediaUrl) return false;
   const status = String(node.providerTaskStatus || '').trim().toLowerCase();
   if (['queued', 'pending', 'created', 'submitted', 'running', 'processing', 'retrying', 'in_progress', 'uncertain'].includes(status)) {
     return true;
@@ -848,9 +853,16 @@ export async function getModelCatalog(): Promise<ModelCatalog> {
   return request('/api/model-catalog');
 }
 
-export async function getGenerationTasks(projectId: string, limit = 80): Promise<GenerationTask[]> {
+export async function getGenerationTasks(
+  projectId: string,
+  limit = 80,
+  episodeId?: string | null,
+): Promise<GenerationTask[]> {
+  const episodeQuery = episodeId
+    ? `&episodeId=${encodeURIComponent(episodeId)}`
+    : '';
   const data = await request<{tasks: GenerationTask[]}>(
-    `/api/generation-tasks?projectId=${encodeURIComponent(projectId)}&limit=${limit}`,
+    `/api/generation-tasks?projectId=${encodeURIComponent(projectId)}&limit=${limit}${episodeQuery}`,
   );
   return data.tasks || [];
 }
@@ -1038,7 +1050,7 @@ type PayloadNode = {
     refs?: CanvasAssetRef[]; params?: CanvasMediaParams; lastError?: string; shotPatch?: Record<string, unknown>;
     promptStale?: boolean; promptStaleReason?: string; sourcePromptUpdatedAt?: string;
     generationStartedAt?: string; generationFinishedAt?: string;
-    providerTaskStatus?: string; providerTaskPhase?: string; providerTaskProgress?: number;
+    providerTaskStatus?: string; providerTaskPhase?: string; providerTaskProgress?: number; providerTaskProgressChangedAt?: string;
     actualDuration?: number; videoValidation?: Record<string, unknown>;
     episodeId?: string;
   };
@@ -1210,6 +1222,7 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
     providerTaskStatus: typeof m.providerTaskStatus === 'string' ? m.providerTaskStatus : undefined,
     providerTaskPhase: typeof m.providerTaskPhase === 'string' ? m.providerTaskPhase : undefined,
     providerTaskProgress: Number.isFinite(Number(m.providerTaskProgress)) ? Number(m.providerTaskProgress) : undefined,
+    providerTaskProgressChangedAt: typeof m.providerTaskProgressChangedAt === 'string' ? m.providerTaskProgressChangedAt : undefined,
     providerSubmittedAt: typeof m.providerSubmittedAt === 'string' ? m.providerSubmittedAt : undefined,
     finalizePending: m.finalizePending === true,
     episodeId: typeof m.episodeId === 'string' ? m.episodeId : undefined,
@@ -1299,7 +1312,6 @@ export async function getCanvasMediaNodes(
   const nodes = allowedIds
     ? allNodes.filter((node) => (
         allowedIds.has(node.id)
-        || node.metadata?.episodeId === epId
         || !ownedIds.has(node.id)
       ))
     : allNodes;

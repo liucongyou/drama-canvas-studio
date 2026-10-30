@@ -16,6 +16,19 @@ LOCAL_VALIDATION_MARKERS = (
     "源节点尚未生成",
 )
 
+TERMINAL_PROVIDER_FAILURE_PHASES = frozenset({
+    "查询失败",
+    "生成失败",
+})
+
+TERMINAL_PROVIDER_FAILURE_MARKERS = (
+    "供应商明确返回任务不存在",
+    "HTTP 404",
+    "供应商视频生成失败",
+    "供应商图片生成失败",
+    "供应商返回生成失败",
+)
+
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
@@ -24,6 +37,24 @@ def _text(value: Any) -> str:
 def is_local_validation_error(message: Any) -> bool:
     text = _text(message)
     return any(marker in text for marker in LOCAL_VALIDATION_MARKERS)
+
+
+def is_provider_terminal_failure(task: dict[str, Any] | None) -> bool:
+    """Return true only for a supplier-confirmed terminal failure.
+
+    Local lease loss, a timeout, or an uncertain submission is deliberately not
+    terminal. Those states may still be reconciled against the same provider
+    task. A supplier 404 or explicit generation failure is final and must never
+    be reopened by journal reconciliation.
+    """
+    if not task or _text(task.get("status")).lower() != "failed":
+        return False
+    phase = _text(task.get("phase"))
+    error = _text(task.get("error"))
+    return (
+        phase in TERMINAL_PROVIDER_FAILURE_PHASES
+        or any(marker in error for marker in TERMINAL_PROVIDER_FAILURE_MARKERS)
+    )
 
 
 def _provider_submission_may_be_live(task: dict[str, Any]) -> bool:

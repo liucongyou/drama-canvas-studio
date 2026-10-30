@@ -102,6 +102,7 @@ def _connect():
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
                 node_id TEXT NOT NULL,
+                episode_id TEXT DEFAULT '',
                 title TEXT,
                 kind TEXT,
                 status TEXT NOT NULL,
@@ -185,6 +186,14 @@ def _connect():
                 con.execute(
                     "ALTER TABLE generation_tasks ADD COLUMN attempt INTEGER DEFAULT 1"
                 )
+            if "episode_id" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN episode_id TEXT DEFAULT ''"
+                )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_generation_tasks_episode "
+                "ON generation_tasks(project_id, episode_id, created_at DESC)"
+            )
             if "estimated_cost" not in task_columns:
                 con.execute(
                     "ALTER TABLE generation_tasks ADD COLUMN estimated_cost REAL DEFAULT 0"
@@ -456,6 +465,7 @@ def delete_project(pid):
 _TASK_FIELDS = {
     "status", "phase", "progress", "provider", "model", "provider_task_id",
     "error", "started_at", "finished_at", "title", "kind",
+    "episode_id",
     "estimated_cost", "cost_currency", "provider_finished_at", "node_written_at",
     "local_result_url", "provider_result_url",
     "request_json", "client_operation_id", "lease_owner", "lease_expires_at",
@@ -566,6 +576,7 @@ def create_generation_task(
     node_id,
     title="",
     kind="",
+    episode_id="",
     provider="",
     model="",
     estimated_cost=0,
@@ -616,13 +627,14 @@ def create_generation_task(
         try:
             connection.execute(
                 "INSERT INTO generation_tasks("
-                "id,project_id,node_id,title,kind,status,phase,progress,provider,model,"
+                "id,project_id,node_id,episode_id,title,kind,status,phase,progress,provider,model,"
                 "provider_task_id,attempt,estimated_cost,cost_currency,error,"
                 "created_at,started_at,updated_at,finished_at,local_result_url,"
                 "provider_result_url,request_json,client_operation_id,delivery_status"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    task_id, project_id, node_id, title, kind, "queued", "等待调度", 0,
+                    task_id, project_id, node_id, str(episode_id or "").upper(),
+                    title, kind, "queued", "等待调度", 0,
                     provider, model, "", attempt, float(estimated_cost or 0),
                     str(cost_currency or ""), "", now, "", now, "", "", "",
                     request_json, client_operation_id, "pending",
@@ -831,6 +843,12 @@ def reopen_generation_task_for_provider(
             "error=?,provider_task_id=?,delivery_status='pending',"
             "lease_owner='',lease_expires_at=NULL,finished_at='',updated_at=? "
             "WHERE id=? AND status='failed' "
+            "AND COALESCE(phase,'') NOT IN ('查询失败','生成失败') "
+            "AND COALESCE(error,'') NOT LIKE '%供应商明确返回任务不存在%' "
+            "AND COALESCE(error,'') NOT LIKE '%HTTP 404%' "
+            "AND COALESCE(error,'') NOT LIKE '%供应商视频生成失败%' "
+            "AND COALESCE(error,'') NOT LIKE '%供应商图片生成失败%' "
+            "AND COALESCE(error,'') NOT LIKE '%供应商返回生成失败%' "
             "AND (provider_task_id=? OR provider_task_id IS NULL OR provider_task_id='')",
             (
                 str(message or ""),
@@ -1073,21 +1091,78 @@ def list_provider_task_journal():
     return entries
 
 
-def list_generation_tasks(project_id=None, limit=80):
+def list_generation_tasks(project_id=None, limit=80, episode_id=None):
     con = _connect()
     columns = [item[0] for item in con.execute("SELECT * FROM generation_tasks LIMIT 0").description]
-    if project_id:
-        rows = con.execute(
-            "SELECT * FROM generation_tasks WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
-            (project_id, max(1, min(int(limit or 80), 300))),
-        ).fetchall()
-    else:
+    normalized_episode = str(episode_id or "").strip().upper()
+    if not project_id:
         rows = con.execute(
             "SELECT * FROM generation_tasks ORDER BY created_at DESC LIMIT ?",
             (max(1, min(int(limit or 80), 300)),),
         ).fetchall()
+    elif normalized_episode:
+        rows = con.execute(
+            "SELECT * FROM generation_tasks "
+            "WHERE project_id=? AND UPPER(COALESCE(episode_id,''))=? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (
+                project_id,
+                normalized_episode,
+                max(1, min(int(limit or 80), 300)),
+            ),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM generation_tasks WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
+            (project_id, max(1, min(int(limit or 80), 300))),
+        ).fetchall()
     con.close()
     return [dict(zip(columns, row)) for row in rows]
+
+
+def list_queued_generation_tasks(limit=100):
+    con = _connect()
+    columns = [item[0] for item in con.execute("SELECT * FROM generation_tasks LIMIT 0").description]
+    rows = con.execute(
+        "SELECT * FROM generation_tasks WHERE status='queued' "
+        "ORDER BY created_at LIMIT ?",
+        (max(1, min(int(limit or 100), 300)),),
+    ).fetchall()
+    con.close()
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def backfill_generation_task_episode_ids():
+    """Attach legacy task rows to the episode group that owns their node."""
+    updated = 0
+    for project_row in list_projects():
+        project = get_project(project_row.get("id"))
+        if not project:
+            continue
+        owners = {}
+        for group in project.get("payload", {}).get("episodeImports", []):
+            episode_id = str(group.get("id") or "").strip().upper()
+            if not episode_id:
+                continue
+            for node_id in group.get("nodeIds", []):
+                if node_id and node_id not in owners:
+                    owners[str(node_id)] = episode_id
+        if not owners:
+            continue
+        con = _connect()
+        rows = con.execute(
+            "SELECT id,node_id FROM generation_tasks "
+            "WHERE project_id=? AND COALESCE(episode_id,'')=''",
+            (project_row.get("id"),),
+        ).fetchall()
+        con.close()
+        for task_id, node_id in rows:
+            episode_id = owners.get(str(node_id or ""))
+            if not episode_id:
+                continue
+            update_generation_task(task_id, episode_id=episode_id)
+            updated += 1
+    return updated
 
 
 def list_delivery_pending_tasks(limit=100):

@@ -9,11 +9,13 @@ import type {GenerationTask} from './api';
 
 describe('generation presentation', () => {
   it('treats stage-only values as non-progress', () => {
-    expect(hasTrustedProviderProgress('submitting', 10)).toBe(false);
-    expect(hasTrustedProviderProgress('queued', 58)).toBe(false);
-    expect(hasTrustedProviderProgress('running', 0)).toBe(false);
-    expect(hasTrustedProviderProgress('running', 100)).toBe(false);
-    expect(hasTrustedProviderProgress('running', 58)).toBe(true);
+    const now = Date.parse('2026-10-30T00:00:20Z');
+    const changedAt = '2026-10-30T00:00:10Z';
+    expect(hasTrustedProviderProgress('submitting', 10, changedAt, now)).toBe(false);
+    expect(hasTrustedProviderProgress('queued', 58, changedAt, now)).toBe(false);
+    expect(hasTrustedProviderProgress('running', 0, changedAt, now)).toBe(false);
+    expect(hasTrustedProviderProgress('running', 100, changedAt, now)).toBe(false);
+    expect(hasTrustedProviderProgress('running', 58, changedAt, now)).toBe(true);
   });
 
   it('removes stale percent suffixes from stage text', () => {
@@ -23,10 +25,19 @@ describe('generation presentation', () => {
   });
 
   it('renders exactly one percentage in progress labels', () => {
-    expect(generationProgressLabel('生成中 10%', 'running', 10)).toBe('生成中 10%');
-    expect(generationProgressLabel('生成中', 'running', 58)).toBe('生成中 58%');
-    expect(generationProgressLabel('排队中 10%', 'queued', 10)).toBe('生成中');
+    const now = Date.parse('2026-10-30T00:00:20Z');
+    const changedAt = '2026-10-30T00:00:10Z';
+    expect(generationProgressLabel('生成中 10%', 'running', 10, changedAt, now)).toBe('生成中 10%');
+    expect(generationProgressLabel('生成中', 'running', 58, changedAt, now)).toBe('生成中 58%');
+    expect(generationProgressLabel('排队中 10%', 'queued', 10, changedAt, now)).toBe('生成中');
     expect(generationPhaseLabel('排队中')).toBe('生成中');
+  });
+
+  it('hides a provider percentage that has stopped moving', () => {
+    const now = Date.parse('2026-10-30T01:00:00Z');
+    const stale = '2026-10-30T00:00:00Z';
+    expect(generationProgressLabel('生成中 10%', 'running', 10, stale, now)).toBe('生成中');
+    expect(generationProgressLabel('生成中 10%', 'running', 10, undefined, now)).toBe('生成中');
   });
 
   it('uses a terminal label for completed task elapsed time', () => {

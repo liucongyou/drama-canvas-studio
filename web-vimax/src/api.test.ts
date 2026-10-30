@@ -23,6 +23,18 @@ describe('friendlyMediaError', () => {
       providerTaskStatus: 'failed',
       lastError: '供应商明确返回任务不存在（HTTP 404）',
     })).toBe(false);
+    expect(isLiveProviderGeneration({
+      status: 'done',
+      mediaUrl: '/uploads/completed.mp4',
+      providerTaskStatus: 'running',
+      lastError: '',
+    })).toBe(false);
+    expect(isLiveProviderGeneration({
+      status: 'done',
+      mediaUrl: '/uploads/completed.mp4',
+      providerTaskStatus: 'completed',
+      lastError: '',
+    })).toBe(false);
   });
 });
 
@@ -266,6 +278,43 @@ describe('api request recovery', () => {
       status: 'generating',
       mediaUrl: '/uploads/previous-video.mp4',
       providerTaskStatus: 'in_progress',
+    });
+  });
+
+  it('keeps the last usable video visible after a regeneration failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'project-failed-regeneration',
+      title: '失败重生成项目',
+      payload: {
+        nodes: [{
+          id: 'video-1',
+          type: 'video',
+          title: '段4',
+          position: {x: 0, y: 0},
+          metadata: {
+            prompt: '重新生成这一段',
+            status: 'failed',
+            content: '/uploads/previous-video.mp4',
+            lastError: '供应商明确返回任务不存在（HTTP 404）',
+            providerTaskStatus: 'failed',
+            params: {ratio: '9:16', model: 'agnes-video-2.5-flash'},
+          },
+        }],
+        connections: [],
+        episodeImports: [],
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    const nodes = await getCanvasMediaNodes('project-failed-regeneration');
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({
+      id: 'video-1',
+      status: 'failed',
+      mediaUrl: '/uploads/previous-video.mp4',
     });
   });
 

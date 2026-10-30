@@ -9,6 +9,8 @@ const STATUS_WITHOUT_TRUSTED_PROGRESS = new Set([
   'starting',
 ]);
 
+export const PROVIDER_PROGRESS_STALE_MS = 20_000;
+
 export function generationPhaseLabel(raw: unknown): string {
   const text = String(raw || '').trim();
   const withoutPercent = text.replace(/\s*\d+(?:\.\d+)?\s*%\s*$/, '').trim();
@@ -19,9 +21,11 @@ export function generationProgressLabel(
   phase: unknown,
   status: unknown,
   progress: unknown,
+  changedAt?: unknown,
+  now = Date.now(),
 ): string {
   const label = generationPhaseLabel(phase) || '生成中';
-  if (!hasTrustedProviderProgress(status, progress)) {
+  if (!hasTrustedProviderProgress(status, progress, changedAt, now)) {
     return label;
   }
   return `${label} ${Math.round(Number(progress))}%`;
@@ -30,12 +34,19 @@ export function generationProgressLabel(
 export function hasTrustedProviderProgress(
   status: unknown,
   progress: unknown,
+  changedAt?: unknown,
+  now = Date.now(),
 ): boolean {
   const normalized = String(status || '').trim().toLowerCase();
   const numeric = Number(progress);
+  const changedTime = Date.parse(String(changedAt || ''));
+  const fresh = Number.isFinite(changedTime)
+    ? now - changedTime <= PROVIDER_PROGRESS_STALE_MS
+    : false;
   return Boolean(
     normalized
     && !STATUS_WITHOUT_TRUSTED_PROGRESS.has(normalized)
+    && fresh
     && Number.isFinite(numeric)
     && numeric > 0
     && numeric < 100,

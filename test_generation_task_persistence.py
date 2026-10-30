@@ -262,7 +262,7 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(saved["phase"], "结果待确认")
         self.assertEqual(saved["provider_task_id"], "task-live-provider")
 
-    def test_runtime_reconciler_restarts_poller_for_unresolved_provider_task(self):
+    def test_runtime_reconciler_only_projects_state_without_restarting_poller(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("runtime-resume")
             project = canvas_store.get_project(project_id)
@@ -310,20 +310,22 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             }
             with (
                 patch.object(server, "_active_tenants", return_value=[None]),
-                patch.object(
-                    server.provider_catalog,
-                    "resolve_model",
-                    return_value=(provider, model, {}),
-                ),
                 patch.object(server.threading, "Thread") as thread_cls,
             ):
-                resumed = server.reconcile_generation_runtime_once()
+                reconciled = server.reconcile_generation_runtime_once()
             saved = canvas_store.get_generation_task(task["id"])
+            node = next(
+                item
+                for item in canvas_store.get_project(project_id)["payload"]["nodes"]
+                if item["id"] == "node-video"
+            )
 
-        self.assertGreaterEqual(resumed["resumed"], 1)
-        self.assertEqual(saved["status"], "interrupted")
+        self.assertNotIn("resumed", reconciled)
+        self.assertEqual(saved["status"], "failed")
         self.assertEqual(saved["phase"], "结果待确认")
-        thread_cls.return_value.start.assert_called()
+        self.assertEqual(node["metadata"]["status"], "failed")
+        self.assertEqual(node["metadata"]["providerTaskPhase"], "生成中 10%")
+        thread_cls.return_value.start.assert_not_called()
 
     def test_resumer_setup_failure_releases_key_for_next_reconcile(self):
         with tenant_context.use_context(self.context):
@@ -889,6 +891,52 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
 
         self.assertEqual(len(started), 1)
         self.assertTrue(started)
+
+    def test_failed_task_without_live_provider_state_is_not_restarted(self):
+        project = {
+            "id": "project-1",
+            "payload": {
+                "nodes": [{
+                    "id": "node-1",
+                    "type": "video",
+                    "title": "段4",
+                    "metadata": {
+                        "status": "failed",
+                        "taskId": "task-dead",
+                        "providerTaskStatus": "failed",
+                        "providerTaskPhase": "查询失败",
+                        "params": {
+                            "provider": "new-apl",
+                            "model": "004-sd2.0-fast933-5-15-720p",
+                        },
+                    },
+                }],
+            },
+        }
+        task = {
+            "id": "local-task-dead",
+            "project_id": "project-1",
+            "node_id": "node-1",
+            "provider_task_id": "task-dead",
+            "provider": "new-apl",
+            "model": "004-sd2.0-fast933-5-15-720p",
+            "kind": "video",
+            "status": "failed",
+            "phase": "查询失败",
+            "error": "供应商明确返回任务不存在（HTTP 404）",
+        }
+        with (
+            patch.object(server, "_active_tenants", return_value=[None]),
+            patch.object(server.store, "list_projects", return_value=[{"id": "project-1"}]),
+            patch.object(server.store, "get_project", return_value=project),
+            patch.object(server.store, "list_generation_tasks", return_value=[task]),
+            patch.object(server, "commit_node_metadata"),
+            patch.object(server.threading, "Thread") as thread_cls,
+        ):
+            started = server.start_pending_video_resumers()
+
+        self.assertEqual(started, 0)
+        thread_cls.return_value.start.assert_not_called()
 
     def test_journal_restores_uncertain_image_node_to_resumable_state(self):
         project = {

@@ -49,7 +49,7 @@ export function taskOutcomePresentation(
     && !localBlocked
     && UNCERTAIN_RE.test(errorText);
   const liveProviderTask =
-    task.status === 'failed'
+    (task.status === 'failed' || task.status === 'interrupted')
     && backendOutcome?.reason === 'provider_task_running'
     && backendPhase === 'running'
     && backendRegenerate === 'blocked'

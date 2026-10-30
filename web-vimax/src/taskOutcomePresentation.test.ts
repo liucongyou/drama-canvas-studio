@@ -81,6 +81,26 @@ describe('task outcome presentation', () => {
     expect(result.canRegenerate).toBe(false);
   });
 
+  it('shows an interrupted recovery row as generating while the provider task is live', () => {
+    const result = taskOutcomePresentation({
+      status: 'interrupted',
+      phase: '结果待确认',
+      error: '供应商任务仍在执行；系统会继续查询原任务',
+      outcome: {
+        phase: 'running',
+        regenerate: 'blocked',
+        reason: 'provider_task_running',
+        requiresConfirmation: false,
+        providerAccepted: true,
+      },
+      delivery_status: 'pending',
+    });
+    expect(result.outcomeUncertain).toBe(false);
+    expect(result.outcomePending).toBe(true);
+    expect(result.statusLabel).toBe('生成中');
+    expect(result.canRegenerate).toBe(false);
+  });
+
   it('blocks regeneration when the backend marks it blocked', () => {
     const result = taskOutcomePresentation({
       status: 'running',

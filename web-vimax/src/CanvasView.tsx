@@ -2328,7 +2328,9 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   const busy = (node.status === 'generating' || liveProviderGeneration || !!generationBusy)
     && !(node.finalizePending && !!node.mediaUrl);
   const done = node.status === 'done' && !liveProviderGeneration;
-  const failed = node.status === 'failed' && !liveProviderGeneration;
+  const failed = node.status === 'failed'
+    && !liveProviderGeneration
+    && !node.mediaUrl;
   useEffect(() => {
     if (!busy) return;
     setBusyClock(Date.now());
@@ -2344,13 +2346,16 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   const hasProviderProgress = hasTrustedProviderProgress(
     node.providerTaskStatus,
     providerProgress,
+    node.providerTaskProgressChangedAt,
   );
   const providerTaskPhase = node.providerTaskPhase
     || '生成中';
+  const visibleProviderTaskPhase = liveProviderGeneration ? '生成中' : providerTaskPhase;
   const busyLabel = generationProgressLabel(
-    providerTaskPhase,
+    visibleProviderTaskPhase,
     node.providerTaskStatus,
     providerProgress,
+    node.providerTaskProgressChangedAt,
   );
   const p = node.params || {};
   const mediaVersions = mediaVersionList(node);
@@ -7915,12 +7920,15 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     setMediaNodes((prev) => {
       let changed = false;
       const next = prev.map((node) => {
+        // A local rendered result is stronger evidence than a stale task
+        // snapshot. Never paint a media card as "generating" when the file is
+        // already on this canvas.
+        if (node.status === 'done' && node.mediaUrl) return node;
         const task = activeByNode.get(node.id);
         if (task) {
           // A completion event is authoritative. An older task-list snapshot
           // may arrive after it and still say running; never demote a finished
           // node back to generating.
-          if (node.status === 'done' && node.mediaUrl) return node;
           // finalizePending：供应商已出结果、后端还在落盘归档。此时卡片已经能看，
           // 不能再退回「生成中」，否则用户会看到画面闪一下又变回转圈。
           if (node.status === 'generating' || node.finalizePending) return node;
@@ -8220,10 +8228,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   useEffect(() => {
     let alive = true;
     const refreshTasks = () => {
-      void getGenerationTasks(session, 80)
+      void getGenerationTasks(session, 80, currentEp)
         .then((tasks) => { if (alive) setGenerationTasks(tasks); })
         .catch(() => {});
     };
+    setGenerationTasks([]);
     refreshTasks();
     // Only poll quickly while there is active work. Closed task center with no
     // active workments still gets a low-frequency reconciliation, not 1.2s churn.
@@ -8237,7 +8246,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [activeGenerationTaskCount, session, taskCenterOpen]);
+  }, [activeGenerationTaskCount, currentEp, session, taskCenterOpen]);
 
   useEffect(() => {
     let alive = true;
@@ -12602,14 +12611,15 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           params,
           clientOperationId,
         });
-        window.setTimeout(() => {
-          void getGenerationTasks(session, 80)
-            .then((tasks) => setGenerationTasks(tasks))
-            .catch(() => {});
-        }, 250);
         const result = await generationPromise;
-        void getGenerationTasks(session, 80)
+        void getGenerationTasks(session, 80, currentEp)
           .then((tasks) => setGenerationTasks(tasks))
+          .catch(() => {});
+        void getCanvasMediaNodes(session, currentEp)
+          .then((remoteNodes) => {
+            const remote = remoteNodes.find((item) => item.id === node.id);
+            if (remote) updateMediaNode(node.id, remote, {persist: false});
+          })
           .catch(() => {});
         if (result.deferred) {
           setToast(result.accepted
@@ -12644,7 +12654,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       }
     })();
     return true;
-  }, [session, updateMediaNode, allEdges, mediaNodes, modelCatalog, setToast]);
+  }, [session, currentEp, updateMediaNode, allEdges, mediaNodes, modelCatalog, setToast]);
 
   // 段级绑定资产（段内镜头绑定的并集）——直接由 shots 索引构建，供段卡 chips
   const segBoundAssets = useMemo(() => {
