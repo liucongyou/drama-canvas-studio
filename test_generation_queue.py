@@ -287,6 +287,45 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(len(versions), 1)
         self.assertEqual(versions[0]["url"], "/uploads/generated.png")
 
+    def test_regeneration_keeps_previous_videos_as_history(self):
+        meta = {
+            "content": "/uploads/video-1.mp4",
+            "taskId": "task-1",
+            "generatedAt": "2026-10-30T00:00:00Z",
+            "provider": "agnes-ai",
+            "model": "agnes-video-2.5-flash",
+            "params": {},
+        }
+
+        server._record_media_version(
+            meta,
+            "video",
+            "/uploads/video-2.mp4",
+            "task-2",
+            "2026-10-30T00:01:00Z",
+        )
+        meta["content"] = "/uploads/video-2.mp4"
+        server._record_media_version(
+            meta,
+            "video",
+            "/uploads/video-3.mp4",
+            "task-3",
+            "2026-10-30T00:02:00Z",
+        )
+
+        versions = meta["params"]["videoVersions"]
+        self.assertEqual(
+            [item["url"] for item in versions],
+            [
+                "/uploads/video-1.mp4",
+                "/uploads/video-2.mp4",
+                "/uploads/video-3.mp4",
+            ],
+        )
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 2)
+        self.assertEqual(meta["params"]["videoVersionIndex"], 2)
+        self.assertEqual(meta["params"]["mediaVersions"], versions)
+
     def test_image_download_failure_does_not_create_fake_version(self):
         node = {
             "id": "image-same-result",

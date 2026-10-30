@@ -217,6 +217,43 @@ describe('api request recovery', () => {
     expect(workspace.mediaNodes).toMatchObject([{id: 'video-1', x: 10, y: 20}]);
   });
 
+  it('keeps the last usable video visible while the node is regenerating', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'project-regenerating',
+      title: '重新生成项目',
+      payload: {
+        nodes: [{
+          id: 'video-1',
+          type: 'video',
+          title: '段1',
+          position: {x: 0, y: 0},
+          metadata: {
+            prompt: '重新生成这一段',
+            status: 'generating',
+            content: '/uploads/previous-video.mp4',
+            providerTaskStatus: 'in_progress',
+            params: {ratio: '9:16', model: 'agnes-video-2.5-flash'},
+          },
+        }],
+        connections: [],
+        episodeImports: [],
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    const nodes = await getCanvasMediaNodes('project-regenerating');
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({
+      id: 'video-1',
+      status: 'generating',
+      mediaUrl: '/uploads/previous-video.mp4',
+      providerTaskStatus: 'in_progress',
+    });
+  });
+
   it('treats a newly created empty project as an editable canvas', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       id: 'project-empty',
