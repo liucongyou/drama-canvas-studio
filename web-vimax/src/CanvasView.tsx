@@ -132,6 +132,7 @@ import {
   hasTrustedProviderProgress,
   latestTaskByNode,
   activeGenerationNodeIds,
+  retainOptimisticGenerationIds,
 } from './generationPresentation';
 import {
   inheritedGenerationParams,
@@ -7895,6 +7896,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [eventsConnected, setEventsConnected] = useState(false);
   const mediaNodesRef = useRef<CanvasMediaNode[]>([]);
   const workspaceLoadEpochRef = useRef(0);
+  const optimisticGenerationStartsRef = useRef<Map<string, string>>(new Map());
   useEffect(() => { mediaNodesRef.current = mediaNodes; }, [mediaNodes]);
   useEffect(() => {
     if (mediaNodes.length === 0) return;
@@ -7915,6 +7917,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       // previous set by only adding active tasks leaves stale node ids forever
       // after a task dies without a completion event.
       const next = activeGenerationNodeIds(generationTasks);
+      const retained = retainOptimisticGenerationIds(
+        generationTasks,
+        optimisticGenerationStartsRef.current,
+      );
+      optimisticGenerationStartsRef.current = retained;
+      for (const nodeId of retained.keys()) next.add(nodeId);
       return next.size === prev.size && [...next].every((id) => prev.has(id)) ? prev : next;
     });
     setMediaNodes((prev) => {
@@ -12720,6 +12728,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       return false;
     }
     const generationStartedAt = new Date().toISOString();
+    optimisticGenerationStartsRef.current.set(node.id, generationStartedAt);
     const clientOperationId = (
       globalThis.crypto?.randomUUID?.()
       || `canvas-operation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -12792,6 +12801,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           next.delete(node.id);
           return next;
         });
+        optimisticGenerationStartsRef.current.delete(node.id);
         updateMediaNode(node.id, {
           status: 'failed',
           lastError: message,

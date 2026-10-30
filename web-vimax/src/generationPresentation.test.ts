@@ -6,6 +6,7 @@ import {
   generationProgressLabel,
   hasTrustedProviderProgress,
   latestTaskByNode,
+  retainOptimisticGenerationIds,
 } from './generationPresentation';
 import type {GenerationTask} from './api';
 
@@ -107,5 +108,34 @@ describe('generation presentation', () => {
 
     expect([...activeGenerationNodeIds([running, failed])]).toEqual(['node-a']);
     expect([...activeGenerationNodeIds([failed])]).toEqual([]);
+  });
+
+  it('keeps a submitted node active until its persisted task appears', () => {
+    const startedAt = '2026-10-31T00:00:00.000Z';
+    const retained = retainOptimisticGenerationIds(
+      [],
+      new Map([['node-a', startedAt]]),
+      Date.parse('2026-10-31T00:00:05.000Z'),
+    );
+    expect([...retained.keys()]).toEqual(['node-a']);
+  });
+
+  it('releases the optimistic lock once the persisted task owns the node', () => {
+    const startedAt = '2026-10-31T00:00:00.000Z';
+    const task: GenerationTask = {
+      id: 'task-a',
+      project_id: 'project',
+      node_id: 'node-a',
+      title: '段A',
+      status: 'running',
+      created_at: '2026-10-31T00:00:01.000Z',
+      updated_at: '2026-10-31T00:00:02.000Z',
+    };
+    const retained = retainOptimisticGenerationIds(
+      [task],
+      new Map([['node-a', startedAt]]),
+      Date.parse('2026-10-31T00:00:05.000Z'),
+    );
+    expect(retained.size).toBe(0);
   });
 });

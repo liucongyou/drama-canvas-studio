@@ -116,3 +116,27 @@ export function activeGenerationNodeIds(
       .map(([nodeId]) => nodeId),
   );
 }
+
+export function retainOptimisticGenerationIds(
+  tasks: GenerationTask[],
+  optimistic: ReadonlyMap<string, string>,
+  now = Date.now(),
+  ttlMs = 5 * 60 * 1000,
+): Map<string, string> {
+  const retained = new Map(optimistic);
+  const latestByNode = latestTaskByNode(tasks);
+  for (const [nodeId, startedAt] of optimistic) {
+    const startedMs = Date.parse(startedAt);
+    if (!Number.isFinite(startedMs) || now - startedMs > ttlMs) {
+      retained.delete(nodeId);
+      continue;
+    }
+    const latestTask = latestByNode.get(nodeId);
+    if (latestTask && taskTimestamp(latestTask) >= startedMs) {
+      // A persisted task now owns this node. It may be active or terminal, but
+      // the optimistic submission lock is no longer needed.
+      retained.delete(nodeId);
+    }
+  }
+  return retained;
+}
