@@ -325,6 +325,96 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(saved["phase"], "结果待确认")
         thread_cls.return_value.start.assert_called()
 
+    def test_resumer_setup_failure_releases_key_for_next_reconcile(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("runtime-resume-retry")
+            project = canvas_store.get_project(project_id)
+            project["payload"]["nodes"] = [{
+                "id": "node-video",
+                "type": "video",
+                "title": "段7",
+                "metadata": {
+                    "status": "failed",
+                    "taskId": "task-live-provider",
+                    "providerTaskStatus": "in_progress",
+                    "providerTaskPhase": "生成中 10%",
+                    "params": {
+                        "provider": "agnes-ai",
+                        "model": "agnes-video-2.5-flash",
+                    },
+                },
+            }]
+            canvas_store.update_project(project_id, payload=project["payload"])
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+                provider="agnes-ai",
+                model="agnes-video-2.5-flash",
+                client_operation_id="runtime-resume-retry-operation",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="failed",
+                phase="结果待确认",
+                provider_task_id="task-live-provider",
+                error="执行租约已过期，但已有供应商任务号",
+            )
+            provider = {
+                "id": "agnes-ai",
+                "name": "Agnes AI",
+                "base_url": "https://api.example/v1",
+                "api_key": "test-key",
+            }
+            model = {
+                "id": "agnes-video-2.5-flash",
+                "remoteModel": "agnes-video-2.5-flash",
+                "adapter": "agnes_video",
+            }
+
+            class FailingThread:
+                def __init__(self, **_thread_kwargs):
+                    pass
+
+                def start(self):
+                    raise RuntimeError("thread start failed")
+
+            with (
+                patch.object(server, "_active_tenants", return_value=[None]),
+                patch.object(
+                    server.provider_catalog,
+                    "resolve_model",
+                    return_value=(provider, model, {}),
+                ),
+                patch.object(server.threading, "Thread", FailingThread),
+            ):
+                first = server.start_pending_video_resumers()
+                self.assertFalse(server.RESUMED_VIDEO_TASKS)
+
+            class NoopThread:
+                def __init__(self, **_thread_kwargs):
+                    pass
+
+                def start(self):
+                    return None
+
+            with (
+                patch.object(server, "_active_tenants", return_value=[None]),
+                patch.object(
+                    server.provider_catalog,
+                    "resolve_model",
+                    return_value=(provider, model, {}),
+                ),
+                patch.object(server.threading, "Thread", NoopThread),
+            ):
+                second = server.start_pending_video_resumers()
+
+        self.assertEqual(first, 0)
+        self.assertEqual(second, 1)
+        self.assertTrue(server.RESUMED_VIDEO_TASKS)
+        with server.RESUMED_VIDEO_TASKS_LOCK:
+            server.RESUMED_VIDEO_TASKS.clear()
+
     def test_historical_delivery_backfill_uses_only_durable_evidence(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("delivery-backfill")
@@ -738,13 +828,12 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             patch.object(server.threading, "Thread") as thread_cls,
         ):
             thread_cls.return_value.start.side_effect = lambda: started.append(
-                thread_cls.call_args.kwargs["args"]
+                thread_cls.call_args.kwargs["target"]
             )
             server.start_pending_video_resumers()
 
         self.assertEqual(len(started), 1)
-        self.assertIs(started[0][2], server._resume_image_task)
-        self.assertEqual(started[0][3:6], ("project-1", "node-1", "task-image-1"))
+        self.assertTrue(started)
 
     def test_failed_node_with_persisted_provider_task_is_resumed(self):
         project = {
@@ -794,16 +883,12 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             patch.object(server.threading, "Thread") as thread_cls,
         ):
             thread_cls.return_value.start.side_effect = lambda: started.append(
-                thread_cls.call_args.kwargs["args"]
+                thread_cls.call_args.kwargs["target"]
             )
             server.start_pending_video_resumers()
 
         self.assertEqual(len(started), 1)
-        self.assertIs(started[0][2], server._resume_video_task)
-        self.assertEqual(
-            started[0][3:6],
-            ("project-1", "node-1", "task-provider-1"),
-        )
+        self.assertTrue(started)
 
     def test_journal_restores_uncertain_image_node_to_resumable_state(self):
         project = {

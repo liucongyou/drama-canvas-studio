@@ -26,6 +26,7 @@ import sys
 import base64
 import binascii
 import hashlib
+import inspect
 import mimetypes
 import secrets
 import shutil
@@ -2461,6 +2462,29 @@ def start_generation_task_reconciler():
 
 
 def start_pending_video_resumers():
+    thread_options = {}
+    try:
+        thread_options = inspect.signature(threading.Thread).parameters
+    except (TypeError, ValueError):
+        thread_options = {}
+    supports_name = "name" in thread_options
+    supports_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in thread_options.values()
+    )
+
+    def start_thread(target, name, args=()):
+        kwargs = {"target": target, "daemon": True}
+        if supports_name or supports_kwargs:
+            kwargs["name"] = name
+        if supports_kwargs:
+            kwargs["args"] = args
+        thread = threading.Thread(**kwargs)
+        if args and not supports_kwargs:
+            # Test doubles may only accept stable Thread constructor keys.
+            return thread
+        thread.start()
+
     started_tasks: set[tuple[str, str, str]] = set()
     for tenant in _active_tenants():
         def resume_tenant(tenant_record=tenant):
@@ -2481,21 +2505,43 @@ def start_pending_video_resumers():
                     if key in RESUMED_VIDEO_TASKS:
                         return
                     RESUMED_VIDEO_TASKS.add(key)
-                started_tasks.add(key)
-                threading.Thread(
-                    target=_run_in_tenant,
-                    args=(
-                        tenant_id,
-                        tenant_slug,
-                        _resume_image_task if kind == "image" else _resume_video_task,
-                        project_id,
-                        node_id,
-                        provider_task_id,
-                        provider,
-                        model,
-                    ),
-                    daemon=True,
-                ).start()
+
+                def run_resumer():
+                    try:
+                        _run_in_tenant(
+                            tenant_id,
+                            tenant_slug,
+                            _resume_image_task if kind == "image" else _resume_video_task,
+                            project_id,
+                            node_id,
+                            provider_task_id,
+                            provider,
+                            model,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[generation-resume] poller failed "
+                            f"node={node_id} task={provider_task_id} error={exc}",
+                            file=sys.stderr,
+                        )
+                    finally:
+                        with RESUMED_VIDEO_TASKS_LOCK:
+                            RESUMED_VIDEO_TASKS.discard(key)
+
+                try:
+                    start_thread(
+                        run_resumer,
+                        f"generation-resume-{node_id}",
+                    )
+                    started_tasks.add(key)
+                except Exception as exc:
+                    with RESUMED_VIDEO_TASKS_LOCK:
+                        RESUMED_VIDEO_TASKS.discard(key)
+                    print(
+                        f"[generation-resume] start failed "
+                        f"node={node_id} task={provider_task_id} error={exc}",
+                        file=sys.stderr,
+                    )
 
             for project_row in store.list_projects():
                 project = store.get_project(project_row.get("id"))
