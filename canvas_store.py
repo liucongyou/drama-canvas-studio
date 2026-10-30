@@ -474,8 +474,25 @@ def _merge_generation_task_update(task: dict | None, updates: dict) -> dict:
         allowed = requested == "succeeded"
     elif current in {"failed", "interrupted", "cancelled"}:
         allowed = requested == "succeeded" or requested == current
-    elif current in _ACTIVE_TASK_STATUSES and requested == "queued":
+    elif (
+        current in _ACTIVE_TASK_STATUSES
+        and requested == "queued"
+        and current != "queued"
+    ):
         allowed = False
+    if (
+        allowed
+        and current in _ACTIVE_TASK_STATUSES
+        and requested in _ACTIVE_TASK_STATUSES
+        and "progress" in updates
+    ):
+        try:
+            requested_progress = int(updates.get("progress") or 0)
+            current_progress = int(task.get("progress") or 0)
+        except (TypeError, ValueError):
+            requested_progress = current_progress = 0
+        if requested_progress < current_progress:
+            merged.pop("progress", None)
     if allowed:
         return merged
     # Keep non-status evidence (for example a provider task id from a late
@@ -649,6 +666,8 @@ def get_generation_task(task_id):
 
 
 def update_generation_task(task_id, **fields):
+    lease_owner = fields.pop("_lease_owner", None)
+
     def write(con):
         row = con.execute(
             "SELECT * FROM generation_tasks WHERE id=?", (task_id,)
@@ -663,11 +682,47 @@ def update_generation_task(task_id, **fields):
             current,
             {key: value for key, value in fields.items() if key in _TASK_FIELDS},
         )
+        if (
+            current
+            and current.get("status") in _ACTIVE_TASK_STATUSES
+            and "progress" in updates
+        ):
+            try:
+                if int(updates.get("progress") or 0) < int(current.get("progress") or 0):
+                    updates.pop("progress", None)
+            except (TypeError, ValueError):
+                updates.pop("progress", None)
         if not updates:
             return
         updates["updated_at"] = _now_iso()
+        if lease_owner is not None:
+            set_clause = ",".join(
+                (
+                    f"{key}=MAX(COALESCE({key},0),?)"
+                    if key == "progress"
+                    else f"{key}=?"
+                )
+                for key in updates
+            )
+            con.execute(
+                "UPDATE generation_tasks SET "
+                + set_clause
+                + " WHERE id=? AND lease_owner=? AND status='running'",
+                (*updates.values(), task_id, str(lease_owner or "")),
+            )
+            return
+        set_clause = ",".join(
+            (
+                f"{key}=MAX(COALESCE({key},0),?)"
+                if key == "progress"
+                else f"{key}=?"
+            )
+            for key in updates
+        )
         con.execute(
-            "UPDATE generation_tasks SET " + ",".join(f"{key}=?" for key in updates) + " WHERE id=?",
+            "UPDATE generation_tasks SET "
+            + set_clause
+            + " WHERE id=?",
             (*updates.values(), task_id),
         )
     _run_write_transaction(write)
@@ -710,6 +765,8 @@ def finish_generation_task(
     if result_ready_at is not None:
         updates["result_ready_at"] = str(result_ready_at or "")
 
+    wrote = {"value": False}
+
     def write(con):
         row = con.execute(
             "SELECT * FROM generation_tasks WHERE id=?", (task_id,)
@@ -725,27 +782,29 @@ def finish_generation_task(
             return
         if lease_owner is not None:
             owner = str(lease_owner or "")
-            merged.pop("lease_owner", None)
+            merged["lease_owner"] = ""
             merged["lease_expires_at"] = None
-            con.execute(
+            result = con.execute(
                 "UPDATE generation_tasks SET "
                 + ",".join(f"{key}=?" for key in merged)
                 + " WHERE id=? AND lease_owner=?",
                 (*merged.values(), task_id, owner),
             )
+            wrote["value"] = result.rowcount == 1
             return
-        con.execute(
+        result = con.execute(
             "UPDATE generation_tasks SET "
             + ",".join(f"{key}=?" for key in merged)
             + " WHERE id=?",
             (*merged.values(), task_id),
         )
+        wrote["value"] = result.rowcount == 1
 
     _run_write_transaction(write)
-    return get_generation_task(task_id)
+    return get_generation_task(task_id) if wrote["value"] else None
 
 
-def claim_generation_task(task_id, owner, lease_seconds=45):
+def claim_generation_task(task_id, owner, lease_seconds=45, allow_recover=False):
     owner = str(owner or "").strip()
     if not owner:
         raise ValueError("任务执行者不能为空")
@@ -756,13 +815,48 @@ def claim_generation_task(task_id, owner, lease_seconds=45):
     claimed = {"value": False}
 
     def write(con):
+        row = con.execute(
+            "SELECT status,lease_owner FROM generation_tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return
+        current_status, current_owner = row
+        if current_status == "running" and current_owner == owner:
+            con.execute(
+                "UPDATE generation_tasks SET lease_expires_at=?,heartbeat_at=?,updated_at=? "
+                "WHERE id=? AND status='running' AND lease_owner=?",
+                (lease_expires_at, now.isoformat(), now.isoformat(), task_id, owner),
+            )
+            claimed["value"] = True
+            return
+        if current_status == "running" and current_owner and current_owner != owner:
+            lease_row = con.execute(
+                "SELECT lease_expires_at FROM generation_tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            existing_lease_expires_at = str((lease_row or [""])[0] or "")
+            if (
+                existing_lease_expires_at
+                and existing_lease_expires_at > now.isoformat()
+            ):
+                return
+        if allow_recover:
+            status_clause = (
+                "(status IN ('queued','interrupted') "
+                "OR (status='running' AND "
+                "(lease_owner IS NULL OR lease_owner='' OR lease_expires_at IS NULL OR lease_expires_at<=?)))"
+            )
+            status_params = (now.isoformat(),)
+        else:
+            status_clause = "status='queued'"
+            status_params = ()
         result = con.execute(
             "UPDATE generation_tasks SET status='running', phase='已领取执行租约',"
             "lease_owner=?,lease_expires_at=?,heartbeat_at=?,updated_at=?,"
             "started_at=CASE WHEN started_at IS NULL OR started_at='' THEN ? ELSE started_at END,"
             "error='',finished_at='' "
-            "WHERE id=? AND status='queued' "
-            "AND (lease_owner IS NULL OR lease_owner='' OR lease_expires_at IS NULL OR lease_expires_at<=?)",
+            f"WHERE id=? AND {status_clause} ",
             (
                 owner,
                 lease_expires_at,
@@ -770,7 +864,7 @@ def claim_generation_task(task_id, owner, lease_seconds=45):
                 now.isoformat(),
                 now.isoformat(),
                 task_id,
-                now.isoformat(),
+                *status_params,
             ),
         )
         claimed["value"] = result.rowcount == 1
@@ -813,6 +907,7 @@ def release_generation_task_lease(task_id, owner):
         return
 
     def write(con):
+        # Do not release a terminal row's historical (already-empty) lease.
         con.execute(
             "UPDATE generation_tasks SET lease_owner='',lease_expires_at=NULL,updated_at=? "
             "WHERE id=? AND status='running' AND lease_owner=?",

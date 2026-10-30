@@ -147,6 +147,67 @@ class CanvasStoreConcurrencyTests(unittest.TestCase):
         self.assertEqual(total["currency"], "CNY")
         self.assertEqual(total["currencies"], ["CNY"])
 
+    def test_many_generation_task_writers_do_not_lose_state(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("generation-write-stress")
+            tasks = [
+                canvas_store.create_generation_task(
+                    project_id,
+                    f"node-{index}",
+                    kind="video",
+                )
+                for index in range(40)
+            ]
+
+        def update(index_and_task):
+            index, task = index_and_task
+            with tenant_context.use_context(self.context):
+                for step in range(5):
+                    canvas_store.update_generation_task(
+                        task["id"],
+                        phase=f"progress-{step}",
+                        progress=step * 10,
+                        provider_task_id=f"provider-{index}",
+                    )
+                return canvas_store.get_generation_task(task["id"])
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            saved = list(pool.map(update, enumerate(tasks)))
+
+        self.assertEqual(len(saved), 40)
+        self.assertTrue(all(item["provider_task_id"] for item in saved))
+        self.assertTrue(all(item["progress"] == 40 for item in saved))
+
+    def test_reads_and_writes_under_parallel_load(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("read-write-stress")
+            tasks = [
+                canvas_store.create_generation_task(
+                    project_id,
+                    f"rw-node-{index}",
+                    kind="image",
+                )
+                for index in range(20)
+            ]
+
+        def worker(index):
+            with tenant_context.use_context(self.context):
+                task = tasks[index % len(tasks)]
+                if index % 3 == 0:
+                    canvas_store.list_generation_tasks(project_id, 300)
+                    return "read"
+                canvas_store.update_generation_task(
+                    task["id"],
+                    progress=index % 100,
+                )
+                return "write"
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
+            outcomes = list(pool.map(worker, range(120)))
+
+        self.assertEqual(outcomes.count("read"), 40)
+        self.assertEqual(outcomes.count("write"), 80)
+
 
 if __name__ == "__main__":
     unittest.main()

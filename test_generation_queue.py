@@ -260,6 +260,16 @@ class GenerationQueueTests(unittest.TestCase):
         task_updates = []
         handler = object.__new__(server.Handler)
         handler._send = lambda status, payload: sent.append((status, payload)) or payload
+        canvas_store.create_generation_task(
+            project["id"],
+            node["id"],
+            kind="video",
+        )
+        queued_task = canvas_store.list_generation_tasks(project["id"], 10)[0]
+        lease_owner = "test-video-download"
+        self.assertTrue(
+            canvas_store.claim_generation_task(queued_task["id"], lease_owner, 45)
+        )
         with (
             patch.object(server.provider_catalog, "resolve_model", return_value=(provider, model, {})),
             patch.object(
@@ -279,7 +289,7 @@ class GenerationQueueTests(unittest.TestCase):
             ),
             patch.object(
                 server.store,
-                "update_generation_task",
+                "finish_generation_task",
                 side_effect=lambda task_id, **fields: task_updates.append(fields),
             ),
             patch.object(
@@ -349,7 +359,7 @@ class GenerationQueueTests(unittest.TestCase):
             ),
             patch.object(
                 server.store,
-                "update_generation_task",
+                "finish_generation_task",
                 side_effect=lambda task_id, **fields: updates.append(fields),
             ),
             patch.object(server, "commit_node_metadata"),
@@ -687,6 +697,77 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(repaired["provider_task_id"], "provider-task-42")
         self.assertEqual(repaired["status"], "running")
 
+    def test_stale_failed_node_does_not_close_live_provider_task(self):
+        pid = canvas_store.create_project("queue-stale-node-live-provider")
+        node = {
+            "id": "node-1",
+            "type": "video",
+            "title": "段7",
+            "position": {"x": 0, "y": 0},
+            "metadata": {
+                "status": "failed",
+                "lastError": "旧页面错误",
+                "taskId": "provider-still-live",
+                "providerTaskStatus": "in_progress",
+            },
+        }
+        project = canvas_store.get_project(pid)
+        project["payload"]["nodes"] = [node]
+        canvas_store.update_project(pid, payload=project["payload"])
+        task = canvas_store.create_generation_task(pid, "node-1", kind="video")
+        canvas_store.update_generation_task(
+            task["id"],
+            status="running",
+            phase="生成中",
+            provider_task_id="provider-still-live",
+        )
+
+        current = server.reconcile_active_generation_task_for_node(pid, "node-1", node)
+
+        self.assertEqual(current["status"], "running")
+        self.assertEqual(current["provider_task_id"], "provider-still-live")
+        self.assertEqual(
+            canvas_store.get_generation_task(task["id"])["status"],
+            "running",
+        )
+
+    def test_unresolved_provider_task_blocks_new_submission(self):
+        pid = canvas_store.create_project("queue-unresolved-provider")
+        task = canvas_store.create_generation_task(
+            pid,
+            "node-1",
+            kind="video",
+        )
+        canvas_store.update_generation_task(
+            task["id"],
+            status="interrupted",
+            phase="结果待确认",
+            provider_task_id="provider-unresolved",
+        )
+
+        unresolved = server._unresolved_provider_task_for_node(pid, "node-1")
+
+        self.assertIsNotNone(unresolved)
+        self.assertEqual(unresolved["id"], task["id"])
+        self.assertEqual(unresolved["provider_task_id"], "provider-unresolved")
+
+    def test_unresolved_task_without_provider_id_does_not_block_new_submission(self):
+        pid = canvas_store.create_project("queue-unresolved-no-provider")
+        task = canvas_store.create_generation_task(
+            pid,
+            "node-1",
+            kind="video",
+        )
+        canvas_store.update_generation_task(
+            task["id"],
+            status="interrupted",
+            phase="本地中断",
+        )
+
+        unresolved = server._unresolved_provider_task_for_node(pid, "node-1")
+
+        self.assertIsNone(unresolved)
+
     def test_reconcile_marks_stale_generating_node_failed_after_provider_failure(self):
         pid = canvas_store.create_project("queue-failed")
         node = {
@@ -960,7 +1041,7 @@ class GenerationQueueTests(unittest.TestCase):
             ),
             patch.object(
                 server.store,
-                "update_generation_task",
+                "finish_generation_task",
                 side_effect=lambda task_id, **fields: task_updates.append(fields),
             ),
             patch.object(server, "commit_node_metadata"),
@@ -1011,6 +1092,16 @@ class GenerationQueueTests(unittest.TestCase):
         queued = []
         handler = object.__new__(server.Handler)
         handler._send = lambda status, payload: sent.append((status, payload)) or payload
+        canvas_store.create_generation_task(
+            project["id"],
+            node["id"],
+            kind="video",
+        )
+        queued_task = canvas_store.list_generation_tasks(project["id"], 10)[0]
+        lease_owner = "test-video-download"
+        self.assertTrue(
+            canvas_store.claim_generation_task(queued_task["id"], lease_owner, 45)
+        )
         with (
             patch.object(server.provider_catalog, "resolve_model", return_value=(provider, model, {})),
             patch.object(
@@ -1032,11 +1123,6 @@ class GenerationQueueTests(unittest.TestCase):
                 return_value="/uploads/video.mp4",
             ),
             patch.object(
-                server.store,
-                "update_generation_task",
-                side_effect=lambda task_id, **fields: fields,
-            ),
-            patch.object(
                 server,
                 "queue_generated_video_finalize",
                 side_effect=lambda *args: queued.append(args),
@@ -1047,7 +1133,8 @@ class GenerationQueueTests(unittest.TestCase):
                 project["id"],
                 project,
                 node,
-                task_id="local-video-1",
+                task_id=queued_task["id"],
+                lease_owner=lease_owner,
             )
         status, payload = sent[-1]
         self.assertEqual(status, 200)
@@ -1056,6 +1143,12 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(node["metadata"]["status"], "done")
         self.assertEqual(node["metadata"]["content"], "/uploads/video.mp4")
         self.assertEqual(queued[0][2], "/uploads/video.mp4")
+        canvas_store.finish_generation_task(
+            queued_task["id"],
+            status="succeeded",
+            phase="已完成",
+            lease_owner=lease_owner,
+        )
 
     def test_video_finalize_stores_tos_original_bytes(self):
         run = []
