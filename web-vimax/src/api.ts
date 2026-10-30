@@ -545,6 +545,16 @@ export function friendlyMediaError(raw?: string): string {
   return text;
 }
 
+export function isLiveProviderGeneration(node?: Pick<CanvasMediaNode, 'providerTaskStatus' | 'lastError'> | null): boolean {
+  if (!node) return false;
+  const status = String(node.providerTaskStatus || '').trim().toLowerCase();
+  if (['queued', 'pending', 'created', 'submitted', 'running', 'processing', 'retrying', 'in_progress', 'uncertain'].includes(status)) {
+    return true;
+  }
+  const error = String(node.lastError || '');
+  return /执行租约已过期|供应商任务仍在执行|结果待确认/.test(error);
+}
+
 /**
  * 统一读取节点的「音色引用列表」。
  *

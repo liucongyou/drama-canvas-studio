@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, loginAccount, mediaVersionList, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, isLiveProviderGeneration, loginAccount, mediaVersionList, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
 
 describe('friendlyMediaError', () => {
   it('translates persisted write/read timeout errors before rendering', () => {
@@ -8,6 +8,21 @@ describe('friendlyMediaError', () => {
     expect(write).not.toContain('未创建供应商任务');
     expect(write).not.toContain('timed out');
     expect(friendlyMediaError('供应商接口连接失败：The read operation timed out')).toBe(write);
+  });
+
+  it('treats a recoverable provider task as still generating', () => {
+    expect(isLiveProviderGeneration({
+      providerTaskStatus: 'in_progress',
+      lastError: '',
+    })).toBe(true);
+    expect(isLiveProviderGeneration({
+      providerTaskStatus: 'failed',
+      lastError: '执行租约已过期，但已有供应商任务号；系统会继续查询原任务',
+    })).toBe(true);
+    expect(isLiveProviderGeneration({
+      providerTaskStatus: 'failed',
+      lastError: '供应商明确返回任务不存在（HTTP 404）',
+    })).toBe(false);
   });
 });
 

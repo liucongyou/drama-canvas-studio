@@ -107,7 +107,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, projectEventsUrl, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, projectEventsUrl, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -2324,10 +2324,11 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   useEffect(() => { if (!isText) setEditingText(false); }, [isText]);
   // finalizePending：供应商已经出结果、后端还在落盘归档。此时遮罩会把画面挡住，
   // 而用户要看的正是这张画面，所以只要已有地址就不再盖一层「生成中」。
-  const busy = (node.status === 'generating' || !!generationBusy)
+  const liveProviderGeneration = isLiveProviderGeneration(node);
+  const busy = (node.status === 'generating' || liveProviderGeneration || !!generationBusy)
     && !(node.finalizePending && !!node.mediaUrl);
-  const done = node.status === 'done';
-  const failed = node.status === 'failed';
+  const done = node.status === 'done' && !liveProviderGeneration;
+  const failed = node.status === 'failed' && !liveProviderGeneration;
   useEffect(() => {
     if (!busy) return;
     setBusyClock(Date.now());
@@ -2345,7 +2346,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
     providerProgress,
   );
   const providerTaskPhase = node.providerTaskPhase
-    || (node.providerTaskStatus === 'queued' ? '排队中' : '生成中');
+    || '生成中';
   const busyLabel = generationProgressLabel(
     providerTaskPhase,
     node.providerTaskStatus,

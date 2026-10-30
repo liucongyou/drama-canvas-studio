@@ -79,7 +79,7 @@ export function taskOutcomePresentation(
     : task.status === 'running'
       ? '生成中'
       : task.status === 'queued'
-        ? '排队中'
+        ? '生成中'
         : task.status === 'submitting'
           ? '提交中'
         : liveProviderTask

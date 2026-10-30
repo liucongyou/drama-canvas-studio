@@ -11,7 +11,8 @@ const STATUS_WITHOUT_TRUSTED_PROGRESS = new Set([
 
 export function generationPhaseLabel(raw: unknown): string {
   const text = String(raw || '').trim();
-  return text.replace(/\s*\d+(?:\.\d+)?\s*%\s*$/, '').trim();
+  const withoutPercent = text.replace(/\s*\d+(?:\.\d+)?\s*%\s*$/, '').trim();
+  return withoutPercent.replace(/^排队中/, '生成中');
 }
 
 export function generationProgressLabel(
