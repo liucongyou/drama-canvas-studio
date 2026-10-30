@@ -48,11 +48,20 @@ export function taskOutcomePresentation(
     task.status === 'failed'
     && !localBlocked
     && UNCERTAIN_RE.test(errorText);
-  const outcomeUncertain = backendPhase === 'unknown'
+  const liveProviderTask =
+    task.status === 'failed'
+    && backendOutcome?.reason === 'provider_task_running'
+    && backendPhase === 'running'
+    && backendRegenerate === 'blocked'
+    && !localBlocked;
+  const outcomeUncertain = !liveProviderTask && (
+    backendPhase === 'unknown'
     || interruptedUncertain
-    || failedUncertain;
+    || failedUncertain
+  );
   const outcomePending =
-    interruptedUncertain
+    liveProviderTask
+    || interruptedUncertain
     || deliveryStatus === 'pending'
     || deliveryStatus === 'materializing'
     || backendPhase === 'fetching'
@@ -73,6 +82,8 @@ export function taskOutcomePresentation(
         ? '排队中'
         : task.status === 'submitting'
           ? '提交中'
+        : liveProviderTask
+          ? '生成中'
           : localBlocked
             ? '待补素材'
             : backendPhase === 'unknown' || outcomeUncertain

@@ -7,10 +7,22 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.30.13';
+export const APP_VERSION = '2026.10.30.14';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.30.14',
+    date: '2026-10-30',
+    title: '视频断线恢复与真实任务回写',
+    changes: [
+      '服务重启后，已取得供应商任务号的任务即使曾被旧执行线程误标失败，也会从恢复日志重新接管并继续查询原任务。',
+      '只有任务号与供应商任务完全一致的失败记录才允许恢复；真正的供应商失败或任务号不一致的记录不会被复活。',
+      '供应商仍在执行时，画布和任务中心显示“生成中”并禁止重复提交，不再误显示成需要重新生成的失败状态。',
+      '运行中的服务每 30 秒重新扫描待确认任务并补启动缺失的供应商查询线程，不再依赖人工重启才能继续恢复。',
+      '两条真实 Agnes 12 秒视频任务已按原任务号恢复，完成下载、本地落盘、任务成功和画布节点回写。',
+    ],
+  },
   {
     version: '2026.10.30.13',
     date: '2026-10-30',

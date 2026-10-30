@@ -44,6 +44,43 @@ def _provider_submission_may_be_live(task: dict[str, Any]) -> bool:
     )
 
 
+def _provider_reported_live(task: dict[str, Any]) -> bool:
+    if not _text(task.get("provider_task_id")):
+        return False
+    status = _text(task.get("status")).lower()
+    phase = _text(task.get("phase"))
+    error = _text(task.get("error"))
+    if status not in {"running", "interrupted", "failed"}:
+        return False
+    return (
+        phase in {
+            "排队中",
+            "生成中",
+            "查询重试中",
+            "结果待确认",
+            "等待恢复",
+            "正在连接供应商",
+        }
+        or phase.startswith("生成中 ")
+        or "供应商任务仍在执行" in error
+        or "执行租约已过期" in error
+        or "结果待确认" in error
+    )
+
+
+def _provider_reported_dead(task: dict[str, Any]) -> bool:
+    if not _text(task.get("provider_task_id")):
+        return False
+    phase = _text(task.get("phase"))
+    error = _text(task.get("error"))
+    return (
+        phase in {"查询失败", "生成失败"}
+        or "供应商明确返回任务不存在" in error
+        or "供应商视频生成失败" in error
+        or "供应商图片生成失败" in error
+    )
+
+
 def task_outcome(task: dict[str, Any] | None) -> dict[str, Any]:
     """Compute the only public next-step contract from persisted task facts.
 
@@ -107,26 +144,6 @@ def task_outcome(task: dict[str, Any] | None) -> dict[str, Any]:
             "providerAccepted": accepted,
             "retentionExpiresAt": retention_expires_at,
         }
-    if status in {"running", "submitting"}:
-        if provider_retention_expired:
-            return {
-                "phase": "unknown",
-                "regenerate": "confirm",
-                "reason": "provider_retention_expired",
-                "requiresConfirmation": True,
-                "providerTaskId": provider_task_id,
-                "providerAccepted": accepted,
-                "retentionExpiresAt": retention_expires_at,
-            }
-        return {
-            "phase": "running",
-            "regenerate": "blocked",
-            "reason": "provider_running" if provider_task_id else "submitting",
-            "requiresConfirmation": False,
-            "providerTaskId": provider_task_id,
-            "providerAccepted": accepted,
-            "retentionExpiresAt": retention_expires_at,
-        }
     if status == "succeeded":
         if delivery_status in {"pending", "materializing"}:
             return {
@@ -152,6 +169,46 @@ def task_outcome(task: dict[str, Any] | None) -> dict[str, Any]:
             "phase": "ready",
             "regenerate": "allowed",
             "reason": "result_ready",
+            "requiresConfirmation": False,
+            "providerTaskId": provider_task_id,
+            "providerAccepted": accepted,
+            "retentionExpiresAt": retention_expires_at,
+        }
+    if _provider_reported_live(task):
+        return {
+            "phase": "running",
+            "regenerate": "blocked",
+            "reason": "provider_task_running",
+            "requiresConfirmation": False,
+            "providerTaskId": provider_task_id,
+            "providerAccepted": True,
+            "retentionExpiresAt": retention_expires_at,
+        }
+    if _provider_reported_dead(task):
+        return {
+            "phase": "failed",
+            "regenerate": "confirm",
+            "reason": "provider_task_failed",
+            "requiresConfirmation": True,
+            "providerTaskId": provider_task_id,
+            "providerAccepted": True,
+            "retentionExpiresAt": retention_expires_at,
+        }
+    if status in {"running", "submitting"}:
+        if provider_retention_expired:
+            return {
+                "phase": "unknown",
+                "regenerate": "confirm",
+                "reason": "provider_retention_expired",
+                "requiresConfirmation": True,
+                "providerTaskId": provider_task_id,
+                "providerAccepted": accepted,
+                "retentionExpiresAt": retention_expires_at,
+            }
+        return {
+            "phase": "running",
+            "regenerate": "blocked",
+            "reason": "provider_running" if provider_task_id else "submitting",
             "requiresConfirmation": False,
             "providerTaskId": provider_task_id,
             "providerAccepted": accepted,

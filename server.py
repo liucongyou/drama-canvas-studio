@@ -2302,6 +2302,30 @@ def reconcile_generation_task_records():
                 node_provider_id = str(meta.get("taskId") or "")
                 if task_provider_id and node_provider_id and task_provider_id != node_provider_id:
                     continue
+                provider_status = str(meta.get("providerTaskStatus") or "").strip().lower()
+                if (
+                    task_provider_id
+                    and node_provider_id == task_provider_id
+                    and provider_status in {
+                        "queued", "pending", "created", "submitted",
+                        "running", "processing", "retrying", "in_progress", "uncertain",
+                    }
+                ):
+                    # A stale worker may have marked the row failed after the paid
+                    # provider task already existed. Keep it recoverable until the
+                    # same provider task returns completed or failed.
+                    if task.get("status") == "failed":
+                        reopened = store.reopen_generation_task_for_provider(
+                            task["id"],
+                            task_provider_id,
+                            message=(
+                                "供应商任务仍在执行；系统会继续查询原任务，"
+                                "不会自动重新提交。"
+                            ),
+                        )
+                        if reopened:
+                            reconciled += 1
+                    continue
                 error = str(task.get("error") or "生成任务失败")
                 commit_node_metadata(task["project_id"], task["node_id"], {
                     "status": "failed",
@@ -2392,26 +2416,43 @@ def reconcile_failed_generation_task_nodes():
     return repaired
 
 
+def reconcile_generation_runtime_once():
+    """Expire stale leases, recover durable results, and restart missing pollers."""
+    expired = _run_for_active_tenants(store.expire_stale_generation_tasks)
+    delivered = _run_for_active_tenants(
+        reconcile_pending_generation_deliveries
+    )
+    reconciled = _run_for_active_tenants(reconcile_generation_task_records)
+    resumed = start_pending_video_resumers()
+    return {
+        "expired": list(expired or []),
+        "delivered": int(delivered or 0),
+        "reconciled": int(reconciled or 0),
+        "resumed": int(resumed or 0),
+    }
+
+
 def start_generation_task_reconciler():
     def run():
         while True:
             try:
-                expired = _run_for_active_tenants(store.expire_stale_generation_tasks)
-                for item in expired or []:
+                result = reconcile_generation_runtime_once()
+                for item in result["expired"]:
                     print(
                         f"[generation-tasks] stale task converged: "
                         f"task={item.get('id')} status={item.get('status')}",
                         file=sys.stderr,
                     )
-                delivered = _run_for_active_tenants(
-                    reconcile_pending_generation_deliveries
-                )
-                if delivered:
+                if result["delivered"]:
                     print(
-                        f"[generation-delivery] projected {delivered} persisted results",
+                        f"[generation-delivery] projected {result['delivered']} persisted results",
                         file=sys.stderr,
                     )
-                _run_for_active_tenants(reconcile_generation_task_records)
+                if result["resumed"]:
+                    print(
+                        f"[generation-resume] restarted {result['resumed']} provider pollers",
+                        file=sys.stderr,
+                    )
             except Exception as exc:
                 print(f"[generation-tasks] 定时对账失败：{exc}", file=sys.stderr)
             time.sleep(30)
@@ -2420,6 +2461,7 @@ def start_generation_task_reconciler():
 
 
 def start_pending_video_resumers():
+    started_tasks: set[tuple[str, str, str]] = set()
     for tenant in _active_tenants():
         def resume_tenant(tenant_record=tenant):
             known = set()
@@ -2439,6 +2481,7 @@ def start_pending_video_resumers():
                     if key in RESUMED_VIDEO_TASKS:
                         return
                     RESUMED_VIDEO_TASKS.add(key)
+                started_tasks.add(key)
                 threading.Thread(
                     target=_run_in_tenant,
                     args=(
@@ -2515,7 +2558,7 @@ def start_pending_video_resumers():
                     local_id in known
                     or not provider_task_id
                     or task_row.get("kind") not in {"image", "video"}
-                    or task_row.get("status") not in {"running", "interrupted"}
+                    or task_row.get("status") not in {"running", "interrupted", "failed"}
                 ):
                     continue
                 project = store.get_project(task_row.get("project_id"))
@@ -2536,6 +2579,31 @@ def start_pending_video_resumers():
                     )
                 except Exception:
                     continue
+                provider_status = str(
+                    (node.get("metadata") or {}).get("providerTaskStatus") or ""
+                ).strip().lower()
+                live_provider_statuses = {
+                    "queued", "pending", "created", "submitted",
+                    "running", "processing", "retrying", "in_progress", "uncertain",
+                }
+                if (
+                    task_row.get("status") == "failed"
+                    and str((node.get("metadata") or {}).get("taskId") or "")
+                    != provider_task_id
+                    and provider_status not in live_provider_statuses
+                ):
+                    continue
+                if task_row.get("status") == "failed":
+                    reopened = store.reopen_generation_task_for_provider(
+                        task_row["id"],
+                        provider_task_id,
+                        message=(
+                            "供应商任务仍在执行；系统会继续查询原任务，"
+                            "不会自动重新提交。"
+                        ),
+                    )
+                    if not reopened:
+                        continue
                 commit_node_metadata(project["id"], node["id"], {
                     "status": "generating",
                     "taskId": provider_task_id,
@@ -2558,6 +2626,7 @@ def start_pending_video_resumers():
         else:
             with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
                 resume_tenant(tenant)
+    return len(started_tasks)
 
 
 def reconcile_provider_task_journal():
@@ -2571,14 +2640,30 @@ def reconcile_provider_task_journal():
         if not provider_task_id:
             continue
         task = store.get_generation_task(task_id) if task_id else None
+        task_updates = {}
         if task and not task.get("provider_task_id"):
+            task_updates.update({
+                "provider_task_id": provider_task_id,
+                "status": "running",
+                "phase": "等待恢复",
+                "error": "",
+                "finished_at": "",
+            })
+        if task and task.get("status") == "failed":
+            reopened = store.reopen_generation_task_for_provider(
+                task_id,
+                provider_task_id,
+                message=(
+                    "供应商任务仍在执行；系统会继续查询原任务，"
+                    "不会自动重新提交。"
+                ),
+            )
+            if reopened:
+                recovered += 1
+        elif task_updates:
             store.update_generation_task(
                 task_id,
-                provider_task_id=provider_task_id,
-                status="running",
-                phase="等待恢复",
-                error="",
-                finished_at="",
+                **task_updates,
             )
             recovered += 1
         if project_id and node_id:

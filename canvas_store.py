@@ -276,6 +276,10 @@ def _run_write_transaction(callback):
         except sqlite3.OperationalError as exc:
             if not _is_retryable_write_error(exc) or time.monotonic() >= deadline:
                 raise
+            print(
+                f"[sqlite-write] retry connect error={exc}",
+                file=__import__("sys").stderr,
+            )
             time.sleep(delay)
             delay = min(_WRITE_RETRY_MAX_DELAY, delay * 2)
             continue
@@ -289,6 +293,10 @@ def _run_write_transaction(callback):
                 con.rollback()
             if not _is_retryable_write_error(exc) or time.monotonic() >= deadline:
                 raise
+            print(
+                f"[sqlite-write] retry transaction error={exc}",
+                file=__import__("sys").stderr,
+            )
             time.sleep(delay)
             delay = min(_WRITE_RETRY_MAX_DELAY, delay * 2)
         except Exception:
@@ -802,6 +810,40 @@ def finish_generation_task(
 
     _run_write_transaction(write)
     return get_generation_task(task_id) if wrote["value"] else None
+
+
+def reopen_generation_task_for_provider(
+    task_id,
+    provider_task_id,
+    *,
+    message,
+):
+    """Re-open only a failed row that proves the same provider task is live."""
+    task_id = str(task_id or "").strip()
+    provider_task_id = str(provider_task_id or "").strip()
+    if not task_id or not provider_task_id:
+        return None
+    reopened = {"value": False}
+
+    def write(con):
+        result = con.execute(
+            "UPDATE generation_tasks SET status='interrupted',phase='结果待确认',"
+            "error=?,provider_task_id=?,delivery_status='pending',"
+            "lease_owner='',lease_expires_at=NULL,finished_at='',updated_at=? "
+            "WHERE id=? AND status='failed' "
+            "AND (provider_task_id=? OR provider_task_id IS NULL OR provider_task_id='')",
+            (
+                str(message or ""),
+                provider_task_id,
+                _now_iso(),
+                task_id,
+                provider_task_id,
+            ),
+        )
+        reopened["value"] = result.rowcount == 1
+
+    _run_write_transaction(write)
+    return get_generation_task(task_id) if reopened["value"] else None
 
 
 def claim_generation_task(task_id, owner, lease_seconds=45, allow_recover=False):

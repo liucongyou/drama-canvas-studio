@@ -176,6 +176,155 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(outcome["regenerate"], "confirm")
         self.assertEqual(outcome["reason"], "result_delivery_failed")
 
+    def test_failed_row_with_live_provider_task_is_projected_running(self):
+        outcome = generation_outcome.task_outcome({
+            "status": "failed",
+            "phase": "结果待确认",
+            "provider_task_id": "task-live-provider",
+            "error": (
+                "执行租约已过期，但已有供应商任务号；"
+                "系统会继续查询原任务，不会自动重新提交。"
+            ),
+        })
+
+        self.assertEqual(outcome["phase"], "running")
+        self.assertEqual(outcome["regenerate"], "blocked")
+        self.assertEqual(outcome["reason"], "provider_task_running")
+        self.assertTrue(outcome["providerAccepted"])
+
+    def test_journal_reconciliation_revives_failed_task_for_same_provider_task(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("journal-revive")
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+                provider="agnes-ai",
+                model="agnes-video-2.5-flash",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="failed",
+                phase="结果待确认",
+                error="old worker failure",
+            )
+            canvas_store.remember_provider_task(
+                task["id"],
+                "task-live-provider",
+                project_id=project_id,
+                node_id="node-video",
+                provider="agnes-ai",
+                model="agnes-video-2.5-flash",
+            )
+
+            recovered = server.reconcile_provider_task_journal()
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertGreaterEqual(recovered, 1)
+        self.assertEqual(saved["status"], "interrupted")
+        self.assertEqual(saved["phase"], "结果待确认")
+        self.assertEqual(saved["provider_task_id"], "task-live-provider")
+
+    def test_stale_failed_row_is_reopened_when_node_has_same_live_provider_task(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("failed-live-provider")
+            project = canvas_store.get_project(project_id)
+            project["payload"]["nodes"] = [{
+                "id": "node-video",
+                "type": "video",
+                "title": "段7",
+                "metadata": {
+                    "status": "generating",
+                    "taskId": "task-live-provider",
+                    "providerTaskStatus": "in_progress",
+                    "providerTaskPhase": "生成中 10%",
+                },
+            }]
+            canvas_store.update_project(project_id, payload=project["payload"])
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="failed",
+                phase="结果待确认",
+                provider_task_id="task-live-provider",
+                error="old worker failure",
+            )
+
+            reconciled = server.reconcile_generation_task_records()
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertEqual(reconciled, 1)
+        self.assertEqual(saved["status"], "interrupted")
+        self.assertEqual(saved["phase"], "结果待确认")
+        self.assertEqual(saved["provider_task_id"], "task-live-provider")
+
+    def test_runtime_reconciler_restarts_poller_for_unresolved_provider_task(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("runtime-resume")
+            project = canvas_store.get_project(project_id)
+            project["payload"]["nodes"] = [{
+                "id": "node-video",
+                "type": "video",
+                "title": "段7",
+                "metadata": {
+                    "status": "failed",
+                    "taskId": "task-live-provider",
+                    "providerTaskStatus": "in_progress",
+                    "providerTaskPhase": "生成中 10%",
+                    "params": {
+                        "provider": "agnes-ai",
+                        "model": "agnes-video-2.5-flash",
+                    },
+                },
+            }]
+            canvas_store.update_project(project_id, payload=project["payload"])
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+                provider="agnes-ai",
+                model="agnes-video-2.5-flash",
+                client_operation_id="runtime-resume-operation",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="failed",
+                phase="结果待确认",
+                provider_task_id="task-live-provider",
+                error="执行租约已过期，但已有供应商任务号",
+            )
+            provider = {
+                "id": "agnes-ai",
+                "name": "Agnes AI",
+                "base_url": "https://api.example/v1",
+                "api_key": "test-key",
+            }
+            model = {
+                "id": "agnes-video-2.5-flash",
+                "remoteModel": "agnes-video-2.5-flash",
+                "adapter": "agnes_video",
+            }
+            with (
+                patch.object(server, "_active_tenants", return_value=[None]),
+                patch.object(
+                    server.provider_catalog,
+                    "resolve_model",
+                    return_value=(provider, model, {}),
+                ),
+                patch.object(server.threading, "Thread") as thread_cls,
+            ):
+                resumed = server.reconcile_generation_runtime_once()
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertGreaterEqual(resumed["resumed"], 1)
+        self.assertEqual(saved["status"], "interrupted")
+        self.assertEqual(saved["phase"], "结果待确认")
+        thread_cls.return_value.start.assert_called()
+
     def test_historical_delivery_backfill_uses_only_durable_evidence(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("delivery-backfill")

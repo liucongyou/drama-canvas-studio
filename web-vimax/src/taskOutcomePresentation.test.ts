@@ -61,6 +61,26 @@ describe('task outcome presentation', () => {
     expect(result.canRegenerate).toBe(true);
   });
 
+  it('shows a stale failed row as generating while the provider task is live', () => {
+    const result = taskOutcomePresentation({
+      status: 'failed',
+      phase: '结果待确认',
+      error: '执行租约已过期，但供应商任务号仍可恢复',
+      outcome: {
+        phase: 'running',
+        regenerate: 'blocked',
+        reason: 'provider_task_running',
+        requiresConfirmation: false,
+        providerAccepted: true,
+      },
+      delivery_status: 'pending',
+    });
+    expect(result.outcomeUncertain).toBe(false);
+    expect(result.outcomePending).toBe(true);
+    expect(result.statusLabel).toBe('生成中');
+    expect(result.canRegenerate).toBe(false);
+  });
+
   it('blocks regeneration when the backend marks it blocked', () => {
     const result = taskOutcomePresentation({
       status: 'running',
