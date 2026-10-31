@@ -207,3 +207,18 @@ inside the same hot-write transaction. Do not describe the write-layer migration
 as complete until repeated runs consistently meet the gate. Moving to an
 independent write queue, or splitting revision/stat updates out of the interactive
 transaction with a durable outbox, is the next engineering step.
+
+## Seedance TOS Reference Follow-up
+
+The Seedream-to-Seedance guard originally used the globally active object-storage
+backend. When OSS was active, a separately saved TOS profile was ignored and the
+UI incorrectly reported that TOS had not been configured.
+
+Release `f6b9550` separates the saved TOS profile from the active auto-persist
+backend:
+
+- TOS connection tests resolve the saved TOS credentials directly;
+- Seedance reference images can use a verified TOS profile while OSS remains the
+  global auto-persist target;
+- only a TOS profile with a persisted successful connection test is eligible;
+- failed reference uploads stop before the paid Seedance submission.
