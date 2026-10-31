@@ -1189,19 +1189,25 @@ def sync_projection_episode(
             ),
         )
         return
-    con.execute(
-        "UPDATE canvas_projection_episodes SET "
-        "viewport_json=COALESCE(?,viewport_json),"
-        "layout_json=COALESCE(?,layout_json),updated_at=? "
+    existing = con.execute(
+        "SELECT 1 FROM canvas_projection_episodes "
         "WHERE project_id=? AND episode_id=?",
-        (
-            viewport_json,
-            layout_json,
-            stamp,
-            project_id,
-            normalized,
-        ),
-    )
+        (project_id, normalized),
+    ).fetchone()
+    if existing:
+        con.execute(
+            "UPDATE canvas_projection_episodes SET "
+            "viewport_json=COALESCE(?,viewport_json),"
+            "layout_json=COALESCE(?,layout_json),updated_at=? "
+            "WHERE project_id=? AND episode_id=?",
+            (
+                viewport_json,
+                layout_json,
+                stamp,
+                project_id,
+                normalized,
+            ),
+        )
 
 
 def claim_nodes_for_episode(
@@ -2059,6 +2065,19 @@ def repair_episode_node_ownership(project_id):
                 "UPDATE canvas_projects SET payload_json=?,updated_at=? WHERE id=?",
                 (json.dumps(payload, ensure_ascii=False), stamp, project_id),
             )
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                group_episode = str(group.get("id") or "").strip().upper()
+                if not group_episode:
+                    continue
+                sync_projection_episode(
+                    con,
+                    project_id,
+                    group_episode,
+                    group,
+                    updated_at=stamp,
+                )
         return repaired + ambiguous
 
     return int(_run_write_transaction(write) or 0)
