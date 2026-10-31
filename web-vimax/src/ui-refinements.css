@@ -5088,6 +5088,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 .tos-settings-options {
   margin-top: 12px;
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 .tos-settings-options > div {
@@ -5100,6 +5101,9 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   border: 1px solid var(--v-border);
   border-radius: var(--v-radius-sm);
   background: var(--v-surface-sunken);
+}
+.tos-settings-options > div > span {
+  min-width: 0;
 }
 .tos-settings-options > div > span {
   min-width: 0;
@@ -6710,6 +6714,9 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
     padding-right: 14px;
   }
   .tos-settings-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tos-settings-options {
     grid-template-columns: minmax(0, 1fr);
   }
 }

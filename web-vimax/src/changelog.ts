@@ -8,10 +8,21 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.31.16';
+export const APP_VERSION = '2026.10.31.17';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.31.17',
+    date: '2026-10-31',
+    releasedAt: '2026-11-01 00:40:00 +08:00',
+    title: '存储设置自动转存开关改为两列',
+    changes: [
+      '图片、视频、音频参考、Seedream 回退四个自动转存开关改为桌面端两列两行，减少纵向占用。',
+      '底部保存、测试、启用和停用按钮保持原来的单列横排，不改变操作顺序和启停语义。',
+      '窄屏下四个开关退化为单列，避免文字被挤压或截断。',
+    ],
+  },
   {
     version: '2026.10.31.16',
     date: '2026-10-31',
