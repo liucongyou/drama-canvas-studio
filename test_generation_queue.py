@@ -1442,6 +1442,10 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(sent[-1][1]["url"], "/uploads/generated.png")
         self.assertEqual(node["metadata"]["content"], "/uploads/generated.png")
         self.assertEqual(committed[-1][0][2]["content"], "/uploads/generated.png")
+        self.assertEqual(
+            committed[-1][0][2]["providerResultUrl"],
+            "https://provider/result.png",
+        )
 
     def test_image_archive_starts_only_after_terminal_commit(self):
         project_id = canvas_store.create_project("image-archive-order")

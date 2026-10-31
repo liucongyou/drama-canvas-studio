@@ -363,8 +363,8 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
               <Switch checked={draft.auto_persist_audio} label="音频参考自动转存" onChange={(value) => update('auto_persist_audio', value)} />
             </div>
             <div>
-              <span><strong>Seedream 角色图强制存储</strong><small>进入 Seedance 前没有存储原始对象时阻止提交</small></span>
-              <Switch checked={draft.require_for_ark_portrait} label="Seedream 角色图强制使用对象存储" onChange={(value) => update('require_for_ark_portrait', value)} />
+              <span><strong>Seedream 原链失效时使用对象存储</strong><small>临时链接仍有效时可直接引用；失效后才要求 TOS</small></span>
+              <Switch checked={draft.require_for_ark_portrait} label="Seedream 原链失效时使用对象存储" onChange={(value) => update('require_for_ark_portrait', value)} />
             </div>
           </div>
 
@@ -373,8 +373,8 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
               {selectedProviderReady ? <Check size={13} /> : <CloudUpload size={13} />}
               <span>
                 {selectedProviderActive
-                  ? 'TOS 已用于全局自动转存，并可用于 Seedance 原始角色图。'
-                  : 'TOS 配置已独立保存；即使 OSS 是全局自动转存，Seedance 也可单独使用 TOS 原始图。'}
+                  ? 'TOS 已用于全局自动转存；Seedance 会优先使用已保存的 TOS 原始图。'
+                  : 'TOS 配置已独立保存；即使 OSS 是全局自动转存，Seedance 也可优先使用 TOS 原始图。'}
               </span>
             </div>
           )}

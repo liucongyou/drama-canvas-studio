@@ -221,7 +221,56 @@ class TosStorageTests(unittest.TestCase):
         self.assertIn("ivolces.com", url)
         sign.assert_called_once()
 
-    def test_seedream_reference_without_tos_is_blocked(self):
+    def test_seedream_reference_uses_live_provider_url_without_tos(self):
+        source_url = "https://ark-cdn.example/seedream/role.png?sig=live"
+        with (
+            mock.patch.object(
+                provider_catalog,
+                "storage_config",
+                return_value={"require_for_ark_portrait": True},
+            ),
+            mock.patch.object(
+                provider_catalog,
+                "storage_profile_config",
+                return_value={},
+            ),
+            mock.patch.object(
+                provider_client,
+                "_probe_ark_reference_url",
+            ) as probe,
+        ):
+            url = provider_client._ark_reference_url({
+                "url": "/uploads/role.png",
+                "kind": "image",
+                "sourceModel": "doubao-seedream-5-0-pro-260628",
+                "providerResultUrl": source_url,
+            })
+        self.assertEqual(url, source_url)
+        probe.assert_called_once_with(source_url)
+
+    def test_seedream_expired_provider_url_is_blocked_before_submit(self):
+        with (
+            mock.patch.object(tos_storage, "is_ready", return_value=False),
+            mock.patch.object(
+                provider_catalog,
+                "storage_config",
+                return_value={"require_for_ark_portrait": True},
+            ),
+            mock.patch.object(
+                provider_client,
+                "_probe_ark_reference_url",
+                side_effect=RuntimeError("HTTP 404"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "已过期"):
+                provider_client._ark_reference_url({
+                    "url": "/uploads/role.png",
+                    "kind": "image",
+                    "sourceModel": "doubao-seedream-5-0-pro-260628",
+                    "providerResultUrl": "https://ark-cdn.example/expired.png",
+                })
+
+    def test_storage_mirror_cannot_impersonate_seedream_original_url(self):
         with (
             mock.patch.object(tos_storage, "is_ready", return_value=False),
             mock.patch.object(
@@ -230,12 +279,43 @@ class TosStorageTests(unittest.TestCase):
                 return_value={"require_for_ark_portrait": True},
             ),
         ):
-            with self.assertRaisesRegex(RuntimeError, "TOS"):
+            with self.assertRaisesRegex(RuntimeError, "原始临时链接"):
                 provider_client._ark_reference_url({
-                    "url": "/uploads/role.png",
+                    "url": "https://oss-only.example/role.png",
                     "kind": "image",
                     "sourceModel": "doubao-seedream-5-0-pro-260628",
+                    "storage": {
+                        "provider": "aliyun_oss",
+                        "url": "https://oss-only.example/role.png",
+                    },
                 })
+
+    def test_saved_tos_wins_over_live_provider_url(self):
+        with (
+            mock.patch.object(
+                tos_storage,
+                "internal_presigned_url",
+                return_value="https://tos.internal/role?sig=ok",
+            ) as sign,
+            mock.patch.object(
+                provider_client,
+                "_probe_ark_reference_url",
+            ) as probe,
+        ):
+            url = provider_client._ark_reference_url({
+                "url": "/uploads/role.png",
+                "kind": "image",
+                "sourceModel": "doubao-seedream-5-0-pro-260628",
+                "providerResultUrl": "https://ark-cdn.example/role.png",
+                "storage": {
+                    "provider": "tos",
+                    "bucket": "drama-originals",
+                    "key": "drama-canvas/image/role.png",
+                },
+            })
+        self.assertEqual(url, "https://tos.internal/role?sig=ok")
+        sign.assert_called_once()
+        probe.assert_not_called()
 
     def test_seedream_uses_verified_tos_profile_when_oss_is_active(self):
         profile = {

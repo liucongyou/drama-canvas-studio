@@ -78,7 +78,10 @@ def is_ready(config: dict[str, Any] | None = None) -> bool:
 
 def is_verified(config: dict[str, Any] | None = None) -> bool:
     cfg = config or _config()
-    return bool(is_ready(cfg) and cfg.get("last_test_ok") is True)
+    return bool(
+        is_ready(cfg)
+        and cfg.get("last_test_ok") is True
+    )
 
 
 def _client(*, internal: bool = False):

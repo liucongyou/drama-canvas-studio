@@ -226,6 +226,10 @@ def _connect():
             "ON generation_tasks(project_id, node_id, status)"
             )
             con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_generation_tasks_receipt "
+            "ON generation_tasks(project_id, node_id, status, created_at DESC)"
+            )
+            con.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_tasks_active_node "
             "ON generation_tasks(project_id, node_id) "
             "WHERE status IN ('queued','submitting','running')"
@@ -3716,6 +3720,38 @@ def list_generation_tasks_for_node_ids(
         reverse=True,
     )
     return tasks[:capped_limit]
+
+
+def get_latest_succeeded_generation_task_for_node(
+    project_id,
+    node_id,
+    *,
+    kind="",
+):
+    """Fetch one successful task receipt without scanning project history."""
+    if not project_id or not node_id:
+        return None
+    normalized_kind = str(kind or "").strip()
+    con = _connect()
+    columns = [
+        item[0]
+        for item in con.execute(
+            "SELECT * FROM generation_tasks LIMIT 0"
+        ).description
+    ]
+    sql = (
+        "SELECT * FROM generation_tasks "
+        "WHERE project_id=? AND node_id=? AND status='succeeded' "
+        "AND COALESCE(provider_result_url,'')!='' "
+    )
+    params = [project_id, node_id]
+    if normalized_kind:
+        sql += "AND kind=? "
+        params.append(normalized_kind)
+    sql += "ORDER BY created_at DESC, updated_at DESC, rowid DESC LIMIT 1"
+    row = con.execute(sql, params).fetchone()
+    con.close()
+    return dict(zip(columns, row)) if row else None
 
 
 def get_episode_node_ids(project_id, episode_id):

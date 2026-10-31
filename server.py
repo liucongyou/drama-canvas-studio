@@ -778,7 +778,7 @@ def _generation_terminal_event_payload(node_id, updates, *, task=None):
         for key in (
             "status", "content", "lastError", "providerTaskStatus",
             "providerTaskPhase", "providerTaskProgress", "generationFinishedAt",
-            "finalizePending", "storage", "storageError", "videoValidation",
+            "providerResultUrl", "finalizePending", "storage", "storageError", "videoValidation",
             "actualDuration",
         )
         if key in (updates or {})
@@ -879,6 +879,7 @@ def mark_provider_ready(project_id, node, meta, task_id, provider_url, ready_at)
         "generatedAt": ready_at,
         "generationFinishedAt": ready_at,
         "providerUrl": url,
+        "providerResultUrl": url,
         "providerTaskStatus": "completed",
         "providerTaskPhase": "已完成",
         "providerTaskProgress": 100,
@@ -1429,6 +1430,7 @@ GENERATION_OWNED_METADATA_FIELDS = {
     "providerTaskProgress",
     "providerSubmittedAt",
     "generatedAt",
+    "providerResultUrl",
     "production",
     "videoValidation",
     "actualDuration",
@@ -1629,6 +1631,19 @@ def _submitted_provider_task_id(task_id):
         return str((task or {}).get("provider_task_id") or "").strip()
     except Exception:
         return ""
+
+
+def _latest_provider_result_url(project_id, node_id):
+    try:
+        task = store.get_latest_succeeded_generation_task_for_node(
+            project_id,
+            node_id,
+            kind="image",
+        )
+    except Exception:
+        return ""
+    value = str((task or {}).get("provider_result_url") or "").strip()
+    return value if value.startswith("https://") else ""
 
 
 def _start_generation_task_heartbeat(task_id, lease_owner):
@@ -2354,6 +2369,7 @@ def _recover_persisted_result_to_canvas(project_id, node_id, task):
         "lastError": "",
         "taskId": task_id,
         "generatedAt": generated_at,
+        "providerResultUrl": str(task.get("provider_result_url") or ""),
         "providerTaskStatus": "completed",
         "providerTaskPhase": "已完成",
         "generationFinishedAt": generated_at,
@@ -2364,6 +2380,7 @@ def _recover_persisted_result_to_canvas(project_id, node_id, task):
         "lastError": "",
         "taskId": task_id,
         "generatedAt": generated_at,
+        "providerResultUrl": str(task.get("provider_result_url") or ""),
         "providerTaskStatus": "completed",
         "providerTaskPhase": "已完成",
         "generationFinishedAt": generated_at,
@@ -2682,6 +2699,7 @@ def _finalize_resumed_image(project_id, node_id, state, provider, model):
         "taskId": task_id,
         "generatedAt": generated_at,
         "generationFinishedAt": generated_at,
+        "providerResultUrl": str(state.get("url") or ""),
         "providerTaskStatus": "completed",
         "providerTaskPhase": "已完成",
         "provider": provider.get("id"),
@@ -2704,6 +2722,7 @@ def _finalize_resumed_image(project_id, node_id, state, provider, model):
         "taskId": task_id,
         "generatedAt": generated_at,
         "generationFinishedAt": generated_at,
+        "providerResultUrl": str(state.get("url") or ""),
         "providerTaskStatus": "completed",
         "providerTaskPhase": "已完成",
         "provider": provider.get("id"),
@@ -3610,6 +3629,47 @@ def backfill_local_media_storage():
         if changed:
             store.update_project(project["id"], payload=payload)
             updated += 1
+    return updated
+
+
+def backfill_image_provider_result_urls():
+    """Restore a trusted Seedream short URL from the task ledger."""
+    updated = 0
+    for project_row in store.list_projects():
+        project_id = str(project_row.get("id") or "")
+        latest_task = store.get_latest_succeeded_generation_task_for_node
+        project = store.get_project(project_id)
+        if not project:
+            continue
+        payload = project["payload"]
+        changed = 0
+        for node in payload.get("nodes", []):
+            if (
+                not isinstance(node, dict)
+                or node.get("type") != "image"
+                or not isinstance(node.get("metadata"), dict)
+            ):
+                continue
+            meta = node["metadata"]
+            existing = str(
+                meta.get("providerResultUrl")
+                or meta.get("providerUrl")
+                or ""
+            ).strip()
+            if existing.startswith("https://"):
+                continue
+            task = latest_task(
+                project_id,
+                str(node.get("id") or ""),
+                kind="image",
+            ) or {}
+            value = str(task.get("provider_result_url") or "").strip()
+            if value.startswith("https://"):
+                meta["providerResultUrl"] = value
+                changed += 1
+        if changed:
+            store.update_project(project_id, payload=payload)
+            updated += changed
     return updated
 
 
@@ -6773,34 +6833,24 @@ class Handler(BaseHTTPRequestHandler):
                 ).strip()
                 source_provider = str(source_meta.get("provider") or "").strip()
                 storage = source_meta.get("storage")
+                provider_result_url = str(
+                    source_meta.get("providerResultUrl")
+                    or source_meta.get("providerUrl")
+                    or ""
+                ).strip()
                 if (
                     kind == "image"
-                    and str(model.get("adapter") or "") == "ark_video"
-                    and not (isinstance(storage, dict) and storage.get("key"))
-                    and tos_storage.is_verified(
-                        provider_catalog.storage_profile_config("tos")
-                    )
+                    and not provider_result_url
                 ):
-                    try:
-                        storage = tos_storage.ensure_local_image(
-                            url,
-                            source={
-                                "provider": source_provider,
-                                "model": source_model,
-                                "taskId": str(source_meta.get("taskId") or ""),
-                                "generatedAt": str(source_meta.get("generatedAt") or ""),
-                                "url": url,
-                            },
-                        )
-                        if storage:
-                            source_meta["storage"] = storage
-                            source_meta["storageError"] = ""
-                    except Exception as exc:
-                        source_meta["storageError"] = str(exc)
-                        raise RuntimeError(
-                            f"{label} 无法转存到火山 TOS：{exc}。"
-                            "请先在设置中完成“测试 火山 TOS”"
-                        ) from exc
+                    provider_result_url = _latest_provider_result_url(pid, ref_id)
+                    if provider_result_url:
+                        source_meta["providerResultUrl"] = provider_result_url
+                        try:
+                            commit_node_metadata(pid, ref_id, {
+                                "providerResultUrl": provider_result_url,
+                            })
+                        except Exception:
+                            pass
                 resolved.append({
                     "kind": kind,
                     "url": url,
@@ -6810,6 +6860,9 @@ class Handler(BaseHTTPRequestHandler):
                     "storage": storage if isinstance(storage, dict) else None,
                     "sourceModel": source_model,
                     "sourceProvider": source_provider,
+                    "providerResultUrl": provider_result_url,
+                    "generatedAt": str(source_meta.get("generatedAt") or ""),
+                    "taskId": str(source_meta.get("taskId") or ""),
                 })
             return resolved, missing
 
@@ -6964,6 +7017,7 @@ class Handler(BaseHTTPRequestHandler):
                 meta["content"] = generated_url
                 meta["status"] = "done"
                 meta["generatedAt"] = generated_at
+                meta["providerResultUrl"] = provider_url
                 meta["finalizePending"] = False
                 meta["storage"] = {}
                 meta["storageError"] = ""
@@ -7355,7 +7409,7 @@ class Handler(BaseHTTPRequestHandler):
                 "generationStartedAt", "generationFinishedAt", "providerTaskStatus",
                 "providerTaskPhase", "providerTaskProgress",
                 "videoValidation", "actualDuration", "storage", "storageError",
-                "source", "providerUrl", "finalizePending",
+                "source", "providerUrl", "providerResultUrl", "finalizePending",
             )
         }
         if ntype == "text":
@@ -7712,6 +7766,16 @@ def main():
             print(f"已转存 {archived_projects} 个项目的本地素材到对象存储")
     except Exception as exc:
         print(f"[storage] 本地素材转存失败：{exc}", file=sys.stderr)
+    try:
+        restored_urls = _run_for_active_tenants(
+            backfill_image_provider_result_urls
+        )
+        if restored_urls:
+            print(
+                f"已恢复 {restored_urls} 个图片节点的供应商原始链接"
+            )
+    except Exception as exc:
+        print(f"[provider-result] 图片原链回填失败：{exc}", file=sys.stderr)
     try:
         validated = _run_for_active_tenants(backfill_generated_video_validation)
         if validated:

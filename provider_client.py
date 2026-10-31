@@ -42,6 +42,7 @@ UPLOAD_DIR = os.path.join(BASE, "data", "uploads")
 MAX_INLINE_BYTES = 24 * 1024 * 1024
 CANVASPRO_IMAGE_INLINE_MAX_BYTES = 900 * 1024
 CANVASPRO_IMAGE_INLINE_MAX_EDGE = 2048
+ARK_REFERENCE_URL_PROBE_SECONDS = 12
 TaskEventCallback = Callable[[dict[str, Any]], None]
 
 
@@ -925,6 +926,47 @@ def _is_image_path(path: str) -> bool:
     )
 
 
+def _ark_reference_source_url(ref: dict[str, Any]) -> str:
+    """Return only a provider-issued URL, never a mirrored storage URL."""
+    candidates = (
+        ref.get("providerResultUrl"),
+        ref.get("providerUrl"),
+    )
+    for candidate in candidates:
+        raw = str(candidate or "").strip()
+        if raw.startswith(("https://", "http://")):
+            return raw
+    return ""
+
+
+def _probe_ark_reference_url(url: str) -> None:
+    """Fail before the paid submission when Ark cannot fetch a short URL."""
+    for ranged in (True, False):
+        headers = {"User-Agent": "drama-canvas-studio/1.0"}
+        if ranged:
+            headers["Range"] = "bytes=0-0"
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with network_security.safe_urlopen(
+                request,
+                timeout=ARK_REFERENCE_URL_PROBE_SECONDS,
+                max_redirects=0,
+            ) as response:
+                status = int(getattr(response, "status", 0) or 0)
+                if status not in {200, 206}:
+                    raise RuntimeError(f"HTTP {status or 'unknown'}")
+                mime = str(response.headers.get("Content-Type") or "").lower()
+                if mime and not mime.startswith("image/"):
+                    raise RuntimeError(f"返回的不是图片（{mime}）")
+                return
+        except urllib.error.HTTPError as exc:
+            if ranged and exc.code in {400, 405, 416}:
+                continue
+            raise RuntimeError(f"HTTP {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            raise RuntimeError(str(exc)) from exc
+
+
 def _ark_reference_url(ref: dict[str, Any]) -> str:
     raw = str(ref.get("url") or "").strip()
     if not raw:
@@ -933,6 +975,7 @@ def _ark_reference_url(ref: dict[str, Any]) -> str:
     kind = str(ref.get("kind") or "image")
     source_model = str(ref.get("sourceModel") or "").lower()
     storage_cfg = provider_catalog.storage_config()
+    provider_source_url = _ark_reference_source_url(ref)
     source_generated_at = str(
         ref.get("generatedAt")
         or (
@@ -960,6 +1003,20 @@ def _ark_reference_url(ref: dict[str, Any]) -> str:
         return tos_storage.internal_presigned_url(storage)
     if (
         kind == "image"
+        and source_model.startswith("doubao-seedream-5-0-")
+        and provider_source_url
+    ):
+        try:
+            _probe_ark_reference_url(provider_source_url)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Seedream 原始临时链接当前不可用或已过期"
+                f"（{exc}）。请重新生成角色图，"
+                "或在火山 TOS 中保存并测试配置后再提交"
+            ) from exc
+        return provider_source_url
+    if (
+        kind == "image"
         and raw.startswith("/uploads/")
         and tos_storage.is_verified(
             provider_catalog.storage_profile_config("tos")
@@ -984,8 +1041,8 @@ def _ark_reference_url(ref: dict[str, Any]) -> str:
         and storage_cfg.get("require_for_ark_portrait", True)
     ):
         raise RuntimeError(
-            "Seedream 5.0 角色图进入 Seedance 前必须先把原始产物转存到 TOS；"
-            "请先保存火山 TOS 配置并完成“测试 火山 TOS”"
+            "Seedream 5.0 角色图缺少可用的原始临时链接。"
+            "请重新生成角色图，或保存火山 TOS 配置并完成“测试 火山 TOS”"
         )
     return _asset_url_for_provider(raw)
 
