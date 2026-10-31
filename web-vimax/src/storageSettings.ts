@@ -63,10 +63,7 @@ export function draftForProvider(
   const profile = storage?.profiles?.[provider];
   return {
     ...current,
-    enabled: Boolean(
-      storage?.enabled
-      && storage.provider === provider
-    ),
+    enabled: storage?.enabled === true,
     provider,
     bucket: profile?.bucket || '',
     region: profile?.region || 'cn-beijing',
@@ -84,4 +81,12 @@ export function draftForProvider(
     access_key: '',
     secret_key: '',
   };
+}
+
+export function storedProviderState(
+  storage: StorageSpec | null,
+  provider: StorageDraft['provider'],
+): 'active' | 'saved' | 'empty' {
+  if (!storage?.profiles?.[provider]) return 'empty';
+  return storage.enabled && storage.provider === provider ? 'active' : 'saved';
 }

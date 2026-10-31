@@ -1,5 +1,11 @@
 import {describe, expect, it} from 'vitest';
-import {draftForProvider, mergeSavedStorageState, mergeStorageProfile, type StorageDraft} from './storageSettings';
+import {
+  draftForProvider,
+  mergeSavedStorageState,
+  mergeStorageProfile,
+  storedProviderState,
+  type StorageDraft,
+} from './storageSettings';
 import type {StorageSpec} from './api';
 
 
@@ -48,7 +54,7 @@ describe('storage provider form isolation', () => {
   it('clears Tos connection fields when selecting unconfigured Qiniu', () => {
     const next = draftForProvider(base, storage, 'qiniu');
     expect(next.provider).toBe('qiniu');
-    expect(next.enabled).toBe(false);
+    expect(next.enabled).toBe(true);
     expect(next.bucket).toBe('');
     expect(next.endpoint).toBe('');
     expect(next.public_domain).toBe('');
@@ -81,6 +87,23 @@ describe('storage provider form isolation', () => {
     expect(next.bucket).toBe('qiniu-bucket');
     expect(next.public_domain).toBe('https://cdn.qiniu.example');
     expect(next.prefix).toBe('qiniu/');
+    expect(storedProviderState({
+      ...storage,
+      provider: 'aliyun_oss',
+      profiles: {
+        qiniu: {
+          bucket: 'qiniu-bucket',
+          region: 'cn-beijing',
+          endpoint: '',
+          internal_endpoint: '',
+          public_domain: 'https://cdn.qiniu.example',
+          prefix: 'qiniu/',
+          url_ttl_seconds: 3600,
+          has_access_key: true,
+          has_secret_key: true,
+        },
+      },
+    }, 'qiniu')).toBe('saved');
   });
 
   it('keeps the selected OSS form when testing refreshes an active Qiniu state', () => {

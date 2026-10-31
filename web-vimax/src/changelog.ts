@@ -8,10 +8,22 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.31.12';
+export const APP_VERSION = '2026.10.31.13';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.31.13',
+    date: '2026-10-31',
+    releasedAt: '2026-10-31 23:30:00 +08:00',
+    title: '对象存储供应商切换状态修复',
+    changes: [
+      '把“正在编辑哪套存储配置”和“哪套用于全局自动转存”拆成独立状态，点击 TOS、阿里云 OSS、七牛云时可正常切换。',
+      '已保存但未启用的供应商显示“已保存”；当前自动转存供应商标记“自动转存”；只有“自动转存未启用”时高亮不转存。',
+      '切换供应商不会激活或覆盖另一套配置，已有 Bucket、Endpoint 和密钥继续保留；旧形式配置仍可读回。',
+      '保存和测试继续只更新当前供应商 profile，自动转存启停仍由独立按钮执行。',
+    ],
+  },
   {
     version: '2026.10.31.12',
     date: '2026-10-31',

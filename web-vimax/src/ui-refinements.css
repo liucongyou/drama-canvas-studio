@@ -10214,6 +10214,15 @@ button.jim-dependency-prepare-item:disabled{
 }
 .storage-provider-picker button{
   height:32px;
+  min-width:0;
+  padding:0 6px;
+  overflow:hidden;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  text-overflow:ellipsis;
+  white-space:nowrap;
   border:0;
   border-radius:6px;
   background:transparent;
@@ -10221,6 +10230,15 @@ button.jim-dependency-prepare-item:disabled{
   font:inherit;
   font-size:11.5px;
   cursor:pointer;
+}
+.storage-provider-picker button small{
+  flex:none;
+  color:var(--v-text-5);
+  font-size:9px;
+  font-weight:500;
+}
+.storage-provider-picker button.is-active small{
+  color:var(--v-accent-mid);
 }
 .storage-provider-picker button:hover{
   background:var(--v-surface-hover);

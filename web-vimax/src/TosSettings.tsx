@@ -8,7 +8,13 @@ import {
   testStorageConfig,
   type StorageSpec,
 } from './api';
-import {draftForProvider, mergeSavedStorageState, mergeStorageProfile, type StorageDraft} from './storageSettings';
+import {
+  draftForProvider,
+  mergeSavedStorageState,
+  mergeStorageProfile,
+  storedProviderState,
+  type StorageDraft,
+} from './storageSettings';
 
 function storageLabel(provider: string) {
   if (provider === 'aliyun_oss') return '阿里云 OSS';
@@ -218,6 +224,7 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
     && (draft.provider === 'qiniu' || draft.endpoint.trim()),
   );
   const selectedProfileTest = storage?.profiles?.[draft.provider];
+  const selectedStoredState = storedProviderState(storage, draft.provider);
   const selectedProviderActive = Boolean(
     storage?.enabled && storage.provider === draft.provider,
   );
@@ -266,33 +273,57 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
           <div className="storage-provider-picker">
             <button
               type="button"
-              className={!draft.enabled ? 'is-active' : ''}
+              className={!storage?.enabled ? 'is-active' : ''}
               onClick={() => void deactivate()}
             >不转存</button>
             <button
               type="button"
-              className={draft.enabled && draft.provider === 'tos' ? 'is-active' : ''}
+              className={draft.provider === 'tos' ? 'is-active' : ''}
               onClick={() => {
                 selectProvider('tos');
               }}
             >
               火山 TOS
-              {storage?.profiles?.tos && <small>{selectedProviderActive ? '自动转存' : '仅 Seedance'}</small>}
+              {storage?.profiles?.tos && (
+                <small>
+                  {storedProviderState(storage, 'tos') === 'active'
+                    ? '自动转存'
+                    : '已保存'}
+                </small>
+              )}
             </button>
             <button
               type="button"
-              className={draft.enabled && draft.provider === 'aliyun_oss' ? 'is-active' : ''}
+              className={draft.provider === 'aliyun_oss' ? 'is-active' : ''}
               onClick={() => {
                 selectProvider('aliyun_oss');
               }}
-            >阿里云 OSS</button>
+            >
+              阿里云 OSS
+              {storage?.profiles?.aliyun_oss && (
+                <small>
+                  {storedProviderState(storage, 'aliyun_oss') === 'active'
+                    ? '自动转存'
+                    : '已保存'}
+                </small>
+              )}
+            </button>
             <button
               type="button"
-              className={draft.enabled && draft.provider === 'qiniu' ? 'is-active' : ''}
+              className={draft.provider === 'qiniu' ? 'is-active' : ''}
               onClick={() => {
                 selectProvider('qiniu');
               }}
-            >七牛云</button>
+            >
+              七牛云
+              {storage?.profiles?.qiniu && (
+                <small>
+                  {storedProviderState(storage, 'qiniu') === 'active'
+                    ? '自动转存'
+                    : '已保存'}
+                </small>
+              )}
+            </button>
           </div>
 
           <div className="model-settings-form tos-settings-form">
@@ -382,6 +413,16 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
                 {selectedProviderActive
                   ? 'TOS 已用于全局自动转存；Seedance 会优先使用已保存的 TOS 原始图。'
                   : 'TOS 配置已独立保存；即使 OSS 是全局自动转存，Seedance 也可优先使用 TOS 原始图。'}
+              </span>
+            </div>
+          )}
+          {draft.provider !== 'tos' && selectedStoredState !== 'empty' && (
+            <div className={`tos-test-result ${selectedStoredState === 'active' ? 'is-ok' : ''}`}>
+              {selectedStoredState === 'active' ? <Check size={13} /> : <ShieldCheck size={13} />}
+              <span>
+                {selectedStoredState === 'active'
+                  ? `${storageLabel(draft.provider)} 配置已保存，并用于全局自动转存。`
+                  : `${storageLabel(draft.provider)} 配置已保存，可测试或设为自动转存。`}
               </span>
             </div>
           )}
