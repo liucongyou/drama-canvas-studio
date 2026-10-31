@@ -1302,6 +1302,260 @@ def _newapi_inline_image_parts(
     return parts
 
 
+def submit_image_task(
+    provider: dict[str, Any],
+    model: dict[str, Any],
+    prompt: str,
+    params: dict[str, Any],
+    refs: list[dict[str, Any]],
+    *,
+    on_task_created: TaskEventCallback | None = None,
+) -> dict[str, Any]:
+    """Submit once and return the provider task id without polling."""
+    adapter = str(model.get("adapter") or "")
+    if adapter != "newapi_image":
+        raise RuntimeError(f"不支持异步提交的图片适配器：{adapter}")
+    profile = str(model.get("profile") or "").strip()
+    if not profile:
+        raise RuntimeError(
+            "当前 New API 图片模型缺少接口档案 profile；"
+            "请重新拉取模型或重新保存模型，系统不会按名称猜测接口"
+        )
+    route, _, task_field, _ = _newapi_image_route(profile)
+    response = _submit_newapi_image_request(
+        provider,
+        model,
+        prompt,
+        params,
+        refs,
+        route=route,
+    )
+    task_id = str(response.get(task_field) or response.get("id") or "").strip()
+    if not task_id:
+        raise RuntimeError(
+            f"New API 图片任务未返回 {task_field}："
+            f"{json.dumps(response, ensure_ascii=False)[:500]}"
+        )
+    result = {
+        "taskId": task_id,
+        "status": "queued",
+        "progress": 0,
+        "createdAt": time.time(),
+        "raw": response,
+    }
+    _emit_task_created(on_task_created, result)
+    return result
+
+
+def _submit_newapi_image_request(
+    provider: dict[str, Any],
+    model: dict[str, Any],
+    prompt: str,
+    params: dict[str, Any],
+    refs: list[dict[str, Any]],
+    *,
+    route: str,
+) -> dict[str, Any]:
+    """Build and execute one documented New API image submit request."""
+    image_refs = [ref for ref in refs if ref.get("kind") == "image" and ref.get("url")]
+    text_refs = [ref for ref in refs if ref.get("kind") == "text"]
+    text = _reference_prompt(prompt, image_refs)
+    extra_text = _text_refs(text_refs)
+    if extra_text:
+        text += "\n\n" + extra_text
+    text = text.strip()
+    if not text:
+        raise RuntimeError("提示词为空，不能提交生成")
+
+    remote_model = str(model.get("remoteModel") or "").strip()
+    base = _newapi_api_origin(provider["base_url"])
+    key = provider_catalog.provider_key(provider)
+    size = str(params.get("size") or "").strip()
+    quality = str(params.get("quality") or "").strip()
+    image_size = str(params.get("clarity") or params.get("imageSize") or "").strip().upper()
+    if image_size not in {"1K", "2K", "4K"}:
+        image_size = ""
+    ratio = str(params.get("ratio") or "").strip()
+    image_urls = [_asset_url_for_provider(str(ref["url"])) for ref in image_refs]
+
+    if route == "/kr/v1/images":
+        if len(text) > 4000:
+            raise RuntimeError("gpt-image-2 提示词最多 4000 字符")
+        body: dict[str, Any] = {
+            "model": remote_model,
+            "prompt": text,
+            "n": 1,
+        }
+        if ratio:
+            body["size"] = ratio
+            if image_size:
+                body["image_size"] = image_size
+        elif size:
+            body["size"] = size
+        if quality:
+            body["quality"] = quality
+        _apply_declared_params(body, model, params)
+        if image_urls:
+            fields = [
+                ("model", remote_model),
+                *_newapi_image_reference_fields(
+                    route, text, image_urls,
+                    size=ratio or size,
+                    quality=quality,
+                    image_size=image_size,
+                ),
+            ]
+            public_urls = _newapi_public_image_urls(image_urls, base)
+            if public_urls:
+                for url in public_urls:
+                    fields.append(("image_url[]", url))
+            else:
+                for filename, mime, payload in _newapi_image_files(
+                    image_urls, base=base, key=key,
+                ):
+                    fields.append(("image[]", (filename, mime, payload)))
+            return _submit_multipart(
+                "POST", f"{base}{route}/edits", key, fields,
+                timeout=360,
+            )
+        return _submit_json(
+            "POST", f"{base}{route}/generations", key, body, timeout=360,
+        )
+    if route == "/kr/gemini/v1/images":
+        parts: list[dict[str, Any]] = [{"text": text}]
+        parts.extend(_newapi_inline_image_parts(image_urls, base=base, key=key))
+        body = {
+            "model": remote_model,
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {
+                "imageConfig": {
+                    "aspectRatio": ratio or "1:1",
+                    "imageSize": image_size or "2K",
+                },
+            },
+        }
+        _apply_declared_params(body, model, params)
+        return _submit_json(
+            "POST", f"{base}{route}/generations", key, body, timeout=360,
+        )
+    if route == "/hc/v1/images":
+        if len(text) > 8000:
+            raise RuntimeError("HC 图片提示词最多 8000 字符")
+        if image_urls:
+            public_urls = _newapi_public_image_urls(image_urls, base)
+            if public_urls:
+                body = {
+                    "model": remote_model,
+                    "prompt": text,
+                    "image": public_urls[0] if len(public_urls) == 1 else public_urls,
+                    "n": 1,
+                }
+                if size:
+                    body["size"] = size
+                if quality:
+                    body["quality"] = quality
+                _apply_declared_params(body, model, params)
+                return _submit_json(
+                    "POST", f"{base}{route}/edits", key, body, timeout=360,
+                )
+            fields = [
+                ("model", remote_model),
+                ("prompt", text),
+                ("n", "1"),
+            ]
+            if size:
+                fields.append(("size", size))
+            if quality:
+                fields.append(("quality", quality))
+            for filename, mime, payload in _newapi_image_files(
+                image_urls, base=base, key=key,
+            ):
+                fields.append(("image", (filename, mime, payload)))
+            return _submit_multipart(
+                "POST", f"{base}{route}/edits/upload", key, fields,
+                timeout=360,
+            )
+        body = {
+            "model": remote_model,
+            "prompt": text,
+            "n": 1,
+        }
+        if size:
+            body["size"] = size
+        if quality:
+            body["quality"] = quality
+        _apply_declared_params(body, model, params)
+        return _submit_json(
+            "POST", f"{base}{route}/generations", key, body, timeout=360,
+        )
+    if route == "/aistars/v1/images":
+        if len(text) > 5000:
+            raise RuntimeError("即梦图片提示词最多 5000 字符")
+        resolution = str(params.get("clarity") or params.get("resolution") or "").strip().upper()
+        if resolution not in {"1K", "2K"}:
+            raise RuntimeError(
+                f"即梦图片清晰度只支持 1K/2K，收到 {resolution or '<empty>'}；"
+                "请重新选择模型参数后再提交"
+            )
+        body = {
+            "model": remote_model,
+            "prompt": text,
+            "aspect_ratio": ratio or "1:1",
+            "resolution": resolution,
+            "n": 1,
+        }
+        if image_urls:
+            if any(not str(url).startswith("http") for url in image_urls):
+                raise RuntimeError(
+                    "即梦图片参考图必须是公网 HTTP(S) 地址，"
+                    "不能使用本地文件或 Base64"
+                )
+            body["images"] = image_urls
+            action = "edits"
+        else:
+            action = "generations"
+        _apply_declared_params(body, model, params)
+        submitted_at = datetime.now(timezone.utc).isoformat()
+        try:
+            return _request_json(
+                "POST", f"{base}{route}/{action}", key, body, timeout=360,
+            )
+        except ProviderHTTPError as exc:
+            if _is_balance_error_detail(exc.detail):
+                raise _provider_submit_error(exc) from exc
+            if exc.status_code in {429, 500, 502, 503, 504}:
+                detail = str(exc.detail or "").strip()
+                recovered: dict[str, Any] = {}
+                try:
+                    parsed = json.loads(detail)
+                    if isinstance(parsed, dict):
+                        recovered = parsed
+                except json.JSONDecodeError:
+                    recovered = {}
+                recovered_task_id = str(
+                    recovered.get("id")
+                    or recovered.get("task_id")
+                    or (
+                        recovered.get("data", {}).get("id")
+                        if isinstance(recovered.get("data"), dict)
+                        else ""
+                    )
+                    or ""
+                ).strip()
+                if recovered_task_id:
+                    return recovered
+                raise ProviderOutcomeUncertain(
+                    f"供应商请求返回 HTTP {exc.status_code}，但没有返回任务号；"
+                    f"详情：{detail[:500]}。"
+                    f"提交时间 {submitted_at}。"
+                    "系统不会自动重提；请先到供应商账单/任务记录核对，"
+                    "确认前不要重复提交。",
+                    submitted_at=submitted_at,
+                ) from exc
+            raise _provider_submit_error(exc) from exc
+    raise RuntimeError(f"New API 图片线路未实现：{route}")
+
+
 def _newapi_image(
     provider: dict[str, Any],
     model: dict[str, Any],

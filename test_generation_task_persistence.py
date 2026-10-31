@@ -1483,6 +1483,99 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(len(started), 1)
         self.assertTrue(started)
 
+    def test_newapi_image_submit_releases_lease_for_single_resumer(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("newapi-image-single-owner")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "image-single-owner",
+                    "type": "image",
+                    "title": "图片｜单一路径",
+                    "metadata": {
+                        "status": "generating",
+                        "taskId": "task-provider-single",
+                        "providerTaskStatus": "queued",
+                        "params": {"provider": "new-apl", "model": "65-seedream-5-pro"},
+                    },
+                }],
+                episode_id="EP001",
+            )
+            created_task = canvas_store.create_generation_task(
+                project_id,
+                "image-single-owner",
+                title="图片｜单一路径",
+                kind="image",
+                episode_id="EP001",
+                provider="new-apl",
+                model="65-seedream-5-pro",
+                client_operation_id="newapi-image-single-owner",
+            )
+            canvas_store.finish_generation_task(
+                created_task["id"],
+                status="interrupted",
+                phase="供应商任务已提交",
+                error="",
+                provider_task_id="task-provider-single",
+                delivery_status="pending",
+            )
+            task_id = created_task["id"]
+            first = canvas_store.claim_generation_task_for_recovery(
+                task_id,
+                "task-provider-single",
+                "resume:first",
+                45,
+            )
+            second = canvas_store.claim_generation_task_for_recovery(
+                task_id,
+                "task-provider-single",
+                "resume:second",
+                45,
+            )
+            wrong_task = canvas_store.claim_generation_task_for_recovery(
+                task_id,
+                "different-provider-task",
+                "resume:wrong",
+                45,
+            )
+            persisted = canvas_store.get_generation_task(task_id)
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertFalse(wrong_task)
+        self.assertEqual(persisted["lease_owner"], "resume:first")
+
+    def test_newapi_image_submission_starts_one_immediate_resumer(self):
+        project_id = "project-image-resume"
+        node_id = "node-image-resume"
+        task_id = "task-provider-image-resume"
+        started = []
+
+        with patch.object(server, "_resume_image_task", return_value=None), \
+                patch.object(server.threading, "Thread") as thread_cls:
+            thread_cls.return_value.start.side_effect = lambda: started.append(
+                thread_cls.call_args.kwargs["target"]
+            )
+            first = server._start_image_resumer(
+                project_id,
+                node_id,
+                task_id,
+                {"id": "new-apl"},
+                {"id": "65-seedream-5-pro"},
+            )
+            second = server._start_image_resumer(
+                project_id,
+                node_id,
+                task_id,
+                {"id": "new-apl"},
+                {"id": "65-seedream-5-pro"},
+            )
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(len(started), 1)
+        server.RESUMED_VIDEO_TASKS.discard((project_id, node_id, task_id))
+
     def test_failed_node_with_persisted_provider_task_is_resumed(self):
         project = {
             "id": "project-1",

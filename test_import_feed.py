@@ -1212,6 +1212,51 @@ class ImportFeedContractTests(unittest.TestCase):
             for ref in reimported_voices
         ))
 
+    def test_merge_repairs_referenced_voice_missing_from_episode_group(self):
+        existing = {
+            "episodeId": "EP004",
+            "nodes": [
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段1",
+                    "metadata": {
+                        "params": {
+                            "refs": [],
+                            "voiceRefs": [
+                                {"nodeId": "audio-shared", "label": "音频｜赵铁柱（图1）"},
+                            ],
+                        },
+                    },
+                },
+                {
+                    "id": "audio-shared",
+                    "type": "audio",
+                    "title": "音频｜赵铁柱（图1）",
+                    "metadata": {"prompt": "low steady voice"},
+                },
+            ],
+            "episodeImports": [{
+                "id": "EP004",
+                "nodeIds": ["video-1"],
+                "videoNodeIds": ["video-1"],
+            }],
+        }
+        incoming = {
+            **existing,
+            "nodes": [existing["nodes"][0]],
+            "episodeImports": [{
+                "id": "EP004",
+                "nodeIds": ["video-1"],
+                "videoNodeIds": ["video-1"],
+            }],
+        }
+
+        merged = import_feed.merge_payload_by_episode(existing, incoming)
+        group = merged["episodeImports"][0]
+
+        self.assertIn("audio-shared", group["nodeIds"])
+
     def test_scene_master_and_grid_collapse_to_master_and_reimport_is_idempotent(self):
         def feed():
             return {

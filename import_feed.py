@@ -3179,12 +3179,38 @@ def merge_payload_by_episode(existing, incoming):
             merged_conns[conn.get("id") or _rid_edge()] = conn
 
     imported_now = _now_iso()
+    # every node used by this episode, including reused series assets.
+    # A reused audio/image node is still part of the current episode when a
+    # video references it; omitting it makes the asset exist in the payload but
+    # disappear from the episode canvas.
+    episode_referenced_ids = set()
+    for connection in incoming_conns:
+        target_id = str(connection.get("toNodeId") or "")
+        source_id = str(connection.get("fromNodeId") or "")
+        if target_id in set(incoming_group.get("videoNodeIds") or []):
+            episode_referenced_ids.add(source_id)
+    for node in incoming_nodes:
+        if node.get("type") != "video":
+            continue
+        meta = node.get("metadata") or {}
+        params = meta.get("params") or {}
+        for key in ("refs", "voiceRefs"):
+            for item in [*(params.get(key) or []), *(meta.get(key) or [])]:
+                if isinstance(item, dict) and item.get("nodeId"):
+                    episode_referenced_ids.add(str(item["nodeId"]))
+
     incoming_group = {
         **incoming_group,
         "id": episode_id,
         "nodeIds": list(dict.fromkeys([
             *[node.get("id") for node in incoming_nodes if node.get("id")],
             *[node_id for node_id in reuse_remap.values() if node_id],
+            *[
+                reuse_remap.get(node_id, node_id)
+                for node_id in episode_referenced_ids
+                if existing_by_id.get(reuse_remap.get(node_id, node_id))
+                or node_id in {node.get("id") for node in incoming_nodes}
+            ],
         ])),
         "videoNodeIds": [node.get("id") for node in incoming_nodes if node.get("type") == "video"],
         "connectionIds": [conn.get("id") for conn in incoming_conns if conn.get("id")],
@@ -3310,4 +3336,72 @@ def merge_payload_by_episode(existing, incoming):
         apply_import_layout(merged_payload, [episode_id])
     else:
         apply_import_layout(merged_payload)
+    _repair_episode_asset_membership(merged_payload, episode_id)
     return merged_payload
+
+
+def _repair_episode_asset_membership(payload, episode_id):
+    """Attach every asset actually referenced by this episode's videos.
+
+    Import reuse deliberately keeps one stable audio/image node across the
+    series. Older imports could retain the node globally but omit it from
+    `episodeImports[].nodeIds`; the canvas then queried the episode and never
+    saw the reused voice. Membership is derived from the videos' persisted
+    refs/voiceRefs, which are the authoritative generation contract.
+    """
+    if not isinstance(payload, dict):
+        return 0
+    target = str(episode_id or payload.get("episodeId") or "").strip().upper()
+    if not target:
+        return 0
+    groups = _ensure_episode_imports(payload)
+    group = next(
+        (
+            item for item in groups
+            if str(item.get("id") or "").strip().upper() == target
+        ),
+        None,
+    )
+    if group is None:
+        return 0
+    nodes = {
+        str(node.get("id") or ""): node
+        for node in payload.get("nodes") or []
+        if isinstance(node, dict) and node.get("id")
+    }
+    video_ids = [
+        str(node_id) for node_id in (group.get("videoNodeIds") or [])
+        if node_id
+    ]
+    referenced = set()
+    for node_id in video_ids:
+        meta = (nodes.get(node_id) or {}).get("metadata") or {}
+        params = meta.get("params") or {}
+        for key in ("refs", "voiceRefs"):
+            for item in [*(params.get(key) or []), *(meta.get(key) or [])]:
+                if isinstance(item, dict):
+                    source_id = str(item.get("nodeId") or "").strip()
+                    if source_id and source_id in nodes:
+                        referenced.add(source_id)
+        for key in ("voiceRef",):
+            item = params.get(key) or meta.get(key)
+            if isinstance(item, dict):
+                source_id = str(item.get("nodeId") or "").strip()
+                if source_id and source_id in nodes:
+                    referenced.add(source_id)
+    if not referenced:
+        return 0
+    current = [str(item) for item in (group.get("nodeIds") or []) if item]
+    merged = list(dict.fromkeys([*current, *sorted(referenced)]))
+    added = [node_id for node_id in merged if node_id not in set(current)]
+    if added:
+        group["nodeIds"] = merged
+        actual = next(
+            (
+                item for item in payload.get("episodeImports") or []
+                if str(item.get("id") or "").strip().upper() == target
+            ),
+            group,
+        )
+        actual["nodeIds"] = merged
+    return len(added)

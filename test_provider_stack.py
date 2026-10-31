@@ -661,6 +661,46 @@ class ProviderCatalogTests(unittest.TestCase):
         self.assertEqual(state["url"], "/uploads/recovered.png")
         self.assertEqual(state["taskId"], "task-recover")
 
+    def test_newapi_image_submit_returns_task_without_second_poll(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "65-seedream-5-pro",
+            "remoteModel": "即梦-65-seedream-5-pro",
+            "adapter": "newapi_image",
+            "profile": "aistars-image",
+            "params": {},
+        }
+        calls = []
+        created = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            return {
+                "id": "task-single-submit",
+                "status": "queued",
+            }
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request):
+            result = provider_client.submit_image_task(
+                provider,
+                model,
+                "角色站在院门口",
+                {"ratio": "9:16", "clarity": "2K"},
+                [],
+                on_task_created=created.append,
+            )
+
+        self.assertEqual(result["taskId"], "task-single-submit")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "POST")
+        self.assertEqual(calls[0][1], "https://api.canvasproai.com/aistars/v1/images/generations")
+        self.assertEqual(created[0]["taskId"], "task-single-submit")
+
     def test_high_quality_sd20_uses_documented_suanli_contract(self):
         provider = {
             "id": "new-apl",

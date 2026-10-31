@@ -4364,6 +4364,65 @@ def claim_generation_task(task_id, owner, lease_seconds=45, allow_recover=False)
     return claimed["value"]
 
 
+def claim_generation_task_for_recovery(task_id, provider_task_id, owner, lease_seconds=45):
+    """Atomically claim one persisted provider task for a single poller.
+
+    The provider task id is part of the ownership predicate. This prevents a
+    startup reconciliation and a foreground request from querying and
+    finalizing the same paid task twice.
+    """
+    task_id = str(task_id or "").strip()
+    provider_task_id = str(provider_task_id or "").strip()
+    owner = str(owner or "").strip()
+    if not task_id or not provider_task_id or not owner:
+        return False
+    now = datetime.now(timezone.utc)
+    now_text = now.isoformat()
+    lease_expires_at = (now + timedelta(seconds=max(5, int(lease_seconds)))).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    )[:-3] + "Z"
+    claimed = {"value": False}
+
+    def write(con):
+        result = con.execute(
+            "UPDATE generation_tasks SET status='running',phase='已领取查询租约',"
+            "lease_owner=?,lease_expires_at=?,heartbeat_at=?,updated_at=?,"
+            "error='',finished_at='' "
+            "WHERE id=? AND provider_task_id=? AND status IN ('queued','submitting','interrupted')",
+            (
+                owner,
+                lease_expires_at,
+                now_text,
+                now_text,
+                task_id,
+                provider_task_id,
+            ),
+        )
+        if result.rowcount == 1:
+            claimed["value"] = True
+            return
+        result = con.execute(
+            "UPDATE generation_tasks SET status='running',phase='已领取查询租约',"
+            "lease_owner=?,lease_expires_at=?,heartbeat_at=?,updated_at=?,"
+            "error='',finished_at='' "
+            "WHERE id=? AND provider_task_id=? AND status='running' "
+            "AND (lease_owner IS NULL OR lease_owner='' OR lease_expires_at IS NULL OR lease_expires_at<=?)",
+            (
+                owner,
+                lease_expires_at,
+                now_text,
+                now_text,
+                task_id,
+                provider_task_id,
+                now_text,
+            ),
+        )
+        claimed["value"] = result.rowcount == 1
+
+    _run_write_transaction(write)
+    return claimed["value"]
+
+
 def renew_generation_task_lease(task_id, owner, lease_seconds=45):
     owner = str(owner or "").strip()
     now = datetime.now(timezone.utc)

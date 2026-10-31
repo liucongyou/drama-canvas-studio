@@ -481,6 +481,51 @@ def _resume_expired_provider_tasks(expired):
     return started
 
 
+def _start_image_resumer(project_id, node_id, provider_task_id, provider, model):
+    """Start one background query for a just-submitted New API image task."""
+    project_id = str(project_id or "").strip()
+    node_id = str(node_id or "").strip()
+    provider_task_id = str(provider_task_id or "").strip()
+    if not project_id or not node_id or not provider_task_id:
+        return False
+    key = (project_id, node_id, provider_task_id)
+    with RESUMED_VIDEO_TASKS_LOCK:
+        if key in RESUMED_VIDEO_TASKS:
+            return False
+        RESUMED_VIDEO_TASKS.add(key)
+
+    def run():
+        try:
+            _resume_image_task(
+                project_id,
+                node_id,
+                provider_task_id,
+                provider,
+                model,
+            )
+        except Exception as exc:
+            print(
+                f"[generation-resume] immediate image poller failed "
+                f"node={node_id} task={provider_task_id} error={exc}",
+                file=sys.stderr,
+            )
+        finally:
+            with RESUMED_VIDEO_TASKS_LOCK:
+                RESUMED_VIDEO_TASKS.discard(key)
+
+    try:
+        threading.Thread(
+            target=run,
+            name=f"generation-resume-{node_id}",
+            daemon=True,
+        ).start()
+        return True
+    except Exception:
+        with RESUMED_VIDEO_TASKS_LOCK:
+            RESUMED_VIDEO_TASKS.discard(key)
+        raise
+
+
 def _run_in_tenant(tenant_id, slug, func, *args, **kwargs):
     if tenant_id is None:
         with tenant_context.use_context(None):
@@ -2950,39 +2995,48 @@ def _finalize_resumed_image(project_id, node_id, state, provider, model):
 
 
 def _resume_image_task(project_id, node_id, task_id, provider, model):
-    key = (project_id, node_id)
-    generation_task = _find_generation_task(project_id, node_id, task_id)
-    if not generation_task:
-        generation_task = next(
-            (
-                item
-                for item in store.list_generation_tasks(project_id, 300)
-                if item.get("node_id") == node_id
-                and item.get("provider_task_id") in {"", task_id}
-                and item.get("status") in {"queued", "interrupted"}
-            ),
-            None,
-        )
-    if _recover_persisted_result_to_canvas(project_id, node_id, generation_task):
-        return
-    if generation_task and generation_task.get("local_result_url"):
-        return
-    lease_owner = ""
-    heartbeat = None
-    if generation_task:
-        lease_owner = f"resume:{secrets.token_hex(12)}"
-        if not store.claim_generation_task(
-            generation_task["id"],
-            lease_owner,
-            TASK_LEASE_SECONDS,
-            allow_recover=True,
-        ):
+    # The provider task id is part of the key. Two different provider tasks for
+    # the same node must be able to be checked independently; only duplicate
+    # consumers of the same paid task are forbidden.
+    key = (project_id, node_id, str(task_id or "").strip())
+    with RESUMED_VIDEO_TASKS_LOCK:
+        if key in RESUMED_VIDEO_TASKS:
             return
-        generation_task["lease_owner"] = lease_owner
-        heartbeat = _start_generation_task_heartbeat(
-            generation_task["id"],
-            lease_owner,
-        )
+        RESUMED_VIDEO_TASKS.add(key)
+    task_id = str(task_id or "").strip()
+    generation_task = _generation_task_for_provider(project_id, node_id, task_id)
+    if not generation_task:
+        with RESUMED_VIDEO_TASKS_LOCK:
+            RESUMED_VIDEO_TASKS.discard(key)
+        return
+    if _recover_persisted_result_to_canvas(project_id, node_id, generation_task):
+        with RESUMED_VIDEO_TASKS_LOCK:
+            RESUMED_VIDEO_TASKS.discard(key)
+        return
+    current_task = store.get_generation_task(generation_task["id"]) or {}
+    lease_expires_at = str(current_task.get("lease_expires_at") or "").strip()
+    if (
+        current_task.get("status") == "running"
+        and current_task.get("lease_owner")
+        and lease_expires_at
+        and lease_expires_at > datetime.now(timezone.utc).isoformat()
+    ):
+        with RESUMED_VIDEO_TASKS_LOCK:
+            RESUMED_VIDEO_TASKS.discard(key)
+        return
+    lease_owner = f"resume:{secrets.token_hex(12)}"
+    if not store.claim_generation_task_for_recovery(
+        generation_task["id"],
+        task_id,
+        lease_owner,
+        TASK_LEASE_SECONDS,
+    ):
+        with RESUMED_VIDEO_TASKS_LOCK:
+            RESUMED_VIDEO_TASKS.discard(key)
+        return
+    generation_task = store.get_generation_task(generation_task["id"]) or generation_task
+    generation_task["lease_owner"] = lease_owner
+    heartbeat = _start_generation_task_heartbeat(generation_task["id"], lease_owner)
     try:
         while True:
             try:
@@ -7456,6 +7510,50 @@ class Handler(BaseHTTPRequestHandler):
                         "generationStartedAt": generation_started_at,
                     })
 
+                # New API image tasks are asynchronous and can take longer than
+                # a browser request. Persist the provider task id, release this
+                # worker, and let the single reconciler own polling/finalization.
+                # This prevents two workers from polling and racing the same
+                # terminal receipt.
+                if str(model.get("adapter") or "") == "newapi_image":
+                    submitted = provider_client.submit_image_task(
+                        provider,
+                        model,
+                        prompt,
+                        effective,
+                        refs,
+                        on_task_created=on_image_task_created,
+                    )
+                    provider_task_id = str(submitted.get("taskId") or "").strip()
+                    if not provider_task_id:
+                        raise RuntimeError("New API 图片任务未返回任务号")
+                    if task_id:
+                        store.finish_generation_task(
+                            task_id,
+                            status="interrupted",
+                            phase="供应商任务已提交",
+                            progress=20,
+                            error="",
+                            provider_task_id=provider_task_id,
+                            delivery_status="pending",
+                            lease_owner=lease_owner,
+                        )
+                    _start_image_resumer(
+                        pid,
+                        node["id"],
+                        provider_task_id,
+                        provider,
+                        model,
+                    )
+                    return self._send(202, {
+                        "accepted": True,
+                        "taskId": task_id or "",
+                        "nodeId": node["id"],
+                        "status": "pending",
+                        "code": "PROVIDER_TASK_ACCEPTED",
+                        "providerTaskId": provider_task_id,
+                        "message": "供应商已受理，后台会查询并回写画布",
+                    })
                 result = provider_client.generate_image(
                     provider,
                     model,
