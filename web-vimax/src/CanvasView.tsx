@@ -7637,7 +7637,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [loading, setLoading] = useState(true);
   const [loadingSlow, setLoadingSlow] = useState(false);
   const [dataReady, setDataReady] = useState(false);
-  const [viewportReady, setViewportReady] = useState(false);
   const [pidRetry, setPidRetry] = useState(0);
   const workspaceLoadStartedAtRef = useRef(0);
   const [zoomTarget, setZoomTarget] = useState<string | null>(null);
@@ -8076,6 +8075,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const editNodeRef = useRef<string | null>(null);
   // 实时缩放百分比（onMove 回写），工具栏显示 + 点击重置 100%
   const [zoomPct, setZoomPct] = useState(100);
+  const fitViewRef = useRef<() => void>(() => {});
   const [largeCanvasOverview, setLargeCanvasOverview] = useState(false);
   const [largeCanvasVisibleBounds, setLargeCanvasVisibleBounds] = useState<CanvasVisibleBounds | null>(null);
   const overviewKeyRef = useRef('');
@@ -8184,41 +8184,17 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [groups, setGroups] = useState<CanvasGroup[]>([]);
   const groupsRef = useRef<CanvasGroup[]>([]);
   groupsRef.current = groups;   // persistLayout 里要读最新值（不能挂 deps，会连锁重建回调）
-  const viewportRef = useRef({x: 0, y: 0, zoom: 1});
+  const [canvasViewport, setCanvasViewport] = useState<CanvasViewport>({x: 0, y: 0, zoom: 1});
+  const viewportRef = useRef(canvasViewport);
   const overviewReturnViewportRef = useRef<CanvasViewport | null>(null);
   const focusSelectionRef = useRef<(showEmptyHint?: boolean) => void>(() => {});
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const viewportRestoreInFlightRef = useRef(false);
-  const viewportRestoreReleaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewportSnapshotRef = useRef({key: '', seq: 0});
   const serverEpisodeViewportsRef = useRef<Record<string, unknown>>({});
   const activeWorkspaceEpisodeRef = useRef<string | null>(null);
   const lastPersistedViewportRef = useRef<{key: string; viewport: {x: number; y: number; zoom: number}} | null>(null);
-
-  const beginViewportRestore = useCallback(() => {
-    setViewportReady(false);
-    viewportRestoreInFlightRef.current = true;
-    if (viewportRestoreReleaseTimer.current) {
-      clearTimeout(viewportRestoreReleaseTimer.current);
-      viewportRestoreReleaseTimer.current = null;
-    }
-  }, []);
-
-  const endViewportRestore = useCallback((delayMs = 80) => {
-    if (viewportRestoreReleaseTimer.current) {
-      clearTimeout(viewportRestoreReleaseTimer.current);
-    }
-    viewportRestoreReleaseTimer.current = setTimeout(() => {
-      viewportRestoreInFlightRef.current = false;
-      setViewportReady(true);
-      viewportRestoreReleaseTimer.current = null;
-    }, Math.max(0, delayMs));
-  }, []);
-  useEffect(() => () => {
-    if (viewportRestoreReleaseTimer.current) {
-      clearTimeout(viewportRestoreReleaseTimer.current);
-    }
-  }, []);
+  const viewportUserInteractingRef = useRef(false);
+  const viewportScopeRef = useRef('');
 
   const loadPersistedLayout = useCallback(() => {
     try {
@@ -8281,20 +8257,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [layoutKey, loadPersistedLayout]);
   const rememberViewport = useCallback((viewport: {x: number; y: number; zoom: number}) => {
     viewportRef.current = viewport;
-    const viewportEpisode = isSingleEpProject
-      ? null
-      : (activeWorkspaceEpisodeRef.current || currentEp);
+    setCanvasViewport(viewport);
+    const viewportEpisode = activeWorkspaceEpisodeRef.current || currentEp;
     const snapshotKey = `${session}:${viewportEpisode || '__project__'}`;
-    const currentSnapshotKey = `${session}:${
-      isSingleEpProject ? '__project__' : (currentEp || '__project__')
-    }`;
-    if (!shouldSaveViewport(
-      viewportRestoreInFlightRef.current,
-      snapshotKey,
-      currentSnapshotKey,
-    )) {
-      return;
-    }
     serverEpisodeViewportsRef.current = mergeEpisodeViewport(
       serverEpisodeViewportsRef.current,
       viewportEpisode,
@@ -8351,42 +8316,26 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         // View persistence is best-effort and must not affect canvas interaction.
       }
     }, 220);
-  }, [currentEp, isSingleEpProject, layoutKey, session]);
+  }, [currentEp, layoutKey, session]);
 
   const flushViewportNow = useCallback(() => {
-    const viewportScope = isSingleEpProject
-      ? '__project__'
-      : (activeWorkspaceEpisodeRef.current || currentEp || '__project__');
-    const currentScope = isSingleEpProject
-      ? '__project__'
-      : (currentEp || '__project__');
-    if (!shouldSaveViewport(
-      viewportRestoreInFlightRef.current,
-      `${session}:${viewportScope}`,
-      `${session}:${currentScope}`,
-    )) return;
+    if (!viewportUserInteractingRef.current) return;
     if (viewportSaveTimer.current) {
       clearTimeout(viewportSaveTimer.current);
       viewportSaveTimer.current = null;
     }
     rememberViewport(viewportRef.current);
-  }, [currentEp, isSingleEpProject, rememberViewport, session]);
+  }, [rememberViewport]);
 
   const switchEpisode = useCallback((episodeId: string) => {
     if (episodeId === currentEp) return;
-    if (viewportRestoreReleaseTimer.current) {
-      clearTimeout(viewportRestoreReleaseTimer.current);
-      viewportRestoreReleaseTimer.current = null;
-    }
-    viewportRestoreInFlightRef.current = true;
+    viewportUserInteractingRef.current = false;
     if (viewportSaveTimer.current) {
       clearTimeout(viewportSaveTimer.current);
       viewportSaveTimer.current = null;
     }
     const remembered = {...viewportRef.current};
-    const leavingEpisode = isSingleEpProject
-      ? null
-      : (activeWorkspaceEpisodeRef.current || currentEp);
+    const leavingEpisode = activeWorkspaceEpisodeRef.current || currentEp;
     serverEpisodeViewportsRef.current = mergeEpisodeViewport(
       serverEpisodeViewportsRef.current,
       leavingEpisode,
@@ -8415,7 +8364,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     // here causes onMove/fitView from the leaving canvas to be saved as the
     // newly selected episode's viewport.
     activeWorkspaceEpisodeRef.current = String(leavingEpisode || '').trim().toUpperCase() || null;
-  }, [currentEp, isSingleEpProject, session]);
+  }, [currentEp, session]);
 
   // ── 编组操作 ──────────────────────────────────────────────────────
   // 编组：把当前选中的卡片收进一个新组。已属于其它组的成员会自动离组（一个人只能在一个组里）。
@@ -9311,11 +9260,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     return () => window.clearTimeout(timer);
   }, [loading, canvas]);
   useEffect(() => {
-    beginViewportRestore();
-    if (viewportRestoreReleaseTimer.current) {
-      clearTimeout(viewportRestoreReleaseTimer.current);
-      viewportRestoreReleaseTimer.current = null;
-    }
+    viewportUserInteractingRef.current = false;
     setLoading(true);
     setLoadingSlow(false);
     setDataReady(false);
@@ -9451,7 +9396,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         setLoading(false);
       })
       .catch((err: unknown) => {
-        endViewportRestore(0);
         if (loadEpoch === workspaceLoadEpochRef.current) {
           const aborted = err instanceof DOMException && err.name === 'AbortError';
           setError(
@@ -9480,7 +9424,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         workspaceLoadEpochRef.current += 1;
       }
     };
-  }, [session, currentEp, pidRetry, beginViewportRestore]);
+  }, [session, currentEp, pidRetry]);
 
   // 拉取创作质量自评报告（与画布数据并行），供镜头卡弱项色点使用。
   useEffect(() => {
@@ -11108,14 +11052,25 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       setNodes((prev) => prev.map((node) => (
         wanted.has(node.id) ? {...node, selected: true} : {...node, selected: false}
       )));
-      rf.fitView({
-        nodes: copiedFlowIds.map((id) => ({id})),
-        padding: 0.35,
-        duration: 260,
-      });
+      const copiedMedia = remappedMedia.filter((node) => node.id);
+      if (copiedMedia.length > 0) {
+        const minX = Math.min(...copiedMedia.map((node) => node.x));
+        const minY = Math.min(...copiedMedia.map((node) => node.y));
+        const maxX = Math.max(...copiedMedia.map((node) => node.x + MEDIA_KIND_META[node.kind].w));
+        const maxY = Math.max(...copiedMedia.map((node) => node.y + MEDIA_KIND_META[node.kind].h));
+        const next = viewportForCanvasBounds(
+          {x: minX, y: minY, width: maxX - minX, height: maxY - minY},
+          window.innerWidth,
+          window.innerHeight,
+          {focus: true, padding: 0.2, minZoom: 0.5, maxZoom: 1.2},
+        );
+        viewportRef.current = next;
+        setCanvasViewport(next);
+        setZoomPct(Math.round(next.zoom * 100));
+      }
     }));
     return count;
-  }, [pushHistory, persistMediaNodes, persistNotes, rf, setNodes]);
+  }, [pushHistory, persistMediaNodes, persistNotes, setNodes]);
 
   // Ctrl+D：就地复制选中（不污染剪贴板）
   const duplicateSelectedNodes = useCallback(
@@ -13210,8 +13165,16 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           focusSelectionRef.current();
           return;
         }
-        if (key === '0') { event.preventDefault(); rf.zoomTo(1, {duration: 200}); return; }
-        if (key === '1') { event.preventDefault(); rf.fitView({padding: 0.2, duration: 300}); return; }
+        if (key === '0') {
+          event.preventDefault();
+          const current = rf.getViewport();
+          const next = {x: current.x, y: current.y, zoom: 1};
+          viewportRef.current = next;
+          setCanvasViewport(next);
+          setZoomPct(100);
+          return;
+        }
+        if (key === '1') { event.preventDefault(); fitViewRef.current(); return; }
         if (key === 's') { event.preventDefault(); setToast('画布自动保存已开启，无需手动保存'); return; }
         return;
       }
@@ -13234,7 +13197,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         event.preventDefault();
         focusSelectionRef.current();
       }
-      else if (key === 'f') { event.preventDefault(); rf.fitView({padding: 0.2}); }
+      else if (key === 'f') { event.preventDefault(); fitViewRef.current(); }
       else if (key === '?') { event.preventDefault(); setHelpOpen(true); }
       else if (event.code === 'Space') { event.preventDefault(); setPanning(true); }
       else if (key === 'arrowup' || key === 'arrowdown' || key === 'arrowleft' || key === 'arrowright') {
@@ -14311,8 +14274,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         maxZoom: 1,
       },
     );
-    rf.setViewport(viewport, {duration: options?.animate ? 220 : 0});
-  }, [canvas, effectiveSegments, notes, rf, assetRatios, mediaNodes]);
+    viewportRef.current = viewport;
+    setCanvasViewport(viewport);
+    setZoomPct(Math.round(viewport.zoom * 100));
+  }, [canvas, effectiveSegments, notes, assetRatios, mediaNodes]);
 
   const fitView = useCallback(() => {
     if (shouldUseLargeCanvasOverview(mediaNodes)) {
@@ -14322,6 +14287,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     }
     fitCanvas({animate: true});
   }, [fitCanvas, mediaNodes]);
+  fitViewRef.current = fitView;
   const focusSelection = useCallback((showEmptyHint = true) => {
     setLargeCanvasOverview(false);
     window.requestAnimationFrame(() => {
@@ -14330,13 +14296,28 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         if (showEmptyHint) setToast('先选择节点，再点「聚焦」');
         return;
       }
-      rf.fitView({
-        nodes: selected.map((node) => ({id: node.id})),
-        padding: 0.3,
-        duration: 280,
-      });
+      const selectedIds = new Set(selected.map((node) => node.id));
+      const selectedMedia = mediaNodes.filter((node) => selectedIds.has(`media-${node.id}`));
+      if (selectedMedia.length === 0) {
+        if (showEmptyHint) setToast('先选择节点，再点「聚焦」');
+        return;
+      }
+      const minX = Math.min(...selectedMedia.map((node) => node.x));
+      const minY = Math.min(...selectedMedia.map((node) => node.y));
+      const maxX = Math.max(...selectedMedia.map((node) => node.x + MEDIA_KIND_META[node.kind].w));
+      const maxY = Math.max(...selectedMedia.map((node) => node.y + MEDIA_KIND_META[node.kind].h));
+      const host = document.querySelector('.react-flow') as HTMLElement | null;
+      const next = viewportForCanvasBounds(
+        {x: minX, y: minY, width: maxX - minX, height: maxY - minY},
+        host?.clientWidth || window.innerWidth,
+        host?.clientHeight || window.innerHeight,
+        {focus: true, padding: 0.2, minZoom: 0.5, maxZoom: 1.2},
+      );
+      viewportRef.current = next;
+      setCanvasViewport(next);
+      setZoomPct(Math.round(next.zoom * 100));
     });
-  }, [rf, setToast]);
+  }, [mediaNodes, rf, setToast]);
   const focusWorkspace = useCallback(() => {
     focusSelection(true);
   }, [focusSelection]);
@@ -14345,10 +14326,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const viewport = overviewReturnViewportRef.current;
     setLargeCanvasOverview(false);
     window.requestAnimationFrame(() => {
-      if (viewport) rf.setViewport(viewport, {duration: 180});
+      if (viewport) {
+        viewportRef.current = viewport;
+        setCanvasViewport(viewport);
+        setZoomPct(Math.round(viewport.zoom * 100));
+      }
       else fitCanvas({animate: true, focus: true});
     });
-  }, [fitCanvas, rf]);
+  }, [fitCanvas]);
   const focusOverviewNode = useCallback((node: CanvasMediaNode) => {
     const zoom = 0.8;
     setLargeCanvasOverview(false);
@@ -14363,14 +14348,18 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       window.innerWidth,
       window.innerHeight,
     ));
-    window.setTimeout(() => {
-      rf.setCenter(
-        node.x + MEDIA_KIND_META[node.kind].w / 2,
-        node.y + MEDIA_KIND_META[node.kind].h / 2,
-        {zoom, duration: 260},
-      );
-    }, 0);
-  }, [rf]);
+    const host = document.querySelector('.react-flow') as HTMLElement | null;
+    const width = host?.clientWidth || window.innerWidth;
+    const height = host?.clientHeight || window.innerHeight;
+    const next = {
+      x: width / 2 - (node.x + MEDIA_KIND_META[node.kind].w / 2) * zoom,
+      y: height / 2 - (node.y + MEDIA_KIND_META[node.kind].h / 2) * zoom,
+      zoom,
+    };
+    viewportRef.current = next;
+    setCanvasViewport(next);
+    setZoomPct(Math.round(zoom * 100));
+  }, []);
   const updateLargeCanvasViewport = useCallback((viewport: CanvasViewport) => {
     if (mediaNodes.length <= 400 || largeCanvasOverview) return;
     if (visibleBoundsTimerRef.current !== null) {
@@ -14516,67 +14505,23 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     // was just visited has a fresher value than the last persisted payload.
     // It must win over the localStorage snapshot during the switch-back frame.
     if (serverViewport) savedViewport = serverViewport;
+    const nextViewport = serverViewport || savedViewport;
+    if (nextViewport) {
+      viewportRef.current = nextViewport;
+      setCanvasViewport(nextViewport);
+      setZoomPct(Math.round(nextViewport.zoom * 100));
+    }
     // 画布适配必须等节点 DOM 挂载后再执行：React Flow 对未测量节点保持
     // visibility:hidden（hasDimensions 为 false），首次 fitBounds 若在节点挂载前
     // 调用不会触发测量，节点将永久隐藏——"画布内容进入后就消失"的根因。
     // 延迟一帧再 fitCanvas（fitBounds→setViewport 会触发节点测量并可见）。
     // ★ 每次切集（loading/canvas 变化）都必须重新 fit，否则视口停在上一集位置，
     //   媒体卡片会被挤到视口外（实测：剧集页签点「第01集」后画布只剩镜头条块）。
-    if (shouldFit) {
-      beginViewportRestore();
-      let settledFrames = 0;
-      let attempts = 0;
-      const restoreWhenSettled = () => {
-        attempts += 1;
-        if (
-          loading
-          || fittedScopeRef.current !== scope
-        ) return;
-        if (attempts > 180) {
-          const fallback = selectCanvasViewport(
-            serverEpisodeViewportsRef.current,
-            currentEp,
-            session,
-            isSingleEpProject,
-          );
-          if (fallback) {
-            viewportRef.current = fallback;
-            setZoomPct(Math.round(fallback.zoom * 100));
-            rf.setViewport(fallback, {duration: 0});
-          }
-          endViewportRestore();
-          return;
-        }
-        const nodesReady = rf.getNodes().length > 0
-          && rf.getNodes().every((node) => Boolean(node.measured));
-        settledFrames = nodesReady
-          ? settledFrames + 1
-          : 0;
-        if (settledFrames < 2) {
-          window.requestAnimationFrame(restoreWhenSettled);
-          return;
-        }
-        const freshServerViewport = selectCanvasViewport(
-          serverEpisodeViewportsRef.current,
-          currentEp,
-          session,
-          isSingleEpProject,
-        );
-        if (freshServerViewport) {
-          savedViewport = freshServerViewport;
-        }
-        if (savedViewport) {
-          viewportRef.current = savedViewport;
-          setZoomPct(Math.round(savedViewport.zoom * 100));
-          rf.setViewport(savedViewport, {duration: 0});
-        } else {
-          fitCanvasRef.current({animate: false, focus: true});
-        }
-        window.setTimeout(() => endViewportRestore(80), 80);
-      };
-      window.requestAnimationFrame(restoreWhenSettled);
+    if (shouldFit && !nextViewport) {
+      fitCanvasRef.current({animate: false, focus: true});
     }
-  }, [loading, canvas, session, currentEp, isSingleEpProject, beginViewportRestore, endViewportRestore]);
+    viewportScopeRef.current = currentEp || '__project__';
+  }, [loading, canvas, session, currentEp, isSingleEpProject]);
 
   // 通用文本下载（导出分镜 Markdown / 镜头 CSV / 布局 JSON）
   const downloadText = useCallback((filename: string, text: string, mime = 'text/plain') => {
@@ -14709,7 +14654,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         && Number.isFinite(parsed.viewport.y)
         && Number.isFinite(parsed.viewport.zoom)
       ) {
-        rf.setViewport(parsed.viewport, {duration: 0});
+        viewportRef.current = parsed.viewport;
+        setCanvasViewport(parsed.viewport);
+        setZoomPct(Math.round(parsed.viewport.zoom * 100));
       }
       persistLayout(
         layoutPositionsForExport({
@@ -14725,7 +14672,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     } catch (error) {
       setToast(error instanceof Error ? error.message : '布局文件解析失败');
     }
-  }, [persistLayout, persistMediaPositions, persistNotes, rf, setGroups, setNodes, setUserEdges, setToast]);
+  }, [persistLayout, persistMediaPositions, persistNotes, setGroups, setNodes, setUserEdges, setToast]);
 
   // 全局搜索结果：段/镜头/备注/资产（资产命中同时过滤画布卡片；点击定位画布）
   const searchResults = useMemo(() => {
@@ -14797,7 +14744,18 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       const fallback = positionRef.current[hit.nodeId];
       target = abs ?? fallback ?? {x: 0, y: 0};
     }
-    rf.setCenter(target.x + 180, target.y + 140, {zoom: Math.max(rf.getZoom(), 0.9), duration: 360});
+    const host = document.querySelector('.react-flow') as HTMLElement | null;
+    const width = host?.clientWidth || window.innerWidth;
+    const height = host?.clientHeight || window.innerHeight;
+    const zoom = Math.max(viewportRef.current.zoom, 0.9);
+    const next = {
+      x: width / 2 - (target.x + 180) * zoom,
+      y: height / 2 - (target.y + 140) * zoom,
+      zoom,
+    };
+    viewportRef.current = next;
+    setCanvasViewport(next);
+    setZoomPct(Math.round(zoom * 100));
     setSelectedId(hit.nodeId);
     setSearchFocused(false);
     // ★ 选中态必须落到 React Flow 的节点上（只 setSelectedId 是内部 state，画布上没有任何视觉反馈，
@@ -14825,7 +14783,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       return true;
     };
     if (!flash()) window.setTimeout(flash, 200);
-  }, [rf, notes, mediaNodes, setNodes]);
+  }, [notes, mediaNodes, setNodes]);
 
   // Escape 关闭各类弹层（菜单/段契约/资产详情/帮助/侧边面板）
   useEffect(() => {
@@ -14866,8 +14824,20 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [setNodes]);
 
-  const zoomIn = useCallback(() => rf.zoomIn({duration: 200}), [rf]);
-  const zoomOut = useCallback(() => rf.zoomOut({duration: 200}), [rf]);
+  const zoomIn = useCallback(() => {
+    const current = viewportRef.current;
+    const next = {...current, zoom: Math.min(8, current.zoom * 1.2)};
+    viewportRef.current = next;
+    setCanvasViewport(next);
+    setZoomPct(Math.round(next.zoom * 100));
+  }, []);
+  const zoomOut = useCallback(() => {
+    const current = viewportRef.current;
+    const next = {...current, zoom: Math.max(0.12, current.zoom / 1.2)};
+    viewportRef.current = next;
+    setCanvasViewport(next);
+    setZoomPct(Math.round(next.zoom * 100));
+  }, []);
 
   // 一键导出画布 PNG（html-to-image 对当前视口截图，2x 像素；背景色随主题）
   const exportCanvasPng = useCallback(async () => {
@@ -14918,8 +14888,19 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const targetId = segNodeId(seg);
     const abs = absolutePositionOf(targetId, dragNodesRef.current);
     if (!abs) return;
-    rf.setCenter(abs.x + 160, abs.y + 140, {zoom: Math.max(rf.getZoom(), 0.9), duration: 420});
-  }, [rf, segNodeId]);
+    const host = document.querySelector('.react-flow') as HTMLElement | null;
+    const width = host?.clientWidth || window.innerWidth;
+    const height = host?.clientHeight || window.innerHeight;
+    const zoom = Math.max(viewportRef.current.zoom, 0.9);
+    const next = {
+      x: width / 2 - (abs.x + 160) * zoom,
+      y: height / 2 - (abs.y + 140) * zoom,
+      zoom,
+    };
+    viewportRef.current = next;
+    setCanvasViewport(next);
+    setZoomPct(Math.round(zoom * 100));
+  }, [segNodeId]);
 
   const contextNode = useMemo(() => {
     if (!contextMenu?.nodeId) return null;
@@ -15579,7 +15560,16 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             </div>
           )}
           <ReactFlow
-            className={`canvas-flow ${viewportReady ? 'is-viewport-ready' : 'is-viewport-restoring'} ${draggingNode ? 'is-node-dragging' : ''} ${connecting ? 'is-connecting' : ''} ${selectedCount >= 2 ? 'has-multi-selection' : ''} ${edgesHidden ? 'is-edges-hidden' : ''}`}
+            className={`canvas-flow ${draggingNode ? 'is-node-dragging' : ''} ${connecting ? 'is-connecting' : ''} ${selectedCount >= 2 ? 'has-multi-selection' : ''} ${edgesHidden ? 'is-edges-hidden' : ''}`}
+            viewport={canvasViewport}
+            onViewportChange={(next) => {
+              viewportRef.current = next;
+              setCanvasViewport(next);
+              setZoomPct(Math.round(next.zoom * 100));
+              if (viewportUserInteractingRef.current) {
+                rememberViewport(next);
+              }
+            }}
             onConnectStart={() => setConnecting(true)}
             onConnectEnd={() => setConnecting(false)}
             data-mouse-mode={mouseMode}
@@ -15619,11 +15609,19 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             onMove={(_evt, viewport) => {
               setZoomPct(Math.round(viewport.zoom * 100));
               updateLargeCanvasViewport(viewport);
-              rememberViewport(viewport);
               syncSelBar();
               syncGroupFrames();
             }}
-            onMoveEnd={() => flushViewportNow()}
+            onMoveStart={() => {
+              viewportUserInteractingRef.current = true;
+            }}
+            onMoveEnd={(_event, viewport) => {
+              if (viewportUserInteractingRef.current) {
+                rememberViewport(viewport);
+              }
+              viewportUserInteractingRef.current = false;
+              flushViewportNow();
+            }}
             // 连线中点的剪断按钮挂在 EdgeLabelRenderer 里，会被画布的 zoom 一起缩放：
             // 缩到 38% 时 20px 的按钮只剩 7.6px，剪刀图标等于看不见。
             // 这里注入 1/zoom 让按钮恒为 20px 屏幕像素（钳到 6x 防极端缩放时爆掉）。
@@ -15948,7 +15946,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   <span className="canvas-tool-ico"><ScanSearch size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">聚焦</span>
                 </button>
                 <button type="button" onClick={zoomOut} title="缩小" aria-label="缩小"><Minus size={14} strokeWidth={2.2} aria-hidden="true" /></button>
-                <button type="button" className="canvas-toolbar-zoom" onClick={() => rf.zoomTo(1, {duration: 200})} title="重置为 100%（Ctrl+0）">{zoomPct}%</button>
+                <button type="button" className="canvas-toolbar-zoom" onClick={() => {
+                  const current = viewportRef.current;
+                  const next = {...current, zoom: 1};
+                  viewportRef.current = next;
+                  setCanvasViewport(next);
+                  setZoomPct(100);
+                }} title="重置为 100%（Ctrl+0）">{zoomPct}%</button>
                 <button type="button" onClick={zoomIn} title="放大" aria-label="放大"><Plus size={14} strokeWidth={2.2} aria-hidden="true" /></button>
                 <span className="canvas-toolbar-sep" />
                 <button type="button" className={snapGrid ? 'is-active' : ''} onClick={() => setSnapGrid((v) => !v)} title="网格吸附：拖动时按 12px 栅格对齐" aria-label="网格吸附">
@@ -16249,7 +16253,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   {nodeClipboard && (nodeClipboard.media.length > 0 || nodeClipboard.notes.length > 0) && (
                     <button type="button" onClick={() => { const n = pasteNodeClipboard(); if (n > 0) setToast(`已粘贴 ${n} 个节点`); setContextMenu(null); }}>粘贴（Ctrl+V）</button>
                   )}
-                  <button type="button" onClick={() => { rf.zoomTo(1, {duration: 200}); setContextMenu(null); }}>重置为 100%（Ctrl+0）</button>
+                  <button type="button" onClick={() => {
+                    const current = viewportRef.current;
+                    const next = {...current, zoom: 1};
+                    viewportRef.current = next;
+                    setCanvasViewport(next);
+                    setZoomPct(100);
+                    setContextMenu(null);
+                  }}>重置为 100%（Ctrl+0）</button>
                   <button type="button" onClick={() => { fitView(); setContextMenu(null); }}>适应视图</button>
                   <button type="button" onClick={() => { setHelpOpen(true); setContextMenu(null); }}>帮助</button>
                 </>
@@ -16833,13 +16844,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           const now = performance.now();
           if (now - revealRef.current.at < 120) return;
           revealRef.current = {at: now, key: 1};
-          const current = rf.getViewport();
+          const current = viewportRef.current;
           const limit = Math.max(0, window.innerHeight - 120);
           const shift = Math.max(-limit, Math.min(limit, requiredBottom));
-          rf.setViewport(
-            {...current, y: current.y + shift},
-            {duration: 180},
-          );
+          const next = {...current, y: current.y + shift};
+          viewportRef.current = next;
+          setCanvasViewport(next);
         }}
         onClose={(reason) => {
           revealRef.current = {key: 0, at: 0};
