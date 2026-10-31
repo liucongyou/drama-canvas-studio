@@ -674,6 +674,20 @@ def sync_projection_node(
             stamp=stamp,
         ),
     )
+    ownership = str(
+        node.get("episodeId")
+        or (node.get("metadata") or {}).get("episodeId")
+        or episode_id
+        or ""
+    ).strip().upper()
+    if ownership:
+        claim_nodes_for_episode(
+            con,
+            project_id,
+            ownership,
+            [node.get("id")],
+            updated_at=stamp,
+        )
 
 
 def refresh_project_projection_stats(con, project_id, *, updated_at=""):
@@ -1188,6 +1202,56 @@ def sync_projection_episode(
             normalized,
         ),
     )
+
+
+def claim_nodes_for_episode(
+    con,
+    project_id,
+    episode_id,
+    node_ids,
+    *,
+    updated_at="",
+):
+    """Make episode ownership exclusive for the submitted node ids."""
+    normalized = str(episode_id or "").strip().upper()
+    ids = {
+        str(node_id)
+        for node_id in (node_ids or [])
+        if str(node_id or "").strip()
+    }
+    if not normalized or not ids:
+        return
+    stamp = str(updated_at or _now_iso())
+    rows = con.execute(
+        "SELECT episode_id,group_json,node_ids_json,video_node_ids_json "
+        "FROM canvas_projection_episodes WHERE project_id=?",
+        (project_id,),
+    ).fetchall()
+    for row in rows:
+        row_episode = str(row[0] or "").strip().upper()
+        if row_episode == normalized:
+            continue
+        try:
+            group = json.loads(row[1] or "{}")
+            node_list = json.loads(row[2] or "[]")
+            video_list = json.loads(row[3] or "[]")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(group, dict):
+            group = {}
+        next_nodes = [value for value in node_list if str(value) not in ids]
+        next_videos = [value for value in video_list if str(value) not in ids]
+        if next_nodes == node_list and next_videos == video_list:
+            continue
+        group["nodeIds"] = next_nodes
+        group["videoNodeIds"] = next_videos
+        sync_projection_episode(
+            con,
+            project_id,
+            row_episode,
+            group,
+            updated_at=stamp,
+        )
 
 
 def replace_projection_nodes(con, project_id, nodes, *, updated_at=""):
@@ -1763,10 +1827,14 @@ def get_project_workspace_nodes(project_id, episode_id=None):
                     for node_id in group.get("nodeIds") or []
                     if node_id
                 }
-            payload_nodes = [
-                node for node in nodes
-                if not allowed or str(node.get("id")) in allowed
-            ]
+            payload_nodes = (
+                [
+                    node for node in nodes
+                    if str(node.get("id")) in allowed
+                ]
+                if normalized_episode
+                else nodes
+            )
             payload_edges = [
                 edge for edge in payload.get("connections") or []
                 if not allowed
@@ -1834,6 +1902,119 @@ def get_project_workspace_nodes(project_id, episode_id=None):
         "connections": edges,
         "layouts": layout if isinstance(layout, dict) else {},
     }
+
+
+def repair_episode_node_ownership(project_id):
+    """Repair explicit ownership and quarantine ambiguous cross-episode nodes."""
+    repaired = 0
+    ambiguous = 0
+
+    def write(con):
+        nonlocal repaired, ambiguous
+        row = con.execute(
+            "SELECT payload_json FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if not row:
+            return 0
+        try:
+            payload = json.loads(row[0] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
+        groups = (
+            payload.get("episodeImports")
+            if isinstance(payload.get("episodeImports"), list)
+            else []
+        )
+        memberships: dict[str, list[str]] = {}
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_episode = str(group.get("id") or "").strip().upper()
+            if not group_episode:
+                continue
+            for node_id in group.get("nodeIds") or []:
+                memberships.setdefault(str(node_id), []).append(group_episode)
+        stamp = _now_iso()
+        for node in nodes:
+            if not isinstance(node, dict) or not node.get("id"):
+                continue
+            node_id = str(node["id"])
+            meta = node.get("metadata")
+            if not isinstance(meta, dict):
+                meta = {}
+                node["metadata"] = meta
+            explicit = str(
+                node.get("episodeId") or meta.get("episodeId") or ""
+            ).strip().upper()
+            candidates = list(dict.fromkeys(memberships.get(node_id, [])))
+            owner = explicit or (candidates[0] if len(candidates) == 1 else "")
+            if not owner:
+                continue
+            if meta.get("episodeId") != owner:
+                meta["episodeId"] = owner
+                node["updatedAt"] = stamp
+                repaired += 1
+            sync_projection_node(
+                con,
+                project_id,
+                node,
+                episode_id=owner,
+                updated_at=stamp,
+            )
+            claim_nodes_for_episode(
+                con,
+                project_id,
+                owner,
+                [node_id],
+                updated_at=stamp,
+            )
+        ambiguous_ids = set()
+        if groups:
+            # A node without explicit ownership that appears in multiple
+            # episodes is not safe to assign arbitrarily. Keep its row and
+            # content, but remove the ambiguous shared membership so it cannot
+            # leak into every episode. The node remains recoverable from the
+            # project payload and will be claimed when edited in one episode.
+            for node in nodes:
+                if not isinstance(node, dict) or not node.get("id"):
+                    continue
+                node_id = str(node["id"])
+                meta = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+                explicit = str(
+                    node.get("episodeId") or meta.get("episodeId") or ""
+                ).strip().upper()
+                candidates = list(dict.fromkeys(memberships.get(node_id, [])))
+                if not explicit and len(candidates) > 1:
+                    ambiguous_ids.add(node_id)
+            if ambiguous_ids:
+                for group in groups:
+                    if not isinstance(group, dict):
+                        continue
+                    group["nodeIds"] = [
+                        node_id for node_id in group.get("nodeIds") or []
+                        if str(node_id) not in ambiguous_ids
+                    ]
+                    group["videoNodeIds"] = [
+                        node_id for node_id in group.get("videoNodeIds") or []
+                        if str(node_id) not in ambiguous_ids
+                    ]
+                for node_id in ambiguous_ids:
+                    con.execute(
+                        "UPDATE canvas_projection_nodes SET episode_id='' "
+                        "WHERE project_id=? AND node_id=?",
+                        (project_id, node_id),
+                    )
+                ambiguous = len(ambiguous_ids)
+        if repaired or ambiguous:
+            con.execute(
+                "UPDATE canvas_projects SET payload_json=?,updated_at=? WHERE id=?",
+                (json.dumps(payload, ensure_ascii=False), stamp, project_id),
+            )
+        return repaired + ambiguous
+
+    return int(_run_write_transaction(write) or 0)
 
 
 def _run_write_transaction(callback):
@@ -2425,7 +2606,26 @@ def insert_project_nodes(
             )
         stamp = _now_iso()
         normalized_episode = str(episode_id or "").strip().upper()
+        if not normalized_episode:
+            raise ValueError("新建节点必须指定所属集")
+        claim_nodes_for_episode(
+            con,
+            project_id,
+            normalized_episode,
+            [item.get("id") for item in items],
+            updated_at=stamp,
+        )
         for item in items:
+            metadata = item.get("metadata")
+            metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            metadata_episode = str(metadata.get("episodeId") or "").strip().upper()
+            if metadata_episode and metadata_episode != normalized_episode:
+                raise ValueError(
+                    f"节点 {item.get('id')} 的集号 {metadata_episode} "
+                    f"与保存目标 {normalized_episode} 不一致"
+                )
+            metadata["episodeId"] = normalized_episode
+            item["metadata"] = metadata
             item.setdefault("createdAt", stamp)
             item.setdefault("positionUpdatedAt", stamp)
             item.setdefault("updatedAt", stamp)
@@ -2663,7 +2863,45 @@ def update_project_nodes(
         stamp = _now_iso()
         normalized_episode = str(episode_id or "").strip().upper()
         updated = 0
+        if normalized_episode:
+            group_row = con.execute(
+                "SELECT 1 FROM canvas_projection_episodes "
+                "WHERE project_id=? AND episode_id=?",
+                (project_id, normalized_episode),
+            ).fetchone()
+            if not group_row:
+                sync_projection_episode(
+                    con,
+                    project_id,
+                    normalized_episode,
+                    {
+                        "id": normalized_episode,
+                        "title": normalized_episode,
+                        "nodeIds": [],
+                        "videoNodeIds": [],
+                        "connectionIds": [],
+                    },
+                    updated_at=stamp,
+                )
+            claim_nodes_for_episode(
+                con,
+                project_id,
+                normalized_episode,
+                [item.get("id") for item in items],
+                updated_at=stamp,
+            )
         for item in items:
+            metadata = item.get("metadata")
+            metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            if normalized_episode:
+                metadata_episode = str(metadata.get("episodeId") or "").strip().upper()
+                if metadata_episode and metadata_episode != normalized_episode:
+                    raise ValueError(
+                        f"节点 {item.get('id')} 的集号 {metadata_episode} "
+                        f"与保存目标 {normalized_episode} 不一致"
+                    )
+                metadata["episodeId"] = normalized_episode
+                item["metadata"] = metadata
             item.setdefault("updatedAt", stamp)
             cursor = con.execute(
                 "SELECT 1 FROM canvas_projection_nodes "

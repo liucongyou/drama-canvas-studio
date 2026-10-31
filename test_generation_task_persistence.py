@@ -16,6 +16,66 @@ import tenant_context
 
 
 class GenerationTaskPersistenceTests(unittest.TestCase):
+    def test_insert_node_requires_episode_and_claims_exclusive_membership(self):
+        project_id = canvas_store.create_project("episode-node-ownership")
+        first = {
+            "id": "owned-node",
+            "type": "image",
+            "title": "角色｜测试",
+            "position": {"x": 10, "y": 20},
+            "metadata": {"status": "idle"},
+        }
+        canvas_store.insert_project_nodes(
+            project_id,
+            [first],
+            episode_id="EP001",
+        )
+        project = canvas_store.get_project(project_id)
+        node = next(
+            item for item in project["payload"]["nodes"]
+            if item["id"] == "owned-node"
+        )
+        self.assertEqual(node["metadata"]["episodeId"], "EP001")
+        self.assertIn(
+            "owned-node",
+            next(
+                group for group in project["payload"]["episodeImports"]
+                if group["id"] == "EP001"
+            )["nodeIds"],
+        )
+        canvas_store.update_project_nodes(
+            project_id,
+            [{
+                **node,
+                "metadata": {**node["metadata"], "episodeId": "EP002"},
+            }],
+            episode_id="EP002",
+        )
+        project = canvas_store.get_project(project_id)
+        ep1 = next(
+            group for group in project["payload"]["episodeImports"]
+            if group["id"] == "EP001"
+        )
+        ep2 = next(
+            group for group in project["payload"]["episodeImports"]
+            if group["id"] == "EP002"
+        )
+        self.assertNotIn("owned-node", ep1["nodeIds"])
+        self.assertIn("owned-node", ep2["nodeIds"])
+
+    def test_insert_node_without_episode_is_rejected(self):
+        project_id = canvas_store.create_project("episode-node-required")
+        with self.assertRaisesRegex(ValueError, "所属集"):
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "orphan-node",
+                    "type": "image",
+                    "title": "无主节点",
+                    "metadata": {},
+                }],
+            )
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root_override = patch.dict(

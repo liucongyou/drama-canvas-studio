@@ -9568,6 +9568,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       title: titles[kind],
       prompt: '',
       status: 'idle',
+      episodeId: currentEp || undefined,
       x,
       y,
       updatedAt: new Date().toISOString(),
@@ -9580,7 +9581,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     };
     pushHistory(userEdgesRef.current, notesRef.current, {removeAddedMedia: true});
     setMediaNodes((prev) => { const next = [...prev, node]; persistMediaNodes(next, [node]); return next; });
-  }, [modelCatalog, persistMediaNodes, pushHistory]);
+  }, [currentEp, modelCatalog, persistMediaNodes, pushHistory]);
   const updateMediaNode = useCallback((
     id: string,
     patch: Partial<CanvasMediaNode>,
@@ -10003,6 +10004,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         prompt: '',
         mediaUrl: url,
         status: 'done',
+        episodeId: currentEp || undefined,
         actualDuration: inspected.duration,
         source: {
           type: 'local',
@@ -10110,6 +10112,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           prompt: '',
           mediaUrl: uploaded.url,
           status: 'done',
+          episodeId: currentEp || undefined,
           actualDuration: inspected.duration,
           source: {
             type: 'local',

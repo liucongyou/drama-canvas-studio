@@ -3886,6 +3886,17 @@ def reconcile_image_provider_metadata():
     return updated
 
 
+def repair_episode_node_ownership():
+    """Backfill explicit node ownership and make episode membership exclusive."""
+    repaired = 0
+    for project_row in store.list_projects():
+        project_id = str(project_row.get("id") or "")
+        if not project_id:
+            continue
+        repaired += store.repair_episode_node_ownership(project_id)
+    return repaired
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stdout.write("[%s] %s\n" % (self.server.server_address, fmt % args))
@@ -6238,6 +6249,12 @@ class Handler(BaseHTTPRequestHandler):
             incoming = body.get("nodes")
             if not isinstance(incoming, list):
                 return self._send(400, {"error": "nodes 字段缺失或不是数组"})
+            episode_id = str(body.get("episodeId") or "").strip().upper()
+            if not episode_id:
+                return self._send(400, {
+                    "error": "新建节点必须指定所属集",
+                    "code": "CANVAS_EPISODE_REQUIRED",
+                })
             active_task_nodes = {
                 task.get("node_id")
                 for task in store.list_generation_tasks(pid, 300)
@@ -6245,7 +6262,6 @@ class Handler(BaseHTTPRequestHandler):
             }
             conflicts = []
             save_updates = []
-            episode_id = str(body.get("episodeId") or "").strip().upper()
             created = 0
             persisted_node_count = 0
             current_revision = 0
@@ -8011,6 +8027,16 @@ def main():
             )
     except Exception as exc:
         print(f"[provider-result] 图片元数据对账失败：{exc}", file=sys.stderr)
+    try:
+        repaired_ownership = _run_for_active_tenants(
+            repair_episode_node_ownership
+        )
+        if repaired_ownership:
+            print(
+                f"已修复 {repaired_ownership} 个节点的集数归属"
+            )
+    except Exception as exc:
+        print(f"[episode-ownership] 节点集数归属修复失败：{exc}", file=sys.stderr)
     try:
         validated = _run_for_active_tenants(backfill_generated_video_validation)
         if validated:
