@@ -571,6 +571,8 @@ function LazyCanvasImage({
   onClick,
   onDoubleClick,
   draggable,
+  rootMargin,
+  loadingPlaceholder,
 }: {
   src: string;
   alt: string;
@@ -580,6 +582,8 @@ function LazyCanvasImage({
   onClick?: (event: React.MouseEvent<HTMLImageElement>) => void;
   onDoubleClick?: (event: React.MouseEvent<HTMLImageElement>) => void;
   draggable?: boolean;
+  rootMargin?: string;
+  loadingPlaceholder?: ReactNode;
 }) {
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [shouldLoad, setShouldLoad] = useState(false);
@@ -601,14 +605,16 @@ function LazyCanvasImage({
         setShouldLoad(true);
         observer.disconnect();
       }
-    }, {rootMargin: '500px 500px'});
+    }, {rootMargin: rootMargin || '500px 500px'});
     observer.observe(image);
     return () => observer.disconnect();
-  }, [src]);
+  }, [src, rootMargin]);
 
   return (
     <>
-      {!loaded && !failed && <span className="canvas-image-loading" aria-hidden="true" />}
+      {!loaded && !failed && (
+        loadingPlaceholder || <span className="canvas-image-loading" aria-hidden="true" />
+      )}
       <img
         ref={imageRef}
         className={`${className}${loaded ? ' is-media-loaded' : ' is-media-loading'}${failed ? ' is-media-failed' : ''}`}
@@ -4619,7 +4625,22 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                   onPointerLeave={() => setMentionPreview(null)}
                 >
                   <em className="jim-ref-slot">{i + 1}</em>
-                  {(refKind(r) === 'image' || refKind(r) === 'audio') && refVisualUrl(r) ? <img src={refVisualUrl(r)} alt="" loading="lazy" draggable={false} /> : (
+                  {(refKind(r) === 'image' || refKind(r) === 'audio') && refVisualUrl(r) ? (
+                    <LazyCanvasImage
+                      src={refVisualUrl(r)}
+                      alt=""
+                      className="jim-ref-lazy-image"
+                      rootMargin="120px 120px"
+                      draggable={false}
+                      loadingPlaceholder={(
+                        <span className="jim-ref-image-skeleton" aria-hidden="true">
+                          {refKind(r) === 'audio'
+                            ? <AudioLines size={14} strokeWidth={1.8} />
+                            : <ImageGlyph size={14} strokeWidth={1.7} />}
+                        </span>
+                      )}
+                    />
+                  ) : (
                     // 源节点尚未生成媒体：显示类型图标占位（不显示"资产/角色"文字）
                     <i className="jim-ref-ph" aria-label={refLabel(r)}>
                       {refKind(r) === 'text' ? <Type size={15} strokeWidth={1.7} aria-hidden="true" />

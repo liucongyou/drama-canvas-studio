@@ -6739,6 +6739,38 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
        改成右上角小圆点：可见图标 14px，靠 ::before 撑 22px 命中区（视觉小、好点）。 */
 .jim-ref-thumb{position:relative;overflow:visible}
 .jim-ref-thumb img,.jim-ref-thumb i{border-radius:9px;overflow:hidden}
+.jim-ref-thumb .jim-ref-lazy-image{
+  width:100%;
+  height:100%;
+  display:block;
+  object-fit:cover;
+  opacity:0;
+  transition:opacity 160ms ease;
+}
+.jim-ref-thumb .jim-ref-lazy-image.is-media-loaded{
+  opacity:1;
+}
+.jim-ref-thumb .jim-ref-image-skeleton{
+  position:absolute;
+  inset:0;
+  z-index:0;
+  display:grid;
+  place-items:center;
+  color:var(--v-text-5);
+  background:
+    linear-gradient(105deg, transparent 25%, rgba(255,255,255,.055) 38%, transparent 52%),
+    color-mix(in srgb, var(--v-surface-sunken) 82%, var(--v-surface) 18%);
+  background-size:220% 100%, 100% 100%;
+  border-radius:8px;
+  animation:jim-ref-thumb-shimmer 1.25s ease-in-out infinite;
+}
+.jim-ref-thumb .jim-ref-image-skeleton svg{
+  opacity:.62;
+}
+@keyframes jim-ref-thumb-shimmer{
+  from{background-position:130% 0,0 0}
+  to{background-position:-110% 0,0 0}
+}
 .jim-ref-thumb button{
   top:-5px;right:-5px;
   width:14px;height:14px;

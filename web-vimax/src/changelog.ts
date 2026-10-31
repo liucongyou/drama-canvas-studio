@@ -8,10 +8,21 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.31.13';
+export const APP_VERSION = '2026.10.31.14';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.31.14',
+    date: '2026-10-31',
+    releasedAt: '2026-10-31 23:55:00 +08:00',
+    title: '引用缩略图按可见区域延迟加载',
+    changes: [
+      '节点底部参考图槽改为组件级可见区加载，不再只依赖浏览器原生 loading=lazy。',
+      '加载前显示固定尺寸骨架和类型图标，避免缩略图逐张出现时撑开或抖动布局。',
+      '只有进入预加载范围的引用槽才请求图片，加载完成后淡入；音频角色图沿用同一策略。',
+    ],
+  },
   {
     version: '2026.10.31.13',
     date: '2026-10-31',
