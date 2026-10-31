@@ -1432,10 +1432,13 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
 .canvas-edge-chain .react-flow__edge-path,
 .canvas-edge-user .react-flow__edge-path {
   stroke: var(--v-edge-tone) !important;
+  opacity: .42;
+  transition: opacity 140ms ease, stroke 140ms ease;
 }
 .react-flow__edge:hover .react-flow__edge-path,
 .react-flow__edge.selected .react-flow__edge-path {
   stroke: var(--v-accent) !important;
+  opacity: 1;
 }
 .react-flow__edge:hover .canvas-edge-source-dot,
 .react-flow__edge.selected .canvas-edge-source-dot {
