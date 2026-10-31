@@ -1105,7 +1105,140 @@ type PayloadNode = {
   };
 };
 
-export type ProjectResponse = {id: string; payload: Payload; title?: string};
+export type ProjectResponse = {
+  id: string;
+  payload: Payload;
+  title?: string;
+  revision?: number;
+};
+
+export type WorkspaceIndex = {
+  id: string;
+  title: string;
+  revision: number;
+  updatedAt: string;
+  projectMeta: Record<string, unknown>;
+  episodes: Array<{
+    id: string;
+    title?: string;
+    nodeIds?: string[];
+    videoNodeIds?: string[];
+    connectionIds?: string[];
+    [key: string]: unknown;
+  }>;
+  episodeViewports: Record<string, unknown>;
+};
+
+export type WorkspaceProjectMeta = {
+  id: string;
+  title: string;
+  revision: number;
+  updatedAt: string;
+  projectMeta: Record<string, unknown>;
+  episodes: WorkspaceIndex['episodes'];
+  episodeViewports: Record<string, unknown>;
+};
+
+export type WorkspaceNodes = {
+  episodeId: string;
+  episode: Record<string, unknown>;
+  nodes: PayloadNode[];
+  connections: Array<{id?: string; fromNodeId: string; toNodeId: string; source?: string}>;
+  layouts: Record<string, {x: number; y: number}>;
+};
+
+export async function getWorkspaceIndex(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<WorkspaceIndex> {
+  return request<WorkspaceIndex>(
+    `/api/projects/${encodeURIComponent(sessionId)}/workspace-index`,
+    {signal},
+  ).then(normalizeProjectMediaUrls);
+}
+
+export async function getWorkspaceNodes(
+  sessionId: string,
+  episodeId?: string | null,
+  signal?: AbortSignal,
+): Promise<WorkspaceNodes> {
+  const suffix = episodeId
+    ? `?episodeId=${encodeURIComponent(episodeId)}`
+    : '';
+  return request<WorkspaceNodes>(
+    `/api/projects/${encodeURIComponent(sessionId)}/workspace-nodes${suffix}`,
+    {signal},
+  ).then(normalizeProjectMediaUrls);
+}
+
+function workspaceProjectSnapshot(
+  index: WorkspaceProjectMeta,
+  episodeId: string,
+): ProjectResponse {
+  const projectMeta = index.projectMeta || {};
+  return {
+    id: index.id,
+    title: index.title,
+    revision: index.revision,
+    payload: {
+      ...(projectMeta as Record<string, unknown>),
+      id: index.id,
+      title: index.title,
+      revision: index.revision,
+      updatedAt: index.updatedAt,
+      nodes: [],
+      connections: [],
+      episodeImports: index.episodes,
+      episodeViewports: index.episodeViewports,
+      episodeLayouts: {},
+      extras: (
+        projectMeta.extras
+        && typeof projectMeta.extras === 'object'
+      )
+        ? projectMeta.extras as {notes?: CanvasNote[]}
+        : {},
+    } as Payload,
+  };
+}
+
+export function getWorkspaceShell(
+  index: WorkspaceProjectMeta,
+  episodeId: string,
+): {
+  canvas: Canvas | {empty: true};
+  notes: CanvasNote[];
+  mediaNodes: CanvasMediaNode[];
+  episodeViewports: Record<string, unknown>;
+  activeEpisodeId: string | null;
+  connections: Array<{
+    id?: string;
+    fromNodeId: string;
+    toNodeId: string;
+    source?: string;
+  }>;
+  tasks: GenerationTask[];
+} {
+  const normalizedEpisode = String(episodeId || '').trim().toUpperCase()
+    || null;
+  const pseudoProject = workspaceProjectSnapshot(
+    index,
+    normalizedEpisode || 'EP001',
+  );
+  const canvas = getCanvasSync(
+    index.id,
+    normalizedEpisode,
+    pseudoProject,
+  );
+  return {
+    canvas,
+    notes: pseudoProject.payload.extras?.notes || [],
+    mediaNodes: [],
+    episodeViewports: index.episodeViewports || {},
+    activeEpisodeId: normalizedEpisode,
+    connections: [],
+    tasks: [],
+  };
+}
 
 export async function getProject(pid: string): Promise<ProjectResponse> {
   const project = await request<ProjectResponse>(
@@ -1131,6 +1264,14 @@ export async function getCanvas(
   const proj = projectSnapshot === undefined
     ? await getProject(sessionId).catch(() => null)
     : projectSnapshot;
+  return getCanvasSync(sessionId, epId, proj);
+}
+
+function getCanvasSync(
+  sessionId: string,
+  epId?: string | null,
+  proj?: ProjectResponse | null,
+): Canvas | {empty: true} {
   if (!proj || !proj.payload) return {empty: true};
   const payload = proj.payload;
   const nodes = payload.nodes || [];
@@ -1738,6 +1879,162 @@ export async function getCanvasNotes(
   return proj?.payload?.extras?.notes || [];
 }
 
+async function getProjectionCanvasWorkspace(
+  sessionId: string,
+  epId?: string | null,
+  signal?: AbortSignal,
+): Promise<{
+  canvas: Canvas | {empty: true};
+  notes: CanvasNote[];
+  mediaNodes: CanvasMediaNode[];
+  episodeViewports: Record<string, unknown>;
+  activeEpisodeId: string | null;
+  connections: Array<{
+    id?: string;
+    fromNodeId: string;
+    toNodeId: string;
+    source?: string;
+  }>;
+  tasks: GenerationTask[];
+}> {
+  const index = await getWorkspaceIndex(sessionId, signal);
+  if (!Array.isArray(index.episodes)) {
+    throw withRequestStatus(
+      new Error('workspace index contract unavailable'),
+      501,
+    );
+  }
+  const episodes = index.episodes.length > 0
+    ? index.episodes
+    : [{
+        id: 'EP001',
+        title: index.title || '画布工作流',
+        nodeIds: [],
+        videoNodeIds: [],
+      }];
+  const requestedEpisode = String(epId || '').trim().toUpperCase();
+  const currentEpisode = episodes.some((item) => (
+    String(item.id || '').toUpperCase() === requestedEpisode
+  ))
+    ? requestedEpisode
+    : String(episodes[0]?.id || 'EP001').toUpperCase();
+  const [nodesPayload, tasks] = await Promise.all([
+    getWorkspaceNodes(sessionId, currentEpisode, signal),
+    getGenerationTasks(sessionId, 80, currentEpisode),
+  ]);
+  if (
+    !nodesPayload
+    || !Array.isArray(nodesPayload.nodes)
+    || !Array.isArray(nodesPayload.connections)
+  ) {
+    throw withRequestStatus(
+      new Error('workspace nodes contract unavailable'),
+      501,
+    );
+  }
+  const projectMeta = index.projectMeta || {};
+  const pseudoProject: ProjectResponse = {
+    id: index.id,
+    title: index.title,
+    payload: {
+      ...(projectMeta as Record<string, unknown>),
+      title: index.title,
+      nodes: nodesPayload.nodes,
+      connections: nodesPayload.connections,
+      episodeImports: episodes,
+      episodeViewports: index.episodeViewports,
+      episodeLayouts: {
+        [currentEpisode]: nodesPayload.layouts || {},
+      },
+      extras: (
+        projectMeta.extras
+        && typeof projectMeta.extras === 'object'
+      )
+        ? projectMeta.extras as {notes?: CanvasNote[]}
+        : {},
+    } as Payload,
+  };
+  const canvas = await getCanvas(
+    sessionId,
+    currentEpisode,
+    pseudoProject,
+  );
+  const notes = pseudoProject.payload.extras?.notes || [];
+  const mediaNodes = await getCanvasMediaNodes(
+    sessionId,
+    currentEpisode,
+    pseudoProject,
+  );
+  const activeByNode = new Map(
+    [...latestTaskByNode(tasks).values()]
+      .filter((task) => ['queued', 'submitting', 'running'].includes(task.status))
+      .map((task) => [task.node_id, task]),
+  );
+  const latestByNode = latestTaskByNode(tasks);
+  const currentNodes = mediaNodes.map((node) => {
+    const task = activeByNode.get(node.id);
+    if (node.status === 'done' && node.mediaUrl) return node;
+    if ((node.status as string) === 'error' && !activeByNode.has(node.id)) {
+      return {
+        ...node,
+        status: 'failed' as const,
+        providerTaskStatus: node.providerTaskStatus || 'failed',
+        providerTaskPhase: node.providerTaskPhase || '结果待确认',
+        lastError: node.lastError || '供应商结果待确认，请重新生成或联系供应商核对',
+      };
+    }
+    if (!task) {
+      const terminal = latestByNode.get(node.id);
+      if (
+        node.status === 'generating'
+        && !node.finalizePending
+        && (!terminal || ['failed', 'interrupted', 'succeeded'].includes(terminal.status))
+      ) {
+        return {
+          ...node,
+          status: terminal?.status === 'succeeded' ? 'done' as const : 'failed' as const,
+          lastError: terminal?.status === 'succeeded'
+            ? undefined
+            : String(terminal?.error || node.lastError || '生成任务已结束'),
+          generationFinishedAt: terminal?.finished_at || node.generationFinishedAt,
+          providerTaskStatus: terminal?.status || 'interrupted',
+          providerTaskPhase: terminal?.phase || '任务已结束',
+          providerTaskProgress: terminal?.status === 'succeeded'
+            ? 100
+            : node.providerTaskProgress,
+        };
+      }
+      return node;
+    }
+    return {
+      ...node,
+      status: 'generating' as const,
+      lastError: undefined,
+      generationStartedAt: task.started_at || task.created_at || node.generationStartedAt,
+      generationFinishedAt: undefined,
+      providerTaskStatus: task.status,
+      providerTaskPhase: task.phase || '生成中',
+      providerTaskProgress: Number(task.progress || node.providerTaskProgress || 0),
+      providerTaskProgressChangedAt:
+        task.progress_updated_at
+        || task.started_at
+        || task.created_at
+        || node.providerTaskProgressChangedAt,
+      providerTaskId: String(task.provider_task_id || node.providerTaskId || ''),
+      providerTaskStatusRaw: task.status,
+    };
+  });
+  return {
+    canvas,
+    notes,
+    mediaNodes: currentNodes,
+    episodeViewports: index.episodeViewports || {},
+    activeEpisodeId: currentEpisode,
+    tasks,
+    connections: nodesPayload.connections,
+  };
+}
+
 export async function getCanvasWorkspace(
   sessionId: string,
   epId?: string | null,
@@ -1756,6 +2053,31 @@ export async function getCanvasWorkspace(
   }>;
   tasks: GenerationTask[];
 }> {
+  try {
+    return await getProjectionCanvasWorkspace(
+      sessionId,
+      epId,
+      signal,
+    );
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error;
+    }
+    if (error && typeof error === 'object') {
+      const status = Number(
+        (error as {status?: unknown; statusCode?: unknown}).status
+        ?? (error as {statusCode?: unknown}).statusCode,
+      );
+      // Only fall back when the projection contract is unavailable. A real
+      // auth/server failure must remain visible rather than being masked by a
+      // second full-payload request.
+      if (![404, 405, 501].includes(status)) {
+        throw error;
+      }
+    }
+    // Rollout fallback: older application servers do not expose projection
+    // endpoints yet. Keep the complete payload path available for one release.
+  }
   const project = await request<ProjectResponse>(
     `/api/projects/${encodeURIComponent(sessionId)}`,
     {signal},

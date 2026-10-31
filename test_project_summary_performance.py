@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import os
 import tempfile
 import time
@@ -98,35 +99,65 @@ class ProjectSummaryPerformanceTests(unittest.TestCase):
         self.assertEqual(project["node_count"], 1)
         self.assertEqual(project["episode_count"], 1)
 
-    def test_existing_schema_with_default_zero_counts_is_backfilled_once(self):
-        project_id = canvas_store.create_project(
-            "nullable-counts",
-            {
-                "nodes": [{"id": "node-1"}, {"id": "node-2"}],
-                "connections": [{"id": "edge-1"}],
-                "episodeImports": [{"id": "EP001", "nodeIds": []}],
-            },
-        )
-        connection = canvas_store._connect()
-        connection.execute(
-            "UPDATE canvas_projects SET node_count=0, connection_count=0,"
-            "episode_count=1, failed_count=0, local_blocked_count=0 WHERE id=?",
-            (project_id,),
-        )
-        connection.execute(
-            "DELETE FROM canvas_meta WHERE key LIKE 'project_stats_%'"
-        )
-        connection.commit()
-        connection.close()
-        canvas_store._SCHEMA_READY = False
-        canvas_store._SCHEMA_READY_PATHS.clear()
-        project = next(
-            item for item in canvas_store.list_project_summaries()
-            if item["id"] == project_id
-        )
+    def test_legacy_project_table_is_backfilled_before_stats_marker(self):
+        legacy = tenant_context.make_context("legacy-summary", "legacy-summary")
+        tenant_context.ensure_context_dirs(legacy)
+        with tenant_context.use_context(legacy):
+            connection = canvas_store.sqlite3.connect(canvas_store._db_path())
+            connection.execute(
+                "CREATE TABLE canvas_projects("
+                "id TEXT PRIMARY KEY,user_id TEXT,title TEXT,payload_json TEXT,"
+                "revision INTEGER DEFAULT 1,created_at TEXT,updated_at TEXT)"
+            )
+            connection.execute(
+                "INSERT INTO canvas_projects("
+                "id,user_id,title,payload_json,revision,created_at,updated_at"
+                ") VALUES(?,?,?,?,?,?,?)",
+                (
+                    "legacy-project",
+                    "legacy",
+                    "旧项目",
+                    json.dumps({
+                        "nodes": [
+                            {
+                                "id": "provider-failed",
+                                "metadata": {
+                                    "status": "failed",
+                                    "lastError": "HTTP 502",
+                                },
+                            },
+                            {
+                                "id": "blocked",
+                                "metadata": {
+                                    "status": "failed",
+                                    "lastError": "参考素材缺失",
+                                },
+                            },
+                        ],
+                        "connections": [{"id": "edge-1"}],
+                        "episodeImports": [
+                            {"id": "EP001"},
+                            {"id": "EP002"},
+                        ],
+                    }),
+                    1,
+                    "2026-10-30T00:00:00Z",
+                    "2026-10-30T00:00:00Z",
+                ),
+            )
+            connection.commit()
+            connection.close()
+            canvas_store._SCHEMA_READY = False
+            canvas_store._SCHEMA_READY_PATHS.clear()
+            project = next(
+                item for item in canvas_store.list_project_summaries()
+                if item["id"] == "legacy-project"
+            )
         self.assertEqual(project["node_count"], 2)
         self.assertEqual(project["connection_count"], 1)
-        self.assertEqual(project["episode_count"], 1)
+        self.assertEqual(project["episode_count"], 2)
+        self.assertEqual(project["failed_count"], 1)
+        self.assertEqual(project["local_blocked_count"], 1)
 
     def test_project_stats_migration_records_failed_nodes_without_guessing(self):
         project_id = canvas_store.create_project(

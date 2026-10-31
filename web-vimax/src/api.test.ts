@@ -278,9 +278,35 @@ describe('api request recovery', () => {
 
   it('loads project snapshot and task truth together for the initial canvas', async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
-      const body = String(url).includes('/api/generation-tasks')
+      const target = String(url);
+      const body = target.includes('/api/generation-tasks')
         ? {tasks: []}
-        : {
+        : target.includes('/workspace-index')
+          ? {
+              id: 'project-1',
+              title: '测试项目',
+              revision: 1,
+              updatedAt: '2026-10-28T00:00:00Z',
+              projectMeta: {title: '测试项目', extras: {notes: [{id: 'note-1', text: '备注', x: 0, y: 0, updatedAt: '2026-10-28T00:00:00Z'}]}},
+              episodes: [{id: 'EP001', title: '第01集', nodeIds: ['video-1']}],
+              episodeViewports: {EP001: {x: 12, y: 34, zoom: 0.66}},
+            }
+          : target.includes('/workspace-nodes')
+            ? {
+                episodeId: 'EP001',
+                episode: {id: 'EP001', title: '第01集', nodeIds: ['video-1']},
+                nodes: [{
+                  id: 'video-1',
+                  type: 'video',
+                  title: '段1',
+                  position: {x: 10, y: 20},
+                  metadata: {prompt: '第一段', status: 'idle', params: {ratio: '9:16'}},
+                }],
+                connections: [],
+                layouts: {},
+              }
+            : target.includes('/api/projects/project-1')
+              ? {
             id: 'project-1',
             title: '测试项目',
             payload: {
@@ -306,9 +332,13 @@ describe('api request recovery', () => {
                 videoNodeIds: ['video-1'],
               }],
             },
-          };
+                }
+              : {
+                  error: 'not found',
+                };
+      const status = body && 'error' in body ? 404 : 200;
       return Promise.resolve(new Response(JSON.stringify(body), {
-        status: 200,
+        status,
         headers: {'Content-Type': 'application/json'},
       }));
     });
@@ -316,7 +346,7 @@ describe('api request recovery', () => {
 
     const workspace = await getCanvasWorkspace('project-1', 'EP001');
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(workspace.canvas).not.toHaveProperty('empty');
     expect(workspace.notes).toHaveLength(1);
     expect(workspace.mediaNodes).toMatchObject([{id: 'video-1', x: 10, y: 20}]);
@@ -412,20 +442,44 @@ describe('api request recovery', () => {
   });
 
   it('treats a newly created empty project as an editable canvas', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      id: 'project-empty',
-      title: '空白项目',
-      payload: {
-        title: '空白项目',
-        nodes: [],
-        connections: [],
-        episodeImports: [],
-        extras: {notes: []},
-      },
-    }), {
-      status: 200,
-      headers: {'Content-Type': 'application/json'},
-    })));
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+      const target = String(url);
+      const body = target.includes('/api/generation-tasks')
+        ? {tasks: []}
+        : target.includes('/workspace-index')
+          ? {
+              id: 'project-empty',
+              title: '空白项目',
+              revision: 1,
+              updatedAt: '2026-10-31T00:00:00Z',
+              projectMeta: {title: '空白项目', extras: {notes: []}},
+              episodes: [],
+              episodeViewports: {},
+            }
+          : target.includes('/workspace-nodes')
+            ? {
+                episodeId: 'EP001',
+                episode: {id: 'EP001', title: '空白项目', nodeIds: []},
+                nodes: [],
+                connections: [],
+                layouts: {},
+              }
+            : {
+                id: 'project-empty',
+                title: '空白项目',
+                payload: {
+                  title: '空白项目',
+                  nodes: [],
+                  connections: [],
+                  episodeImports: [],
+                  extras: {notes: []},
+                },
+              };
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    }));
 
     const workspace = await getCanvasWorkspace('project-empty', null);
 
@@ -574,7 +628,8 @@ describe('api request recovery', () => {
 
   it('projects an active task onto the initial media snapshot atomically', async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
-      const body = String(url).includes('/api/generation-tasks')
+      const target = String(url);
+      const body = target.includes('/api/generation-tasks')
         ? {
             tasks: [{
               id: 'task-1',
@@ -587,10 +642,19 @@ describe('api request recovery', () => {
               updated_at: '2026-10-31T01:00:01Z',
             }],
           }
-        : {
+        : target.includes('/workspace-index')
+          ? {
             id: 'project-1',
             title: '测试项目',
-            payload: {
+              revision: 1,
+              updatedAt: '2026-10-31T01:00:00Z',
+              projectMeta: {extras: {notes: []}},
+              episodes: [{id: 'EP001', title: '第01集', nodeIds: ['image-1'], videoNodeIds: []}],
+              episodeViewports: {},
+            }
+          : {
+              episodeId: 'EP001',
+              episode: {id: 'EP001', title: '第01集', nodeIds: ['image-1']},
               nodes: [{
                 id: 'image-1',
                 type: 'image',
@@ -598,10 +662,8 @@ describe('api request recovery', () => {
                 metadata: {status: 'generating'},
               }],
               connections: [],
-              episodeImports: [{id: 'EP001', nodeIds: ['image-1'], videoNodeIds: []}],
-              extras: {notes: []},
-            },
-          };
+              layouts: {},
+            };
       return Promise.resolve(new Response(JSON.stringify(body), {
         status: 200,
         headers: {'Content-Type': 'application/json'},
@@ -614,7 +676,7 @@ describe('api request recovery', () => {
     expect(workspace.mediaNodes).toHaveLength(1);
     expect(workspace.tasks).toHaveLength(1);
     expect(workspace.mediaNodes[0].status).toBe('generating');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('turns a stale generating node into a terminal card in the initial read', async () => {
@@ -702,9 +764,37 @@ describe('api request recovery', () => {
 
   it('does not use another project episode when switching projects', async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
-      const body = String(url).includes('/api/generation-tasks')
+      const target = String(url);
+      const body = target.includes('/api/generation-tasks')
         ? {tasks: []}
-        : {
+        : target.includes('/workspace-index')
+          ? {
+              id: 'project-2',
+              title: '新项目',
+              revision: 1,
+              updatedAt: '2026-10-31T00:00:00Z',
+              projectMeta: {},
+              episodes: [{id: 'EP001', title: '第01集', nodeIds: ['image-new']}],
+              episodeViewports: {},
+            }
+          : target.includes('/workspace-nodes')
+            ? {
+                episodeId: 'EP001',
+                episode: {id: 'EP001', title: '第01集', nodeIds: ['image-new']},
+                nodes: [{
+                  id: 'image-new',
+                  type: 'image',
+                  title: '新项目图片',
+                  metadata: {
+                    status: 'done',
+                    content: '/uploads/new.png',
+                    episodeId: 'EP001',
+                  },
+                }],
+                connections: [],
+                layouts: {},
+              }
+            : {
             id: 'project-2',
             title: '新项目',
             payload: {
@@ -725,7 +815,7 @@ describe('api request recovery', () => {
                 videoNodeIds: [],
               }],
             },
-          };
+              };
       return Promise.resolve(new Response(JSON.stringify(body), {
         status: 200,
         headers: {'Content-Type': 'application/json'},
@@ -737,15 +827,41 @@ describe('api request recovery', () => {
 
     expect(workspace.mediaNodes.map((node) => node.id)).toEqual(['image-new']);
     expect(workspace.canvas).not.toHaveProperty('empty');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(String(fetchMock.mock.calls[1][0])).toContain('episodeId=EP001');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(
+      fetchMock.mock.calls.map((call) => String(call[0])).join(' ')
+    ).toContain('episodeId=EP001');
   });
 
   it('falls back to the first project episode when no episode is selected', async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
-      const body = String(url).includes('/api/generation-tasks')
+      const target = String(url);
+      const body = target.includes('/api/generation-tasks')
         ? {tasks: []}
-        : {
+        : target.includes('/workspace-index')
+          ? {
+              id: 'project-empty',
+              title: '空项目',
+              revision: 1,
+              updatedAt: '2026-10-31T00:00:00Z',
+              projectMeta: {},
+              episodes: [{id: 'EP001', title: '第01集', nodeIds: ['image-1']}],
+              episodeViewports: {},
+            }
+          : target.includes('/workspace-nodes')
+            ? {
+                episodeId: 'EP001',
+                episode: {id: 'EP001', title: '第01集', nodeIds: ['image-1']},
+                nodes: [{
+                  id: 'image-1',
+                  type: 'image',
+                  title: '图片',
+                  metadata: {status: 'done'},
+                }],
+                connections: [],
+                layouts: {},
+              }
+            : {
             id: 'project-empty',
             title: '空项目',
             payload: {
@@ -758,7 +874,7 @@ describe('api request recovery', () => {
               connections: [],
               episodeImports: [{id: 'EP001', nodeIds: ['image-1'], videoNodeIds: []}],
             },
-          };
+              };
       return Promise.resolve(new Response(JSON.stringify(body), {
         status: 200,
         headers: {'Content-Type': 'application/json'},
@@ -769,7 +885,9 @@ describe('api request recovery', () => {
     const workspace = await getCanvasWorkspace('project-empty', '');
 
     expect(workspace.mediaNodes.map((node) => node.id)).toEqual(['image-1']);
-    expect(String(fetchMock.mock.calls[1][0])).toContain('episodeId=EP001');
+    expect(
+      fetchMock.mock.calls.map((call) => String(call[0])).join(' ')
+    ).toContain('episodeId=EP001');
   });
 
   it('uses one media version list for image, audio and video', () => {

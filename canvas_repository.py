@@ -42,6 +42,12 @@ class CanvasRepository:
     def get_project(self, project_id):
         return canvas_store.get_project(project_id)
 
+    def get_workspace_index(self, project_id):
+        return canvas_store.get_project_workspace_index(project_id)
+
+    def get_workspace_nodes(self, project_id, episode_id=None):
+        return canvas_store.get_project_workspace_nodes(project_id, episode_id)
+
     def create_project(self, title, payload=None):
         return canvas_store.create_project(title, payload)
 
@@ -90,24 +96,20 @@ class CanvasRepository:
         if not isinstance(viewport, dict):
             raise ValueError("viewport 必须是对象")
         with project_write_lock(project_id):
-            current = self._require_project(project_id)
-            expected = self._expected_revision(current, if_revision)
-            payload = copy.deepcopy(current["payload"])
             normalized = {
                 "x": float(viewport.get("x") or 0),
                 "y": float(viewport.get("y") or 0),
                 "zoom": float(viewport.get("zoom") or 1),
             }
             ep_id = str(episode_id or "").strip().upper()
-            if ep_id:
-                payload.setdefault("episodeViewports", {})[ep_id] = normalized
-            else:
-                payload["viewport"] = normalized
-            canvas_store.update_project(
+            saved = canvas_store.update_project_viewport(
                 project_id,
-                payload=payload,
-                if_revision=expected,
+                normalized,
+                episode_id=ep_id or None,
+                if_revision=if_revision,
             )
+            if saved is None:
+                raise KeyError("项目不存在")
             return normalized
 
     def upsert_nodes(self, project_id, nodes, *, episode_id=None, if_revision=None):
@@ -175,34 +177,15 @@ class CanvasRepository:
 
     def patch_node(self, project_id, node_id, patch, *, if_revision=None):
         with project_write_lock(project_id):
-            current = self._require_project(project_id)
-            expected = self._expected_revision(current, if_revision)
-            payload = copy.deepcopy(current["payload"])
-            node = next(
-                (
-                    item
-                    for item in payload.get("nodes", [])
-                    if item.get("id") == node_id
-                ),
-                None,
-            )
-            if node is None:
-                raise KeyError("节点不存在")
-            if isinstance(patch.get("metadata"), dict):
-                node["metadata"] = {
-                    **(node.get("metadata") or {}),
-                    **copy.deepcopy(patch["metadata"]),
-                }
-            for key in ("title", "position", "type"):
-                if key in patch:
-                    node[key] = copy.deepcopy(patch[key])
-            node["updatedAt"] = canvas_store._now_iso()
-            canvas_store.update_project(
+            saved = canvas_store.update_project_node(
                 project_id,
-                payload=payload,
-                if_revision=expected,
+                node_id,
+                patch_node=patch,
+                if_revision=if_revision,
             )
-            return copy.deepcopy(node)
+            if saved is None:
+                raise KeyError("节点不存在")
+            return copy.deepcopy(saved["node"])
 
     def delete_nodes(self, project_id, node_ids, *, if_revision=None):
         targets = {str(item) for item in node_ids if item}

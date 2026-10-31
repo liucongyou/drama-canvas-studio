@@ -108,7 +108,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getWorkspaceIndex, getWorkspaceShell, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -7634,6 +7634,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [pidRetry, setPidRetry] = useState(0);
   const workspaceLoadStartedAtRef = useRef(0);
   const [zoomTarget, setZoomTarget] = useState<string | null>(null);
+  const [shellEpisodeId, setShellEpisodeId] = useState<string | null>(null);
   const [trayPreview, setTrayPreview] = useState<({url: string; label: string} & PreviewPlacement) | null>(null);
   const [notes, setNotes] = useState<CanvasNote[]>([]);
   // 画布内提示条：必须自动收起，否则会一直悬在画布顶部挡视线（全书 20+ 处 setToast）
@@ -9280,7 +9281,40 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const workspaceTimeout = window.setTimeout(() => {
       workspaceAbort.abort();
     }, 20_000);
-    getCanvasWorkspace(session, currentEp, workspaceAbort.signal)
+    getWorkspaceIndex(session, workspaceAbort.signal)
+      .then((index) => {
+        if (loadEpoch !== workspaceLoadEpochRef.current) return;
+        const shellStartedAt = performance.now();
+        const requestedEpisode = String(currentEp || '').trim().toUpperCase();
+        const episodes = Array.isArray(index.episodes) ? index.episodes : [];
+        const activeEpisode = episodes.some((episode) => (
+          String(episode.id || '').toUpperCase() === requestedEpisode
+        ))
+          ? requestedEpisode
+          : String(episodes[0]?.id || 'EP001').toUpperCase();
+        const shell = getWorkspaceShell(
+          index as WorkspaceProjectMeta,
+          activeEpisode,
+        );
+        if (!('empty' in shell.canvas)) {
+          activeWorkspaceEpisodeRef.current = activeEpisode;
+          serverEpisodeViewportsRef.current = shell.episodeViewports;
+          setCanvas(shell.canvas);
+          setNotes(shell.notes);
+          setShellEpisodeId(activeEpisode);
+          setDataReady(true);
+          if (typeof performance !== 'undefined') {
+            performance.mark('canvas-shell-painted', {
+              detail: {elapsed: performance.now() - shellStartedAt},
+            });
+          }
+        }
+      })
+      .catch(() => {
+        // The projection contract is optional during rollout. The complete
+        // workspace request below remains the compatibility fallback.
+      });
+    const completedWorkspace = getCanvasWorkspace(session, currentEp, workspaceAbort.signal)
       .then(({
         canvas: data,
         notes: noteList,
@@ -9303,6 +9337,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           .trim()
           .toUpperCase() || null;
         activeWorkspaceEpisodeRef.current = normalizedActiveEpisode;
+        setShellEpisodeId(null);
         serverEpisodeViewportsRef.current = episodeViewports || {};
         taskLoadGenerationRef.current += 1;
         projectConnectionsRef.current = projectConnections;
@@ -9350,6 +9385,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               : err instanceof Error ? err.message : String(err),
           );
           setLoading(false);
+          setShellEpisodeId(null);
           setDataReady(false);
         }
       })
@@ -9357,9 +9393,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         window.clearTimeout(workspaceTimeout);
         if (loadEpoch === workspaceLoadEpochRef.current) {
           setLoading(false);
+          setShellEpisodeId(null);
           workspaceLoadStartedAtRef.current = 0;
         }
       });
+    void completedWorkspace;
     return () => {
       window.clearTimeout(workspaceTimeout);
       workspaceAbort.abort();
@@ -15031,27 +15069,26 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       {toast && <div className="canvas-toast" onClick={() => setToast('')}>{toast}</div>}
 
       {!dataReady ? (
-        <div className="ledger-loading" role="status">
-          <span className="canvas-empty-icon" aria-hidden="true">
-            <FolderOpen size={22} strokeWidth={1.7} />
-          </span>
-          <span>
-            {loadingSlow
-              ? '正在整理画布素材，项目内容较多，请稍候…'
-              : '正在整理画布素材…'}
-          </span>
-          {error && <span className="ledger-loading-hint">{error}</span>}
-          <button
-            type="button"
-            className="ledger-loading-action"
-            onClick={() => {
-              setError('');
-              workspaceLoadEpochRef.current += 1;
-              setPidRetry((value) => value + 1);
-            }}
-          >
-            重新打开项目
-          </button>
+        <div className="canvas-skeleton" role="status" aria-live="polite">
+          <div className="canvas-skeleton-grid" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <div className="canvas-skeleton-status">
+            <span className="canvas-skeleton-pulse" aria-hidden="true" />
+            <span>{loadingSlow ? '项目内容较多，仍在载入当前集…' : '正在载入当前集…'}</span>
+            {error && <button
+              type="button"
+              onClick={() => {
+                setError('');
+                workspaceLoadEpochRef.current += 1;
+                setPidRetry((value) => value + 1);
+              }}
+            >
+              重试
+            </button>}
+          </div>
         </div>
       ) : !canvas ? (
         <div className="ledger-empty-state">
@@ -15112,6 +15149,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               onClose={returnFromOverview}
             />
           )}
+          {shellEpisodeId && mediaNodes.length === 0 && (
+            <div className="canvas-shell-nodes" role="status" aria-live="polite">
+              <span className="canvas-reload-spin" aria-hidden="true" />
+              <span>{fmtEp(shellEpisodeId)} 节点加载中</span>
+            </div>
+          )}
           <div className="canvas-bg-switch" title="画布底纹">
             {([
               ['dots', '点阵'],
@@ -15135,7 +15178,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           {loading && dataReady && (
             <div className="canvas-reload-bar" role="status">
               <span className="canvas-reload-spin" />
-              <span>正在加载{currentEp ? ` ${fmtEp(currentEp)}` : '项目画布'}…（画布内容保留）</span>
+              <span>{shellEpisodeId
+                ? `画布已打开，正在载入 ${fmtEp(shellEpisodeId)} 节点…`
+                : `正在加载${currentEp ? ` ${fmtEp(currentEp)}` : '项目画布'}…（画布内容保留）`}</span>
             </div>
           )}
           <aside className={`canvas-ep-list ${epListOpen ? 'is-open' : ''}`} aria-hidden={!epListOpen}>

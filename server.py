@@ -4603,6 +4603,23 @@ class Handler(BaseHTTPRequestHandler):
                 project["latest_task_phase"] = activity.get("latest_task_phase") or ""
                 project["latest_task_error_kind"] = activity.get("latest_task_error_kind") or ""
             return self._send(200, {"projects": projects})
+        m = re.match(r"^/api/projects/([^/]+)/workspace-index$", path)
+        if m:
+            project_id = unquote(m.group(1))
+            workspace = store.get_project_workspace_index(project_id)
+            if not workspace:
+                return self._send(404, {"error": "项目不存在"})
+            return self._send(200, workspace)
+        m = re.match(r"^/api/projects/([^/]+)/workspace-nodes$", path)
+        if m:
+            project_id = unquote(m.group(1))
+            query = urllib.parse.parse_qs(parsed.query)
+            episode_id = str((query.get("episodeId") or [""])[0]).strip().upper()
+            workspace = store.get_project_workspace_nodes(
+                project_id,
+                episode_id,
+            )
+            return self._send(200, workspace)
         if path == "/api/storage":
             return self._send(200, {"storage": provider_catalog.public_storage_config()})
         if path == "/api/generation-tasks":
@@ -5770,6 +5787,9 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/projects/([^/]+)/viewport$", path)
         if m:
             pid = unquote(m.group(1))
+            proj = store.get_project(pid)
+            if not proj:
+                return self._send(404, {"error": "项目不存在"})
             incoming = body.get("viewport")
             if not isinstance(incoming, dict):
                 return self._send(400, {"error": "viewport 字段缺失或不是对象"})
@@ -5792,6 +5812,7 @@ class Handler(BaseHTTPRequestHandler):
                     pid,
                     viewport,
                     episode_id=normalized_episode or None,
+                    if_revision=proj["revision"],
                 )
             except KeyError:
                 return self._send(404, {"error": "项目不存在"})
@@ -5807,78 +5828,121 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/projects/([^/]+)/nodes/positions$", path)
         if m:
             pid = unquote(m.group(1))
-            proj = store.get_project(pid)
-            if not proj:
-                return self._send(404, {"error": "项目不存在"})
             incoming = body.get("positions")
             if not isinstance(incoming, list):
                 return self._send(400, {"error": "positions 字段缺失或不是数组"})
             write_owner = str(body.get("writeOwner") or "").strip()[:120]
-            by_id = {node.get("id"): node for node in proj["payload"].get("nodes", [])}
             episode_id = str(body.get("episodeId") or "").upper()
-            episode_layout = (
-                proj["payload"].setdefault("episodeLayouts", {}).setdefault(episode_id, {})
-                if episode_id
-                else None
-            )
             updates = []
             unchanged_ids = []
             missing_ids = []
-            for item in incoming:
-                if not isinstance(item, dict) or not item.get("id"):
-                    continue
-                position = item.get("position")
-                node = by_id.get(item["id"])
-                if node is None or not isinstance(position, dict):
-                    if node is None:
-                        missing_ids.append(item["id"])
-                    continue
-                position = {
-                    "x": float(position.get("x") or 0),
-                    "y": float(position.get("y") or 0),
+            saved = None
+            for attempt in range(4):
+                updates = []
+                unchanged_ids = []
+                missing_ids = []
+                proj = store.get_project(pid)
+                if not proj:
+                    return self._send(404, {"error": "项目不存在"})
+                by_id = {
+                    node.get("id"): node
+                    for node in proj["payload"].get("nodes", [])
                 }
-                try:
-                    write_seq = int(item.get("seq") or 0)
-                except (TypeError, ValueError):
-                    write_seq = 0
-                if (
-                    write_owner
-                    and write_seq
-                    and node.get("positionWriteOwner") == write_owner
-                    and int(node.get("positionWriteSeq") or 0) > write_seq
-                ):
-                    unchanged_ids.append(item["id"])
-                    continue
-                current_position = (
-                    episode_layout.get(item["id"])
-                    if episode_layout is not None
-                    else node.get("position")
+                episode_layouts = proj["payload"].get("episodeLayouts")
+                if not isinstance(episode_layouts, dict):
+                    episode_layouts = {}
+                    proj["payload"]["episodeLayouts"] = episode_layouts
+                episode_layout = (
+                    episode_layouts.setdefault(episode_id, {})
+                    if episode_id
+                    else None
                 )
-                if (
-                    isinstance(current_position, dict)
-                    and current_position.get("x") == position["x"]
-                    and current_position.get("y") == position["y"]
-                ):
-                    unchanged_ids.append(item["id"])
+                if episode_id and not isinstance(episode_layout, dict):
+                    episode_layout = {}
+                    episode_layouts[episode_id] = episode_layout
+                for item in incoming:
+                    if not isinstance(item, dict) or not item.get("id"):
+                        continue
+                    position = item.get("position")
+                    node = by_id.get(item["id"])
+                    if node is None or not isinstance(position, dict):
+                        if node is None:
+                            missing_ids.append(item["id"])
+                        continue
+                    try:
+                        position = {
+                            "x": float(position.get("x") or 0),
+                            "y": float(position.get("y") or 0),
+                        }
+                        write_seq = int(item.get("seq") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if (
+                        write_owner
+                        and write_seq
+                        and node.get("positionWriteOwner") == write_owner
+                        and int(node.get("positionWriteSeq") or 0) > write_seq
+                    ):
+                        unchanged_ids.append(item["id"])
+                        continue
+                    current_position = (
+                        episode_layout.get(item["id"])
+                        if isinstance(episode_layout, dict)
+                        else node.get("position")
+                    )
+                    if (
+                        isinstance(current_position, dict)
+                        and current_position.get("x") == position["x"]
+                        and current_position.get("y") == position["y"]
+                    ):
+                        unchanged_ids.append(item["id"])
+                        continue
+                    position_updated_at = store._now_iso()
+                    if episode_layout is not None:
+                        episode_layout[item["id"]] = position
+                    else:
+                        node["position"] = position
+                    if write_owner:
+                        node["positionWriteOwner"] = write_owner
+                        node["positionWriteSeq"] = write_seq
+                    node["positionUpdatedAt"] = position_updated_at
+                    node["updatedAt"] = position_updated_at
+                    updates.append({
+                        "nodeId": item["id"],
+                        "position": position,
+                        "positionUpdatedAt": position_updated_at,
+                        "updatedAt": position_updated_at,
+                    })
+                if not updates:
+                    break
+                try:
+                    if episode_id:
+                        saved = store.update_project_layout(
+                            pid,
+                            episode_id,
+                            episode_layout or {},
+                            if_revision=proj["revision"],
+                        )
+                    else:
+                        saved = store.update_project_rows(
+                            pid,
+                            nodes=proj["payload"].get("nodes") or [],
+                            if_revision=proj["revision"],
+                        )
+                    if saved:
+                        break
+                except store.RevisionConflictError:
+                    if attempt == 3:
+                        return self._send(409, {
+                            "error": "画布位置保存冲突，请重试",
+                            "code": "POSITION_REVISION_CONFLICT",
+                        })
                     continue
-                position_updated_at = store._now_iso()
-                if episode_layout is not None:
-                    episode_layout[item["id"]] = position
-                else:
-                    node["position"] = position
-                if write_owner:
-                    node["positionWriteOwner"] = write_owner
-                    node["positionWriteSeq"] = write_seq
-                node["positionUpdatedAt"] = position_updated_at
-                node["updatedAt"] = position_updated_at
-                updates.append({
-                    "nodeId": item["id"],
-                    "position": position,
-                    "positionUpdatedAt": position_updated_at,
-                    "updatedAt": position_updated_at,
+            if updates and not saved:
+                return self._send(409, {
+                    "error": "画布位置保存冲突，请重试",
+                    "code": "POSITION_REVISION_CONFLICT",
                 })
-            if updates:
-                store.update_project(pid, payload=proj["payload"])
             return self._send(200, {
                 "ok": True,
                 "updated": len(updates),
@@ -5892,97 +5956,172 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/projects/([^/]+)/nodes$", path)
         if m:
             pid = unquote(m.group(1))
-            proj = store.get_project(pid)
-            if not proj:
-                return self._send(404, {"error": "项目不存在"})
             incoming = body.get("nodes")
             if not isinstance(incoming, list):
                 return self._send(400, {"error": "nodes 字段缺失或不是数组"})
-            payload = proj["payload"]
-            nodes_list = payload.setdefault("nodes", [])
-            by_id = {n.get("id"): n for n in nodes_list}
             active_task_nodes = {
                 task.get("node_id")
                 for task in store.list_generation_tasks(pid, 300)
                 if task.get("status") in {"queued", "submitting", "running"}
             }
             conflicts = []
-            for item in incoming:
-                if not isinstance(item, dict) or not item.get("id"):
-                    continue
-                current = by_id.get(item["id"])
-                if current and _node_save_conflict(
-                    item,
-                    current,
-                    include_position=False,
-                ):
-                    conflicts.append({
-                        "nodeId": item["id"],
-                        "title": current.get("title") or item.get("title") or item["id"],
-                        "serverUpdatedAt": current.get("updatedAt"),
-                        "clientUpdatedAt": item.get("baseUpdatedAt"),
-                    })
-            if conflicts:
-                names = "、".join(item["title"] for item in conflicts[:5])
-                suffix = "…" if len(conflicts) > 5 else ""
-                return self._send(409, {
-                    "error": f"另一个标签页已更新此节点，已拒绝覆盖：{names}{suffix}。请刷新后再编辑。",
-                    "code": "NODE_EDIT_CONFLICT",
-                    "conflicts": conflicts,
-                })
-            created = 0
             save_updates = []
-            for item in incoming:
-                if not isinstance(item, dict):
-                    continue
-                nid = item.get("id")
-                if not nid:
-                    continue
-                node = by_id.get(nid)
-                if node is None:
-                    created_at = store._now_iso()
-                    node = {
-                        "id": nid,
-                        "type": item.get("type") if item.get("type") in ("text", "image", "audio", "video") else "text",
-                        "title": item.get("title") or "未命名节点",
-                        "position": item.get("position") if isinstance(item.get("position"), dict) else {"x": 0, "y": 0},
-                        "metadata": dict(item.get("metadata") or {}),
-                        "createdAt": created_at,
-                        "positionUpdatedAt": created_at,
-                        "updatedAt": created_at,
-                    }
-                    nodes_list.append(node)
-                    by_id[nid] = node
-                    created += 1
-                else:
-                    if isinstance(item.get("metadata"), dict):
-                        meta = node.setdefault("metadata", {})
-                        merge_node_metadata(
-                            meta,
-                            item["metadata"],
-                            generation_active=nid in active_task_nodes,
-                        )
-                    if "title" in item:
-                        node["title"] = item["title"]
-                    if item.get("type") in ("text", "image", "audio", "video"):
-                        node["type"] = item["type"]
-                    node["updatedAt"] = store._now_iso()
-                save_updates.append({
-                    "id": nid,
-                    "updatedAt": node.get("updatedAt"),
-                    "positionUpdatedAt": node.get("positionUpdatedAt"),
-                })
             episode_id = str(body.get("episodeId") or "").strip().upper()
-            if episode_id:
-                import_feed.attach_nodes_to_episode(
-                    payload,
-                    episode_id,
-                    [item.get("id") for item in incoming if isinstance(item, dict)],
-                )
-            store.update_project(pid, payload=payload)
+            created = 0
+            persisted_node_count = 0
+            current_revision = 0
+            existing_created_items: list[dict] = []
+            existing_updated_items: list[dict] = []
+            for attempt in range(4):
+                proj = store.get_project(pid)
+                if not proj:
+                    return self._send(404, {"error": "项目不存在"})
+                current_revision = int(proj["revision"])
+                nodes_list = proj["payload"].setdefault("nodes", [])
+                project_node_ids = {
+                    str(node.get("id"))
+                    for node in nodes_list
+                    if isinstance(node, dict) and node.get("id")
+                }
+                by_id = {
+                    node.get("id"): node
+                    for node in nodes_list
+                    if isinstance(node, dict) and node.get("id")
+                }
+                conflicts = []
+                for item in incoming:
+                    if not isinstance(item, dict) or not item.get("id"):
+                        continue
+                    current = by_id.get(item["id"])
+                    if current and _node_save_conflict(
+                        item,
+                        current,
+                        include_position=False,
+                    ):
+                        conflicts.append({
+                            "nodeId": item["id"],
+                            "title": current.get("title") or item.get("title") or item["id"],
+                            "serverUpdatedAt": current.get("updatedAt"),
+                            "clientUpdatedAt": item.get("baseUpdatedAt"),
+                        })
+                if conflicts:
+                    names = "、".join(item["title"] for item in conflicts[:5])
+                    suffix = "…" if len(conflicts) > 5 else ""
+                    return self._send(409, {
+                        "error": f"另一个标签页已更新此节点，已拒绝覆盖：{names}{suffix}。请刷新后再编辑。",
+                        "code": "NODE_EDIT_CONFLICT",
+                        "conflicts": conflicts,
+                    })
+                created_items = []
+                save_updates = []
+                try:
+                    for item in incoming:
+                        if not isinstance(item, dict) or not item.get("id"):
+                            continue
+                        nid = item.get("id")
+                        node = by_id.get(nid)
+                        if node is None:
+                            created_at = store._now_iso()
+                            node = {
+                                "id": nid,
+                                "type": item.get("type") if item.get("type") in ("text", "image", "audio", "video") else "text",
+                                "title": item.get("title") or "未命名节点",
+                                "position": item.get("position") if isinstance(item.get("position"), dict) else {"x": 0, "y": 0},
+                                "metadata": dict(item.get("metadata") or {}),
+                                "createdAt": created_at,
+                                "positionUpdatedAt": created_at,
+                                "updatedAt": created_at,
+                            }
+                            if not any(
+                                existing.get("id") == nid
+                                for existing in created_items
+                            ):
+                                created_items.append(node)
+                            continue
+                        if isinstance(item.get("metadata"), dict):
+                            meta = node.setdefault("metadata", {})
+                            merge_node_metadata(
+                                meta,
+                                item["metadata"],
+                                generation_active=nid in active_task_nodes,
+                            )
+                        if "title" in item:
+                            node["title"] = item["title"]
+                        if item.get("type") in ("text", "image", "audio", "video"):
+                            node["type"] = item["type"]
+                        node["updatedAt"] = store._now_iso()
+                        save_updates.append({
+                            "id": nid,
+                            "updatedAt": node.get("updatedAt"),
+                            "positionUpdatedAt": node.get("positionUpdatedAt"),
+                            "node": node,
+                        })
+                except Exception:
+                    raise
+                if not created_items and not save_updates:
+                    break
+                try:
+                    if created_items:
+                        created_items = [
+                            item
+                            for item in created_items
+                            if str(item.get("id")) not in by_id
+                        ]
+                    if save_updates:
+                        save_updates = [
+                            update
+                            for update in save_updates
+                            if str(update.get("id")) in project_node_ids
+                        ]
+                    if created_items:
+                        saved = store.insert_project_nodes(
+                            pid,
+                            created_items,
+                            episode_id=episode_id,
+                            if_revision=current_revision,
+                        )
+                        created += int(saved.get("created") or 0)
+                        current_revision = int(
+                            saved.get("revision") or current_revision
+                        )
+                        persisted_node_count += int(saved.get("created") or 0)
+                        existing_created_items.extend(saved.get("nodes") or [])
+                        project_node_ids.update(
+                            str(item.get("id"))
+                            for item in (saved.get("nodes") or [])
+                            if item.get("id")
+                        )
+                    if save_updates:
+                        remaining = [
+                            update["node"]
+                            for update in save_updates
+                        ]
+                        store.update_project_nodes(
+                            pid,
+                            remaining,
+                            episode_id=episode_id,
+                            if_revision=current_revision,
+                        )
+                        persisted_node_count += len(remaining)
+                        existing_updated_items.extend(remaining)
+                    break
+                except store.RevisionConflictError:
+                    if attempt == 3:
+                        return self._send(409, {
+                            "error": "项目正在被其他操作更新，请重新保存",
+                            "code": "NODE_REVISION_CONFLICT",
+                        })
+            save_updates = [
+                {
+                    "id": update["id"],
+                    "updatedAt": update["updatedAt"],
+                    "positionUpdatedAt": update["positionUpdatedAt"],
+                }
+                for update in save_updates
+            ]
             return self._send(200, {
                 "ok": True,
-                "nodes": len(nodes_list),
+                "nodes": persisted_node_count,
                 "created": created,
                 "updates": save_updates,
             })

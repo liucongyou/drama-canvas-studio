@@ -180,3 +180,30 @@ toy project.
 
 Any target that only improves perceived loading while leaving full-document hot
 writes is not an acceptable result.
+
+## 2026-10-31 Implementation Status
+
+Correctness work landed:
+
+- isolated projection tables (`canvas_projection_*`) with legacy payload retained
+  as a rollback copy
+- two-stage reads (`workspace-index`, then episode-scoped `workspace-nodes`)
+- progressive canvas shell while the current episode loads
+- row-level paths for project viewport, node insert, node edit, and node layout
+- provider terminal commits still use a single transaction; no automatic
+  resubmission was added
+- real owner DB copy comparison passed for all three projects:
+  node ids, edge ids, episode viewports, and episode layouts are identical
+
+Measured performance is not yet accepted:
+
+- 12 concurrent writes, 60 node insert requests
+- all requests returned `200`, with zero missing nodes
+- observed P95 varied from roughly `0.87s` to `2.5s` across repeated runs
+- the `500ms` Phase 2 gate is still unmet
+
+The remaining bottleneck is SQLite's single writer plus revision/stat updates
+inside the same hot-write transaction. Do not describe the write-layer migration
+as complete until repeated runs consistently meet the gate. Moving to an
+independent write queue, or splitting revision/stat updates out of the interactive
+transaction with a durable outbox, is the next engineering step.

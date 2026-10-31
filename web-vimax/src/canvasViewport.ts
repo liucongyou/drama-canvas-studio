@@ -104,6 +104,18 @@ export function episodeIdFromWorkspace(
   return null;
 }
 
+export function chooseActiveEpisodeViewport(
+  serverViewports: Record<string, unknown>,
+  currentEpisode: string | null,
+  projectId: string,
+  localViewport: CanvasViewport | null,
+): CanvasViewport | null {
+  return (
+    selectEpisodeViewport(serverViewports, currentEpisode, projectId)
+    || validRestoredViewport(localViewport)
+  );
+}
+
 type ViewportNodeLike = {
   kind: string;
   x: number;

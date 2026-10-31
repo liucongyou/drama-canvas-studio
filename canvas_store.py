@@ -96,6 +96,78 @@ def _connect():
             )"""
             )
             con.execute(
+            """CREATE TABLE IF NOT EXISTS canvas_project_meta(
+                project_id TEXT PRIMARY KEY,
+                meta_json TEXT DEFAULT '{}',
+                updated_at TEXT DEFAULT ''
+            )"""
+            )
+            con.execute(
+            """CREATE TABLE IF NOT EXISTS canvas_projection_nodes(
+                project_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                episode_id TEXT DEFAULT '',
+                node_type TEXT NOT NULL,
+                title TEXT DEFAULT '',
+                position_x REAL DEFAULT 0,
+                position_y REAL DEFAULT 0,
+                position_updated_at TEXT DEFAULT '',
+                metadata_json TEXT DEFAULT '{}',
+                node_json TEXT DEFAULT '{}',
+                updated_at TEXT DEFAULT '',
+                PRIMARY KEY(project_id, node_id)
+            )"""
+            )
+            con.execute("DROP INDEX IF EXISTS idx_canvas_nodes_episode")
+            con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_projection_nodes_episode "
+            "ON canvas_projection_nodes(project_id, episode_id, node_id)"
+            )
+            con.execute(
+            """CREATE TABLE IF NOT EXISTS canvas_projection_edges(
+                project_id TEXT NOT NULL,
+                edge_id TEXT NOT NULL,
+                from_node_id TEXT NOT NULL,
+                to_node_id TEXT NOT NULL,
+                source TEXT DEFAULT '',
+                edge_json TEXT DEFAULT '{}',
+                updated_at TEXT DEFAULT '',
+                PRIMARY KEY(project_id, edge_id)
+            )"""
+            )
+            con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_projection_edges_project "
+            "ON canvas_projection_edges(project_id, edge_id)"
+            )
+            con.execute(
+            """CREATE TABLE IF NOT EXISTS canvas_projection_episodes(
+                project_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
+                title TEXT DEFAULT '',
+                group_json TEXT DEFAULT '{}',
+                node_ids_json TEXT DEFAULT '[]',
+                video_node_ids_json TEXT DEFAULT '[]',
+                connection_ids_json TEXT DEFAULT '[]',
+                viewport_json TEXT DEFAULT '',
+                layout_json TEXT DEFAULT '{}',
+                updated_at TEXT DEFAULT '',
+                PRIMARY KEY(project_id, episode_id)
+            )"""
+            )
+            con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_projection_episodes_project "
+            "ON canvas_projection_episodes(project_id, episode_id)"
+            )
+            episode_state_columns = {
+                row[1]
+                for row in con.execute("PRAGMA table_info(canvas_projection_episodes)")
+            }
+            if "group_json" not in episode_state_columns:
+                con.execute(
+                    "ALTER TABLE canvas_projection_episodes "
+                    "ADD COLUMN group_json TEXT DEFAULT '{}'"
+                )
+            con.execute(
             """CREATE TABLE IF NOT EXISTS canvas_snapshots(
                 id TEXT PRIMARY KEY,
                 canvas_id TEXT,
@@ -158,6 +230,14 @@ def _connect():
             "ON generation_tasks(project_id, node_id) "
             "WHERE status IN ('queued','submitting','running')"
             )
+            task_columns = {
+                row[1] for row in con.execute("PRAGMA table_info(generation_tasks)")
+            }
+            if "episode_id" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN episode_id TEXT DEFAULT ''"
+                )
+                task_columns.add("episode_id")
             con.execute(
             """CREATE TABLE IF NOT EXISTS audit_events(
                 id TEXT PRIMARY KEY,
@@ -191,16 +271,9 @@ def _connect():
             "CREATE INDEX IF NOT EXISTS idx_canvas_events_project "
             "ON canvas_events(project_id, id)"
             )
-            task_columns = {
-                row[1] for row in con.execute("PRAGMA table_info(generation_tasks)")
-            }
             if "attempt" not in task_columns:
                 con.execute(
                     "ALTER TABLE generation_tasks ADD COLUMN attempt INTEGER DEFAULT 1"
-                )
-            if "episode_id" not in task_columns:
-                con.execute(
-                    "ALTER TABLE generation_tasks ADD COLUMN episode_id TEXT DEFAULT ''"
                 )
             con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_generation_tasks_episode "
@@ -299,7 +372,7 @@ def _connect():
                         f"ALTER TABLE canvas_projects ADD COLUMN {column} "
                         f"INTEGER DEFAULT {default}"
                     )
-            stats_version = "project_stats_v3"
+            stats_version = "project_stats_v4"
             stats_migrated = con.execute(
                 "SELECT 1 FROM canvas_meta WHERE key=?",
                 (stats_version,),
@@ -327,6 +400,31 @@ def _connect():
                     "INSERT INTO canvas_meta(key,value) VALUES(?,?) "
                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     (stats_version, "1"),
+                )
+            projection_version = "canvas_projection_v1"
+            projection_migrated = con.execute(
+                "SELECT 1 FROM canvas_meta WHERE key=?",
+                (projection_version,),
+            ).fetchone()
+            if not projection_migrated:
+                rows = con.execute(
+                    "SELECT id,payload_json FROM canvas_projects"
+                ).fetchall()
+                for project_id, raw_payload in rows:
+                    try:
+                        payload = json.loads(raw_payload or "{}")
+                    except (TypeError, ValueError):
+                        payload = {}
+                    sync_payload_projection(
+                        con,
+                        project_id,
+                        payload,
+                        updated_at=_now_iso(),
+                    )
+                con.execute(
+                    "INSERT INTO canvas_meta(key,value) VALUES(?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (projection_version, "1"),
                 )
             con.commit()
             _SCHEMA_READY_PATHS.add(path)
@@ -367,6 +465,1371 @@ def payload_stats(payload):
         failed_count,
         local_blocked_count,
     )
+
+
+def sync_payload_projection(
+    con,
+    project_id,
+    payload,
+    *,
+    updated_at="",
+):
+    """Keep relational read models aligned with the legacy payload copy."""
+    if not isinstance(payload, dict):
+        return
+    stamp = str(updated_at or _now_iso())
+    nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
+    edges = (
+        payload.get("connections")
+        if isinstance(payload.get("connections"), list)
+        else []
+    )
+    episode_groups = (
+        payload.get("episodeImports")
+        if isinstance(payload.get("episodeImports"), list)
+        else []
+    )
+    sync_projection_meta(
+        con,
+        project_id,
+        payload,
+        updated_at=stamp,
+    )
+    owner_by_node = {}
+    for group in episode_groups:
+        if not isinstance(group, dict):
+            continue
+        episode_id = str(group.get("id") or "").strip().upper()
+        for node_id in group.get("nodeIds") or []:
+            node_id = str(node_id or "")
+            if node_id and node_id not in owner_by_node:
+                owner_by_node[node_id] = episode_id
+    for node in nodes:
+        if not isinstance(node, dict) or not node.get("id"):
+            continue
+        node_id = str(node["id"])
+        metadata = node.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        sync_projection_node(
+            con,
+            project_id,
+            node,
+            episode_id=str(
+                node.get("episodeId")
+                or metadata.get("episodeId")
+                or owner_by_node.get(node_id)
+                or ""
+            ).upper(),
+            updated_at=stamp,
+        )
+    node_ids = {
+        str(node.get("id"))
+        for node in nodes
+        if isinstance(node, dict) and node.get("id")
+    }
+    edge_ids = {
+        str(edge.get("id"))
+        for edge in edges
+        if isinstance(edge, dict) and edge.get("id")
+    }
+    if node_ids:
+        placeholders = ",".join("?" for _ in node_ids)
+        con.execute(
+            f"DELETE FROM canvas_projection_nodes WHERE project_id=? "
+            f"AND node_id NOT IN ({placeholders})",
+            (project_id, *sorted(node_ids)),
+        )
+    else:
+        con.execute("DELETE FROM canvas_projection_nodes WHERE project_id=?", (project_id,))
+    existing_edges = {
+        str(row[0])
+        for row in con.execute(
+            "SELECT edge_id FROM canvas_projection_edges WHERE project_id=?",
+            (project_id,),
+        )
+    }
+    current_edges = {str(edge.get("id")) for edge in edges if isinstance(edge, dict) and edge.get("id")}
+    if existing_edges != current_edges:
+        for edge in edges:
+            sync_projection_edge(con, project_id, edge, updated_at=stamp)
+    for edge in edges:
+        sync_projection_edge(con, project_id, edge, updated_at=stamp)
+    if edge_ids:
+        placeholders = ",".join("?" for _ in edge_ids)
+        con.execute(
+            f"DELETE FROM canvas_projection_edges WHERE project_id=? "
+            f"AND edge_id NOT IN ({placeholders})",
+            (project_id, *sorted(edge_ids)),
+        )
+    else:
+        con.execute("DELETE FROM canvas_projection_edges WHERE project_id=?", (project_id,))
+    viewports = (
+        payload.get("episodeViewports")
+        if isinstance(payload.get("episodeViewports"), dict)
+        else {}
+    )
+    layouts = (
+        payload.get("episodeLayouts")
+        if isinstance(payload.get("episodeLayouts"), dict)
+        else {}
+    )
+    episode_ids = set()
+    for group in episode_groups:
+        if not isinstance(group, dict):
+            continue
+        episode_id = str(group.get("id") or "").strip().upper()
+        if not episode_id:
+            continue
+        episode_ids.add(episode_id)
+        sync_projection_episode(
+            con,
+            project_id,
+            episode_id,
+            group,
+            viewport_json=(
+                json.dumps(viewports.get(episode_id), ensure_ascii=False)
+                if episode_id in viewports
+                else ""
+            ),
+            layout_json=json.dumps(
+                layouts.get(episode_id) or {},
+                ensure_ascii=False,
+            ),
+            updated_at=stamp,
+        )
+    if episode_ids:
+        placeholders = ",".join("?" for _ in episode_ids)
+        con.execute(
+            f"DELETE FROM canvas_projection_episodes WHERE project_id=? "
+            f"AND episode_id NOT IN ({placeholders})",
+            (project_id, *sorted(episode_ids)),
+        )
+    else:
+        con.execute(
+            "DELETE FROM canvas_projection_episodes WHERE project_id=?",
+            (project_id,),
+        )
+
+
+def _projection_node_values(project_id, node, *, episode_id="", stamp=""):
+    metadata = node.get("metadata")
+    position = node.get("position")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if not isinstance(position, dict):
+        position = {}
+    return (
+        project_id,
+        str(node.get("id") or ""),
+        str(
+            node.get("episodeId")
+            or metadata.get("episodeId")
+            or episode_id
+            or ""
+        ).upper(),
+        str(node.get("type") or "text"),
+        str(node.get("title") or ""),
+        float(position.get("x") or 0),
+        float(position.get("y") or 0),
+        str(node.get("positionUpdatedAt") or ""),
+        json.dumps(metadata, ensure_ascii=False),
+        json.dumps(node, ensure_ascii=False),
+        str(node.get("updatedAt") or stamp),
+    )
+
+
+def sync_projection_node(
+    con,
+    project_id,
+    node,
+    *,
+    episode_id="",
+    updated_at="",
+):
+    """Update one node projection row without scanning the graph."""
+    if not isinstance(node, dict) or not node.get("id"):
+        return
+    stamp = str(updated_at or _now_iso())
+    con.execute(
+        "INSERT INTO canvas_projection_nodes("
+        "project_id,node_id,episode_id,node_type,title,position_x,position_y,"
+        "position_updated_at,metadata_json,node_json,updated_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(project_id,node_id) DO UPDATE SET "
+        "episode_id=excluded.episode_id,node_type=excluded.node_type,"
+        "title=excluded.title,position_x=excluded.position_x,"
+        "position_y=excluded.position_y,"
+        "position_updated_at=excluded.position_updated_at,"
+        "metadata_json=excluded.metadata_json,node_json=excluded.node_json,"
+        "updated_at=excluded.updated_at",
+        _projection_node_values(
+            project_id,
+            node,
+            episode_id=episode_id,
+            stamp=stamp,
+        ),
+    )
+
+
+def refresh_project_projection_stats(con, project_id, *, updated_at=""):
+    node_count = int(con.execute(
+        "SELECT COUNT(*) FROM canvas_projection_nodes WHERE project_id=?",
+        (project_id,),
+    ).fetchone()[0] or 0)
+    connection_count = int(con.execute(
+        "SELECT COUNT(*) FROM canvas_projection_edges WHERE project_id=?",
+        (project_id,),
+    ).fetchone()[0] or 0)
+    episode_count = int(con.execute(
+        "SELECT COUNT(*) FROM canvas_projection_episodes WHERE project_id=?",
+        (project_id,),
+    ).fetchone()[0] or 1)
+    failed_count = int(con.execute(
+        "SELECT COUNT(*) FROM canvas_projection_nodes "
+        "WHERE project_id=? AND metadata_json LIKE '%\"status\"%failed%' "
+        "AND metadata_json NOT LIKE '%参考素材缺失%' "
+        "AND metadata_json NOT LIKE '%引用节点不存在%' "
+        "AND metadata_json NOT LIKE '%提示词为空%' "
+        "AND metadata_json NOT LIKE '%音色节点尚未生成%' "
+        "AND metadata_json NOT LIKE '%源节点尚未生成%' "
+        "AND metadata_json NOT LIKE '%原始产物转存到 TOS%' "
+        "AND metadata_json NOT LIKE '%信任窗口只有%'",
+        (project_id,),
+    ).fetchone()[0] or 0)
+    local_blocked_count = int(con.execute(
+        "SELECT COUNT(*) FROM canvas_projection_nodes "
+        "WHERE project_id=? AND metadata_json LIKE '%\"status\"%failed%' "
+        "AND (metadata_json LIKE '%参考素材缺失%' "
+        "OR metadata_json LIKE '%引用节点不存在%' "
+        "OR metadata_json LIKE '%提示词为空%' "
+        "OR metadata_json LIKE '%音色节点尚未生成%' "
+        "OR metadata_json LIKE '%源节点尚未生成%' "
+        "OR metadata_json LIKE '%原始产物转存到 TOS%' "
+        "OR metadata_json LIKE '%信任窗口只有%')",
+        (project_id,),
+    ).fetchone()[0] or 0)
+    con.execute(
+        "UPDATE canvas_projects SET node_count=?,connection_count=?,"
+        "episode_count=?,failed_count=?,local_blocked_count=? WHERE id=?",
+        (
+            node_count,
+            connection_count,
+            max(1, episode_count),
+            failed_count,
+            local_blocked_count,
+            project_id,
+        ),
+    )
+    return {
+        "node_count": node_count,
+        "connection_count": connection_count,
+        "episode_count": max(1, episode_count),
+        "failed_count": failed_count,
+        "local_blocked_count": local_blocked_count,
+    }
+
+
+def sync_project_state(
+    con,
+    project_id,
+    current_revision,
+    *,
+    nodes=None,
+    edges=None,
+    episode_groups=None,
+    viewports=None,
+    layouts=None,
+    snapshot_mode="none",
+):
+    """Atomically update relational graph rows and revision metadata."""
+    row = con.execute(
+        "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
+    if not row:
+        return None
+    revision = int(current_revision)
+    current_revision = revision - 1
+    stamp = _now_iso()
+    layout_patch = None
+    selected_episode = None
+    if isinstance(layouts, str):
+        try:
+            layout_patch = json.loads(layouts)
+        except (TypeError, ValueError):
+            layout_patch = None
+    if nodes is not None:
+        replace_projection_nodes(
+            con,
+            project_id,
+            nodes,
+            updated_at=stamp,
+        )
+        if isinstance(layout_patch, dict):
+            for node_id, position in layout_patch.items():
+                if not isinstance(position, dict):
+                    continue
+                row = con.execute(
+                    "SELECT node_json FROM canvas_projection_nodes "
+                    "WHERE project_id=? AND node_id=?",
+                    (project_id, str(node_id)),
+                ).fetchone()
+                if not row:
+                    continue
+                try:
+                    node = json.loads(row[0] or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(node, dict):
+                    continue
+                node["position"] = position
+                sync_projection_node(
+                    con,
+                    project_id,
+                    node,
+                    updated_at=stamp,
+                )
+    if edges is not None:
+        replace_projection_edges(
+            con,
+            project_id,
+            edges,
+            updated_at=stamp,
+        )
+    if isinstance(layouts, str):
+        layout_written = False
+        if isinstance(episode_groups, list):
+            selected_episode = None
+            for group in episode_groups:
+                if not isinstance(group, dict):
+                    continue
+                episode_id = str(group.get("id") or "").strip().upper()
+                if episode_id:
+                    cursor = con.execute(
+                        "UPDATE canvas_projection_episodes SET layout_json=? "
+                        "WHERE project_id=? AND episode_id=?",
+                        (layouts, project_id, episode_id),
+                    )
+                    if cursor.rowcount:
+                        selected_episode = episode_id
+                        layout_written = True
+                        break
+        else:
+            con.execute(
+                "UPDATE canvas_projection_episodes SET layout_json=? "
+                "WHERE project_id=? AND episode_id=("
+                "SELECT episode_id FROM canvas_projection_episodes "
+                "WHERE project_id=? ORDER BY episode_id LIMIT 1)",
+                (layouts, project_id, project_id),
+            )
+            layout_written = True
+        if selected_episode is None:
+            selected_episode = con.execute(
+                "SELECT episode_id FROM canvas_projection_episodes "
+                "WHERE project_id=? ORDER BY episode_id LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            selected_episode = str(selected_episode[0]) if selected_episode else None
+        if isinstance(layout_patch, dict):
+            for node_id, position in layout_patch.items():
+                if not isinstance(position, dict):
+                    continue
+                node_row = con.execute(
+                    "SELECT node_json FROM canvas_projection_nodes "
+                    "WHERE project_id=? AND node_id=?",
+                    (project_id, str(node_id)),
+                ).fetchone()
+                if not node_row:
+                    continue
+                try:
+                    node = json.loads(node_row[0] or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(node, dict):
+                    node["position"] = position
+                    sync_projection_node(
+                        con,
+                        project_id,
+                        node,
+                        updated_at=stamp,
+                        update_stats=False,
+                    )
+        if not layout_written:
+            con.execute(
+                "UPDATE canvas_projection_episodes SET layout_json=? "
+                "WHERE project_id=? AND episode_id=("
+                "SELECT episode_id FROM canvas_projection_episodes "
+                "WHERE project_id=? ORDER BY episode_id LIMIT 1)",
+                (layouts, project_id, project_id),
+            )
+    if episode_groups is not None:
+        groups = episode_groups if isinstance(episode_groups, list) else []
+        if selected_episode is None and groups:
+            selected_episode = str(groups[0].get("id") or "").strip().upper() or None
+        current_rows = {
+            str(row[0]): row
+            for row in con.execute(
+                "SELECT episode_id,viewport_json,layout_json "
+                "FROM canvas_projection_episodes WHERE project_id=?",
+                (project_id,),
+            )
+        }
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            episode_id = str(group.get("id") or "").strip().upper()
+            if not episode_id:
+                continue
+            existing = current_rows.get(episode_id)
+            sync_projection_episode(
+                con,
+                project_id,
+                episode_id,
+                group,
+                viewport_json=(
+                    existing[1]
+                    if existing and existing[1]
+                    else (
+                        json.dumps(viewports.get(episode_id), ensure_ascii=False)
+                        if isinstance(viewports, dict)
+                        and episode_id in viewports
+                        else ""
+                    )
+                ),
+                layout_json=(
+                    json.dumps(layouts.get(episode_id) or {}, ensure_ascii=False)
+                    if isinstance(layouts, dict)
+                    else (
+                        layouts
+                        if isinstance(layouts, str)
+                        and selected_episode == episode_id
+                        else (existing[2] if existing and existing[2] else "{}")
+                    )
+                ),
+                updated_at=stamp,
+            )
+        keep = {
+            str(group.get("id") or "").strip().upper()
+            for group in groups
+            if isinstance(group, dict) and group.get("id")
+        }
+        for episode_id in set(current_rows) - keep:
+            con.execute(
+                "DELETE FROM canvas_projection_episodes "
+                "WHERE project_id=? AND episode_id=?",
+                (project_id, episode_id),
+            )
+    elif viewports is not None or layouts is not None:
+        current_rows = {
+            str(row[0]): row
+            for row in con.execute(
+                "SELECT episode_id,viewport_json,layout_json "
+                "FROM canvas_projection_episodes WHERE project_id=?",
+                (project_id,),
+            )
+        }
+        for episode_id, (_, current_viewport, current_layout) in current_rows.items():
+            sync_projection_episode(
+                con,
+                project_id,
+                episode_id,
+                viewport_json=(
+                    json.dumps(viewports.get(episode_id), ensure_ascii=False)
+                    if isinstance(viewports, dict)
+                    and episode_id in viewports
+                    else current_viewport
+                ),
+                layout_json=(
+                    json.dumps(layouts.get(episode_id) or {}, ensure_ascii=False)
+                    if isinstance(layouts, dict)
+                    and episode_id in layouts
+                    else current_layout
+                ),
+                updated_at=stamp,
+            )
+    stats = None
+    cursor = con.execute(
+        "UPDATE canvas_projects SET revision=?,updated_at=? "
+        "WHERE id=? AND revision=?",
+        (revision, stamp, project_id, int(current_revision)),
+    )
+    if cursor.rowcount != 1:
+        raise RevisionConflictError(
+            f"项目写入冲突：期望 revision={int(current_revision)}，"
+            f"实际 revision={con.execute('SELECT revision FROM canvas_projects WHERE id=?', (project_id,)).fetchone()[0]}"
+        )
+    payload = None
+    if snapshot_mode != "none":
+        payload = get_projection_payload(con, project_id)
+        if payload:
+            _maybe_snapshot(
+                con,
+                project_id,
+                row[0],
+                payload,
+                revision,
+                mode=snapshot_mode,
+                now=stamp,
+            )
+    return {
+        "revision": revision,
+        "updated_at": stamp,
+        "stats": stats,
+    }
+
+
+def get_projection_payload(con, project_id):
+    """Build a payload from projection rows on an existing connection."""
+    meta_row = con.execute(
+        "SELECT meta_json FROM canvas_project_meta WHERE project_id=?",
+        (project_id,),
+    ).fetchone()
+    project_row = con.execute(
+        "SELECT id,title,revision,updated_at FROM canvas_projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
+    if not project_row:
+        return None
+    try:
+        payload = json.loads(meta_row[0]) if meta_row else {}
+    except (TypeError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.update({
+        "id": project_row[0],
+        "title": project_row[1],
+        "revision": project_row[2],
+        "updatedAt": project_row[3],
+    })
+    payload["nodes"] = []
+    payload["connections"] = []
+    for (raw,) in con.execute(
+        "SELECT node_json FROM canvas_projection_nodes "
+        "WHERE project_id=? ORDER BY rowid",
+        (project_id,),
+    ):
+        try:
+            node = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(node, dict):
+            payload["nodes"].append(node)
+    for (raw,) in con.execute(
+        "SELECT edge_json FROM canvas_projection_edges "
+        "WHERE project_id=? ORDER BY rowid",
+        (project_id,),
+    ):
+        try:
+            edge = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(edge, dict):
+            payload["connections"].append(edge)
+    payload["episodeImports"] = []
+    payload["episodeViewports"] = {}
+    payload["episodeLayouts"] = {}
+    for (
+        episode_id,
+        title,
+        group_json,
+        node_ids_json,
+        video_node_ids_json,
+        connection_ids_json,
+        viewport_json,
+        layout_json,
+    ) in con.execute(
+        "SELECT episode_id,title,group_json,node_ids_json,"
+        "video_node_ids_json,connection_ids_json,viewport_json,layout_json "
+        "FROM canvas_projection_episodes WHERE project_id=? "
+        "ORDER BY episode_id",
+        (project_id,),
+    ):
+        try:
+            group = json.loads(group_json or "{}")
+            node_ids = json.loads(node_ids_json or "[]")
+            video_node_ids = json.loads(video_node_ids_json or "[]")
+            connection_ids = json.loads(connection_ids_json or "[]")
+            layout = json.loads(layout_json or "{}")
+        except (TypeError, ValueError):
+            group, node_ids, video_node_ids, connection_ids, layout = (
+                {}, [], [], [], {}
+            )
+        if not isinstance(group, dict):
+            group = {}
+        group.update({
+            "id": episode_id,
+            "title": title,
+            "nodeIds": node_ids if isinstance(node_ids, list) else [],
+            "videoNodeIds": (
+                video_node_ids if isinstance(video_node_ids, list) else []
+            ),
+            "connectionIds": (
+                connection_ids if isinstance(connection_ids, list) else []
+            ),
+        })
+        payload["episodeImports"].append(group)
+        if viewport_json:
+            try:
+                payload["episodeViewports"][episode_id] = json.loads(viewport_json)
+            except (TypeError, ValueError):
+                pass
+        if isinstance(layout, dict) and layout:
+            payload["episodeLayouts"][episode_id] = layout
+    if not payload["episodeImports"]:
+        payload["episodeImports"] = [{
+            "id": "EP001",
+            "title": payload.get("title") or "画布工作流",
+            "nodeIds": [
+                node.get("id")
+                for node in payload["nodes"]
+                if node.get("id")
+            ],
+            "videoNodeIds": [
+                node.get("id")
+                for node in payload["nodes"]
+                if node.get("type") == "video"
+            ],
+        }]
+        payload.setdefault("episodeViewports", {})
+        payload.setdefault("episodeLayouts", {})
+    return payload
+
+
+def sync_projection_edge(con, project_id, edge, *, updated_at=""):
+    if not isinstance(edge, dict) or not edge.get("id"):
+        return
+    stamp = str(updated_at or _now_iso())
+    con.execute(
+        "INSERT INTO canvas_projection_edges("
+        "project_id,edge_id,from_node_id,to_node_id,source,edge_json,updated_at"
+        ") VALUES(?,?,?,?,?,?,?) "
+        "ON CONFLICT(project_id,edge_id) DO UPDATE SET "
+        "from_node_id=excluded.from_node_id,to_node_id=excluded.to_node_id,"
+        "source=excluded.source,edge_json=excluded.edge_json,"
+        "updated_at=excluded.updated_at",
+        (
+            project_id,
+            str(edge["id"]),
+            str(edge.get("fromNodeId") or ""),
+            str(edge.get("toNodeId") or ""),
+            str(edge.get("source") or ""),
+            json.dumps(edge, ensure_ascii=False),
+            stamp,
+        ),
+    )
+
+
+def sync_projection_episode(
+    con,
+    project_id,
+    episode_id,
+    group=None,
+    *,
+    viewport_json=None,
+    layout_json=None,
+    updated_at="",
+):
+    normalized = str(episode_id or "").strip().upper()
+    if not normalized:
+        return
+    stamp = str(updated_at or _now_iso())
+    if isinstance(group, dict):
+        values = (
+            normalized,
+            str(group.get("title") or ""),
+            json.dumps(group, ensure_ascii=False),
+            json.dumps(group.get("nodeIds") or [], ensure_ascii=False),
+            json.dumps(group.get("videoNodeIds") or [], ensure_ascii=False),
+            json.dumps(group.get("connectionIds") or [], ensure_ascii=False),
+        )
+        con.execute(
+            "INSERT INTO canvas_projection_episodes("
+            "project_id,episode_id,title,group_json,node_ids_json,"
+            "video_node_ids_json,connection_ids_json,viewport_json,layout_json,"
+            "updated_at) VALUES(?,?,?,?,?,?,?,COALESCE(?, ''),"
+            "COALESCE(?, '{}'),?) "
+            "ON CONFLICT(project_id,episode_id) DO UPDATE SET "
+            "title=excluded.title,group_json=excluded.group_json,"
+            "node_ids_json=excluded.node_ids_json,"
+            "video_node_ids_json=excluded.video_node_ids_json,"
+            "connection_ids_json=excluded.connection_ids_json,"
+            "viewport_json=CASE WHEN ? IS NULL THEN viewport_json "
+            "ELSE excluded.viewport_json END,"
+            "layout_json=CASE WHEN ? IS NULL THEN layout_json "
+            "ELSE excluded.layout_json END,"
+            "updated_at=excluded.updated_at",
+            (
+                project_id,
+                *values,
+                viewport_json,
+                layout_json,
+                stamp,
+                viewport_json,
+                layout_json,
+            ),
+        )
+        return
+    con.execute(
+        "UPDATE canvas_projection_episodes SET "
+        "viewport_json=COALESCE(?,viewport_json),"
+        "layout_json=COALESCE(?,layout_json),updated_at=? "
+        "WHERE project_id=? AND episode_id=?",
+        (
+            viewport_json,
+            layout_json,
+            stamp,
+            project_id,
+            normalized,
+        ),
+    )
+
+
+def replace_projection_nodes(con, project_id, nodes, *, updated_at=""):
+    """Replace only changed node rows; delete rows absent from the payload."""
+    if not isinstance(nodes, list):
+        nodes = []
+    stamp = str(updated_at or _now_iso())
+    keep = set()
+    owners = {}
+    for item in nodes:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        node_id = str(item["id"])
+        keep.add(node_id)
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        owners[node_id] = str(
+            item.get("episodeId") or metadata.get("episodeId") or ""
+        ).upper()
+        encoded = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        current = con.execute(
+            "SELECT node_json FROM canvas_projection_nodes "
+            "WHERE project_id=? AND node_id=?",
+            (project_id, node_id),
+        ).fetchone()
+        if current:
+            try:
+                if json.loads(current[0] or "{}") == json.loads(encoded):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        sync_projection_node(
+            con,
+            project_id,
+            item,
+            episode_id=owners[node_id],
+            updated_at=stamp,
+        )
+    existing = {
+        str(row[0])
+        for row in con.execute(
+            "SELECT node_id FROM canvas_projection_nodes WHERE project_id=?",
+            (project_id,),
+        )
+    }
+    stale = existing - keep
+    for node_id in stale:
+        con.execute(
+            "DELETE FROM canvas_projection_nodes "
+            "WHERE project_id=? AND node_id=?",
+            (project_id, node_id),
+        )
+
+
+def replace_projection_edges(con, project_id, edges, *, updated_at=""):
+    if not isinstance(edges, list):
+        edges = []
+    stamp = str(updated_at or _now_iso())
+    keep = set()
+    for item in edges:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        edge_id = str(item["id"])
+        keep.add(edge_id)
+        encoded = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        current = con.execute(
+            "SELECT edge_json FROM canvas_projection_edges "
+            "WHERE project_id=? AND edge_id=?",
+            (project_id, edge_id),
+        ).fetchone()
+        if current:
+            try:
+                if json.loads(current[0] or "{}") == json.loads(encoded):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        sync_projection_edge(con, project_id, item, updated_at=stamp)
+    existing = {
+        str(row[0])
+        for row in con.execute(
+            "SELECT edge_id FROM canvas_projection_edges WHERE project_id=?",
+            (project_id,),
+        )
+    }
+    for edge_id in existing - keep:
+        con.execute(
+            "DELETE FROM canvas_projection_edges "
+            "WHERE project_id=? AND edge_id=?",
+            (project_id, edge_id),
+        )
+
+
+def replace_projection_episodes(
+    con,
+    project_id,
+    episode_groups,
+    viewports,
+    layouts,
+    *,
+    updated_at="",
+):
+    if not isinstance(episode_groups, list):
+        episode_groups = []
+    viewports = viewports if isinstance(viewports, dict) else {}
+    layouts = layouts if isinstance(layouts, dict) else {}
+    stamp = str(updated_at or _now_iso())
+    keep = set()
+    for group in episode_groups:
+        if not isinstance(group, dict):
+            continue
+        episode_id = str(group.get("id") or "").strip().upper()
+        if not episode_id:
+            continue
+        keep.add(episode_id)
+        sync_projection_episode(
+            con,
+            project_id,
+            episode_id,
+            group,
+            viewport_json=(
+                json.dumps(viewports.get(episode_id), ensure_ascii=False)
+                if episode_id in viewports
+                else None
+            ),
+            layout_json=json.dumps(
+                layouts.get(episode_id) or {},
+                ensure_ascii=False,
+            ),
+            updated_at=stamp,
+        )
+    existing = {
+        str(row[0])
+        for row in con.execute(
+            "SELECT episode_id FROM canvas_projection_episodes "
+            "WHERE project_id=?",
+            (project_id,),
+        )
+    }
+    for episode_id in existing - keep:
+        con.execute(
+            "DELETE FROM canvas_projection_episodes "
+            "WHERE project_id=? AND episode_id=?",
+            (project_id, episode_id),
+        )
+
+
+def get_project_projection(project_id):
+    """Load a project through the relational projection, not payload_json."""
+    con = _connect()
+    project_row = con.execute(
+        "SELECT id,title,revision,updated_at FROM canvas_projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
+    if not project_row:
+        con.close()
+        return None
+    meta_row = con.execute(
+        "SELECT meta_json FROM canvas_project_meta WHERE project_id=?",
+        (project_id,),
+    ).fetchone()
+    node_rows = con.execute(
+        "SELECT node_json FROM canvas_projection_nodes WHERE project_id=? "
+        "ORDER BY rowid",
+        (project_id,),
+    ).fetchall()
+    edge_rows = con.execute(
+        "SELECT edge_json FROM canvas_projection_edges WHERE project_id=? "
+        "ORDER BY rowid",
+        (project_id,),
+    ).fetchall()
+    episode_rows = con.execute(
+        "SELECT episode_id,title,group_json,node_ids_json,video_node_ids_json,"
+        "connection_ids_json,viewport_json,layout_json "
+        "FROM canvas_projection_episodes WHERE project_id=? "
+        "ORDER BY episode_id",
+        (project_id,),
+    ).fetchall()
+    node_summary_rows = con.execute(
+        "SELECT node_id,node_type FROM canvas_projection_nodes "
+        "WHERE project_id=? ORDER BY rowid",
+        (project_id,),
+    ).fetchall()
+    con.close()
+    try:
+        payload = json.loads(meta_row[0]) if meta_row else {}
+    except (TypeError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.update({
+        "id": project_row[0],
+        "title": project_row[1],
+        "revision": project_row[2],
+        "updatedAt": project_row[3],
+    })
+    payload["nodes"] = []
+    payload["connections"] = []
+    for row in node_rows:
+        try:
+            node = json.loads(row[0])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(node, dict):
+            payload["nodes"].append(node)
+    for row in edge_rows:
+        try:
+            edge = json.loads(row[0])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(edge, dict):
+            payload["connections"].append(edge)
+    payload["episodeImports"] = []
+    payload["episodeViewports"] = {}
+    payload["episodeLayouts"] = {}
+    for (
+        episode_id,
+        title,
+        group_json,
+        node_ids_json,
+        video_node_ids_json,
+        connection_ids_json,
+        viewport_json,
+        layout_json,
+    ) in episode_rows:
+        try:
+            node_ids = json.loads(node_ids_json or "[]")
+            video_node_ids = json.loads(video_node_ids_json or "[]")
+            connection_ids = json.loads(connection_ids_json or "[]")
+            layout = json.loads(layout_json or "{}")
+        except (TypeError, ValueError):
+            node_ids, video_node_ids, connection_ids, layout = [], [], [], {}
+        try:
+            group = json.loads(group_json or "{}")
+        except (TypeError, ValueError):
+            group = {}
+        if not isinstance(group, dict):
+            group = {}
+        group.update({
+            "id": episode_id,
+            "title": title,
+            "nodeIds": node_ids if isinstance(node_ids, list) else [],
+            "videoNodeIds": (
+                video_node_ids if isinstance(video_node_ids, list) else []
+            ),
+            "connectionIds": (
+                connection_ids if isinstance(connection_ids, list) else []
+            ),
+        })
+        payload["episodeImports"].append(group)
+        if viewport_json:
+            try:
+                payload["episodeViewports"][episode_id] = json.loads(viewport_json)
+            except (TypeError, ValueError):
+                pass
+        if isinstance(layout, dict) and layout:
+            payload["episodeLayouts"][episode_id] = layout
+    if not payload["episodeImports"]:
+        payload["episodeImports"] = [{
+            "id": "EP001",
+            "title": payload.get("title") or "画布工作流",
+            "nodeIds": [
+                node.get("id") for node in payload["nodes"] if node.get("id")
+            ],
+            "videoNodeIds": [
+                node.get("id")
+                for node in payload["nodes"]
+                if node.get("type") == "video"
+            ],
+        }]
+    return {
+        "id": project_row[0],
+        "title": project_row[1],
+        "payload": payload,
+        "revision": project_row[2],
+        "projection": True,
+    }
+
+
+def project_projection_is_ready(project_id):
+    con = _connect()
+    row = con.execute(
+        "SELECT 1 FROM canvas_project_meta WHERE project_id=? LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    con.close()
+    # Empty projects legitimately have no episode row. The projection reader
+    # synthesizes EP001, so the project metadata marker is the readiness fact.
+    return bool(row)
+
+
+def _projection_reconcile_marker(con, project_id):
+    marker = f"canvas_projection_reconciled_v2:{project_id}"
+    existing = con.execute(
+        "SELECT 1 FROM canvas_meta WHERE key=?",
+        (marker,),
+    ).fetchone()
+    return marker, bool(existing)
+
+
+def ensure_default_episode_on_connection(con, project_id):
+    existing = con.execute(
+        "SELECT 1 FROM canvas_projection_episodes WHERE project_id=? LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    if existing:
+        return False
+    project = con.execute(
+        "SELECT title FROM canvas_projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
+    if not project:
+        return False
+    node_rows = con.execute(
+        "SELECT node_id,node_type FROM canvas_projection_nodes "
+        "WHERE project_id=? ORDER BY rowid",
+        (project_id,),
+    ).fetchall()
+    group = {
+        "id": "EP001",
+        "title": str(project[0] or "画布工作流"),
+        "nodeIds": [str(row[0]) for row in node_rows],
+        "videoNodeIds": [
+            str(row[0]) for row in node_rows if str(row[1]) == "video"
+        ],
+        "connectionIds": [],
+    }
+    sync_projection_episode(
+        con,
+        project_id,
+        "EP001",
+        group,
+        updated_at=_now_iso(),
+    )
+    con.execute(
+        "UPDATE canvas_projects SET episode_count=MAX(1,episode_count) "
+        "WHERE id=?",
+        (project_id,),
+    )
+    return True
+
+
+def reconcile_project_projection_on_connection(con, project_id):
+    """Repair projection rows from the rollback payload when safe."""
+    marker, migrated = _projection_reconcile_marker(con, project_id)
+    if migrated:
+        ensure_default_episode_on_connection(con, project_id)
+        return False
+    if not con.in_transaction:
+        con.execute("BEGIN IMMEDIATE")
+    marker, migrated = _projection_reconcile_marker(con, project_id)
+    if migrated:
+        ensure_default_episode_on_connection(con, project_id)
+        return False
+    revision_row = con.execute(
+        "SELECT revision FROM canvas_projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
+    if not revision_row:
+        return False
+    project_revision = int(revision_row[0] or 0)
+    rollback_versions = {
+        int(value)
+        for (value,) in con.execute(
+            "SELECT revision FROM canvas_snapshots "
+            "WHERE canvas_id=? AND kind='auto'",
+            (project_id,),
+        )
+        if value is not None
+    }
+    latest_snapshot = con.execute(
+        "SELECT revision FROM canvas_snapshots "
+        "WHERE canvas_id=? AND kind='auto' "
+        "ORDER BY revision DESC, created_at DESC, rowid DESC LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    if (
+        project_revision > 1
+        and project_revision not in rollback_versions
+        and not (
+            latest_snapshot
+            and project_revision - int(latest_snapshot[0] or 0) < 20
+        )
+    ):
+        con.execute(
+            "INSERT INTO canvas_meta(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (marker, "skipped_stale_rollback"),
+        )
+        ensure_default_episode_on_connection(con, project_id)
+        return False
+    row = con.execute(
+        "SELECT payload_json FROM canvas_projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
+    if not row:
+        return False
+    try:
+        payload = json.loads(row[0] or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    if isinstance(payload, dict) and payload:
+        sync_payload_projection(
+            con,
+            project_id,
+            payload,
+            updated_at=_now_iso(),
+        )
+    ensure_default_episode_on_connection(con, project_id)
+    con.execute(
+        "INSERT INTO canvas_meta(key,value) VALUES(?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (marker, "1"),
+    )
+    return True
+
+
+def reconcile_project_projection(project_id):
+    """Repair stale shadow rows from the rollback payload exactly once."""
+    con = _connect()
+    try:
+        return reconcile_project_projection_on_connection(con, project_id)
+    finally:
+        con.close()
+
+
+def ensure_project_default_episode(project_id):
+    """Materialize EP001 for legacy projects that have nodes but no episode row."""
+    con = _connect()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        changed = ensure_default_episode_on_connection(con, project_id)
+        con.commit()
+        return changed
+    except Exception:
+        if con.in_transaction:
+            con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def get_project_workspace_index(project_id):
+    """Return project identity and episode metadata without loading nodes."""
+    con = _connect()
+    project_row = con.execute(
+        "SELECT id,title,revision,updated_at FROM canvas_projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
+    if not project_row:
+        con.close()
+        return None
+    meta_row = con.execute(
+        "SELECT meta_json FROM canvas_project_meta WHERE project_id=?",
+        (project_id,),
+    ).fetchone()
+    episode_rows = con.execute(
+        "SELECT episode_id,title,group_json,node_ids_json,video_node_ids_json,"
+        "connection_ids_json,viewport_json,layout_json "
+        "FROM canvas_projection_episodes WHERE project_id=? "
+        "ORDER BY episode_id",
+        (project_id,),
+    ).fetchall()
+    con.close()
+    try:
+        project_meta = json.loads(meta_row[0]) if meta_row else {}
+    except (TypeError, ValueError):
+        project_meta = {}
+    if not isinstance(project_meta, dict):
+        project_meta = {}
+    episodes = []
+    viewports = {}
+    for row in episode_rows:
+        episode_id, title, group_json, node_ids_json, video_node_ids_json, connection_ids_json, viewport_json, layout_json = row
+        try:
+            group = json.loads(group_json or "{}")
+            node_ids = json.loads(node_ids_json or "[]")
+            video_node_ids = json.loads(video_node_ids_json or "[]")
+            connection_ids = json.loads(connection_ids_json or "[]")
+            layout = json.loads(layout_json or "{}")
+            viewport = json.loads(viewport_json) if viewport_json else None
+        except (TypeError, ValueError):
+            group, node_ids, video_node_ids, connection_ids = {}, [], [], []
+            layout, viewport = {}, None
+        if not isinstance(group, dict):
+            group = {}
+        group.update({
+            "id": episode_id,
+            "title": title,
+            "nodeIds": node_ids if isinstance(node_ids, list) else [],
+            "videoNodeIds": video_node_ids if isinstance(video_node_ids, list) else [],
+            "connectionIds": connection_ids if isinstance(connection_ids, list) else [],
+            "shot_count": len(video_node_ids) if isinstance(video_node_ids, list) else 0,
+            "described_count": len(video_node_ids) if isinstance(video_node_ids, list) else 0,
+            "storyboard_ready": True,
+        })
+        episodes.append(group)
+        if viewport:
+            viewports[episode_id] = viewport
+    if not episodes:
+        episodes.append({
+            "id": "EP001",
+            "title": project_row[1] or "画布工作流",
+            "nodeIds": [str(row[0]) for row in node_summary_rows],
+            "videoNodeIds": [
+                str(row[0]) for row in node_summary_rows if str(row[1]) == "video"
+            ],
+            "connectionIds": [],
+            "shot_count": len([
+                row for row in node_summary_rows if str(row[1]) == "video"
+            ]),
+            "described_count": len([
+                row for row in node_summary_rows if str(row[1]) == "video"
+            ]),
+            "storyboard_ready": True,
+        })
+    return {
+        "id": project_row[0],
+        "title": project_row[1],
+        "revision": project_row[2],
+        "updatedAt": project_row[3],
+        "projectMeta": project_meta,
+        "episodes": episodes,
+        "episodeViewports": viewports,
+    }
+
+
+def get_project_workspace_nodes(project_id, episode_id=None):
+    """Return current episode nodes and edges from relational projection."""
+    normalized_episode = str(episode_id or "").strip().upper()
+    con = _connect()
+    if normalized_episode:
+        episode_row = con.execute(
+            "SELECT group_json,node_ids_json,layout_json FROM canvas_projection_episodes "
+            "WHERE project_id=? AND episode_id=?",
+            (project_id, normalized_episode),
+        ).fetchone()
+    else:
+        episode_row = None
+    if episode_row:
+        try:
+            group = json.loads(episode_row[0] or "{}")
+            node_ids = json.loads(episode_row[1] or "[]")
+            layout = json.loads(episode_row[2] or "{}")
+        except (TypeError, ValueError):
+            group, node_ids, layout = {}, [], {}
+        if not isinstance(node_ids, list):
+            node_ids = []
+        allowed = {str(node_id) for node_id in node_ids if node_id}
+    else:
+        allowed = set()
+        group = {}
+        layout = {}
+    if not allowed:
+        fallback = con.execute(
+            "SELECT payload_json FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if fallback:
+            try:
+                payload = json.loads(fallback[0] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
+            if normalized_episode:
+                group = next(
+                    (
+                        item for item in payload.get("episodeImports") or []
+                        if str(item.get("id") or "").upper() == normalized_episode
+                    ),
+                    {},
+                )
+                allowed = {
+                    str(node_id)
+                    for node_id in group.get("nodeIds") or []
+                    if node_id
+                }
+            payload_nodes = [
+                node for node in nodes
+                if not allowed or str(node.get("id")) in allowed
+            ]
+            payload_edges = [
+                edge for edge in payload.get("connections") or []
+                if not allowed
+                or (
+                    str(edge.get("fromNodeId")) in allowed
+                    and str(edge.get("toNodeId")) in allowed
+                )
+            ]
+            con.close()
+            return {
+                "episodeId": normalized_episode or "EP001",
+                "episode": group,
+                "nodes": payload_nodes,
+                "connections": payload_edges,
+                "layouts": {},
+            }
+    if allowed:
+        placeholders = ",".join("?" for _ in allowed)
+        node_rows = con.execute(
+            f"SELECT node_json FROM canvas_projection_nodes WHERE project_id=? "
+            f"AND node_id IN ({placeholders}) ORDER BY rowid",
+            (project_id, *sorted(allowed)),
+        ).fetchall()
+    elif normalized_episode:
+        node_rows = con.execute(
+            "SELECT node_json FROM canvas_projection_nodes WHERE project_id=? "
+            "AND episode_id=? ORDER BY rowid",
+            (project_id, normalized_episode),
+        ).fetchall()
+    else:
+        node_rows = con.execute(
+            "SELECT node_json FROM canvas_projection_nodes WHERE project_id=? ORDER BY rowid",
+            (project_id,),
+        ).fetchall()
+    nodes = []
+    for row in node_rows:
+        try:
+            node = json.loads(row[0])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(node, dict):
+            nodes.append(node)
+    node_ids = {str(node.get("id")) for node in nodes if node.get("id")}
+    edge_rows = con.execute(
+        "SELECT edge_json FROM canvas_projection_edges WHERE project_id=? ORDER BY rowid",
+        (project_id,),
+    ).fetchall()
+    con.close()
+    edges = []
+    for row in edge_rows:
+        try:
+            edge = json.loads(row[0])
+        except (TypeError, ValueError):
+            continue
+        if (
+            isinstance(edge, dict)
+            and str(edge.get("fromNodeId") or "") in node_ids
+            and str(edge.get("toNodeId") or "") in node_ids
+        ):
+            edges.append(edge)
+    return {
+        "episodeId": normalized_episode or group.get("id") or "EP001",
+        "episode": group,
+        "nodes": nodes,
+        "connections": edges,
+        "layouts": layout if isinstance(layout, dict) else {},
+    }
 
 
 def _run_write_transaction(callback):
@@ -462,6 +1925,13 @@ def list_project_summaries():
 
 
 def get_project(pid):
+    projection = (
+        get_project_projection(pid)
+        if project_projection_is_ready(pid)
+        else None
+    )
+    if projection is not None:
+        return projection
     con = _connect()
     row = con.execute(
         "SELECT id, title, payload_json, revision FROM canvas_projects WHERE id=?", (pid,)
@@ -526,6 +1996,23 @@ def project_activity_summaries():
     return summaries
 
 
+def get_workspace_artifacts(project_id, episode_id=None):
+    """Compatibility slice of project metadata for workspace clients."""
+    index = get_project_workspace_index(project_id)
+    if not index:
+        return None
+    episode = str(episode_id or "").strip().upper()
+    meta = index.get("projectMeta") or {}
+    return {
+        "meta": meta,
+        "episodeViewports": index.get("episodeViewports") or {},
+        "episodes": index.get("episodes") or [],
+        "currentEpisode": episode or (
+            (index.get("episodes") or [{}])[0].get("id") or "EP001"
+        ),
+    }
+
+
 def is_local_validation_error(message):
     text = str(message or "")
     markers = (
@@ -588,6 +2075,7 @@ def create_project(title, payload=None):
             *payload_stats(payload),
         ),
     )
+    sync_payload_projection(con, pid, payload, updated_at=now)
     _snapshot(con, pid, title, payload, 1, kind="auto")
     con.commit()
     con.close()
@@ -647,6 +2135,12 @@ def update_project(
         if cursor.rowcount != 1:
             con.rollback()
             raise RevisionConflictError("项目写入冲突，请重新读取后再试")
+        sync_payload_projection(
+            con,
+            pid,
+            new_payload,
+            updated_at=now,
+        )
         _maybe_snapshot(
             con,
             pid,
@@ -670,6 +2164,10 @@ def delete_project(pid):
     con = _connect()
     con.execute("DELETE FROM generation_tasks WHERE project_id=?", (pid,))
     con.execute("DELETE FROM canvas_snapshots WHERE canvas_id=?", (pid,))
+    con.execute("DELETE FROM canvas_projection_nodes WHERE project_id=?", (pid,))
+    con.execute("DELETE FROM canvas_projection_edges WHERE project_id=?", (pid,))
+    con.execute("DELETE FROM canvas_projection_episodes WHERE project_id=?", (pid,))
+    con.execute("DELETE FROM canvas_project_meta WHERE project_id=?", (pid,))
     con.execute("DELETE FROM canvas_projects WHERE id=?", (pid,))
     con.commit()
     con.close()
@@ -891,6 +2389,374 @@ def create_generation_task(
     return {**(get_generation_task(task_id) or {}), "created_new": True}
 
 
+def insert_project_nodes(
+    project_id,
+    nodes,
+    *,
+    episode_id=None,
+    if_revision=None,
+):
+    """Insert new nodes and episode membership without a payload JSON rewrite."""
+    items = [
+        item
+        for item in (nodes or [])
+        if isinstance(item, dict) and item.get("id")
+    ]
+    if not items:
+        return {"created": 0, "revision": None}
+
+    def write(con):
+        reconcile_project_projection_on_connection(con, project_id)
+        row = con.execute(
+            "SELECT revision FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if not row:
+            return None
+        current_revision = int(row[0] or 0)
+        if if_revision is not None and current_revision != int(if_revision):
+            raise RevisionConflictError(
+                f"项目已更新：期望 revision={if_revision}，实际 revision={current_revision}"
+            )
+        stamp = _now_iso()
+        normalized_episode = str(episode_id or "").strip().upper()
+        for item in items:
+            item.setdefault("createdAt", stamp)
+            item.setdefault("positionUpdatedAt", stamp)
+            item.setdefault("updatedAt", stamp)
+            sync_projection_node(
+                con,
+                project_id,
+                item,
+                episode_id=normalized_episode,
+                updated_at=stamp,
+            )
+        group = None
+        if normalized_episode:
+            group_row = con.execute(
+                "SELECT group_json,node_ids_json,video_node_ids_json,"
+                "connection_ids_json,title FROM canvas_projection_episodes "
+                "WHERE project_id=? AND episode_id=?",
+                (project_id, normalized_episode),
+            ).fetchone()
+            if group_row:
+                try:
+                    group = json.loads(group_row[0] or "{}")
+                except (TypeError, ValueError):
+                    group = {}
+                if not isinstance(group, dict):
+                    group = {}
+                try:
+                    node_ids = json.loads(group_row[1] or "[]")
+                    video_ids = json.loads(group_row[2] or "[]")
+                except (TypeError, ValueError):
+                    node_ids, video_ids = [], []
+                grouped_ids = [
+                    str(value)
+                    for value in node_ids
+                    if value
+                ]
+                grouped_video_ids = [
+                    str(value)
+                    for value in video_ids
+                    if value
+                ]
+                group["id"] = normalized_episode
+                group["title"] = str(group_row[4] or group.get("title") or "")
+            else:
+                grouped_ids = []
+                grouped_video_ids = []
+                group = {
+                    "id": normalized_episode,
+                    "title": normalized_episode,
+                    "nodeIds": grouped_ids,
+                    "videoNodeIds": grouped_video_ids,
+                    "connectionIds": [],
+                }
+            for item in items:
+                node_id = str(item["id"])
+                if node_id not in grouped_ids:
+                    grouped_ids.append(node_id)
+                if item.get("type") == "video" and node_id not in grouped_video_ids:
+                    grouped_video_ids.append(node_id)
+            group["nodeIds"] = grouped_ids
+            group["videoNodeIds"] = grouped_video_ids
+            sync_projection_episode(
+                con,
+                project_id,
+                normalized_episode,
+                group,
+                updated_at=stamp,
+            )
+        revision = current_revision + 1
+        con.execute(
+            "UPDATE canvas_projects SET revision=?,updated_at=?,"
+            "node_count=node_count+?,episode_count=MAX(episode_count,?) "
+            "WHERE id=? AND revision=?",
+            (
+                revision,
+                stamp,
+                len(items),
+                1 if normalized_episode else 0,
+                project_id,
+                current_revision,
+            ),
+        )
+        return {
+            "created": len(items),
+            "revision": revision,
+            "nodes": items,
+            "episode": group,
+        }
+
+    result = _run_write_transaction(write)
+    return result or {"created": 0, "revision": None}
+
+
+def update_project_layout(
+    project_id,
+    episode_id,
+    layout,
+    *,
+    if_revision=None,
+):
+    """Persist one episode layout and node coordinates only."""
+    normalized = str(episode_id or "").strip().upper()
+    if not normalized or not isinstance(layout, dict):
+        return None
+
+    def write(con):
+        reconcile_project_projection_on_connection(con, project_id)
+        row = con.execute(
+            "SELECT revision FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if not row:
+            return None
+        current = int(row[0] or 0)
+        if if_revision is not None and current != int(if_revision):
+            raise RevisionConflictError(
+                f"项目已更新：期望 revision={if_revision}，实际 revision={current}"
+            )
+        stamp = _now_iso()
+        encoded_layout = json.dumps(layout, ensure_ascii=False)
+        for node_id, position in layout.items():
+            if not isinstance(position, dict):
+                continue
+            node_row = con.execute(
+                "SELECT node_json FROM canvas_projection_nodes "
+                "WHERE project_id=? AND node_id=?",
+                (project_id, str(node_id)),
+            ).fetchone()
+            if not node_row:
+                continue
+            try:
+                node = json.loads(node_row[0] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(node, dict):
+                continue
+            node["position"] = position
+            sync_projection_node(
+                con,
+                project_id,
+                node,
+                episode_id=normalized,
+                updated_at=stamp,
+            )
+        group_row = con.execute(
+            "SELECT group_json,node_ids_json,video_node_ids_json,"
+            "connection_ids_json,viewport_json,title "
+            "FROM canvas_projection_episodes "
+            "WHERE project_id=? AND episode_id=?",
+            (project_id, normalized),
+        ).fetchone()
+        if group_row:
+            try:
+                group = json.loads(group_row[0] or "{}")
+            except (TypeError, ValueError):
+                group = {}
+            if not isinstance(group, dict):
+                group = {}
+            group.update({
+                "id": normalized,
+                "title": group.get("title") or group_row[5] or normalized,
+                "nodeIds": json.loads(group_row[1] or "[]"),
+                "videoNodeIds": json.loads(group_row[2] or "[]"),
+                "connectionIds": json.loads(group_row[3] or "[]"),
+            })
+            sync_projection_episode(
+                con,
+                project_id,
+                normalized,
+                group,
+                viewport_json=group_row[4] or "",
+                layout_json=encoded_layout,
+                updated_at=stamp,
+            )
+        else:
+            sync_projection_episode(
+                con,
+                project_id,
+                normalized,
+                {
+                    "id": normalized,
+                    "title": normalized,
+                    "nodeIds": sorted(layout),
+                    "videoNodeIds": [],
+                    "connectionIds": [],
+                },
+                layout_json=encoded_layout,
+                updated_at=stamp,
+            )
+        # Aggregate stats are maintained incrementally from node deltas.
+        revision = current + 1
+        con.execute(
+            "UPDATE canvas_projects SET revision=?,updated_at=? "
+            "WHERE id=? AND revision=?",
+            (
+                revision,
+                stamp,
+                project_id,
+                current,
+            ),
+        )
+        return {"revision": revision, "updated_at": stamp}
+
+    return _run_write_transaction(write)
+
+
+def update_project_nodes(
+    project_id,
+    nodes,
+    *,
+    episode_id=None,
+    if_revision=None,
+):
+    """Update existing node rows without serializing the complete project."""
+    items = [
+        item
+        for item in (nodes or [])
+        if isinstance(item, dict) and item.get("id")
+    ]
+    if not items:
+        return {"updated": 0, "revision": None}
+
+    def write(con):
+        reconcile_project_projection_on_connection(con, project_id)
+        row = con.execute(
+            "SELECT revision FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if not row:
+            return None
+        current_revision = int(row[0] or 0)
+        if if_revision is not None and current_revision != int(if_revision):
+            raise RevisionConflictError(
+                f"项目已更新：期望 revision={if_revision}，实际 revision={current_revision}"
+            )
+        stamp = _now_iso()
+        normalized_episode = str(episode_id or "").strip().upper()
+        updated = 0
+        for item in items:
+            item.setdefault("updatedAt", stamp)
+            cursor = con.execute(
+                "SELECT 1 FROM canvas_projection_nodes "
+                "WHERE project_id=? AND node_id=?",
+                (project_id, str(item["id"])),
+            ).fetchone()
+            if not cursor:
+                continue
+            sync_projection_node(
+                con,
+                project_id,
+                item,
+                episode_id=normalized_episode,
+                updated_at=stamp,
+            )
+            updated += 1
+            if normalized_episode:
+                group_row = con.execute(
+                    "SELECT group_json,node_ids_json,video_node_ids_json "
+                    "FROM canvas_projection_episodes "
+                    "WHERE project_id=? AND episode_id=?",
+                    (project_id, normalized_episode),
+                ).fetchone()
+                if group_row:
+                    try:
+                        group = json.loads(group_row[0] or "{}")
+                        node_ids = json.loads(group_row[1] or "[]")
+                        video_ids = json.loads(group_row[2] or "[]")
+                    except (TypeError, ValueError):
+                        group, node_ids, video_ids = {}, [], []
+                    if isinstance(group, dict):
+                        group["id"] = normalized_episode
+                        group["nodeIds"] = [
+                            str(value)
+                            for value in node_ids
+                            if value
+                        ]
+                        if str(item["id"]) not in group["nodeIds"]:
+                            group["nodeIds"].append(str(item["id"]))
+                        group["videoNodeIds"] = [
+                            str(value)
+                            for value in video_ids
+                            if value
+                        ]
+                        if (
+                            item.get("type") == "video"
+                            and str(item["id"]) not in group["videoNodeIds"]
+                        ):
+                            group["videoNodeIds"].append(str(item["id"]))
+                        sync_projection_episode(
+                            con,
+                            project_id,
+                            normalized_episode,
+                            group,
+                            updated_at=stamp,
+                        )
+        stats = refresh_project_projection_stats(con, project_id)
+        revision = current_revision + 1
+        con.execute(
+            "UPDATE canvas_projects SET revision=?,updated_at=?,"
+            "failed_count=?,local_blocked_count=? "
+            "WHERE id=? AND revision=?",
+            (
+                revision,
+                stamp,
+                int(stats.get("failed_count") or 0),
+                int(stats.get("local_blocked_count") or 0),
+                project_id,
+                current_revision,
+            ),
+        )
+        return {
+            "updated": updated,
+            "revision": revision,
+            "nodes": items,
+        }
+
+    result = _run_write_transaction(write)
+    return result or {"updated": 0, "revision": None}
+
+
+def get_projection_node(project_id, node_id):
+    con = _connect()
+    row = con.execute(
+        "SELECT node_json FROM canvas_projection_nodes "
+        "WHERE project_id=? AND node_id=?",
+        (project_id, node_id),
+    ).fetchone()
+    con.close()
+    if not row:
+        return None
+    try:
+        value = json.loads(row[0] or "{}")
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def get_generation_task(task_id):
     con = _connect()
     row = con.execute("SELECT * FROM generation_tasks WHERE id=?", (task_id,)).fetchone()
@@ -964,6 +2830,268 @@ def update_generation_task(task_id, **fields):
         )
     _run_write_transaction(write)
     return get_generation_task(task_id)
+
+
+def update_project_rows(
+    project_id,
+    *,
+    nodes=None,
+    edges=None,
+    episode_groups=None,
+    viewports=None,
+    layouts=None,
+    if_revision=None,
+    snapshot_mode="none",
+):
+    """Patch graph rows without serializing the entire project payload."""
+    def write(con):
+        reconcile_project_projection_on_connection(con, project_id)
+        row = con.execute(
+            "SELECT revision FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if not row:
+            return None
+        current = int(row[0] or 0)
+        if if_revision is not None and current != int(if_revision):
+            raise RevisionConflictError(
+                f"项目已更新：期望 revision={if_revision}，实际 revision={current}"
+            )
+        return sync_project_state(
+            con,
+            project_id,
+            current + 1,
+            nodes=nodes,
+            edges=edges,
+            episode_groups=episode_groups,
+            viewports=viewports,
+            layouts=layouts,
+            snapshot_mode=snapshot_mode,
+        )
+
+    return _run_write_transaction(write)
+
+
+def sync_projection_meta(con, project_id, payload, *, updated_at=""):
+    if not isinstance(payload, dict):
+        return
+    stamp = str(updated_at or _now_iso())
+    project_meta = {
+        key: value
+        for key, value in payload.items()
+        if key not in {
+            "nodes",
+            "connections",
+            "episodeImports",
+            "episodeLayouts",
+            "episodeViewports",
+        }
+    }
+    con.execute(
+        "INSERT INTO canvas_project_meta(project_id,meta_json,updated_at) "
+        "VALUES(?,?,?) ON CONFLICT(project_id) DO UPDATE SET "
+        "meta_json=excluded.meta_json,updated_at=excluded.updated_at",
+        (
+            project_id,
+            json.dumps(project_meta, ensure_ascii=False),
+            stamp,
+        ),
+    )
+
+
+def update_project_node(
+    project_id,
+    node_id,
+    *,
+    patch_node=None,
+    episode_id=None,
+    if_revision=None,
+    snapshot_mode="none",
+):
+    """Patch one node and one projection row without rewriting other nodes."""
+    def write(con):
+        row = con.execute(
+            "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if not row:
+            return None
+        current_revision = int(row[2] or 0)
+        if if_revision is not None and current_revision != int(if_revision):
+            raise RevisionConflictError(
+                f"项目已更新：期望 revision={if_revision}，实际 revision={current_revision}"
+            )
+        try:
+            payload = json.loads(row[1] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
+        node = next(
+            (
+                item
+                for item in nodes
+                if isinstance(item, dict) and item.get("id") == node_id
+            ),
+            None,
+        )
+        if node is None:
+            return None
+        incoming = patch_node if isinstance(patch_node, dict) else {}
+        if isinstance(incoming.get("metadata"), dict):
+            node["metadata"] = {
+                **(node.get("metadata") or {}),
+                **incoming["metadata"],
+            }
+        if isinstance(incoming.get("position"), dict):
+            node["position"] = incoming["position"]
+        if "title" in incoming:
+            node["title"] = incoming["title"]
+        if incoming.get("type") in {"text", "image", "audio", "video"}:
+            node["type"] = incoming["type"]
+        stamp = _now_iso()
+        node["updatedAt"] = stamp
+        payload["title"] = row[0]
+        payload["revision"] = current_revision + 1
+        payload["updatedAt"] = stamp
+        cursor = con.execute(
+            "UPDATE canvas_projects SET payload_json=?,revision=?,updated_at=?,"
+            "node_count=?,connection_count=?,episode_count=?,failed_count=?,"
+            "local_blocked_count=? WHERE id=? AND revision=?",
+            (
+                json.dumps(payload, ensure_ascii=False),
+                current_revision + 1,
+                stamp,
+                *payload_stats(payload),
+                project_id,
+                current_revision,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RevisionConflictError("项目写入冲突，请重新读取后再试")
+        sync_projection_node(
+            con,
+            project_id,
+            node,
+            episode_id=str(
+                episode_id
+                or node.get("episodeId")
+                or (node.get("metadata") or {}).get("episodeId")
+                or ""
+            ).upper(),
+            updated_at=stamp,
+        )
+        sync_projection_meta(con, project_id, payload, updated_at=stamp)
+        _maybe_snapshot(
+            con,
+            project_id,
+            row[0],
+            payload,
+            current_revision + 1,
+            mode=snapshot_mode,
+            now=stamp,
+        )
+        return {
+            "revision": current_revision + 1,
+            "updated_at": stamp,
+            "payload": payload,
+            "node": node,
+        }
+
+    return _run_write_transaction(write)
+
+
+def update_project_viewport(
+    project_id,
+    viewport,
+    *,
+    episode_id=None,
+    if_revision=None,
+):
+    """Persist one viewport and legacy rollback copy without touching graph rows."""
+    def write(con):
+        row = con.execute(
+            "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if not row:
+            return None
+        current_revision = int(row[2] or 0)
+        if if_revision is not None and current_revision != int(if_revision):
+            raise RevisionConflictError(
+                f"项目已更新：期望 revision={if_revision}，实际 revision={current_revision}"
+            )
+        try:
+            payload = json.loads(row[1] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        normalized = {
+            "x": float(viewport.get("x") or 0),
+            "y": float(viewport.get("y") or 0),
+            "zoom": float(viewport.get("zoom") or 1),
+        }
+        ep_id = str(episode_id or "").strip().upper()
+        if ep_id:
+            payload.setdefault("episodeViewports", {})[ep_id] = normalized
+        else:
+            payload["viewport"] = normalized
+        stamp = _now_iso()
+        payload["revision"] = current_revision + 1
+        payload["updatedAt"] = stamp
+        cursor = con.execute(
+            "UPDATE canvas_projects SET payload_json=?,revision=?,updated_at=? "
+            "WHERE id=? AND revision=?",
+            (
+                json.dumps(payload, ensure_ascii=False),
+                current_revision + 1,
+                stamp,
+                project_id,
+                current_revision,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RevisionConflictError("项目写入冲突，请重新读取后再试")
+        if ep_id:
+            sync_projection_episode(
+                con,
+                project_id,
+                ep_id,
+                {
+                    "id": ep_id,
+                    "title": ep_id,
+                    "nodeIds": [
+                        str(row[0])
+                        for row in con.execute(
+                            "SELECT node_id FROM canvas_projection_nodes "
+                            "WHERE project_id=? ORDER BY rowid",
+                            (project_id,),
+                        )
+                    ],
+                    "videoNodeIds": [
+                        str(row[0])
+                        for row in con.execute(
+                            "SELECT node_id FROM canvas_projection_nodes "
+                            "WHERE project_id=? AND node_type='video' ORDER BY rowid",
+                            (project_id,),
+                        )
+                    ],
+                    "connectionIds": [],
+                },
+                viewport_json=json.dumps(normalized, ensure_ascii=False),
+                updated_at=stamp,
+            )
+        sync_projection_meta(con, project_id, payload, updated_at=stamp)
+        return {
+            "viewport": normalized,
+            "revision": current_revision + 1,
+            "updated_at": stamp,
+        }
+
+    return _run_write_transaction(write)
+
 
 
 def commit_generation_terminal(
@@ -1109,6 +3237,12 @@ def commit_generation_terminal(
         if cursor.rowcount != 1:
             result["reason"] = "project_revision_conflict"
             raise RevisionConflictError("项目写入冲突，请重新读取后再试")
+        sync_payload_projection(
+            con,
+            project_id,
+            new_payload,
+            updated_at=node_written_at,
+        )
         _maybe_snapshot(
             con,
             project_id,
@@ -1588,7 +3722,24 @@ def get_episode_node_ids(project_id, episode_id):
     normalized_episode = str(episode_id or "").strip().upper()
     if not project_id or not normalized_episode:
         return []
+    row = None
     con = _connect()
+    projection = con.execute(
+        "SELECT node_ids_json FROM canvas_projection_episodes "
+        "WHERE project_id=? AND episode_id=?",
+        (project_id, normalized_episode),
+    ).fetchone()
+    if projection:
+        con.close()
+        try:
+            values = json.loads(projection[0] or "[]")
+        except (TypeError, ValueError):
+            return []
+        return [
+            str(node_id)
+            for node_id in values
+            if node_id
+        ] if isinstance(values, list) else []
     row = con.execute(
         "SELECT payload_json FROM canvas_projects WHERE id=?",
         (project_id,),

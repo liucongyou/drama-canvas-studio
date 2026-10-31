@@ -55,6 +55,58 @@ class CanvasRepositoryTests(unittest.TestCase):
         self.assertEqual(created["payload"]["connections"][0]["id"], "edge-1")
         self.assertEqual(created["payload"]["revision"], 1)
 
+    def test_node_patch_does_not_restore_stale_sibling_nodes(self):
+        project_id, created = self._create(payload={
+            "nodes": [
+                {
+                    "id": "target",
+                    "type": "image",
+                    "title": "目标",
+                    "position": {"x": 0, "y": 0},
+                    "metadata": {"prompt": "old"},
+                },
+                {
+                    "id": "video",
+                    "type": "video",
+                    "title": "视频",
+                    "position": {"x": 100, "y": 0},
+                    "metadata": {"status": "generating"},
+                },
+            ],
+            "connections": [],
+            "episodeImports": [{"id": "EP001", "nodeIds": ["target", "video"]}],
+        })
+        stale = copy.deepcopy(created)
+        current = self.repo.get_project(project_id)
+        canvas_store.update_project_node(
+            project_id,
+            "video",
+            patch_node={
+                "metadata": {
+                    "status": "done",
+                    "content": "/uploads/final.mp4",
+                },
+            },
+            if_revision=current["revision"],
+        )
+        with self.assertRaises(canvas_store.RevisionConflictError):
+            self.repo.patch_node(
+                project_id,
+                "target",
+                {"metadata": {"prompt": "new"}},
+                if_revision=stale["revision"],
+            )
+        saved = self.repo.get_project(project_id)
+        video = next(
+            node for node in saved["payload"]["nodes"]
+            if node["id"] == "video"
+        )
+        self.assertEqual(video["metadata"]["status"], "done")
+        self.assertEqual(
+            video["metadata"]["content"],
+            "/uploads/final.mp4",
+        )
+
     def test_revision_precondition_and_node_edge_layout_updates(self):
         project_id, created = self._create()
         revision = created["revision"]
