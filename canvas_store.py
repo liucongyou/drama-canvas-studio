@@ -1993,6 +1993,19 @@ def repair_episode_node_ownership(project_id):
             )
         ambiguous_ids = set()
         if groups:
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                group_episode = str(group.get("id") or "").strip().upper()
+                if not group_episode:
+                    continue
+                sync_projection_episode(
+                    con,
+                    project_id,
+                    group_episode,
+                    group,
+                    updated_at=stamp,
+                )
             # A node without explicit ownership that appears in multiple
             # episodes is not safe to assign arbitrarily. Keep its row and
             # content, but remove the ambiguous shared membership so it cannot
@@ -2028,6 +2041,19 @@ def repair_episode_node_ownership(project_id):
                         (project_id, node_id),
                     )
                 ambiguous = len(ambiguous_ids)
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                group_episode = str(group.get("id") or "").strip().upper()
+                if not group_episode:
+                    continue
+                sync_projection_episode(
+                    con,
+                    project_id,
+                    group_episode,
+                    group,
+                    updated_at=stamp,
+                )
         if repaired or ambiguous:
             con.execute(
                 "UPDATE canvas_projects SET payload_json=?,updated_at=? WHERE id=?",
