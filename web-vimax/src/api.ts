@@ -198,6 +198,9 @@ export type CanvasVideoVersion = {
   url: string;
   taskId?: string;
   generatedAt?: string;
+  provider?: string;
+  model?: string;
+  providerResultUrl?: string;
   actualDuration?: number;
   validationStatus?: string;
   sourceType?: 'local' | 'generated' | string;
@@ -471,6 +474,7 @@ export type CanvasMediaNode = {
   providerTaskId?: string;
   providerTaskStatusRaw?: string;
   providerSubmittedAt?: string;
+  providerResultUrl?: string;
   // 供应商已出结果、本机还没落盘归档：此时卡片已可显示，但任务行仍是 running
   finalizePending?: boolean;
   episodeId?: string;
@@ -1428,6 +1432,7 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
     providerTaskId: typeof m.providerTaskId === 'string' ? m.providerTaskId : undefined,
     providerTaskStatusRaw: typeof m.providerTaskStatusRaw === 'string' ? m.providerTaskStatusRaw : undefined,
     providerSubmittedAt: typeof m.providerSubmittedAt === 'string' ? m.providerSubmittedAt : undefined,
+    providerResultUrl: typeof m.providerResultUrl === 'string' ? m.providerResultUrl : undefined,
     finalizePending: m.finalizePending === true,
     episodeId: typeof m.episodeId === 'string' ? m.episodeId : undefined,
     actualDuration: Number.isFinite(Number(m.actualDuration)) ? Number(m.actualDuration) : undefined,
@@ -1825,6 +1830,7 @@ export async function patchMediaNodesFields(
         params: normalizeParamsForStorage(node.params) || {},
         source: node.source,
         storage: node.storage,
+        providerResultUrl: node.providerResultUrl,
         storageError: node.storageError,
         ...(node._mediaImport === true ? {_mediaImport: true} : {}),
         ...(node._mediaVersionSelection === true ? {_mediaVersionSelection: true} : {}),

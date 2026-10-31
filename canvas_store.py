@@ -3754,6 +3754,41 @@ def get_latest_succeeded_generation_task_for_node(
     return dict(zip(columns, row)) if row else None
 
 
+def list_succeeded_generation_task_receipts(project_id, kind=""):
+    """Return one latest successful receipt per node without N+1 queries."""
+    if not project_id:
+        return []
+    normalized_kind = str(kind or "").strip()
+    con = _connect()
+    columns = [
+        item[0]
+        for item in con.execute(
+            "SELECT * FROM generation_tasks LIMIT 0"
+        ).description
+    ]
+    sql = (
+        "SELECT * FROM ("
+        "SELECT generation_tasks.*, ROW_NUMBER() OVER ("
+        "PARTITION BY node_id ORDER BY created_at DESC, updated_at DESC, rowid DESC"
+        ") AS receipt_rank FROM generation_tasks "
+        "WHERE project_id=? AND status='succeeded' "
+        "AND COALESCE(provider_result_url,'')!='' "
+    )
+    params = [project_id]
+    if normalized_kind:
+        sql += "AND kind=? "
+        params.append(normalized_kind)
+    sql += ") WHERE receipt_rank=1"
+    rows = con.execute(sql, params).fetchall()
+    con.close()
+    receipts = []
+    for row in rows:
+        task = dict(zip([*columns, "receipt_rank"], row))
+        task.pop("receipt_rank", None)
+        receipts.append(task)
+    return receipts
+
+
 def get_episode_node_ids(project_id, episode_id):
     """Return an episode's node ids without copying or parsing its full canvas."""
     normalized_episode = str(episode_id or "").strip().upper()

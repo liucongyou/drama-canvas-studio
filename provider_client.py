@@ -976,29 +976,6 @@ def _ark_reference_url(ref: dict[str, Any]) -> str:
     source_model = str(ref.get("sourceModel") or "").lower()
     storage_cfg = provider_catalog.storage_config()
     provider_source_url = _ark_reference_source_url(ref)
-    source_generated_at = str(
-        ref.get("generatedAt")
-        or (
-            storage.get("source", {}).get("generatedAt")
-            if isinstance(storage, dict) and isinstance(storage.get("source"), dict)
-            else ""
-        )
-        or ""
-    )
-    if source_model.startswith("doubao-seedream-5-0-") and source_generated_at:
-        try:
-            generated = datetime.fromisoformat(source_generated_at.replace("Z", "+00:00"))
-            if generated.tzinfo is None:
-                generated = generated.replace(tzinfo=timezone.utc)
-            if (datetime.now(timezone.utc) - generated).total_seconds() > 30 * 86400:
-                raise RuntimeError(
-                    "Seedream 5.0 原始人像产物的方舟信任窗口只有生成后 30 天；"
-                    "TOS 能长期保存文件，但不能延长这 30 天信任期，请重新生成角色图"
-                )
-        except RuntimeError:
-            raise
-        except (TypeError, ValueError):
-            pass
     if isinstance(storage, dict) and storage.get("provider") == "tos" and storage.get("key"):
         return tos_storage.internal_presigned_url(storage)
     if (
@@ -1015,6 +992,9 @@ def _ark_reference_url(ref: dict[str, Any]) -> str:
                 "或在火山 TOS 中保存并测试配置后再提交"
             ) from exc
         return provider_source_url
+    # A local original may be uploaded to a configured TOS profile. Failure
+    # here is a storage failure; the caller reports it instead of pretending
+    # that an OSS mirror is the provider original.
     if (
         kind == "image"
         and raw.startswith("/uploads/")
@@ -1022,16 +1002,19 @@ def _ark_reference_url(ref: dict[str, Any]) -> str:
             provider_catalog.storage_profile_config("tos")
         )
     ):
-        descriptor = tos_storage.ensure_local_image(
-            raw,
-            source={
-                "provider": ref.get("sourceProvider"),
-                "model": ref.get("sourceModel"),
-                "taskId": ref.get("taskId"),
-                "generatedAt": ref.get("generatedAt"),
-                "url": raw,
-            },
-        )
+        try:
+            descriptor = tos_storage.ensure_local_image(
+                raw,
+                source={
+                    "provider": ref.get("sourceProvider"),
+                    "model": ref.get("sourceModel"),
+                    "taskId": ref.get("taskId"),
+                    "generatedAt": ref.get("generatedAt"),
+                    "url": raw,
+                },
+            )
+        except Exception:
+            descriptor = None
         if descriptor:
             provider_catalog.record_storage_test_success(provider="tos")
             return tos_storage.internal_presigned_url(descriptor)

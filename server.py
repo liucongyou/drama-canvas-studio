@@ -1474,6 +1474,46 @@ def _editable_param_view(meta):
     }
 
 
+def _active_media_version(meta):
+    """Return the recorded version that backs metadata.content."""
+    if not isinstance(meta, dict):
+        return {}
+    params = meta.get("params")
+    if not isinstance(params, dict):
+        return {}
+    content = str(meta.get("content") or "").strip()
+    if not content:
+        return {}
+    versions = params.get("mediaVersions")
+    if not isinstance(versions, list) or not versions:
+        versions = params.get("videoVersions")
+    if not isinstance(versions, list):
+        return {}
+    index_key = (
+        "videoVersionIndex"
+        if isinstance(params.get("videoVersions"), list)
+        and params.get("videoVersions")
+        else "mediaVersionIndex"
+    )
+    try:
+        index = int(params.get(index_key))
+    except (TypeError, ValueError):
+        index = -1
+    if (
+        0 <= index < len(versions)
+        and isinstance(versions[index], dict)
+        and str(versions[index].get("url") or "").strip() == content
+    ):
+        return versions[index]
+    for item in reversed(versions):
+        if (
+            isinstance(item, dict)
+            and str(item.get("url") or "").strip() == content
+        ):
+            return item
+    return {}
+
+
 def _editable_node_view(node, include_position=False):
     meta = node.get("metadata") or {}
     view = {
@@ -1571,7 +1611,20 @@ def merge_node_metadata(meta, incoming, generation_active=False):
                 params["mediaVersionIndex"] = requested_index
                 if params.get("videoVersions"):
                     params["videoVersionIndex"] = requested_index
-                meta["content"] = str(versions[requested_index].get("url") or "")
+                selected = versions[requested_index]
+                meta["content"] = str(selected.get("url") or "")
+                meta["generatedAt"] = str(selected.get("generatedAt") or "")
+                if selected.get("provider"):
+                    meta["provider"] = str(selected.get("provider"))
+                if selected.get("model"):
+                    meta["model"] = str(selected.get("model"))
+                if isinstance(selected.get("storage"), dict):
+                    meta["storage"] = dict(selected["storage"])
+                else:
+                    meta["storage"] = {}
+                meta["providerResultUrl"] = str(
+                    selected.get("providerResultUrl") or ""
+                )
             meta["params"] = params
             continue
         if (
@@ -1580,7 +1633,10 @@ def merge_node_metadata(meta, incoming, generation_active=False):
                 (local_media_import and key in LOCAL_MEDIA_METADATA_FIELDS)
                 or (
                     media_version_selection
-                    and key in {"content", "status", "generatedAt", "actualDuration", "source"}
+                    and key in {
+                        "content", "status", "generatedAt", "actualDuration",
+                        "source", "storage", "providerResultUrl",
+                    }
                 )
             )
         ):
@@ -1744,7 +1800,15 @@ def _mark_generation_outcome_uncertain(task_id, project_id, node_id, exc, provid
 MAX_MEDIA_VERSIONS = 20
 
 
-def _record_media_version(meta, kind, generated_url, task_id, generated_at, storage=None):
+def _record_media_version(
+    meta,
+    kind,
+    generated_url,
+    task_id,
+    generated_at,
+    storage=None,
+    provider_result_url="",
+):
     media_params = meta.setdefault("params", {})
     source_versions = media_params.get("mediaVersions")
     if not source_versions and kind == "video":
@@ -1763,6 +1827,11 @@ def _record_media_version(meta, kind, generated_url, task_id, generated_at, stor
             "kind": kind,
             "provider": str(meta.get("provider") or previous_production.get("provider") or ""),
             "model": str(meta.get("model") or previous_production.get("model") or ""),
+            "providerResultUrl": str(
+                meta.get("providerResultUrl")
+                or meta.get("providerUrl")
+                or ""
+            ),
         })
     # One paid provider task must produce one persisted media version. A
     # recovery attempt may download the same completed provider result to a new
@@ -1788,6 +1857,7 @@ def _record_media_version(meta, kind, generated_url, task_id, generated_at, stor
         "sourceType": "generated",
         "provider": str(production.get("provider") or meta.get("provider") or ""),
         "model": str(production.get("model") or meta.get("model") or ""),
+        "providerResultUrl": str(provider_result_url or ""),
     }
     if isinstance(storage, dict):
         current_version["storage"] = storage
@@ -2362,6 +2432,7 @@ def _recover_persisted_result_to_canvas(project_id, node_id, task):
         local_url,
         task_id,
         generated_at,
+        provider_result_url=str(task.get("provider_result_url") or ""),
     )
     meta.update({
         "status": "done",
@@ -2691,7 +2762,14 @@ def _finalize_resumed_image(project_id, node_id, state, provider, model):
             local_result_url=generated_url,
             provider_finished_at=generated_at,
         )
-    _record_media_version(meta, "image", generated_url, task_id, generated_at)
+    _record_media_version(
+        meta,
+        "image",
+        generated_url,
+        task_id,
+        generated_at,
+        provider_result_url=str(state.get("url") or ""),
+    )
     meta.update({
         "status": "done",
         "content": generated_url,
@@ -3637,11 +3715,19 @@ def backfill_image_provider_result_urls():
     updated = 0
     for project_row in store.list_projects():
         project_id = str(project_row.get("id") or "")
-        latest_task = store.get_latest_succeeded_generation_task_for_node
         project = store.get_project(project_id)
         if not project:
             continue
         payload = project["payload"]
+        receipts = {
+            str(task.get("node_id") or ""): task
+            for task in store.list_succeeded_generation_task_receipts(
+                project_id,
+                kind="image",
+            )
+        }
+        if not receipts:
+            continue
         changed = 0
         for node in payload.get("nodes", []):
             if (
@@ -3656,16 +3742,143 @@ def backfill_image_provider_result_urls():
                 or meta.get("providerUrl")
                 or ""
             ).strip()
-            if existing.startswith("https://"):
-                continue
-            task = latest_task(
-                project_id,
-                str(node.get("id") or ""),
-                kind="image",
-            ) or {}
+            task = receipts.get(str(node.get("id") or "")) or {}
             value = str(task.get("provider_result_url") or "").strip()
-            if value.startswith("https://"):
+            if existing.startswith("https://") or not value.startswith("https://"):
+                continue
+            params = meta.setdefault("params", {})
+            if not isinstance(params, dict):
+                params = {}
+                meta["params"] = params
+            versions = params.get("mediaVersions")
+            if not isinstance(versions, list) or not versions:
+                versions = params.get("videoVersions")
+            versions = versions if isinstance(versions, list) else []
+            target = _active_media_version(meta)
+            if not target:
+                target = next(
+                    (
+                        item for item in reversed(versions)
+                        if isinstance(item, dict)
+                        and str(item.get("taskId") or "")
+                        == str(task.get("provider_task_id") or "")
+                    ),
+                    {},
+                )
+            if not isinstance(target, dict):
+                target = {}
+            if not target and versions:
+                active_index = params.get("mediaVersionIndex")
+                try:
+                    active_index = int(active_index)
+                except (TypeError, ValueError):
+                    active_index = -1
+                if 0 <= active_index < len(versions) and isinstance(
+                    versions[active_index], dict
+                ):
+                    target = versions[active_index]
+            if target:
+                target["providerResultUrl"] = value
+                if not target.get("generatedAt"):
+                    target["generatedAt"] = str(task.get("provider_finished_at") or "")
+                if not target.get("model"):
+                    target["model"] = str(task.get("model") or "")
+                if not target.get("provider"):
+                    target["provider"] = str(task.get("provider") or "")
+            if str(meta.get("content") or "").strip() == str(target.get("url") or "").strip():
                 meta["providerResultUrl"] = value
+                if not meta.get("generatedAt"):
+                    meta["generatedAt"] = str(task.get("provider_finished_at") or "")
+                if not meta.get("model"):
+                    meta["model"] = str(task.get("model") or "")
+                if not meta.get("provider"):
+                    meta["provider"] = str(task.get("provider") or "")
+            changed += 1
+        if changed:
+            store.update_project(project_id, payload=payload)
+            updated += changed
+    return updated
+
+
+def reconcile_image_provider_metadata():
+    """
+    Repair legacy nodes from the task ledger without inventing URLs.
+
+    - Restore a provider result URL only from a successful image task.
+    - Refresh the node-level storage receipt from the active media version.
+    """
+    updated = 0
+    for project_row in store.list_projects():
+        project_id = str(project_row.get("id") or "")
+        project = store.get_project(project_id)
+        if not project:
+            continue
+        payload = project["payload"]
+        receipts = {
+            str(task.get("node_id") or ""): task
+            for task in store.list_succeeded_generation_task_receipts(
+                project_id,
+                kind="image",
+            )
+        }
+        changed = 0
+        for node in payload.get("nodes", []):
+            if (
+                not isinstance(node, dict)
+                or node.get("type") != "image"
+                or not isinstance(node.get("metadata"), dict)
+            ):
+                continue
+            meta = node["metadata"]
+            params = meta.setdefault("params", {})
+            if not isinstance(params, dict):
+                params = {}
+                meta["params"] = params
+            active_version = _active_media_version(meta)
+            if (
+                active_version
+                and isinstance(active_version.get("storage"), dict)
+                and active_version["storage"] != meta.get("storage")
+            ):
+                meta["storage"] = dict(active_version["storage"])
+                changed += 1
+            if active_version:
+                version_model = str(active_version.get("model") or "").strip()
+                version_generated_at = str(
+                    active_version.get("generatedAt") or ""
+                ).strip()
+                if version_model and not meta.get("model"):
+                    meta["model"] = version_model
+                    changed += 1
+                if version_generated_at and not meta.get("generatedAt"):
+                    meta["generatedAt"] = version_generated_at
+                    changed += 1
+            task = receipts.get(str(node.get("id") or "")) or {}
+            value = str(task.get("provider_result_url") or "").strip()
+            existing = str(
+                active_version.get("providerResultUrl")
+                or meta.get("providerResultUrl")
+                or meta.get("providerUrl")
+                or ""
+            ).strip()
+            if value.startswith("https://") and not existing.startswith("https://"):
+                if active_version:
+                    active_version["providerResultUrl"] = value
+                    if not active_version.get("generatedAt"):
+                        active_version["generatedAt"] = str(
+                            task.get("provider_finished_at") or ""
+                        )
+                    if not active_version.get("model"):
+                        active_version["model"] = str(task.get("model") or "")
+                    if not active_version.get("provider"):
+                        active_version["provider"] = str(task.get("provider") or "")
+                meta["providerResultUrl"] = value
+                if not meta.get("generatedAt"):
+                    meta["generatedAt"] = str(task.get("provider_finished_at") or "")
+                if not meta.get("model"):
+                    meta["model"] = str(task.get("model") or "")
+                if not meta.get("provider"):
+                    meta["provider"] = str(task.get("provider") or "")
                 changed += 1
         if changed:
             store.update_project(project_id, payload=payload)
@@ -6826,15 +7039,27 @@ class Handler(BaseHTTPRequestHandler):
                     })
                     continue
                 kind = "audio" if source_type == "audio" else "video" if source_type == "video" else "image"
+                active_version = dict(_active_media_version(source_meta))
                 source_model = str(
-                    source_meta.get("remoteModel")
+                    active_version.get("model")
                     or source_meta.get("model")
+                    or source_meta.get("remoteModel")
                     or ""
                 ).strip()
-                source_provider = str(source_meta.get("provider") or "").strip()
-                storage = source_meta.get("storage")
+                source_provider = str(
+                    active_version.get("provider")
+                    or source_meta.get("provider")
+                    or ""
+                ).strip()
+                version_storage = active_version.get("storage")
+                storage = (
+                    version_storage
+                    if isinstance(version_storage, dict)
+                    else source_meta.get("storage")
+                )
                 provider_result_url = str(
-                    source_meta.get("providerResultUrl")
+                    active_version.get("providerResultUrl")
+                    or source_meta.get("providerResultUrl")
                     or source_meta.get("providerUrl")
                     or ""
                 ).strip()
@@ -6851,6 +7076,7 @@ class Handler(BaseHTTPRequestHandler):
                             })
                         except Exception:
                             pass
+                    active_version["providerResultUrl"] = provider_result_url
                 resolved.append({
                     "kind": kind,
                     "url": url,
@@ -6861,8 +7087,16 @@ class Handler(BaseHTTPRequestHandler):
                     "sourceModel": source_model,
                     "sourceProvider": source_provider,
                     "providerResultUrl": provider_result_url,
-                    "generatedAt": str(source_meta.get("generatedAt") or ""),
-                    "taskId": str(source_meta.get("taskId") or ""),
+                    "generatedAt": str(
+                        active_version.get("generatedAt")
+                        or source_meta.get("generatedAt")
+                        or ""
+                    ),
+                    "taskId": str(
+                        active_version.get("taskId")
+                        or source_meta.get("taskId")
+                        or ""
+                    ),
                 })
             return resolved, missing
 
@@ -7013,6 +7247,7 @@ class Handler(BaseHTTPRequestHandler):
                     generated_url,
                     str(result.get("taskId") or ""),
                     generated_at,
+                    provider_result_url=provider_url,
                 )
                 meta["content"] = generated_url
                 meta["status"] = "done"
@@ -7768,14 +8003,14 @@ def main():
         print(f"[storage] 本地素材转存失败：{exc}", file=sys.stderr)
     try:
         restored_urls = _run_for_active_tenants(
-            backfill_image_provider_result_urls
+            reconcile_image_provider_metadata
         )
         if restored_urls:
             print(
                 f"已恢复 {restored_urls} 个图片节点的供应商原始链接"
             )
     except Exception as exc:
-        print(f"[provider-result] 图片原链回填失败：{exc}", file=sys.stderr)
+        print(f"[provider-result] 图片元数据对账失败：{exc}", file=sys.stderr)
     try:
         validated = _run_for_active_tenants(backfill_generated_video_validation)
         if validated:

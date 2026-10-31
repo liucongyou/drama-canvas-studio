@@ -113,6 +113,43 @@ class StorageConfigTests(unittest.TestCase):
         self.assertEqual(resolved["bucket"], "tos-originals")
         self.assertEqual(resolved["access_key"], "tos-ak")
 
+    def test_latest_task_receipts_are_batched_per_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "canvas.db")
+            with mock.patch.object(provider_catalog, "LOCAL_CONFIG_PATH", os.path.join(tmp, "config.json")):
+                previous = os.environ.get("CANVAS_DB")
+                os.environ["CANVAS_DB"] = db_path
+                try:
+                    import canvas_store
+
+                    project_id = canvas_store.create_project("receipt-batch")
+                    for index in range(3):
+                        task = canvas_store.create_generation_task(
+                            project_id,
+                            "node-image",
+                            kind="image",
+                        )
+                        canvas_store.finish_generation_task(
+                            task["id"],
+                            status="succeeded",
+                            phase="已完成",
+                            provider_result_url=f"https://provider.example/{index}.png",
+                        )
+                    receipts = canvas_store.list_succeeded_generation_task_receipts(
+                        project_id,
+                        kind="image",
+                    )
+                finally:
+                    if previous is None:
+                        os.environ.pop("CANVAS_DB", None)
+                    else:
+                        os.environ["CANVAS_DB"] = previous
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(
+            receipts[0]["provider_result_url"],
+            "https://provider.example/2.png",
+        )
+
 class TosStorageTests(unittest.TestCase):
     def setUp(self):
         self.client = FakeTosClient()
@@ -396,6 +433,42 @@ class TosStorageTests(unittest.TestCase):
         sign.assert_called_once()
         probe.assert_not_called()
 
+    def test_tos_upload_failure_does_not_impersonate_provider_url(self):
+        profile = {
+            "provider": "tos",
+            "enabled": True,
+            "bucket": "tos-originals",
+            "region": "cn-beijing",
+            "endpoint": "tos-cn-beijing.volces.com",
+            "internal_endpoint": "tos-cn-beijing.ivolces.com",
+            "access_key": "tos-ak",
+            "secret_key": "tos-sk",
+            "last_test_ok": True,
+        }
+        with (
+            mock.patch.object(
+                provider_catalog,
+                "storage_config",
+                return_value={"require_for_ark_portrait": True},
+            ),
+            mock.patch.object(
+                provider_catalog,
+                "storage_profile_config",
+                return_value=profile,
+            ),
+            mock.patch.object(
+                tos_storage,
+                "ensure_local_image",
+                side_effect=RuntimeError("TOS overloaded"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "原始临时链接"):
+                provider_client._ark_reference_url({
+                    "url": "/uploads/role.png",
+                    "kind": "image",
+                    "sourceModel": "doubao-seedream-5-0-pro-260628",
+                })
+
     def test_seedream_uses_verified_tos_profile_when_oss_is_active(self):
         profile = {
             "provider": "tos",
@@ -500,24 +573,24 @@ class TosStorageTests(unittest.TestCase):
         profile["last_test_ok"] = True
         self.assertTrue(tos_storage.is_verified(profile))
 
-    def test_seedream_reference_older_than_trust_window_is_blocked(self):
+    def test_seedream_tos_is_not_rejected_by_an_invented_time_window(self):
         with mock.patch.object(
-            provider_catalog,
-            "storage_config",
-            return_value={"require_for_ark_portrait": True},
+            tos_storage,
+            "internal_presigned_url",
+            return_value="https://tos.internal/role?sig=ok",
         ):
-            with self.assertRaisesRegex(RuntimeError, "30 天"):
-                provider_client._ark_reference_url({
-                    "url": "/uploads/role.png",
-                    "kind": "image",
-                    "sourceModel": "doubao-seedream-5-0-pro-260628",
-                    "generatedAt": "2020-01-01T00:00:00Z",
-                    "storage": {
-                        "provider": "tos",
-                        "bucket": "drama-originals",
-                        "key": "drama-canvas/image/role.png",
-                    },
-                })
+            url = provider_client._ark_reference_url({
+                "url": "/uploads/role.png",
+                "kind": "image",
+                "sourceModel": "doubao-seedream-5-0-pro-260628",
+                "generatedAt": "2020-01-01T00:00:00Z",
+                "storage": {
+                    "provider": "tos",
+                    "bucket": "drama-originals",
+                    "key": "drama-canvas/image/role.png",
+                },
+            })
+        self.assertEqual(url, "https://tos.internal/role?sig=ok")
 
 
 if __name__ == "__main__":

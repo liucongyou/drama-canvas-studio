@@ -2727,11 +2727,15 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
     if (!version?.url) return;
     videoRef.current?.pause();
     audioRef.current?.pause();
+    const generatedVersionSource = version.sourceType === 'generated'
+      || Boolean(version.providerResultUrl || version.storage || version.generatedAt);
     onChange(
       node.id,
       {
         mediaUrl: version.url,
         actualDuration: version.actualDuration ?? node.actualDuration,
+        storage: version.storage,
+        providerResultUrl: version.providerResultUrl,
         source: version.sourceType === 'local'
           ? {
               type: 'local',
@@ -2743,7 +2747,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
               height: version.height,
               uploadedAt: version.generatedAt,
             }
-          : version.sourceType === 'generated'
+          : generatedVersionSource
             ? {...(node.source || {}), type: 'generated'}
             : node.source,
         params: {

@@ -13,6 +13,56 @@ import server
 
 
 class GenerationQueueTests(unittest.TestCase):
+    def test_media_version_selection_syncs_provider_metadata(self):
+        meta = {
+            "content": "/uploads/new.png",
+            "provider": "ark",
+            "model": "new-model",
+            "providerResultUrl": "https://provider.example/new.png",
+            "storage": {"provider": "aliyun_oss"},
+            "params": {
+                "mediaVersions": [
+                    {
+                        "url": "/uploads/old.png",
+                        "generatedAt": "2026-10-30T00:00:00Z",
+                        "provider": "ark",
+                        "model": "doubao-seedream-5-0-pro",
+                        "providerResultUrl": "https://provider.example/old.png",
+                        "storage": {
+                            "provider": "tos",
+                            "key": "drama-canvas/image/old.png",
+                        },
+                    },
+                    {
+                        "url": "/uploads/new.png",
+                        "generatedAt": "2026-10-31T00:00:00Z",
+                        "provider": "ark",
+                        "model": "doubao-seedream-5-0-pro",
+                        "providerResultUrl": "https://provider.example/new.png",
+                        "storage": {"provider": "aliyun_oss"},
+                    },
+                ],
+                "mediaVersionIndex": 1,
+            },
+        }
+        server.merge_node_metadata(
+            meta,
+            {
+                "content": "/uploads/old.png",
+                "source": {"type": "generated"},
+                "_mediaVersionSelection": True,
+                "params": {"mediaVersionIndex": 0},
+            },
+        )
+        self.assertEqual(meta["content"], "/uploads/old.png")
+        self.assertEqual(
+            meta["providerResultUrl"],
+            "https://provider.example/old.png",
+        )
+        self.assertEqual(meta["storage"]["provider"], "tos")
+        self.assertEqual(meta["model"], "doubao-seedream-5-0-pro")
+        self.assertEqual(meta["generatedAt"], "2026-10-30T00:00:00Z")
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.old_db_path = canvas_store.DB_PATH
@@ -1559,6 +1609,134 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(sent[-1][0], 400)
         self.assertIn("参考媒体文件已丢失", sent[-1][1]["error"])
         generate.assert_not_called()
+
+    def test_reference_uses_active_version_tos_not_stale_node_storage(self):
+        source = {
+            "id": "seedream-source",
+            "type": "image",
+            "title": "角色｜当前版本",
+            "metadata": {
+                "status": "done",
+                "content": "/uploads/current.png",
+                "provider": "ark",
+                "model": "doubao-seedream-5-0-pro",
+                "storage": {
+                    "provider": "aliyun_oss",
+                    "url": "https://oss.example/stale.png",
+                },
+                "params": {
+                    "mediaVersions": [
+                        {
+                            "url": "/uploads/old.png",
+                            "storage": {
+                                "provider": "aliyun_oss",
+                                "url": "https://oss.example/old.png",
+                            },
+                        },
+                        {
+                            "url": "/uploads/current.png",
+                            "taskId": "image-task-current",
+                            "generatedAt": "2026-10-31T05:55:16Z",
+                            "provider": "ark",
+                            "model": "doubao-seedream-5-0-pro",
+                            "storage": {
+                                "provider": "tos",
+                                "bucket": "drama-originals",
+                                "key": "drama-canvas/image/current.png",
+                            },
+                        },
+                    ],
+                    "mediaVersionIndex": 1,
+                },
+            },
+        }
+        node = {
+            "id": "video-target",
+            "type": "video",
+            "title": "视频目标",
+            "metadata": {
+                "prompt": "生成视频",
+                "status": "generating",
+                "params": {
+                    "provider": "ark",
+                    "model": "seedance",
+                    "duration": 5,
+                    "resolution": "480P",
+                    "ratio": "9:16",
+                    "refs": [{
+                        "nodeId": "seedream-source",
+                        "label": "角色｜当前版本",
+                    }],
+                },
+            },
+        }
+        project_id = canvas_store.create_project("active-version-reference")
+        project = {"id": project_id, "payload": {"nodes": [source, node]}}
+        canvas_store.update_project(project_id, payload=project["payload"])
+        provider = {
+            "id": "ark",
+            "api_key": "test-key",
+            "base_url": "https://ark.example/api/v3",
+        }
+        model = {
+            "id": "seedance",
+            "remoteModel": "doubao-seedance-2-0-fast",
+            "defaultParams": {},
+            "limits": {},
+        }
+        upload_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(upload_dir.cleanup)
+        Path(upload_dir.name, "current.png").write_bytes(b"image")
+        captured = {}
+
+        def fake_generate(*args, **kwargs):
+            captured["refs"] = args[4]
+            captured["voices"] = args[5]
+            return {
+                "url": "https://provider.example/video.mp4",
+                "taskId": "video-task",
+            }
+
+        handler = object.__new__(server.Handler)
+        handler._send = lambda *_args, **_kwargs: None
+        with (
+            patch.object(server, "_upload_dir", return_value=upload_dir.name),
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(provider, model, {}),
+            ),
+            patch.object(server, "ensure_provider_auth"),
+            patch.object(
+                server.provider_client,
+                "generate_video",
+                side_effect=fake_generate,
+            ),
+            patch.object(server, "persist_generated_media", return_value="/uploads/video.mp4"),
+            patch.object(server, "ensure_video_thumbnail", return_value=""),
+            patch.object(server, "validate_generated_video", return_value={"duration": 5}),
+            patch.object(
+                server,
+                "commit_generation_terminal",
+                return_value={"committed": True},
+            ),
+        ):
+            handler._generate_once(project_id, project, node)
+
+        ref = captured["refs"][0]
+        self.assertEqual(ref["storage"]["provider"], "tos")
+        self.assertEqual(
+            ref["storage"]["key"],
+            "drama-canvas/image/current.png",
+        )
+        self.assertEqual(
+            ref["sourceModel"],
+            "doubao-seedream-5-0-pro",
+        )
+        self.assertEqual(
+            ref["generatedAt"],
+            "2026-10-31T05:55:16Z",
+        )
 
     def test_missing_local_voice_reference_is_rejected_before_provider_call(self):
         source = {
