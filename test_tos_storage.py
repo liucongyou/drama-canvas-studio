@@ -270,6 +270,44 @@ class TosStorageTests(unittest.TestCase):
                     "providerResultUrl": "https://ark-cdn.example/expired.png",
                 })
 
+    def test_seedream_probe_falls_back_when_cdn_rejects_range(self):
+        class FakeResponse:
+            status = 200
+            headers = {"Content-Type": "image/png"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        calls = []
+
+        def fake_open(request, **_kwargs):
+            calls.append(dict(request.header_items()))
+            if "Range" in request.headers:
+                raise provider_client.urllib.error.HTTPError(
+                    request.full_url,
+                    405,
+                    "Method Not Allowed",
+                    {},
+                    None,
+                )
+            return FakeResponse()
+
+        with mock.patch.object(
+            provider_client.network_security,
+            "safe_urlopen",
+            side_effect=fake_open,
+        ):
+            provider_client._probe_ark_reference_url(
+                "https://ark-cdn.example/role.png"
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Range", calls[0])
+        self.assertNotIn("Range", calls[1])
+
     def test_storage_mirror_cannot_impersonate_seedream_original_url(self):
         with (
             mock.patch.object(tos_storage, "is_ready", return_value=False),
