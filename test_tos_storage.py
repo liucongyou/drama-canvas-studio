@@ -308,6 +308,47 @@ class TosStorageTests(unittest.TestCase):
         self.assertIn("Range", calls[0])
         self.assertNotIn("Range", calls[1])
 
+    def test_ark_video_does_not_submit_after_reference_url_failure(self):
+        provider = {
+            "id": "ark",
+            "base_url": "https://ark.example/api/v3",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "seedance",
+            "remoteModel": "doubao-seedance-2-0-fast",
+            "adapter": "ark_video",
+            "defaultParams": {},
+            "limits": {},
+        }
+        refs = [{
+            "kind": "image",
+            "url": "/uploads/role.png",
+            "sourceModel": "doubao-seedream-5-0-pro-260628",
+            "providerResultUrl": "https://ark-cdn.example/expired.png",
+        }]
+        with (
+            mock.patch.object(
+                provider_client,
+                "_probe_ark_reference_url",
+                side_effect=RuntimeError("HTTP 404"),
+            ),
+            mock.patch.object(
+                provider_client,
+                "_submit_json",
+            ) as submit,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "已过期"):
+                provider_client.generate_video(
+                    provider,
+                    model,
+                    "test",
+                    {"ratio": "9:16", "resolution": "720P", "duration": 5},
+                    refs,
+                    [],
+                )
+        submit.assert_not_called()
+
     def test_storage_mirror_cannot_impersonate_seedream_original_url(self):
         with (
             mock.patch.object(tos_storage, "is_ready", return_value=False),
