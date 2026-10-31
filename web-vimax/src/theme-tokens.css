@@ -1641,7 +1641,7 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
 
 .canvas-node.canvas-media-node .canvas-media-card-menu button {
   color: var(--v-text-2) !important;
-  background: color-mix(in srgb, var(--v-surface-raised) 92%, transparent) !important;
+  background: color-mix(in srgb, var(--v-surface) 92%, transparent) !important;
   border: 1px solid var(--v-border-hair) !important;
   box-shadow:
     0 4px 12px color-mix(in srgb, var(--v-shadow-panel) 72%, transparent),
@@ -1649,9 +1649,9 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
 }
 
 .canvas-node.canvas-media-node .canvas-media-card-menu button:hover {
-  color: var(--v-accent-mid) !important;
-  background: var(--v-accent-soft) !important;
-  border-color: var(--v-accent-line) !important;
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border-strong) !important;
 }
 
 .canvas-node.canvas-media-node .canvas-media-card-menu button.is-del:hover {
@@ -1661,28 +1661,52 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
 }
 
 .canvas-flow .canvas-node.canvas-media-node .canvas-media-port::before {
-  color: var(--v-text-3) !important;
-  background-color: color-mix(in srgb, var(--v-surface-sunken) 92%, transparent) !important;
-  border-color: var(--v-border-strong) !important;
+  color: #a9b4c1 !important;
+  background-color: color-mix(in srgb, #15171b 92%, transparent) !important;
+  border-color: rgba(150, 162, 178, 0.78) !important;
   box-shadow:
     0 2px 7px color-mix(in srgb, var(--v-shadow-panel) 72%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--v-text) 8%, transparent) !important;
 }
 
 .canvas-flow .canvas-node.canvas-media-node .canvas-media-port .canvas-port-icon {
-  color: var(--v-text-3) !important;
+  color: #a9b4c1 !important;
 }
 
 .canvas-flow .canvas-node.canvas-media-node .canvas-media-port:hover::before,
 .canvas-flow .canvas-node.canvas-media-node:hover .canvas-media-port::before {
-  color: var(--v-accent-mid) !important;
-  background-color: color-mix(in srgb, var(--v-accent) 16%, var(--v-surface)) !important;
-  border-color: var(--v-accent-line) !important;
+  color: var(--v-text) !important;
+  background-color: color-mix(in srgb, #ffffff 8%, #15171b) !important;
+  border-color: rgba(200, 206, 214, 0.6) !important;
 }
 
 .canvas-flow .canvas-node.canvas-media-node .canvas-media-port:hover .canvas-port-icon,
 .canvas-flow .canvas-node.canvas-media-node:hover .canvas-media-port .canvas-port-icon {
-  color: var(--v-accent-mid) !important;
+  color: var(--v-text) !important;
+}
+
+/* The graphite theme is the original workspace appearance. Keep its card
+   geometry and surface from the reference screenshot; light/forest/copper
+   remain free to use their own tokens. */
+html[data-theme='dark'][data-variant='immersive'] .canvas-node.canvas-media-node {
+  --card-c1: #202733;
+  --card-c2: #1b212b;
+  --card-c3: #171c24;
+}
+html[data-theme='dark'][data-variant='immersive'] .canvas-node.canvas-media-node .canvas-media-card {
+  background:
+    radial-gradient(130% 100% at 50% 0%, rgba(112, 132, 160, 0.16), transparent 68%),
+    linear-gradient(180deg, #202733 0%, #1b212b 58%, #171c24 100%) !important;
+}
+html[data-theme='dark'][data-variant='immersive'] .canvas-node.canvas-media-node:hover .canvas-media-card {
+  background:
+    radial-gradient(130% 100% at 50% 0%, rgba(122, 146, 178, 0.2), transparent 68%),
+    linear-gradient(180deg, #252d3a 0%, #1e252f 58%, #191f28 100%) !important;
+}
+html[data-theme='dark'][data-variant='immersive'] .canvas-node.canvas-media-node.is-active .canvas-media-card {
+  background:
+    radial-gradient(130% 100% at 50% 0%, rgba(122, 146, 178, 0.24), transparent 68%),
+    linear-gradient(180deg, #252d3a 0%, #1e252f 58%, #191f28 100%) !important;
 }
 
 .canvas-node.canvas-media-node .canvas-media-busy-mask {

@@ -1030,6 +1030,11 @@ export function ModelSettingsDialog({
                   className={`model-settings-list-item ${provider.id === item.id ? 'is-active' : ''}`}
                   onClick={() => selectProvider(item)}
                 >
+                  <span className="model-settings-provider-icon" aria-hidden="true">
+                    {item.icon
+                      ? <img src={mediaSourceUrl(item.icon)} alt="" loading="lazy" />
+                      : <Box size={15} strokeWidth={1.8} />}
+                  </span>
                   <span><strong>{item.name}</strong><small>{item.protocol} · {item.base_url}</small></span>
                   <i className={item.has_api_key ? 'is-ready' : ''}>{item.has_api_key ? '已配密钥' : '缺密钥'}</i>
                 </button>

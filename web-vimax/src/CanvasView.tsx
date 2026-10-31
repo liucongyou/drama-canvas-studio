@@ -4989,7 +4989,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 {activeProviderIcon ? (
                   <img src={mediaSourceUrl(activeProviderIcon)} alt="" loading="lazy" />
                 ) : (
-                  <Sparkles size={16} strokeWidth={1.8} />
+                  <Box size={14} strokeWidth={1.9} />
                 )}
               </span>
               <span className="jim-model-trigger-name">{curModelSpec?.label || MODEL_META[curModel]?.label || curModel}</span>
