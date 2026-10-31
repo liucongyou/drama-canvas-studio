@@ -1,7 +1,7 @@
 export const LARGE_CANVAS_MEDIA_THRESHOLD = 400;
 export const LARGE_CANVAS_VIEWPORT_MARGIN_PX = 260;
 export const LARGE_CANVAS_OVERVIEW_CHUNK_SIZE = 220;
-export const CANVAS_VIEWPORT_POLICY_VERSION = 2;
+export const CANVAS_VIEWPORT_POLICY_VERSION = 3;
 export const CANVAS_FOCUS_MIN_ZOOM = 0.5;
 export const CANVAS_RESTORE_MIN_ZOOM = 0.12;
 export const CANVAS_RESTORE_MAX_ZOOM = 8;
@@ -113,6 +113,19 @@ export function chooseActiveEpisodeViewport(
   return (
     selectEpisodeViewport(serverViewports, currentEpisode, projectId)
     || validRestoredViewport(localViewport)
+  );
+}
+
+export function shouldSaveViewport(
+  restoreInFlight: boolean,
+  activeScope: string,
+  writeScope: string,
+): boolean {
+  return Boolean(
+    !restoreInFlight
+    && activeScope
+    && writeScope
+    && activeScope === writeScope
   );
 }
 

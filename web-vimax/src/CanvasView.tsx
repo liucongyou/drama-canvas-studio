@@ -163,6 +163,7 @@ import {
   viewportLoadBounds,
   validRestoredViewport,
   shouldPersistViewport,
+  shouldSaveViewport,
   visibleBoundsForViewport,
   type CanvasViewport,
   type CanvasVisibleBounds,
@@ -8185,10 +8186,35 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const overviewReturnViewportRef = useRef<CanvasViewport | null>(null);
   const focusSelectionRef = useRef<(showEmptyHint?: boolean) => void>(() => {});
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewportRestoreInFlightRef = useRef(false);
+  const viewportRestoreReleaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewportSnapshotRef = useRef({key: '', seq: 0});
   const serverEpisodeViewportsRef = useRef<Record<string, unknown>>({});
   const activeWorkspaceEpisodeRef = useRef<string | null>(null);
   const lastPersistedViewportRef = useRef<{key: string; viewport: {x: number; y: number; zoom: number}} | null>(null);
+
+  const beginViewportRestore = useCallback(() => {
+    viewportRestoreInFlightRef.current = true;
+    if (viewportRestoreReleaseTimer.current) {
+      clearTimeout(viewportRestoreReleaseTimer.current);
+      viewportRestoreReleaseTimer.current = null;
+    }
+  }, []);
+
+  const endViewportRestore = useCallback((delayMs = 80) => {
+    if (viewportRestoreReleaseTimer.current) {
+      clearTimeout(viewportRestoreReleaseTimer.current);
+    }
+    viewportRestoreReleaseTimer.current = setTimeout(() => {
+      viewportRestoreInFlightRef.current = false;
+      viewportRestoreReleaseTimer.current = null;
+    }, Math.max(0, delayMs));
+  }, []);
+  useEffect(() => () => {
+    if (viewportRestoreReleaseTimer.current) {
+      clearTimeout(viewportRestoreReleaseTimer.current);
+    }
+  }, []);
 
   const loadPersistedLayout = useCallback(() => {
     try {
@@ -8253,6 +8279,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     viewportRef.current = viewport;
     const viewportEpisode = activeWorkspaceEpisodeRef.current || currentEp;
     const snapshotKey = `${session}:${viewportEpisode || '__project__'}`;
+    if (!shouldSaveViewport(
+      viewportRestoreInFlightRef.current,
+      snapshotKey,
+      `${session}:${currentEp || '__project__'}`,
+    )) {
+      return;
+    }
     serverEpisodeViewportsRef.current = mergeEpisodeViewport(
       serverEpisodeViewportsRef.current,
       viewportEpisode,
@@ -8312,6 +8345,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [currentEp, layoutKey, session]);
 
   const flushViewportNow = useCallback(() => {
+    if (!shouldSaveViewport(
+      viewportRestoreInFlightRef.current,
+      `${session}:${activeWorkspaceEpisodeRef.current || currentEp || '__project__'}`,
+      `${session}:${currentEp || '__project__'}`,
+    )) return;
     if (viewportSaveTimer.current) {
       clearTimeout(viewportSaveTimer.current);
       viewportSaveTimer.current = null;
@@ -8321,6 +8359,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
 
   const switchEpisode = useCallback((episodeId: string) => {
     if (episodeId === currentEp) return;
+    if (viewportRestoreReleaseTimer.current) {
+      clearTimeout(viewportRestoreReleaseTimer.current);
+      viewportRestoreReleaseTimer.current = null;
+    }
+    viewportRestoreInFlightRef.current = true;
     if (viewportSaveTimer.current) {
       clearTimeout(viewportSaveTimer.current);
       viewportSaveTimer.current = null;
@@ -8351,7 +8394,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       );
     }).catch(() => {});
     setCurrentEp(episodeId);
-    activeWorkspaceEpisodeRef.current = String(episodeId || '').trim().toUpperCase() || null;
+    // Keep the old scope until the target episode shell is loaded. Setting it
+    // here causes onMove/fitView from the leaving canvas to be saved as the
+    // newly selected episode's viewport.
+    activeWorkspaceEpisodeRef.current = String(leavingEpisode || '').trim().toUpperCase() || null;
   }, [currentEp, session]);
 
   // ── 编组操作 ──────────────────────────────────────────────────────
@@ -9248,6 +9294,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     return () => window.clearTimeout(timer);
   }, [loading, canvas]);
   useEffect(() => {
+    beginViewportRestore();
+    if (viewportRestoreReleaseTimer.current) {
+      clearTimeout(viewportRestoreReleaseTimer.current);
+      viewportRestoreReleaseTimer.current = null;
+    }
     setLoading(true);
     setLoadingSlow(false);
     setDataReady(false);
@@ -9377,10 +9428,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           setGenerationTasks(initialTasks);
         });
         workspaceLoadStartedAtRef.current = 0;
-        setLoading(false);
+        // The viewport effect owns the release on the next commit, after the
+        // target episode's canvas and measured nodes exist.
         setDataReady(true);
+        setLoading(false);
       })
       .catch((err: unknown) => {
+        endViewportRestore(0);
         if (loadEpoch === workspaceLoadEpochRef.current) {
           const aborted = err instanceof DOMException && err.name === 'AbortError';
           setError(
@@ -9409,7 +9463,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         workspaceLoadEpochRef.current += 1;
       }
     };
-  }, [session, currentEp, pidRetry]);
+  }, [session, currentEp, pidRetry, beginViewportRestore]);
 
   // 拉取创作质量自评报告（与画布数据并行），供镜头卡弱项色点使用。
   useEffect(() => {
@@ -14451,7 +14505,38 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     // ★ 每次切集（loading/canvas 变化）都必须重新 fit，否则视口停在上一集位置，
     //   媒体卡片会被挤到视口外（实测：剧集页签点「第01集」后画布只剩镜头条块）。
     if (shouldFit) {
-      requestAnimationFrame(() => {
+      beginViewportRestore();
+      let settledFrames = 0;
+      let attempts = 0;
+      const restoreWhenSettled = () => {
+        attempts += 1;
+        if (
+          loading
+          || fittedScopeRef.current !== scope
+        ) return;
+        if (attempts > 180) {
+          const fallback = selectEpisodeViewport(
+            serverEpisodeViewportsRef.current,
+            currentEp,
+            session,
+          );
+          if (fallback) {
+            viewportRef.current = fallback;
+            setZoomPct(Math.round(fallback.zoom * 100));
+            rf.setViewport(fallback, {duration: 0});
+          }
+          endViewportRestore();
+          return;
+        }
+        const nodesReady = rf.getNodes().length > 0
+          && rf.getNodes().every((node) => Boolean(node.measured));
+        settledFrames = nodesReady
+          ? settledFrames + 1
+          : 0;
+        if (settledFrames < 2) {
+          window.requestAnimationFrame(restoreWhenSettled);
+          return;
+        }
         const freshServerViewport = selectEpisodeViewport(
           serverEpisodeViewportsRef.current,
           currentEp,
@@ -14462,13 +14547,16 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         }
         if (savedViewport) {
           viewportRef.current = savedViewport;
+          setZoomPct(Math.round(savedViewport.zoom * 100));
           rf.setViewport(savedViewport, {duration: 0});
         } else {
           fitCanvasRef.current({animate: false, focus: true});
         }
-      });
+        window.setTimeout(() => endViewportRestore(80), 80);
+      };
+      window.requestAnimationFrame(restoreWhenSettled);
     }
-  }, [loading, canvas, session, currentEp]);
+  }, [loading, canvas, session, currentEp, beginViewportRestore, endViewportRestore]);
 
   // 通用文本下载（导出分镜 Markdown / 镜头 CSV / 布局 JSON）
   const downloadText = useCallback((filename: string, text: string, mime = 'text/plain') => {

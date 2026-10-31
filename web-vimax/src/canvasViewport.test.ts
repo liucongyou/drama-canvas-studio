@@ -9,6 +9,7 @@ import {
   selectEpisodeViewport,
   episodeIdFromWorkspace,
   shouldPersistViewport,
+  shouldSaveViewport,
   validRestoredViewport,
   viewportForCanvasBounds,
   viewportLoadBounds,
@@ -41,6 +42,26 @@ describe('canvas viewport persistence threshold', () => {
       {x: 10, y: 20, zoom: 0.5},
       {x: 11, y: 20, zoom: 0.5},
     )).toBe(true);
+  });
+
+  it('never writes while a switch restore is settling or into a different episode scope', () => {
+    expect(shouldSaveViewport(false, 'project:EP002', 'project:EP002')).toBe(true);
+    expect(shouldSaveViewport(true, 'project:EP002', 'project:EP002')).toBe(false);
+    expect(shouldSaveViewport(false, 'project:EP001', 'project:EP002')).toBe(false);
+  });
+
+  it('keeps the previous episode view when the target episode has no saved view', () => {
+    const merged = mergeEpisodeViewport(
+      {},
+      'EP003',
+      {x: -804.5, y: 92, zoom: 0.38},
+    );
+    expect(selectEpisodeViewport(merged, 'EP003')).toEqual({
+      x: -804.5,
+      y: 92,
+      zoom: 0.38,
+    });
+    expect(selectEpisodeViewport(merged, 'EP004')).toBeNull();
   });
 });
 
