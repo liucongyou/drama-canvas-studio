@@ -211,6 +211,54 @@ class CanvasProjectionTests(unittest.TestCase):
             connection.close()
         self.assertEqual(tuple(row), (3, 1, 2, 0, 1))
 
+    def test_legacy_project_without_episode_metadata_reads_as_ep001(self):
+        context = tenant_context.make_context(
+            "legacy-episode-default",
+            "legacy-episode-default",
+        )
+        tenant_context.ensure_context_dirs(context)
+        with tenant_context.use_context(context):
+            path = canvas_store._db_path()
+            connection = canvas_store.sqlite3.connect(path)
+            connection.execute(
+                "CREATE TABLE canvas_projects("
+                "id TEXT PRIMARY KEY,user_id TEXT,title TEXT,payload_json TEXT,"
+                "revision INTEGER DEFAULT 1,created_at TEXT,updated_at TEXT)"
+            )
+            connection.execute(
+                "INSERT INTO canvas_projects("
+                "id,user_id,title,payload_json,revision,created_at,updated_at"
+                ") VALUES(?,?,?,?,?,?,?)",
+                (
+                    "legacy-episode-project",
+                    "legacy",
+                    "旧单集项目",
+                    json.dumps({
+                        "nodes": [{
+                            "id": "legacy-video",
+                            "type": "video",
+                            "title": "段1",
+                            "metadata": {"prompt": "旧视频"},
+                        }],
+                        "connections": [],
+                    }),
+                    1,
+                    "2026-10-30T00:00:00Z",
+                    "2026-10-30T00:00:00Z",
+                ),
+            )
+            connection.commit()
+            connection.close()
+            canvas_store._SCHEMA_READY = False
+            canvas_store._SCHEMA_READY_PATHS.discard(path)
+            loaded = canvas_store.get_project("legacy-episode-project")
+        self.assertIsNotNone(loaded)
+        episodes = loaded["payload"]["episodeImports"]
+        self.assertEqual(len(episodes), 1)
+        self.assertEqual(episodes[0]["id"], "EP001")
+        self.assertEqual(episodes[0]["nodeIds"], ["legacy-video"])
+        self.assertEqual(episodes[0]["videoNodeIds"], ["legacy-video"])
+
     def test_update_keeps_projection_in_sync(self):
         project_id = canvas_store.create_project("projection", self._payload())
         current = canvas_store.get_project(project_id)
