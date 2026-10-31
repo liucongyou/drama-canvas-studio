@@ -175,12 +175,69 @@ class CanvasRepository:
             )
             return {"created": created, "updated": len(nodes) - created}
 
-    def patch_node(self, project_id, node_id, patch, *, if_revision=None):
+    def patch_node(
+        self,
+        project_id,
+        node_id,
+        patch,
+        *,
+        episode_id=None,
+        if_revision=None,
+    ):
         with project_write_lock(project_id):
+            if not str(episode_id or "").strip():
+                current = self._require_project(project_id)
+                node = next(
+                    (
+                        item
+                        for item in current["payload"].get("nodes", [])
+                        if item.get("id") == node_id
+                    ),
+                    None,
+                )
+                if not node:
+                    raise KeyError("节点不存在")
+                candidate_episode = (
+                    node.get("episodeId")
+                    or (node.get("metadata") or {}).get("episodeId")
+                )
+                row = None
+                connection = canvas_store._connect()
+                try:
+                    row = connection.execute(
+                        "SELECT episode_id FROM canvas_projection_nodes "
+                        "WHERE project_id=? AND node_id=?",
+                        (project_id, node_id),
+                    ).fetchone()
+                finally:
+                    connection.close()
+                if (
+                    row
+                    and str(row[0] or "").strip()
+                    and str(row[0]).strip() != canvas_store._UNASSIGNED_EPISODE_ID
+                ):
+                    candidate_episode = str(row[0]).strip()
+                groups = current["payload"].get("episodeImports") or []
+                if (
+                    not candidate_episode
+                    or candidate_episode == canvas_store._UNASSIGNED_EPISODE_ID
+                ):
+                    matches = [
+                        str(group.get("id") or "")
+                        for group in groups
+                        if isinstance(group, dict)
+                        and node_id in (group.get("nodeIds") or [])
+                    ]
+                    if len(matches) == 1:
+                        candidate_episode = matches[0]
+                if not candidate_episode and len(groups) == 1:
+                    candidate_episode = groups[0].get("id")
+                episode_id = candidate_episode
             saved = canvas_store.update_project_node(
                 project_id,
                 node_id,
                 patch_node=patch,
+                episode_id=episode_id,
                 if_revision=if_revision,
             )
             if saved is None:

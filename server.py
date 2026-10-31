@@ -1390,7 +1390,7 @@ def _publish_node_metadata_event(project_id, node_id, updates):
     publish_project_event(project_id, "media", node_id, payload)
 
 
-def commit_node_metadata(project_id, node_id, updates):
+def commit_node_metadata(project_id, node_id, updates, episode_id=None):
     """Merge generated fields into the current node without overwriting peers."""
     with project_write_lock(project_id):
         current = store.get_project(project_id)
@@ -1402,6 +1402,38 @@ def commit_node_metadata(project_id, node_id, updates):
         )
         if not current_node:
             return False
+        owner_row = None
+        connection = store._connect()
+        try:
+            owner_row = connection.execute(
+                "SELECT episode_id,node_json FROM canvas_projection_nodes "
+                "WHERE project_id=? AND node_id=?",
+                (project_id, node_id),
+            ).fetchone()
+        finally:
+            connection.close()
+        owner = {}
+        if owner_row:
+            try:
+                owner = json.loads(owner_row[1] or "{}")
+            except (TypeError, ValueError):
+                owner = {}
+            owner["episodeId"] = str(owner_row[0] or "")
+        owner_episode = str(
+            owner.get("episodeId")
+            or (owner.get("metadata") or {}).get("episodeId")
+            or ""
+        ).strip().upper()
+        requested_episode = str(episode_id or "").strip().upper()
+        if (
+            owner_episode
+            and owner_episode != store._UNASSIGNED_EPISODE_ID
+            and requested_episode
+            and owner_episode != requested_episode
+        ):
+            raise ValueError(
+                f"节点 {node_id} 属于 {owner_episode}，不能从 {requested_episode} 写入"
+            )
         meta = current_node.setdefault("metadata", {})
         pending = dict(updates)
         params_patch = pending.pop("_paramsPatch", None)
@@ -1412,6 +1444,9 @@ def commit_node_metadata(project_id, node_id, updates):
                 meta[key] = value
         if isinstance(params_patch, dict) and params_patch:
             meta["params"] = {**(meta.get("params") or {}), **params_patch}
+        if owner_episode and owner_episode != store._UNASSIGNED_EPISODE_ID:
+            meta["episodeId"] = owner_episode
+            current_node["episodeId"] = owner_episode
         current_node["updatedAt"] = store._now_iso()
         store.update_project(project_id, payload=current["payload"])
         _publish_node_metadata_event(project_id, node_id, updates)
@@ -1956,18 +1991,9 @@ def _filter_generation_tasks_for_episode(project_id, tasks, episode_id, node_ids
     if not episode_id:
         return list(tasks or [])
     if node_ids is None:
-        project = store.get_project(project_id) if project_id else None
-        if not project:
+        if not project_id:
             return []
-        group = next(
-            (
-                item
-                for item in project.get("payload", {}).get("episodeImports", [])
-                if str(item.get("id") or "").upper() == episode_id
-            ),
-            None,
-        )
-        node_ids = (group or {}).get("nodeIds", [])
+        node_ids = store.get_episode_node_ids(project_id, episode_id)
     node_ids = {
         str(node_id)
         for node_id in node_ids
@@ -5078,11 +5104,17 @@ class Handler(BaseHTTPRequestHandler):
                     or params.get("videoVersions")
                     or []
                 )
-                episode_ids = [
-                    str(group.get("id") or "")
-                    for group in payload.get("episodeImports") or []
-                    if node.get("id") in (group.get("nodeIds") or [])
-                ]
+                node_episode = str(
+                    node.get("episodeId")
+                    or meta.get("episodeId")
+                    or ""
+                ).strip().upper()
+                episode_ids = (
+                    [node_episode]
+                    if node_episode
+                    and node_episode != store._UNASSIGNED_EPISODE_ID
+                    else []
+                )
                 assets.append({
                     "id": node.get("id"),
                     "kind": node.get("type"),
@@ -5647,6 +5679,11 @@ class Handler(BaseHTTPRequestHandler):
                         "revision": plan.revision,
                         "warnings": warning_payload,
                     })
+                except ValueError as exc:
+                    return self._send(400, {
+                        "error": str(exc),
+                        "code": "CANVAS_IMPORT_OWNERSHIP_INVALID",
+                    })
                 payload = plan.merged_payload
                 readiness = import_feed.episode_readiness(payload, plan.episode_id)
                 store.record_audit_event(
@@ -5711,6 +5748,23 @@ class Handler(BaseHTTPRequestHandler):
             node = next((n for n in proj["payload"].get("nodes", []) if n["id"] == nid), None)
             if not node:
                 return self._send(404, {"error": "节点不存在"})
+            requested_episode = str(body.get("episodeId") or "").strip().upper()
+            node_episode = str(
+                node.get("episodeId")
+                or (node.get("metadata") or {}).get("episodeId")
+                or ""
+            ).strip().upper()
+            if (
+                requested_episode
+                and node_episode
+                and requested_episode != node_episode
+            ):
+                return self._send(409, {
+                    "error": (
+                        f"节点属于 {node_episode}，不能在 {requested_episode} 提交生成"
+                    ),
+                    "code": "NODE_EPISODE_MISMATCH",
+                })
             # 允许按请求体覆盖类型：候选类型包含 text（文本节点也能 AI 生成）
             if body.get("type") in ("text", "image", "audio", "video"):
                 node["type"] = body["type"]
@@ -5800,6 +5854,7 @@ class Handler(BaseHTTPRequestHandler):
                     "version": 1,
                     "projectId": pid,
                     "nodeId": node["id"],
+                    "episodeId": node_episode or requested_episode,
                     "kind": node.get("type") or "",
                     "provider": params.get("provider") or meta.get("provider") or "",
                     "model": params.get("model") or meta.get("model") or "",
@@ -5811,7 +5866,9 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 task = store.create_generation_task(
                     pid, node["id"], title=node.get("title", ""), kind=node.get("type", ""),
-                    episode_id=str(meta.get("episodeId") or ""),
+                    episode_id=node_episode or requested_episode or str(
+                        meta.get("episodeId") or ""
+                    ),
                     provider=params.get("provider") or meta.get("provider") or "",
                     model=params.get("model") or meta.get("model") or "",
                     estimated_cost=(budget_estimate or {}).get("amount") or 0,
@@ -6427,58 +6484,123 @@ class Handler(BaseHTTPRequestHandler):
         proj = store.get_project(pid)
         if not proj:
             return self._send(404, {"error": "项目不存在"})
-        node = next((n for n in proj["payload"].get("nodes", []) if n["id"] == nid), None)
+        node = store.get_projection_node(pid, nid)
         if not node:
             # upsert：前端新建的卡片 id 形如 m-<timestamp>，载荷里本就不存在，
             # 直接 404 会让"＋添加"添加的一切节点永远存不进去 —— 表现为"加了卡片，刷新就没了"。
             # 这里按 body 建新节点后再走同一套合并逻辑。
+            episode_id = str(body.get("episodeId") or "").strip().upper()
+            if not episode_id:
+                return self._send(400, {
+                    "error": "新建节点必须指定所属集",
+                    "code": "CANVAS_EPISODE_REQUIRED",
+                })
             node = {
                 "id": nid,
                 "type": body.get("type") if body.get("type") in ("text", "image", "audio", "video") else "text",
                 "title": body.get("title") or "未命名节点",
                 "position": body.get("position") if isinstance(body.get("position"), dict) else {"x": 0, "y": 0},
-                "metadata": dict(body.get("metadata") or {}),
+                "metadata": {
+                    **dict(body.get("metadata") or {}),
+                    "episodeId": episode_id,
+                },
                 "createdAt": store._now_iso(),
             }
-            proj["payload"].setdefault("nodes", []).append(node)
+            node["episodeId"] = episode_id
             node["updatedAt"] = store._now_iso()
-            store.update_project(pid, payload=proj["payload"])
-            return self._send(200, {"ok": True, "nodeId": nid, "created": True})
-        incoming_node = {
-            "id": nid,
-            "title": body.get("title", node.get("title")),
-            "metadata": body.get("metadata") if isinstance(body.get("metadata"), dict) else node.get("metadata"),
-            "position": body.get("position") if isinstance(body.get("position"), dict) else node.get("position"),
-            "baseUpdatedAt": body.get("baseUpdatedAt"),
-        }
-        if _node_save_conflict(
-            incoming_node,
-            node,
-            include_position=False,
+            saved = store.insert_project_nodes(
+                pid,
+                [node],
+                episode_id=episode_id,
+                if_revision=proj["revision"],
+            )
+            if not saved or not saved.get("revision"):
+                return self._send(409, {
+                    "error": "项目正在被其他操作更新，请重新保存",
+                    "code": "NODE_REVISION_CONFLICT",
+                })
+            return self._send(200, {
+                "ok": True,
+                "nodeId": nid,
+                "created": bool(saved.get("created")),
+                "updatedAt": saved["nodes"][0].get("updatedAt") if saved.get("nodes") else "",
+                "positionUpdatedAt": (
+                    saved["nodes"][0].get("positionUpdatedAt")
+                    if saved.get("nodes")
+                    else ""
+                ),
+            })
+        requested_episode = str(body.get("episodeId") or "").strip().upper()
+        node_episode = str(
+            node.get("episodeId")
+            or (node.get("metadata") or {}).get("episodeId")
+            or ""
+        ).strip().upper()
+        if (
+            requested_episode
+            and node_episode
+            and requested_episode != node_episode
         ):
+            return self._send(409, {
+                "error": (
+                    f"节点属于 {node_episode}，不能在 {requested_episode} 保存"
+                ),
+                "code": "NODE_EPISODE_MISMATCH",
+            })
+        active_task_nodes = {
+            task.get("node_id")
+            for task in store.list_generation_tasks(pid, 300)
+            if task.get("status") in {"queued", "submitting", "running"}
+        }
+
+        def merge_metadata(target, incoming):
+            merge_node_metadata(
+                target,
+                incoming,
+                generation_active=nid in active_task_nodes,
+            )
+
+        try:
+            update_result = store.patch_project_node_atomic(
+                pid,
+                requested_episode or node_episode,
+                nid,
+                {
+                    "_baseUpdatedAt": body.get("baseUpdatedAt"),
+                    "metadata": (
+                        body.get("metadata")
+                        if isinstance(body.get("metadata"), dict)
+                        else {}
+                    ),
+                    **(
+                        {"title": body["title"]}
+                        if "title" in body
+                        else {}
+                    ),
+                    "position": (
+                        body.get("position")
+                        if isinstance(body.get("position"), dict)
+                        else None
+                    ),
+                },
+                merge_metadata=merge_metadata,
+            )
+        except ValueError as exc:
+            return self._send(409, {
+                "error": str(exc),
+                "code": "NODE_EPISODE_MISMATCH",
+            })
+        except store.RevisionConflictError:
             return self._send(409, {
                 "error": "另一个标签页已更新此节点，已拒绝覆盖。请刷新后再编辑。",
                 "code": "NODE_EDIT_CONFLICT",
                 "nodeId": nid,
-                "serverUpdatedAt": node.get("updatedAt"),
             })
-        # 合并更新（metadata 深合并，position/title 直接覆盖）
-        if isinstance(body.get("metadata"), dict):
-            meta = node.setdefault("metadata", {})
-            active_task_nodes = {
-                task.get("node_id")
-                for task in store.list_generation_tasks(pid, 300)
-                if task.get("status") in {"queued", "submitting", "running"}
-            }
-            merge_node_metadata(
-                meta,
-                body["metadata"],
-                generation_active=nid in active_task_nodes,
-            )
-        if "title" in body:
-            node["title"] = body["title"]
-        node["updatedAt"] = store._now_iso()
-        store.update_project(pid, payload=proj["payload"])
+        if not update_result:
+            return self._send(409, {
+                "error": "项目正在被其他操作更新，请重新保存",
+                "code": "NODE_REVISION_CONFLICT",
+            })
         return self._send(200, {"ok": True, "nodeId": nid})
 
     def do_DELETE(self):
@@ -6523,11 +6645,7 @@ class Handler(BaseHTTPRequestHandler):
                     "error": f"{episode_id.upper()} 不存在",
                     "code": "EPISODE_NOT_FOUND",
                 })
-            node_ids = [
-                str(node_id)
-                for node_id in target.get("nodeIds") or []
-                if node_id
-            ]
+            node_ids = store.get_episode_node_ids(pid, target["id"])
             if node_ids:
                 return self._send(409, {
                     "error": f"{target['id']} 还有 {len(node_ids)} 个节点，请先移除或迁移后再删除集数",

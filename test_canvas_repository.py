@@ -87,6 +87,7 @@ class CanvasRepositoryTests(unittest.TestCase):
                     "content": "/uploads/final.mp4",
                 },
             },
+            episode_id="EP001",
             if_revision=current["revision"],
         )
         with self.assertRaises(canvas_store.RevisionConflictError):

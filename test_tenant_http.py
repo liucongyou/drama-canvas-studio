@@ -235,7 +235,7 @@ class TenantHttpTests(unittest.TestCase):
             f"/api/projects/{pid}/nodes",
             "alpha.example.com",
             cookie,
-            {"nodes": [node]},
+            {"nodes": [node], "episodeId": "EP001"},
         )
         self.assertEqual(status, 200)
         status, _, project_body = self.request(
@@ -252,7 +252,7 @@ class TenantHttpTests(unittest.TestCase):
         original_updated_at = stored["updatedAt"]
         original_position_updated_at = stored["positionUpdatedAt"]
 
-        status, _, _ = self.request(
+        status, _, conflict_body = self.request(
             "PUT",
             f"/api/projects/{pid}/nodes/{node['id']}",
             "alpha.example.com",
@@ -260,9 +260,10 @@ class TenantHttpTests(unittest.TestCase):
             {
                 "baseUpdatedAt": original_updated_at,
                 "metadata": {"prompt": "second", "status": "done", "params": {"ratio": "1:1"}},
+                "episodeId": "EP001",
             },
         )
-        self.assertEqual(status, 200)
+        self.assertEqual(status, 200, conflict_body.decode("utf-8"))
 
         status, _, move_body = self.request(
             "PUT",
@@ -337,7 +338,7 @@ class TenantHttpTests(unittest.TestCase):
             f"/api/projects/{pid}/nodes",
             "alpha.example.com",
             cookie,
-            {"nodes": [node]},
+            {"nodes": [node], "episodeId": "EP001"},
         )
         owner = "tab-alpha"
         self.request(
@@ -405,7 +406,7 @@ class TenantHttpTests(unittest.TestCase):
             f"/api/projects/{pid}/nodes",
             "alpha.example.com",
             cookie,
-            {"nodes": [node]},
+            {"nodes": [node], "episodeId": "EP001"},
         )
         # A legacy or cached client may still send position in the generic bulk
         # payload. Existing nodes must ignore it; only /nodes/positions writes.
@@ -418,7 +419,7 @@ class TenantHttpTests(unittest.TestCase):
                 **node,
                 "position": {"x": 999, "y": 888},
                 "metadata": {"prompt": "更新提示词"},
-            }]},
+            }], "episodeId": "EP001"},
         )
         self.assertEqual(status, 200)
         _, _, project_body = self.request(
@@ -433,6 +434,61 @@ class TenantHttpTests(unittest.TestCase):
         )
         self.assertEqual(final_node["position"], {"x": 10.0, "y": 20.0})
         self.assertEqual(final_node["metadata"]["prompt"], "更新提示词")
+
+    def test_node_save_rejects_wrong_episode(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        _, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "集归属拒绝测试"},
+        )
+        pid = json.loads(body)["id"]
+        node = {
+            "id": "episode-owned-node",
+            "type": "image",
+            "title": "角色",
+            "position": {"x": 0, "y": 0},
+            "metadata": {"prompt": "角色"},
+        }
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes",
+            "alpha.example.com",
+            cookie,
+            {"nodes": [node], "episodeId": "EP001"},
+        )
+        self.assertEqual(status, 200)
+
+        status, _, error_body = self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes/{node['id']}",
+            "alpha.example.com",
+            cookie,
+            {
+                "metadata": {"prompt": "错误集"},
+                "episodeId": "EP002",
+            },
+        )
+
+        self.assertEqual(status, 409)
+        payload = json.loads(error_body)
+        self.assertEqual(payload["code"], "NODE_EPISODE_MISMATCH")
+        workspace = None
+        with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+            workspace = server.store.get_project_workspace_nodes(pid, "EP001")
+        self.assertIn(
+            node["id"],
+            {item["id"] for item in workspace["nodes"]},
+        )
 
     def test_manual_connections_persist_without_overwriting_automatic_edges(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
@@ -479,7 +535,7 @@ class TenantHttpTests(unittest.TestCase):
             f"/api/projects/{pid}/nodes",
             "alpha.example.com",
             cookie,
-            {"nodes": nodes},
+            {"nodes": nodes, "episodeId": "EP001"},
         )
         self.assertEqual(status, 200)
         with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
@@ -592,7 +648,7 @@ class TenantHttpTests(unittest.TestCase):
             f"/api/projects/{pid}/nodes",
             "alpha.example.com",
             cookie,
-            {"nodes": nodes},
+            {"nodes": nodes, "episodeId": "EP001"},
         )
         self.assertEqual(status, 200)
 
@@ -630,6 +686,7 @@ class TenantHttpTests(unittest.TestCase):
                             "label": "角色图",
                         }]},
                     },
+                    "episodeId": "EP001",
                 },
             ))
 

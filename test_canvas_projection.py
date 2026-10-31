@@ -128,6 +128,231 @@ class CanvasProjectionTests(unittest.TestCase):
             ["edge-1"],
         )
 
+    def test_episode_read_ignores_tampered_json_membership_snapshot(self):
+        project_id = canvas_store.create_project(
+            "projection-ownership-source",
+            self._payload(),
+        )
+        def tamper_membership(con):
+            con.execute(
+                "UPDATE canvas_projection_episodes "
+                "SET node_ids_json=?,video_node_ids_json=? "
+                "WHERE project_id=? AND episode_id='EP001'",
+                (
+                    json.dumps(["image-2"]),
+                    json.dumps([]),
+                    project_id,
+                ),
+            )
+
+        canvas_store._run_write_transaction(tamper_membership)
+
+        workspace = canvas_store.get_project_workspace_nodes(
+            project_id,
+            "EP001",
+        )
+        project = canvas_store.get_project(project_id)
+        ep001 = next(
+            group for group in project["payload"]["episodeImports"]
+            if group["id"] == "EP001"
+        )
+
+        self.assertEqual(
+            [node["id"] for node in workspace["nodes"]],
+            ["image-1", "video-1"],
+        )
+        self.assertEqual(ep001["nodeIds"], ["image-1", "video-1"])
+        self.assertEqual(ep001["videoNodeIds"], ["video-1"])
+
+    def test_episode_node_ids_have_no_payload_json_fallback(self):
+        project_id = canvas_store.create_project(
+            "projection-node-ids-source",
+            {
+                "title": "payload fallback isolation",
+                "nodes": [],
+                "connections": [],
+                "episodeViewports": {},
+                "episodeLayouts": {},
+                "episodeImports": [{
+                    "id": "EP009",
+                    "nodeIds": ["legacy-ghost"],
+                }],
+            },
+        )
+        project = canvas_store.get_project(project_id)
+
+        self.assertEqual(
+            canvas_store.get_episode_node_ids(project_id, "EP009"),
+            [],
+        )
+        self.assertNotIn(
+            "legacy-ghost",
+            next(
+                group
+                for group in project["payload"]["episodeImports"]
+                if group["id"] == "EP009"
+            )["nodeIds"],
+        )
+
+    def test_node_moved_to_other_episode_is_absent_from_original_episode(self):
+        project_id = canvas_store.create_project(
+            "projection-ownership-move",
+            self._payload(),
+        )
+        node = canvas_store.get_projection_node(project_id, "image-1")
+        node["metadata"]["episodeId"] = "EP002"
+        canvas_store.update_project_nodes(
+            project_id,
+            [node],
+            episode_id="EP002",
+        )
+
+        ep001 = canvas_store.get_project_workspace_nodes(project_id, "EP001")
+        ep002 = canvas_store.get_project_workspace_nodes(project_id, "EP002")
+
+        self.assertNotIn(
+            "image-1",
+            {item["id"] for item in ep001["nodes"]},
+        )
+        self.assertIn(
+            "image-1",
+            {item["id"] for item in ep002["nodes"]},
+        )
+
+    def test_atomic_node_edit_bumps_revision_and_owned_snapshot(self):
+        project_id = canvas_store.create_project(
+            "projection-atomic-edit",
+            self._payload(),
+        )
+        before = canvas_store.get_project(project_id)
+
+        saved = canvas_store.patch_project_node_atomic(
+            project_id,
+            "EP001",
+            "image-1",
+            {
+                "metadata": {"prompt": "atomic"},
+            },
+            merge_metadata=lambda target, incoming: target.update(incoming),
+        )
+        after = canvas_store.get_project(project_id)
+        group = next(
+            item for item in after["payload"]["episodeImports"]
+            if item["id"] == "EP001"
+        )
+        row = canvas_store._connect()
+        try:
+            owner = row.execute(
+                "SELECT episode_id FROM canvas_projection_nodes "
+                "WHERE project_id=? AND node_id=?",
+                (project_id, "image-1"),
+            ).fetchone()
+        finally:
+            row.close()
+
+        self.assertEqual(saved["metadata"]["prompt"], "atomic")
+        self.assertEqual(after["revision"], before["revision"] + 1)
+        self.assertEqual(owner[0], "EP001")
+        self.assertIn("image-1", group["nodeIds"])
+        self.assertEqual(
+            after["payload"]["nodes"][0]["metadata"]["prompt"],
+            "atomic",
+        )
+
+    def test_atomic_node_edit_targets_project_and_episode(self):
+        first_project = canvas_store.create_project(
+            "projection-atomic-project-a",
+            self._payload(),
+        )
+        second_project = canvas_store.create_project(
+            "projection-atomic-project-b",
+            self._payload(),
+        )
+
+        wrong_episode = canvas_store.patch_project_node_atomic(
+            first_project,
+            "EP002",
+            "image-1",
+            {"metadata": {"prompt": "wrong episode"}},
+            merge_metadata=lambda target, incoming: target.update(incoming),
+        )
+        right_project = canvas_store.patch_project_node_atomic(
+            second_project,
+            "EP001",
+            "image-1",
+            {"metadata": {"prompt": "second project"}},
+            merge_metadata=lambda target, incoming: target.update(incoming),
+        )
+
+        first = canvas_store.get_project_workspace_nodes(first_project, "EP001")
+        second = canvas_store.get_project_workspace_nodes(second_project, "EP001")
+        first_node = next(item for item in first["nodes"] if item["id"] == "image-1")
+        second_node = next(item for item in second["nodes"] if item["id"] == "image-1")
+
+        self.assertIsNone(wrong_episode)
+        self.assertEqual(right_project["metadata"]["prompt"], "second project")
+        self.assertEqual(first_node["metadata"]["prompt"], "角色")
+        self.assertEqual(second_node["metadata"]["prompt"], "second project")
+
+    def test_same_node_id_in_two_projects_stays_isolated(self):
+        first_project = canvas_store.create_project(
+            "project-a",
+            {
+                **self._payload(),
+                "nodes": [{
+                    "id": "shared-node-id",
+                    "type": "image",
+                    "metadata": {"episodeId": "EP001"},
+                }],
+                "connections": [],
+                "episodeImports": [{
+                    "id": "EP001",
+                    "nodeIds": ["shared-node-id"],
+                }],
+                "episodeViewports": {},
+                "episodeLayouts": {},
+            },
+        )
+        second_project = canvas_store.create_project(
+            "project-b",
+            {
+                "nodes": [{
+                    "id": "shared-node-id",
+                    "type": "video",
+                    "metadata": {"episodeId": "EP001"},
+                }],
+                "connections": [],
+                "episodeImports": [{
+                    "id": "EP001",
+                    "nodeIds": ["shared-node-id"],
+                }],
+            },
+        )
+
+        first = canvas_store.get_project_workspace_nodes(first_project, "EP001")
+        second = canvas_store.get_project_workspace_nodes(second_project, "EP001")
+
+        self.assertEqual(first["nodes"][0]["type"], "image")
+        self.assertEqual(second["nodes"][0]["type"], "video")
+
+    def test_node_database_rejects_empty_episode_id(self):
+        project_id = canvas_store.create_project("projection-required-owner")
+        with self.assertRaises(canvas_store.sqlite3.IntegrityError):
+            canvas_store._run_write_transaction(
+                lambda con: con.execute(
+                    "INSERT INTO canvas_projection_nodes("
+                    "project_id,node_id,episode_id,node_type,node_json"
+                    ") VALUES(?,?,?,?,?)",
+                    (
+                        project_id,
+                        "empty-owner",
+                        "",
+                        "image",
+                        "{}",
+                    ),
+                )
+            )
+
     def test_projection_counts_failed_nodes_without_payload_parse(self):
         project_id = canvas_store.create_project("projection", self._payload())
         summary = next(
@@ -152,6 +377,7 @@ class CanvasProjectionTests(unittest.TestCase):
                     "content": "/uploads/final.mp4",
                 },
             },
+            episode_id="EP001",
             if_revision=current["revision"],
         )
         self.assertIsNotNone(node_result)
