@@ -304,6 +304,14 @@ describe('api request recovery', () => {
                 }],
                 connections: [],
                 layouts: {},
+                notes: [{
+                  id: 'note-1',
+                  episodeId: 'EP001',
+                  text: '备注',
+                  x: 0,
+                  y: 0,
+                  updatedAt: '2026-10-28T00:00:00Z',
+                }],
               }
             : target.includes('/api/projects/project-1')
               ? {
@@ -663,6 +671,7 @@ describe('api request recovery', () => {
               }],
               connections: [],
               layouts: {},
+              notes: [],
             };
       return Promise.resolve(new Response(JSON.stringify(body), {
         status: 200,
@@ -793,6 +802,7 @@ describe('api request recovery', () => {
                 }],
                 connections: [],
                 layouts: {},
+                notes: [],
               }
             : {
             id: 'project-2',

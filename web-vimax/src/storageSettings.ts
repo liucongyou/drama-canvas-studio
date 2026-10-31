@@ -45,7 +45,10 @@ export function mergeSavedStorageState(
   const merged = mergeStorageProfile(current, response, savedProvider);
   return {
     ...merged,
-    enabled: response.enabled,
+    enabled: Boolean(
+      response.enabled
+      && response.provider === savedProvider
+    ),
     provider: savedProvider,
     access_key: '',
     secret_key: '',
@@ -60,7 +63,10 @@ export function draftForProvider(
   const profile = storage?.profiles?.[provider];
   return {
     ...current,
-    enabled: current.enabled,
+    enabled: Boolean(
+      storage?.enabled
+      && storage.provider === provider
+    ),
     provider,
     bucket: profile?.bucket || '',
     region: profile?.region || 'cn-beijing',

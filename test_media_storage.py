@@ -318,6 +318,37 @@ class MediaStorageTests(unittest.TestCase):
                 self.assertEqual(qiniu["profiles"]["qiniu"]["bucket"], "qiniu-bucket")
                 self.assertEqual(qiniu["profiles"]["qiniu"]["public_domain"], "https://cdn.qiniu.example")
 
+    def test_deactivated_storage_is_not_reported_as_ready_or_active(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.local.json")
+            with mock.patch.object(provider_catalog, "LOCAL_CONFIG_PATH", path):
+                provider_catalog.save_storage_config({
+                    "provider": "tos",
+                    "bucket": "tos-bucket",
+                    "region": "cn-beijing",
+                    "endpoint": "tos-cn-beijing.volces.com",
+                    "internal_endpoint": "tos-cn-beijing.ivolces.com",
+                    "access_key": "ak",
+                    "secret_key": "sk",
+                })
+                active = provider_catalog.activate_storage_provider("tos")
+                self.assertTrue(active["enabled"])
+                self.assertTrue(active["ready"])
+                self.assertTrue(active["active"])
+
+                disabled = provider_catalog.deactivate_storage()
+                self.assertFalse(disabled["enabled"])
+                self.assertFalse(disabled["ready"])
+                self.assertFalse(disabled["active"])
+                self.assertTrue(disabled["configured"])
+                self.assertIn("tos", disabled["profiles"])
+
+                reloaded = provider_catalog.public_storage_config()
+                self.assertFalse(reloaded["enabled"])
+                self.assertFalse(reloaded["ready"])
+                self.assertFalse(reloaded["active"])
+                self.assertTrue(reloaded["tos_ready"])
+
 
 if __name__ == "__main__":
     unittest.main()

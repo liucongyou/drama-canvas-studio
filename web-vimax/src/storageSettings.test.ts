@@ -48,7 +48,7 @@ describe('storage provider form isolation', () => {
   it('clears Tos connection fields when selecting unconfigured Qiniu', () => {
     const next = draftForProvider(base, storage, 'qiniu');
     expect(next.provider).toBe('qiniu');
-    expect(next.enabled).toBe(base.enabled);
+    expect(next.enabled).toBe(false);
     expect(next.bucket).toBe('');
     expect(next.endpoint).toBe('');
     expect(next.public_domain).toBe('');
@@ -142,5 +142,21 @@ describe('storage provider form isolation', () => {
     expect(next.provider).toBe('aliyun_oss');
     expect(next.bucket).toBe('oss-bucket');
     expect(next.access_key).toBe('');
+  });
+
+  it('does not mark a saved inactive profile as globally enabled', () => {
+    const inactive = {
+      ...base,
+      enabled: false,
+      provider: 'tos',
+      active_provider: 'tos',
+    };
+    const next = mergeSavedStorageState(
+      {...base, enabled: false, provider: 'aliyun_oss'},
+      inactive,
+      'aliyun_oss',
+    );
+    expect(next.enabled).toBe(false);
+    expect(next.provider).toBe('aliyun_oss');
   });
 });

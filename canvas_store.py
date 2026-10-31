@@ -184,6 +184,35 @@ def _connect():
             "CREATE INDEX IF NOT EXISTS idx_canvas_projection_episodes_project "
             "ON canvas_projection_episodes(project_id, episode_id)"
             )
+            con.execute(
+            """CREATE TABLE IF NOT EXISTS canvas_projection_notes(
+                project_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
+                note_id TEXT NOT NULL,
+                text TEXT DEFAULT '',
+                position_x REAL DEFAULT 0,
+                position_y REAL DEFAULT 0,
+                note_json TEXT DEFAULT '{}',
+                updated_at TEXT DEFAULT '',
+                PRIMARY KEY(project_id, episode_id, note_id)
+            )"""
+            )
+            con.execute(
+            "CREATE TRIGGER IF NOT EXISTS trg_canvas_projection_notes_episode_insert "
+            "BEFORE INSERT ON canvas_projection_notes "
+            "WHEN NEW.episode_id IS NULL OR TRIM(NEW.episode_id)='' "
+            "BEGIN SELECT RAISE(ABORT, 'episode_id required'); END"
+            )
+            con.execute(
+            "CREATE TRIGGER IF NOT EXISTS trg_canvas_projection_notes_episode_update "
+            "BEFORE UPDATE OF episode_id ON canvas_projection_notes "
+            "WHEN NEW.episode_id IS NULL OR TRIM(NEW.episode_id)='' "
+            "BEGIN SELECT RAISE(ABORT, 'episode_id required'); END"
+            )
+            con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_projection_notes_episode "
+            "ON canvas_projection_notes(project_id, episode_id, note_id)"
+            )
             episode_state_columns = {
                 row[1]
                 for row in con.execute("PRAGMA table_info(canvas_projection_episodes)")
@@ -456,6 +485,30 @@ def _connect():
                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     (projection_version, "1"),
                 )
+            notes_migration = "canvas_projection_notes_v1"
+            notes_migrated = con.execute(
+                "SELECT 1 FROM canvas_meta WHERE key=?",
+                (notes_migration,),
+            ).fetchone()
+            if not notes_migrated:
+                rows = con.execute(
+                    "SELECT id,payload_json FROM canvas_projects"
+                ).fetchall()
+                for project_id, raw_payload in rows:
+                    try:
+                        payload = json.loads(raw_payload or "{}")
+                    except (TypeError, ValueError):
+                        payload = {}
+                    sync_legacy_project_notes(
+                        con,
+                        project_id,
+                        payload,
+                    )
+                con.execute(
+                    "INSERT INTO canvas_meta(key,value) VALUES(?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (notes_migration, "1"),
+                )
             con.commit()
             _SCHEMA_READY_PATHS.add(path)
             _SCHEMA_READY = True
@@ -672,6 +725,223 @@ def _projection_node_values(project_id, node, *, episode_id="", stamp=""):
         json.dumps(node, ensure_ascii=False),
         str(node.get("updatedAt") or stamp),
     )
+
+
+def _normalize_note(note, episode_id=""):
+    if not isinstance(note, dict) or not note.get("id"):
+        return None
+    normalized_episode = str(
+        episode_id or note.get("episodeId") or ""
+    ).strip().upper()
+    if not normalized_episode:
+        raise ValueError("保存备注必须指定所属集")
+    note_id = str(note.get("id") or "").strip()
+    if not note_id:
+        return None
+    try:
+        x = float(note.get("x") or 0)
+        y = float(note.get("y") or 0)
+    except (TypeError, ValueError):
+        raise ValueError("备注坐标必须是数字")
+    value = {
+        "id": note_id,
+        "episodeId": normalized_episode,
+        "text": str(note.get("text") or ""),
+        "x": x,
+        "y": y,
+        "updatedAt": str(
+            note.get("updatedAt")
+            or _now_iso()
+        ),
+    }
+    return value
+
+
+def sync_legacy_project_notes(con, project_id, payload):
+    """Migrate project-level notes once, without broadcasting them by episode."""
+    existing = con.execute(
+        "SELECT 1 FROM canvas_projection_notes WHERE project_id=? LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    if existing:
+        return 0
+    extras = payload.get("extras") if isinstance(payload, dict) else None
+    notes = extras.get("notes") if isinstance(extras, dict) else None
+    if not isinstance(notes, list) or not notes:
+        return 0
+    episode_ids = {
+        str(group.get("id") or "").strip().upper()
+        for group in payload.get("episodeImports") or []
+        if isinstance(group, dict)
+    }
+    target_episode = "EP001"
+    if episode_ids and target_episode not in episode_ids:
+        target_episode = sorted(episode_ids)[0]
+    con.execute(
+        "INSERT INTO canvas_projection_episodes("
+        "project_id,episode_id,title,group_json,node_ids_json,"
+        "video_node_ids_json,connection_ids_json,viewport_json,layout_json,"
+        "updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(project_id,episode_id) DO NOTHING",
+        (
+            project_id,
+            target_episode,
+            target_episode,
+            json.dumps({
+                "id": target_episode,
+                "title": target_episode,
+                "nodeIds": [],
+                "videoNodeIds": [],
+                "connectionIds": [],
+            }, ensure_ascii=False),
+            "[]",
+            "[]",
+            "[]",
+            "",
+            "{}",
+            _now_iso(),
+        ),
+    )
+    stamp = _now_iso()
+    migrated = 0
+    for raw_note in notes:
+        try:
+            note = _normalize_note(raw_note, target_episode)
+        except ValueError:
+            continue
+        if not note:
+            continue
+        con.execute(
+            "INSERT INTO canvas_projection_notes("
+            "project_id,episode_id,note_id,text,position_x,position_y,"
+            "note_json,updated_at) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(project_id,episode_id,note_id) DO NOTHING",
+            (
+                project_id,
+                target_episode,
+                note["id"],
+                note["text"],
+                note["x"],
+                note["y"],
+                json.dumps(note, ensure_ascii=False),
+                note["updatedAt"] or stamp,
+            ),
+        )
+        migrated += 1
+    return migrated
+
+
+def get_episode_notes(project_id, episode_id):
+    normalized = str(episode_id or "").strip().upper()
+    if not normalized:
+        raise ValueError("读取备注必须指定所属集")
+    con = _connect()
+    rows = con.execute(
+        "SELECT note_json FROM canvas_projection_notes "
+        "WHERE project_id=? AND episode_id=? ORDER BY rowid",
+        (project_id, normalized),
+    ).fetchall()
+    con.close()
+    notes = []
+    for (raw,) in rows:
+        try:
+            note = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(note, dict) and note.get("id"):
+            notes.append({**note, "episodeId": normalized})
+    return notes
+
+
+def replace_episode_notes(
+    project_id,
+    episode_id,
+    notes,
+    *,
+    if_revision=None,
+):
+    normalized = str(episode_id or "").strip().upper()
+    if not normalized:
+        raise ValueError("保存备注必须指定所属集")
+    if not isinstance(notes, list):
+        raise ValueError("备注必须是数组")
+    con = _connect()
+    try:
+        project_exists = con.execute(
+            "SELECT 1 FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        episode_exists = con.execute(
+            "SELECT 1 FROM canvas_projection_episodes "
+            "WHERE project_id=? AND episode_id=?",
+            (project_id, normalized),
+        ).fetchone()
+    finally:
+        con.close()
+    if not project_exists:
+        return None
+    if not episode_exists:
+        raise ValueError(f"集 {normalized} 不在当前项目中，请刷新项目后重试")
+    normalized_notes = []
+    seen = set()
+    for raw_note in notes:
+        note = _normalize_note(raw_note, normalized)
+        if not note or note["id"] in seen:
+            continue
+        seen.add(note["id"])
+        normalized_notes.append(note)
+
+    def write(con):
+        row = con.execute(
+            "SELECT revision FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if not row:
+            return None
+        current_revision = int(row[0] or 0)
+        if (
+            if_revision is not None
+            and current_revision != int(if_revision)
+        ):
+            raise RevisionConflictError(
+                f"项目已更新：期望 revision={if_revision}，"
+                f"实际 revision={current_revision}"
+            )
+        stamp = _now_iso()
+        con.execute(
+            "DELETE FROM canvas_projection_notes "
+            "WHERE project_id=? AND episode_id=?",
+            (project_id, normalized),
+        )
+        for note in normalized_notes:
+            con.execute(
+                "INSERT INTO canvas_projection_notes("
+                "project_id,episode_id,note_id,text,position_x,position_y,"
+                "note_json,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    project_id,
+                    normalized,
+                    note["id"],
+                    note["text"],
+                    note["x"],
+                    note["y"],
+                    json.dumps(note, ensure_ascii=False),
+                    note["updatedAt"] or stamp,
+                ),
+            )
+        revision = current_revision + 1
+        con.execute(
+            "UPDATE canvas_projects SET revision=?,updated_at=? "
+            "WHERE id=? AND revision=?",
+            (revision, stamp, project_id, current_revision),
+        )
+        return {
+            "episodeId": normalized,
+            "notes": normalized_notes,
+            "revision": revision,
+        }
+
+    return _run_write_transaction(write)
 
 
 def refresh_projection_episode_membership(
@@ -2016,6 +2286,11 @@ def get_project_workspace_nodes(project_id, episode_id=None):
         "nodes": nodes,
         "connections": edges,
         "layouts": layout if isinstance(layout, dict) else {},
+        "notes": (
+            get_episode_notes(project_id, normalized_episode)
+            if normalized_episode
+            else []
+        ),
     }
 
 
@@ -2302,6 +2577,26 @@ def get_project(pid):
     return {"id": row[0], "title": row[1], "payload": json.loads(row[2]), "revision": row[3]}
 
 
+def project_exists(project_id):
+    con = _connect()
+    row = con.execute(
+        "SELECT 1 FROM canvas_projects WHERE id=? LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    con.close()
+    return bool(row)
+
+
+def get_project_revision(project_id):
+    con = _connect()
+    row = con.execute(
+        "SELECT revision FROM canvas_projects WHERE id=? LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    con.close()
+    return int(row[0] or 0) if row else None
+
+
 def project_activity_summaries():
     """Return project activity without scanning full canvas payloads.
 
@@ -2528,6 +2823,7 @@ def delete_project(pid):
     con.execute("DELETE FROM canvas_projection_nodes WHERE project_id=?", (pid,))
     con.execute("DELETE FROM canvas_projection_edges WHERE project_id=?", (pid,))
     con.execute("DELETE FROM canvas_projection_episodes WHERE project_id=?", (pid,))
+    con.execute("DELETE FROM canvas_projection_notes WHERE project_id=?", (pid,))
     con.execute("DELETE FROM canvas_project_meta WHERE project_id=?", (pid,))
     con.execute("DELETE FROM canvas_projects WHERE id=?", (pid,))
     con.commit()

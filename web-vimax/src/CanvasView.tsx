@@ -9238,18 +9238,31 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     setDeletedAutoEdgeIds((prev) => new Set(prev).add(`e-media-${targetNodeId}-${refNodeId}`));
   }, [dropRefsForPairs]);
 
-  const persistNotes = useCallback((next: CanvasNote[]) => {
+  const persistNotes = useCallback((next: CanvasNote[], episodeId = currentEp) => {
     if (noteSaveTimer.current) clearTimeout(noteSaveTimer.current);
+    const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
+    if (!normalizedEpisode) {
+      setSaveError('保存备注必须指定集号');
+      return;
+    }
     noteSaveTimer.current = setTimeout(() => {
       beginSave();
-      void saveCanvasNotes(session, next)
+      void saveCanvasNotes(
+        session,
+        next.map((note) => ({...note, episodeId: normalizedEpisode})),
+        normalizedEpisode,
+      )
         .then(() => finishSave(true))
         .catch((error) => {
           finishSave(false);
           setSaveError(error instanceof Error ? error.message : String(error));
         });
     }, 600);
-  }, [beginSave, finishSave, session]);
+  }, [beginSave, currentEp, finishSave, session]);
+
+  const persistCurrentNotes = useCallback((next: CanvasNote[]) => {
+    persistNotes(next, currentEp);
+  }, [currentEp, persistNotes]);
 
   useEffect(() => {
     if (!loading || canvas) {
@@ -9277,7 +9290,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     setGenerationTasks([]);
     setGenerationBusyIds(new Set());
     taskLoadGenerationRef.current += 1;
-    // 一集一画布：切集后重置镜头草稿与选中态（备注为项目级，保留）
+    // 一集一画布：切集后备注由后端按 episodeId 重新加载。
     if (shotSaveTimer.current) { clearTimeout(shotSaveTimer.current); shotSaveTimer.current = null; }
     setDrafts({});
     setDirtyShots(new Set());
@@ -10803,7 +10816,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       const drop = new Set(noteIds);
       setNotes((prev) => {
         const next = prev.filter((n) => !drop.has(n.id));
-        persistNotes(next);
+        persistCurrentNotes(next);
         return next;
       });
     }
@@ -10823,18 +10836,30 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       (edge) => !deletedFlowIds.has(edge.source) && !deletedFlowIds.has(edge.target),
     ));
     return total;
-  }, [deleteMediaNodePersistently, rf, pushHistory, persistNotes, persistMediaNodes]);
+  }, [deleteMediaNodePersistently, rf, pushHistory, persistCurrentNotes, persistMediaNodes]);
 
   const addNote = useCallback((x: number, y: number, text = '') => {
-    const note: CanvasNote = {id: `n-${Date.now()}`, text, x, y, updatedAt: new Date().toISOString()};
+    const episodeId = String(currentEp || '').trim().toUpperCase();
+    if (!episodeId) {
+      setToast('请先选择集数再添加备注');
+      return;
+    }
+    const note: CanvasNote = {
+      id: `n-${Date.now()}`,
+      episodeId,
+      text,
+      x,
+      y,
+      updatedAt: new Date().toISOString(),
+    };
     pushHistory(userEdgesRef.current, notesRef.current);
     setNotes((prev) => {
       const next = [...prev, note];
-      persistNotes(next);
+      persistCurrentNotes(next);
       return next;
     });
     setContextMenu(null);
-  }, [persistNotes, pushHistory]);
+  }, [currentEp, persistCurrentNotes, pushHistory, setToast]);
 
   const userEdgesRef = useRef<Edge[]>([]);
   useEffect(() => {
@@ -10917,8 +10942,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
 
   const updateNoteText = useCallback((id: string, text: string) => {
     setNotes((prev) => prev.map((note) => (note.id === id ? {...note, text, updatedAt: new Date().toISOString()} : note)));
-    persistNotes(notesRef.current.map((note) => (note.id === id ? {...note, text} : note)));
-  }, [persistNotes]);
+    persistNotes(notesRef.current.map((note) => (note.id === id ? {...note, text} : note)), currentEp);
+  }, [currentEp, persistNotes]);
 
   const duplicateNote = useCallback((note: CanvasNote) => {
     addNote(note.x + 36, note.y + 36, note.text);
@@ -11055,7 +11080,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     if (noteList.length > 0) {
       setNotes((prev) => {
         const next = [...prev, ...newNotes];
-        persistNotes(next);
+        persistCurrentNotes(next);
         return next;
       });
     }
@@ -11116,7 +11141,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       }
     }));
     return count;
-  }, [pushHistory, persistMediaNodes, persistNotes, setNodes]);
+  }, [pushHistory, persistMediaNodes, persistCurrentNotes, setNodes]);
 
   // Ctrl+D：就地复制选中（不污染剪贴板）
   const duplicateSelectedNodes = useCallback(
@@ -11480,11 +11505,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           const pos = patchMap.get(NOTE_PREFIX + nn.id);
           return pos ? {...nn, x: pos.x, y: pos.y, updatedAt: new Date().toISOString()} : nn;
         });
-        persistNotes(next);
+        persistCurrentNotes(next);
         return next;
       });
     }
-  }, [persistMediaNodes, persistMediaPositions, persistNotes]);
+  }, [persistCurrentNotes, persistMediaNodes, persistMediaPositions]);
 
   // 对齐 / 分布：基于 RF 实测宽高（measured），缺测量值时退化为左上角对齐
   // scopeAll=true 时才允许作用于全量节点；否则**只**作用于选中节点。
@@ -11563,7 +11588,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       const drop = new Set(noteIds);
       setNotes((prev) => {
         const next = prev.filter((n) => !drop.has(n.id));
-        persistNotes(next);
+        persistCurrentNotes(next);
         return next;
       });
     }
@@ -11589,7 +11614,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       });
     }
     return total;
-  }, [deleteMediaNodePersistently, pushHistory, persistNotes, dropRefsForPairs]);
+  }, [deleteMediaNodePersistently, pushHistory, persistCurrentNotes, dropRefsForPairs]);
 
   const cutSelectedNodes = useCallback(() => {
     const copied = copySelectedNodes();
@@ -11669,8 +11694,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     persistNotes(notesRef.current.map((note) => {
       const pos = dirty.find((item) => item.id === note.id);
       return pos ? {...note, x: pos.position.x, y: pos.position.y} : note;
-    }));
-  }, [persistNotes]);
+    }), currentEp);
+  }, [currentEp, persistNotes]);
 
   // 子卡片（资产卡 / 分段卡）的位置是按索引派生的（见 flowNodes 末尾 placed 分支），
   // 不支持单独摆放；直接拖子卡会每帧被派生位置拽回，表现为"一闪一闪、跳过来跳过去"。
@@ -13037,7 +13062,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       }));
       requestAnimationFrame(() => syncGroupFrames());
     }
-    persistNotes(snapshot.notes);
+    persistCurrentNotes(snapshot.notes);
     if (changedNodes.length > 0) persistMediaNodes(merged, changedNodes);
     if (snapshot.positions) {
       // A drag stop already queued its final coordinates. Cancel that pending
@@ -13059,7 +13084,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         setToast(error instanceof Error ? error.message : '撤销新增节点失败');
       });
     }
-  }, [deleteMediaNodePersistently, persistNotes, persistMediaNodes, persistMediaPositions, setNodes, setToast, syncGroupFrames]);
+  }, [deleteMediaNodePersistently, persistCurrentNotes, persistMediaNodes, persistMediaPositions, setNodes, setToast, syncGroupFrames]);
 
   const applyMetadataSnapshot = useCallback((node: CanvasMediaNode) => {
     const next = mediaNodesRef.current.map((item) => item.id === node.id ? node : item);
@@ -14686,7 +14711,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       if (positioned.changedNotes.length > 0) {
         setNotes(positioned.notes);
         notesRef.current = positioned.notes;
-        persistNotes(positioned.notes);
+        persistCurrentNotes(positioned.notes);
       }
       if (Array.isArray(parsed.userEdges)) setUserEdges(parsed.userEdges.map(hydrateUserEdge));
       if (Array.isArray(parsed.deletedAuto)) setDeletedAutoEdgeIds(new Set(parsed.deletedAuto));
@@ -14718,7 +14743,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     } catch (error) {
       setToast(error instanceof Error ? error.message : '布局文件解析失败');
     }
-  }, [persistLayout, persistMediaPositions, persistNotes, setGroups, setNodes, setUserEdges, setToast]);
+  }, [persistLayout, persistMediaPositions, persistCurrentNotes, setGroups, setNodes, setUserEdges, setToast]);
 
   // 全局搜索结果：段/镜头/备注/资产（资产命中同时过滤画布卡片；点击定位画布）
   const searchResults = useMemo(() => {

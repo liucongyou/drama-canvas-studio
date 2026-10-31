@@ -188,7 +188,14 @@ export type Canvas = {
   segments: CanvasSegment[];
 };
 
-export type CanvasNote = {id: string; text: string; x: number; y: number; updatedAt: string};
+export type CanvasNote = {
+  id: string;
+  episodeId: string;
+  text: string;
+  x: number;
+  y: number;
+  updatedAt: string;
+};
 
 export type CanvasMediaNodeKind = 'text' | 'image' | 'audio' | 'video';
 
@@ -394,6 +401,8 @@ export type StorageSpec = {
   has_secret_key: boolean;
   secret_key_hint?: string;
   ready: boolean;
+  active?: boolean;
+  configured?: boolean;
   tos_ready: boolean;
   oss_ready: boolean;
   qiniu_ready: boolean;
@@ -1077,7 +1086,7 @@ type Payload = {
   connections?: {fromNodeId: string; toNodeId: string}[];
   episodeViewports?: Record<string, unknown>;
   title?: string;
-  extras?: {notes?: CanvasNote[]};
+  extras?: Record<string, unknown>;
   episodeId?: string;
   episodeTitle?: string;
   episodeImports?: Array<{
@@ -1149,6 +1158,7 @@ export type WorkspaceNodes = {
   nodes: PayloadNode[];
   connections: Array<{id?: string; fromNodeId: string; toNodeId: string; source?: string}>;
   layouts: Record<string, {x: number; y: number}>;
+  notes?: CanvasNote[];
 };
 
 export async function getWorkspaceIndex(
@@ -1199,7 +1209,7 @@ function workspaceProjectSnapshot(
         projectMeta.extras
         && typeof projectMeta.extras === 'object'
       )
-        ? projectMeta.extras as {notes?: CanvasNote[]}
+        ? projectMeta.extras as Record<string, unknown>
         : {},
     } as Payload,
   };
@@ -1235,7 +1245,7 @@ export function getWorkspaceShell(
   );
   return {
     canvas,
-    notes: pseudoProject.payload.extras?.notes || [],
+    notes: [],
     mediaNodes: [],
     episodeViewports: index.episodeViewports || {},
     activeEpisodeId: normalizedEpisode,
@@ -1881,12 +1891,18 @@ export async function deleteCanvasMediaNode(sessionId: string, nodeId: string) {
 
 export async function getCanvasNotes(
   sessionId: string,
-  projectSnapshot?: ProjectResponse | null,
+  episodeId: string,
+  _projectSnapshot?: ProjectResponse | null,
 ): Promise<CanvasNote[]> {
-  const proj = projectSnapshot === undefined
-    ? await getProject(sessionId).catch(() => null)
-    : projectSnapshot;
-  return proj?.payload?.extras?.notes || [];
+  const normalized = String(episodeId || '').trim().toUpperCase();
+  if (!normalized) throw new Error('读取备注必须指定集号');
+  const data = await request<{notes: CanvasNote[]}>(
+    `/api/projects/${encodeURIComponent(sessionId)}/notes?episodeId=${encodeURIComponent(normalized)}`,
+  );
+  return (data.notes || []).map((note) => ({
+    ...note,
+    episodeId: normalized,
+  }));
 }
 
 async function getProjectionCanvasWorkspace(
@@ -1960,7 +1976,7 @@ async function getProjectionCanvasWorkspace(
         projectMeta.extras
         && typeof projectMeta.extras === 'object'
       )
-        ? projectMeta.extras as {notes?: CanvasNote[]}
+        ? projectMeta.extras as Record<string, unknown>
         : {},
     } as Payload,
   };
@@ -1969,7 +1985,9 @@ async function getProjectionCanvasWorkspace(
     currentEpisode,
     pseudoProject,
   );
-  const notes = pseudoProject.payload.extras?.notes || [];
+  const notes = Array.isArray(nodesPayload.notes)
+    ? nodesPayload.notes
+    : await getCanvasNotes(sessionId, currentEpisode);
   const mediaNodes = await getCanvasMediaNodes(
     sessionId,
     currentEpisode,
@@ -2120,7 +2138,9 @@ export async function getCanvasWorkspace(
     || null;
   const canvas = await getCanvas(sessionId, currentEpisode, project);
   const [notes, mediaNodes, tasks] = await Promise.all([
-    getCanvasNotes(sessionId, project),
+    currentEpisode
+      ? getCanvasNotes(sessionId, currentEpisode)
+      : Promise.resolve([]),
     getCanvasMediaNodes(sessionId, currentEpisode, project),
     getGenerationTasks(sessionId, 80, currentEpisode),
   ]);
@@ -2199,11 +2219,28 @@ export async function getCanvasWorkspace(
   };
 }
 
-export async function saveCanvasNotes(sessionId: string, notes: CanvasNote[]) {
-  // 后端 server.py 仅在 do_POST 中实现 /api/projects/{id}/notes（写回 payload.extras.notes），
-  // 没有对应的 PUT 处理器；此前前端误用 PUT 导致 404，备注创建后无法落库、刷新即丢失。
-  await request(`/api/projects/${encodeURIComponent(sessionId)}/notes`, {
-    method: 'POST', body: JSON.stringify({notes}),
+export async function saveCanvasNotes(
+  sessionId: string,
+  notes: CanvasNote[],
+  episodeId?: string | null,
+  ifRevision?: number | null,
+) {
+  const normalizedEpisode = String(
+    episodeId || notes[0]?.episodeId || '',
+  ).trim().toUpperCase();
+  if (!normalizedEpisode) throw new Error('保存备注必须指定集号');
+  if (notes.some((note) => note.episodeId !== normalizedEpisode)) {
+    throw new Error('备注集合包含不同集号，拒绝保存');
+  }
+  await request(`/api/projects/${encodeURIComponent(sessionId)}/notes?episodeId=${encodeURIComponent(normalizedEpisode)}`, {
+    method: 'POST',
+    body: JSON.stringify({
+      episodeId: normalizedEpisode,
+      notes,
+      ...(ifRevision !== undefined && ifRevision !== null
+        ? {if_revision: ifRevision}
+        : {}),
+    }),
   });
   return {ok: true};
 }

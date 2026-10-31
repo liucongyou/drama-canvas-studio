@@ -669,12 +669,12 @@ class GenerationQueueTests(unittest.TestCase):
             {"id": "task-old", "node_id": "node-old"},
             {"id": "task-current", "node_id": "node-current"},
         ]
-        with patch.object(server.store, "get_project", return_value=project):
-            filtered = server._filter_generation_tasks_for_episode(
-                "project-episode-scope",
-                tasks,
-                "EP010",
-            )
+        filtered = server._filter_generation_tasks_for_episode(
+            "project-episode-scope",
+            tasks,
+            "EP010",
+            node_ids=project["payload"]["episodeImports"][1]["nodeIds"],
+        )
 
         self.assertEqual([task["id"] for task in filtered], ["task-current"])
 

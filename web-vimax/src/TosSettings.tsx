@@ -149,9 +149,17 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
     setTestingProvider(provider);
     setTestState(null);
     try {
+      // Test the form the user is looking at. The endpoint without a provider
+      // reads the last saved profile, so an edited key would otherwise be
+      // silently ignored and produce a misleading success.
+      const saved = await saveStorageConfig({
+        ...draft,
+        url_ttl_seconds: Number(draft.url_ttl_seconds || 3600),
+      });
+      setStorage(saved);
+      setDraft((current) => mergeSavedStorageState(current, saved, provider));
       const result = await testStorageConfig(provider);
       setTestState({ok: result.ok, message: result.message || '连接成功'});
-      if (provider !== draft.provider) return;
       const refreshed = await getStorageConfig();
       setStorage(refreshed);
       setDraft((current) => mergeStorageProfile(current, refreshed, provider));
@@ -204,8 +212,7 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
     draft.access_key.trim() && draft.secret_key.trim(),
   );
   const canTest = Boolean(
-    draft.enabled
-    && draft.bucket.trim()
+    draft.bucket.trim()
     && (storedCredentials || draftCredentials)
     && (draft.provider !== 'qiniu' || draft.public_domain.trim())
     && (draft.provider === 'qiniu' || draft.endpoint.trim()),
@@ -235,9 +242,9 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
             <span className="model-settings-subtitle">生成图片、视频后自动转入所选存储；存储失败不影响已生成的素材</span>
           </div>
           <div className="model-settings-header-actions">
-            <span className={`tos-state-pill ${storage?.ready ? 'is-ready' : ''}`}>
-              {storage?.ready ? <Check size={12} /> : <CloudUpload size={12} />}
-              {storage?.ready ? `${storageLabel(storage.provider)} 自动转存已启用` : '未启用'}
+            <span className={`tos-state-pill ${storage?.enabled ? 'is-ready' : ''}`}>
+              {storage?.enabled ? <Check size={12} /> : <CloudUpload size={12} />}
+              {storage?.enabled ? `${storageLabel(storage.provider)} 自动转存已启用` : '自动转存未启用'}
             </span>
             <button type="button" onClick={() => void load()} title="刷新存储配置"><RefreshCw size={14} />刷新</button>
             <button type="button" className="canvas-inspector-close" onClick={onClose} aria-label="关闭"><X size={15} /></button>
@@ -264,7 +271,7 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
             >不转存</button>
             <button
               type="button"
-              className={draft.provider === 'tos' ? 'is-active' : ''}
+              className={draft.enabled && draft.provider === 'tos' ? 'is-active' : ''}
               onClick={() => {
                 selectProvider('tos');
               }}
@@ -274,14 +281,14 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
             </button>
             <button
               type="button"
-              className={draft.provider === 'aliyun_oss' ? 'is-active' : ''}
+              className={draft.enabled && draft.provider === 'aliyun_oss' ? 'is-active' : ''}
               onClick={() => {
                 selectProvider('aliyun_oss');
               }}
             >阿里云 OSS</button>
             <button
               type="button"
-              className={draft.provider === 'qiniu' ? 'is-active' : ''}
+              className={draft.enabled && draft.provider === 'qiniu' ? 'is-active' : ''}
               onClick={() => {
                 selectProvider('qiniu');
               }}

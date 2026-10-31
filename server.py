@@ -5018,6 +5018,26 @@ class Handler(BaseHTTPRequestHandler):
                 episode_id,
             )
             return self._send(200, workspace)
+        m = re.match(r"^/api/projects/([^/]+)/notes$", path)
+        if m:
+            project_id = unquote(m.group(1))
+            query = urllib.parse.parse_qs(parsed.query)
+            episode_id = str((query.get("episodeId") or [""])[0]).strip().upper()
+            if not episode_id:
+                return self._send(400, {"error": "读取备注必须指定集号"})
+            if not store.project_exists(project_id):
+                return self._send(404, {"error": "项目不存在"})
+            try:
+                notes = canvas_repository.repository.get_notes(
+                    project_id,
+                    episode_id,
+                )
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
+            return self._send(200, {
+                "episodeId": episode_id,
+                "notes": notes,
+            })
         if path == "/api/storage":
             return self._send(200, {"storage": provider_catalog.public_storage_config()})
         if path == "/api/generation-tasks":
@@ -5812,15 +5832,28 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/projects/([^/]+)/notes$", path)
         if m:
             pid = unquote(m.group(1))
-            with project_write_lock(pid):
-                proj = store.get_project(pid)
-                if not proj:
-                    return self._send(404, {"error": "项目不存在"})
-                payload = proj["payload"]
-                payload.setdefault("extras", {})
-                payload["extras"]["notes"] = body.get("notes") or []
-                store.update_project(pid, payload=payload)
-            return self._send(200, {"ok": True, "notes": payload["extras"]["notes"]})
+            body = body if isinstance(body, dict) else {}
+            query = urllib.parse.parse_qs(parsed.query)
+            episode_id = str(
+                body.get("episodeId")
+                or (query.get("episodeId") or [""])[0]
+            ).strip().upper()
+            if not episode_id:
+                return self._send(400, {"error": "保存备注必须指定集号"})
+            try:
+                result = canvas_repository.repository.save_notes(
+                    pid,
+                    episode_id,
+                    body.get("notes") or [],
+                    if_revision=body.get("if_revision"),
+                )
+            except canvas_store.RevisionConflictError as exc:
+                return self._send(409, {"error": str(exc)})
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
+            if result is None:
+                return self._send(404, {"error": "项目不存在"})
+            return self._send(200, {"ok": True, **result})
         m = re.match(r"^/api/projects/([^/]+)/nodes/([^/]+)/generate$", path)
         if m:
             pid, nid = unquote(m.group(1)), unquote(m.group(2))

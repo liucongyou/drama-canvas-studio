@@ -8,10 +8,22 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.31.10';
+export const APP_VERSION = '2026.10.31.11';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.31.11',
+    date: '2026-10-31',
+    releasedAt: '2026-10-31 18:40:00 +08:00',
+    title: '分集文本备注隔离与存储状态收口',
+    changes: [
+      '文本备注改为独立集级数据表，按项目、集号和备注 ID 三重隔离；切集、刷新和重启后都只显示本集备注。',
+      '旧项目级备注只迁移到 EP001 一次，不再出现在所有集；删除最后一条备注仍可正常保存为空集合。',
+      '存储顶部状态只由“自动转存是否启用”决定；已保存但未启用的 TOS 配置不再显示为自动转存已启用。',
+      '测试连接会保存当前表单后再测试，修改 Key 后不会误测旧配置；自动转存开关与连接可用性不再混为同一状态。',
+    ],
+  },
   {
     version: '2026.10.31.10',
     date: '2026-10-31',

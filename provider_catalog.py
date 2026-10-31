@@ -1343,7 +1343,16 @@ def _public_storage(storage: dict[str, Any]) -> dict[str, Any]:
         storage if provider == "qiniu" else {}
     ))
     tested_ok = storage.get("last_test_ok")
-    ready = (tos_ready or oss_ready or qiniu_ready) and tested_ok is not False
+    selected_ready = {
+        "tos": tos_ready,
+        "aliyun_oss": oss_ready,
+        "qiniu": qiniu_ready,
+    }.get(provider, False)
+    ready = (
+        enabled
+        and selected_ready
+        and tested_ok is not False
+    )
     return {
         "enabled": enabled,
         "provider": provider,
@@ -1364,6 +1373,8 @@ def _public_storage(storage: dict[str, Any]) -> dict[str, Any]:
         "has_secret_key": bool(secret_key.strip()),
         "secret_key_hint": _hint(secret_key) if secret_key.strip() else "",
         "ready": ready,
+        "active": enabled and selected_ready,
+        "configured": selected_ready,
         "tos_ready": tos_ready,
         "oss_ready": oss_ready,
         "qiniu_ready": qiniu_ready,

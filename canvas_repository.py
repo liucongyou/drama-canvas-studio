@@ -48,6 +48,37 @@ class CanvasRepository:
     def get_workspace_nodes(self, project_id, episode_id=None):
         return canvas_store.get_project_workspace_nodes(project_id, episode_id)
 
+    def get_notes(self, project_id, episode_id):
+        if not canvas_store.project_exists(project_id):
+            raise KeyError("项目不存在")
+        return canvas_store.get_episode_notes(project_id, episode_id)
+
+    def save_notes(
+        self,
+        project_id,
+        episode_id,
+        notes,
+        *,
+        if_revision=None,
+    ):
+        with project_write_lock(project_id):
+            current_revision = canvas_store.get_project_revision(project_id)
+            if current_revision is None:
+                raise KeyError("项目不存在")
+            expected = self._expected_revision(
+                {"revision": current_revision},
+                if_revision,
+            )
+            result = canvas_store.replace_episode_notes(
+                project_id,
+                episode_id,
+                notes,
+                if_revision=expected,
+            )
+            if result is None:
+                raise KeyError("项目不存在")
+            return result
+
     def create_project(self, title, payload=None):
         return canvas_store.create_project(title, payload)
 

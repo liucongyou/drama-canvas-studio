@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import concurrent.futures
 import json
 import os
 import tempfile
@@ -126,6 +127,103 @@ class CanvasProjectionTests(unittest.TestCase):
         self.assertEqual(
             [edge["id"] for edge in workspace["connections"]],
             ["edge-1"],
+        )
+
+    def test_notes_are_isolated_by_project_and_episode(self):
+        first = canvas_store.create_project("notes-a", self._payload())
+        second = canvas_store.create_project("notes-b", self._payload())
+        canvas_store.replace_episode_notes(
+            first,
+            "EP001",
+            [{"id": "note-1", "text": "EP001 only", "x": 1, "y": 2}],
+        )
+        canvas_store.replace_episode_notes(
+            first,
+            "EP002",
+            [{"id": "note-2", "text": "EP002 only", "x": 3, "y": 4}],
+        )
+        canvas_store.replace_episode_notes(
+            second,
+            "EP001",
+            [{"id": "note-3", "text": "other project", "x": 5, "y": 6}],
+        )
+
+        self.assertEqual(
+            [note["id"] for note in canvas_store.get_episode_notes(first, "EP001")],
+            ["note-1"],
+        )
+        self.assertEqual(
+            [note["id"] for note in canvas_store.get_episode_notes(first, "EP002")],
+            ["note-2"],
+        )
+        self.assertEqual(
+            [note["id"] for note in canvas_store.get_episode_notes(second, "EP001")],
+            ["note-3"],
+        )
+        self.assertEqual(
+            [
+                note["id"]
+                for note in canvas_store.get_project_workspace_nodes(
+                    first,
+                    "EP002",
+                )["notes"]
+            ],
+            ["note-2"],
+        )
+
+    def test_note_save_requires_episode_and_preserves_empty_collection(self):
+        project_id = canvas_store.create_project("notes-empty", self._payload())
+        canvas_store.replace_episode_notes(
+            project_id,
+            "EP001",
+            [{"id": "note-1", "text": "remove me", "x": 1, "y": 2}],
+        )
+        with self.assertRaises(ValueError):
+            canvas_store.replace_episode_notes(
+                project_id,
+                "",
+                [],
+            )
+        canvas_store.replace_episode_notes(project_id, "EP001", [])
+        self.assertEqual(canvas_store.get_episode_notes(project_id, "EP001"), [])
+        self.assertEqual(canvas_store.get_episode_notes(project_id, "EP002"), [])
+
+    def test_concurrent_note_writes_do_not_cross_episodes(self):
+        payload = self._payload()
+        episodes = [f"EP{index:03d}" for index in range(1, 13)]
+        payload["episodeImports"] = [
+            {
+                "id": episode,
+                "title": episode,
+                "nodeIds": [],
+                "videoNodeIds": [],
+            }
+            for episode in episodes
+        ]
+        project_id = canvas_store.create_project("notes-concurrent", payload)
+
+        def write(index_and_episode):
+            index, episode = index_and_episode
+            with tenant_context.use_context(self.context):
+                canvas_store.replace_episode_notes(
+                    project_id,
+                    episode,
+                    [{
+                        "id": f"note-{index}",
+                        "text": episode,
+                        "x": index,
+                        "y": index,
+                    }],
+                )
+                return canvas_store.get_episode_notes(project_id, episode)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            result = list(pool.map(write, enumerate(episodes, start=1)))
+
+        self.assertTrue(all(len(notes) == 1 for notes in result))
+        self.assertEqual(
+            [[note["text"] for note in notes] for notes in result],
+            [[episode] for episode in episodes],
         )
 
     def test_episode_read_ignores_tampered_json_membership_snapshot(self):
@@ -554,6 +652,78 @@ class CanvasProjectionTests(unittest.TestCase):
             }
             migrated.close()
         self.assertIn("episode_id", columns)
+
+    def test_legacy_project_notes_migrate_once_to_ep001_only(self):
+        context = tenant_context.make_context("legacy-notes", "legacy-notes")
+        tenant_context.ensure_context_dirs(context)
+        with tenant_context.use_context(context):
+            path = canvas_store._db_path()
+            connection = canvas_store.sqlite3.connect(path)
+            connection.execute(
+                "CREATE TABLE canvas_projects("
+                "id TEXT PRIMARY KEY,user_id TEXT,title TEXT,payload_json TEXT,"
+                "revision INTEGER DEFAULT 1,created_at TEXT,updated_at TEXT)"
+            )
+            connection.execute(
+                "INSERT INTO canvas_projects("
+                "id,user_id,title,payload_json,revision,created_at,updated_at"
+                ") VALUES(?,?,?,?,?,?,?)",
+                (
+                    "legacy-notes-project",
+                    "legacy",
+                    "旧备注",
+                    json.dumps({
+                        "title": "旧备注",
+                        "nodes": [],
+                        "connections": [],
+                        "episodeImports": [
+                            {"id": "EP001", "nodeIds": []},
+                            {"id": "EP002", "nodeIds": []},
+                        ],
+                        "extras": {
+                            "notes": [{
+                                "id": "legacy-note",
+                                "text": "旧项目备注",
+                                "x": 10,
+                                "y": 20,
+                            }],
+                        },
+                    }),
+                    1,
+                    "2026-10-30T00:00:00Z",
+                    "2026-10-30T00:00:00Z",
+                ),
+            )
+            connection.commit()
+            connection.close()
+            canvas_store._SCHEMA_READY = False
+            canvas_store._SCHEMA_READY_PATHS.discard(path)
+            ep001 = canvas_store.get_episode_notes(
+                "legacy-notes-project",
+                "EP001",
+            )
+            ep002 = canvas_store.get_episode_notes(
+                "legacy-notes-project",
+                "EP002",
+            )
+            canvas_store.replace_episode_notes(
+                "legacy-notes-project",
+                "EP001",
+                [],
+            )
+            canvas_store._SCHEMA_READY = False
+            canvas_store._SCHEMA_READY_PATHS.discard(path)
+            ep001_after_restart = canvas_store.get_episode_notes(
+                "legacy-notes-project",
+                "EP001",
+            )
+
+        self.assertEqual(
+            [note["id"] for note in ep001],
+            ["legacy-note"],
+        )
+        self.assertEqual(ep002, [])
+        self.assertEqual(ep001_after_restart, [])
 
 
 if __name__ == "__main__":
