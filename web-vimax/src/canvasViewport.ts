@@ -153,3 +153,29 @@ export function filterMediaNodesInBounds<T extends ViewportNodeLike>(
     );
   });
 }
+
+export function viewportLoadBounds(
+  bounds: CanvasVisibleBounds,
+  zoom: number,
+  overscanPx = 640,
+): CanvasVisibleBounds {
+  const safeZoom = Math.max(0.05, zoom || 1);
+  const overscan = Math.max(0, overscanPx) / safeZoom;
+  return {
+    x1: bounds.x1 - overscan,
+    y1: bounds.y1 - overscan,
+    x2: bounds.x2 + overscan,
+    y2: bounds.y2 + overscan,
+  };
+}
+
+export function shouldLoadMediaForViewport(input: {
+  contentVisible: boolean;
+  index: number;
+  total: number;
+  budget?: number;
+}): boolean {
+  if (input.contentVisible) return true;
+  const budget = Math.max(1, input.budget ?? 12);
+  return input.index >= 0 && input.index < Math.min(input.total, budget);
+}

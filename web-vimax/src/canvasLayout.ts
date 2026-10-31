@@ -584,6 +584,31 @@ export function layoutPositionsForExport(input: {
   return positions;
 }
 
+export function initialViewportForScope<Scope extends {scope: string}>(
+  scopes: Scope[],
+  activeScope: string,
+): Scope | null {
+  const scoped = scopes.find((item) => item.scope === activeScope);
+  return scoped ?? scopes.find((item) => item.scope === '__project__') ?? null;
+}
+
+export function viewportIndexForSave<Entry extends {scope: string}>(
+  entries: Entry[] | null | undefined,
+  scope: string,
+  entry: Entry,
+): Entry[] {
+  return [
+    ...(Array.isArray(entries)
+      ? entries.filter((item) => item && item.scope !== scope)
+      : []),
+    entry,
+  ];
+}
+
+export function canvasViewportIndexKey(projectId: string): string {
+  return `vimax.canvas.viewports.${projectId}`;
+}
+
 export function applyLayoutPositions<
   Media extends {id: string; x: number; y: number},
   Note extends {id: string; x: number; y: number},

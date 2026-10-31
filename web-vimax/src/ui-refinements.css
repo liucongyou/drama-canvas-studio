@@ -2550,6 +2550,41 @@ html[data-theme='dark'][data-variant='immersive']{
   object-fit:cover;
   object-position:center;
 }
+.canvas-media-image-frame{
+  position:relative;
+  width:100%;
+  height:100%;
+  min-height:96px;
+  display:block;
+  overflow:hidden;
+  border-radius:11px;
+  background:var(--v-surface-sunken);
+}
+.canvas-media-image-frame .canvas-media-preview.is-photo{
+  opacity:0;
+  transition:opacity 180ms ease;
+}
+.canvas-media-image-frame .canvas-media-preview.is-photo.is-media-loaded{
+  opacity:1;
+}
+.canvas-media-image-frame > .canvas-image-loading{
+  position:absolute;
+  inset:0;
+  border-radius:11px;
+}
+.canvas-media-image-lazy{
+  width:100%;
+  height:100%;
+  min-height:96px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:var(--v-text-4);
+  border-radius:11px;
+  background:
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--v-accent) 13%, transparent), transparent 45%),
+    var(--v-surface-sunken);
+}
 .canvas-node.canvas-media-node .canvas-media-preview.is-video{
   background:#090b0f;
 }
@@ -2562,6 +2597,30 @@ html[data-theme='dark'][data-variant='immersive']{
   border-radius:11px;
   background:#090b0f;
   cursor:pointer;
+}
+.canvas-video-lazy-poster{
+  position:absolute;
+  inset:0;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  color:var(--v-text-4);
+  background:
+    radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--v-accent) 15%, transparent), transparent 34%),
+    linear-gradient(135deg, #0d1015, #151b23 55%, #0d1015);
+  pointer-events:none;
+}
+.canvas-video-lazy-poster.is-cover{
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  object-position:center;
+  background:#090b0f;
+}
+.canvas-video-shell.is-source-deferred .canvas-video-controls{
+  display:none;
 }
 .canvas-video-shell>video.canvas-media-preview.is-video{
   display:block;
@@ -7102,6 +7161,24 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 .canvas-ep-list-header{
   position:relative;
   padding-right:34px;
+}
+.canvas-ep-list-header .canvas-ep-list-add,
+.canvas-ep-list-header .canvas-ep-list-close{
+  align-self:center;
+  flex:none;
+}
+.canvas-ep-list-header .canvas-ep-list-add{
+  margin-left:auto;
+  margin-top:-2px;
+  padding:0;
+  line-height:0;
+}
+.canvas-ep-list-header .canvas-ep-list-close{
+  margin-top:-1px;
+}
+.canvas-ep-list-header .canvas-ep-list-add svg,
+.canvas-ep-list-header .canvas-ep-list-close svg{
+  display:block;
 }
 .canvas-ep-list-close{
   position:absolute;

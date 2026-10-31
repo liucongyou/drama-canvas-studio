@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent} from 'react';
+import {useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent} from 'react';
 import {createRoot} from 'react-dom/client';
 import {createPortal} from 'react-dom';
 import {Check, ChevronDown, CloudUpload, Copy, Download, ExternalLink, FolderOpen, FolderPlus, History, KeyRound, LogOut, MoreHorizontal, Palette, Pencil, Plus, Settings, ShieldCheck, Trash2, Upload, X} from 'lucide-react';
@@ -96,12 +96,17 @@ function importPreviewMessage(preview: Record<string, unknown>) {
 
 // 自研画布工作流入口：项目选择 + 导入载荷 + CanvasView（ViMax 画布内核，对接本地后端）
 function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) {
+  const shellStartedAtRef = useRef<number>(
+    typeof performance !== 'undefined' ? performance.now() : Date.now(),
+  );
   const [projects, setProjects] = useState<{
     id: string;
     title: string;
     running_count?: number;
     failed_count?: number;
     local_blocked_count?: number;
+    node_count?: number;
+    episode_count?: number;
     latest_task_status?: string;
     latest_task_phase?: string;
     latest_task_error_kind?: string;
@@ -186,21 +191,44 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
 
   const loadProjects = async () => {
     try {
-      const d = await fetch(apiUrl('/api/projects'), {credentials: 'include'}).then(r => r.json());
-      const list = d.projects || [];
+      const d = await loadProjectsDeduped();
+      const list = d.projects;
       setProjects(list);
-      if (d.error) {
-        // Keep the initial loading state when project enumeration failed.
-        return;
-      }
       reconcileSelectedProject(list);
+      if (!projectsLoaded && typeof performance !== 'undefined') {
+        const elapsed = performance.now() - shellStartedAtRef.current;
+        performance.mark('canvas-projects-loaded', {detail: {elapsed}});
+        if (elapsed > 1500) {
+          console.warn(`[canvas-load] project list took ${Math.round(elapsed)}ms`);
+        }
+      }
       setProjectsLoaded(true);
     } catch { /* 后端未启动 */ }
   };
+  const projectsRequestRef = useRef<Promise<{
+    projects: typeof projects;
+  }> | null>(null);
+  const loadProjectsDeduped = useCallback(async () => {
+    if (projectsRequestRef.current) return projectsRequestRef.current;
+    const request = fetch(apiUrl('/api/projects'), {credentials: 'include'})
+      .then((response) => response.json())
+      .then((payload) => ({
+        projects: Array.isArray(payload?.projects) ? payload.projects : [],
+      }))
+      .finally(() => {
+        if (projectsRequestRef.current === request) {
+          projectsRequestRef.current = null;
+        }
+      });
+    projectsRequestRef.current = request;
+    return request;
+  }, []);
   useEffect(() => {
     const loadAfterProjectChange = () => { void loadProjects(); };
     void loadProjects();
-    const timer = window.setInterval(() => { void loadProjects(); }, 8000);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void loadProjects();
+    }, 15_000);
     window.addEventListener('canvas-projects-changed', loadAfterProjectChange);
     return () => {
       window.clearInterval(timer);
@@ -567,7 +595,9 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
                     <span className="canvas-project-menu-label">
                       <strong>{p.title}</strong>
                       <small>
-                        {(p.running_count || 0) > 0
+                        {(p.node_count || 0) > 0
+                          ? `${p.episode_count || 1} 集 · ${p.node_count || 0} 节点`
+                          : (p.running_count || 0) > 0
                           ? `${p.running_count} 个生成中`
                           : (p.local_blocked_count || 0) > 0
                             ? `${p.local_blocked_count} 个素材待补`
@@ -1060,6 +1090,16 @@ function AdminAccountsDialog({onClose}: {onClose: () => void}) {
 }
 
 function ChangelogDialog({entries, onClose}: {entries: ChangelogEntry[]; onClose: () => void}) {
+  const formatReleaseTime = (value: string) => {
+    const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)(?:\s*([+-]\d{2}:?\d{2}))?/.exec(value || '');
+    if (match) {
+      return `${match[1]} ${match[2]}`;
+    }
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? value || '-'
+      : date.toLocaleString('zh-CN', {hour12: false, timeZone: 'Asia/Shanghai'});
+  };
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="canvas-changelog-dialog" role="dialog" aria-modal="true" aria-labelledby="changelog-title">
@@ -1068,7 +1108,7 @@ function ChangelogDialog({entries, onClose}: {entries: ChangelogEntry[]; onClose
             <span><History size={17} strokeWidth={1.9} aria-hidden="true" /></span>
             <div>
               <h2 id="changelog-title">更新记录</h2>
-              <p>当前版本 v{APP_VERSION} · 最近更新 {entries[0]?.date || '-'}</p>
+              <p>当前版本 v{APP_VERSION} · 最近更新 {entries[0]?.releasedAt ? formatReleaseTime(entries[0].releasedAt) : (entries[0]?.date || '-')}</p>
             </div>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭更新记录"><X size={16} strokeWidth={2} /></button>
@@ -1078,7 +1118,7 @@ function ChangelogDialog({entries, onClose}: {entries: ChangelogEntry[]; onClose
             <article key={entry.version} className={index === 0 ? 'is-current' : ''}>
               <div className="canvas-changelog-version">
                 <strong>v{entry.version}</strong>
-                <time dateTime={entry.date}>{entry.date}</time>
+                <time dateTime={entry.releasedAt || entry.date}>{formatReleaseTime(entry.releasedAt || entry.date)}</time>
                 {index === 0 && <em>当前版本</em>}
               </div>
               <h3>{entry.title}</h3>

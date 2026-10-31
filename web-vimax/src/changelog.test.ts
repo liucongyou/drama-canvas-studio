@@ -11,6 +11,9 @@ describe('frontend changelog', () => {
     expect(new Set(versions).size).toBe(versions.length);
     for (const entry of CHANGELOG) {
       expect(entry.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(entry.releasedAt).toMatch(
+        /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00$/,
+      );
       expect(entry.title.trim()).not.toBe('');
       expect(entry.changes.length).toBeGreaterThan(0);
     }

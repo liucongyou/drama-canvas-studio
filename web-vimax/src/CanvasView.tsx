@@ -147,19 +147,22 @@ import {
   modelMaxRefs,
   type BatchGenerationCandidate,
 } from './batchGeneration';
-import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, applyLayoutPositions, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
+import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, applyLayoutPositions, canvasViewportIndexKey, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, initialViewportForScope, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, viewportIndexForSave, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
 import {
   CANVAS_VIEWPORT_POLICY_VERSION,
   filterMediaNodesInBounds,
   focusedNodeVisibleBounds,
   LARGE_CANVAS_OVERVIEW_CHUNK_SIZE,
   popupRevealShift,
+  shouldLoadMediaForViewport,
   shouldUseLargeCanvasOverview,
   viewportForCanvasBounds,
+  viewportLoadBounds,
   visibleBoundsForViewport,
   type CanvasViewport,
   type CanvasVisibleBounds,
 } from './canvasViewport';
+import {workspaceRetryDecision} from './requestRetry';
 
 type Props = {
   session: string;
@@ -546,13 +549,86 @@ function mainClipStyle(ratioHw?: number): CSSProperties {
   return {width: '100%', height: 'auto', maxHeight: 260, objectFit: 'contain'};
 }
 
+function LazyCanvasImage({
+  src,
+  alt,
+  className,
+  onLoad,
+  onError,
+  onClick,
+  onDoubleClick,
+  draggable,
+}: {
+  src: string;
+  alt: string;
+  className: string;
+  onLoad?: (image: HTMLImageElement) => void;
+  onError?: () => void;
+  onClick?: (event: React.MouseEvent<HTMLImageElement>) => void;
+  onDoubleClick?: (event: React.MouseEvent<HTMLImageElement>) => void;
+  draggable?: boolean;
+}) {
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const [shouldLoad, setShouldLoad] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setLoaded(false);
+    setFailed(false);
+    setShouldLoad(false);
+    const image = imageRef.current;
+    if (!image) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setShouldLoad(true);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setShouldLoad(true);
+        observer.disconnect();
+      }
+    }, {rootMargin: '500px 500px'});
+    observer.observe(image);
+    return () => observer.disconnect();
+  }, [src]);
+
+  return (
+    <>
+      {!loaded && !failed && <span className="canvas-image-loading" aria-hidden="true" />}
+      <img
+        ref={imageRef}
+        className={`${className}${loaded ? ' is-media-loaded' : ' is-media-loading'}${failed ? ' is-media-failed' : ''}`}
+        src={shouldLoad ? src : undefined}
+        alt={alt}
+        loading="lazy"
+        decoding="async"
+        draggable={draggable}
+        aria-busy={!loaded && !failed}
+        onClick={onClick}
+        onDoubleClick={onDoubleClick}
+        onLoad={(event) => {
+          setLoaded(true);
+          setFailed(false);
+          onLoad?.(event.currentTarget);
+        }}
+        onError={() => {
+          setLoaded(false);
+          setFailed(true);
+          onError?.();
+        }}
+      />
+    </>
+  );
+}
+
 function AssetThumb({url, name, onZoom}: {url: string; name: string; onZoom: () => void}) {
   if (/\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(url)) {
     return <video className="canvas-thumb is-video nodrag nowheel" src={url} controls preload="metadata" aria-label={name} />;
   }
   return (
     <button type="button" className="canvas-thumb" onDoubleClick={onZoom} title="双击放大查看">
-      <img src={url} alt={name} loading="lazy" />
+      <LazyCanvasImage src={url} alt={name} className="canvas-thumb-image" />
     </button>
   );
 }
@@ -1057,24 +1133,35 @@ type AssetCardNodeData = {
   item: CanvasAssetItem;
   refs: number;
   clips: number;
+  contentVisible?: boolean;
   onDetail: (kind: string, item: CanvasAssetItem) => void;
   onZoom: (url: string) => void;
 };
 
 // 资产卡片子节点：图片/音频 + 名称 + 引用徽章，右侧一个 source 端口（hover 显示）
 function AssetCardNode({data}: NodeProps<FlowNode<AssetCardNodeData>>) {
-  const {kindLabel, item, refs, clips, onDetail, onZoom} = data;
+  const {kindLabel, item, refs, clips, contentVisible = true, onDetail, onZoom} = data;
+  const [loaded, setLoaded] = useState(false);
   return (
     <div className={`canvas-asset-card ${item.image_url ? '' : 'is-audio'}`} title={item.name}>
       {item.image_url ? (
-        <img
-          className="canvas-asset-card-img"
-          src={item.image_url}
-          alt={item.name}
-          loading="lazy"
-          onClick={(event) => { event.stopPropagation(); onDetail(kindLabel, item); }}
-          onDoubleClick={(event) => { event.stopPropagation(); onZoom(item.image_url as string); }}
-        />
+        contentVisible
+          ? <span className={`canvas-asset-card-media${loaded ? ' is-loaded' : ''}`}>
+              {!loaded && <span className="canvas-thumb-loading" aria-hidden="true" />}
+              <img
+                className={`canvas-asset-card-img${loaded ? ' is-media-loaded' : ' is-media-loading'}`}
+                src={item.image_url}
+                alt={item.name}
+                loading="lazy"
+                decoding="async"
+                onLoad={() => setLoaded(true)}
+                onClick={(event) => { event.stopPropagation(); onDetail(kindLabel, item); }}
+                onDoubleClick={(event) => { event.stopPropagation(); onZoom(item.image_url as string); }}
+              />
+            </span>
+          : <span className="canvas-asset-card-media is-deferred" aria-label={`${item.name}尚未进入可视区域`}>
+              <span className="canvas-thumb-loading" aria-hidden="true" />
+            </span>
       ) : item.audio_url ? (
         <audio className="canvas-asset-card-audio" controls src={item.audio_url} preload="none" onClick={(event) => event.stopPropagation()} />
       ) : null}
@@ -1303,6 +1390,125 @@ function LargeCanvasOverview({
   );
 }
 
+function EpisodeRows({
+  episodes,
+  currentEp,
+  episodeDeleting,
+  fmtEp,
+  setCurrentEp,
+  setEpisodeMenu,
+}: {
+  episodes: Canvas['meta']['episodes'];
+  currentEp: string | null;
+  episodeDeleting: boolean;
+  fmtEp: (epId: string) => string;
+  setCurrentEp: (epId: string) => void;
+  setEpisodeMenu: (menu: {epId: string; title: string; left: number; top: number}) => void;
+}) {
+  const [requested, setRequested] = useState(80);
+  const [size, setSize] = useState({width: 320, height: 640});
+  const listRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    setRequested(80);
+  }, [episodes.length]);
+  useLayoutEffect(() => {
+    const element = listRef.current;
+    if (!element) return;
+    const update = () => {
+      setSize({
+        width: element.clientWidth || 320,
+        height: element.clientHeight || 640,
+      });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  const estimate = useMemo(() => {
+    const rowHeight = 40;
+    const titleHeight = 34;
+    const columns = Math.max(1, Math.floor(size.width / 170));
+    const perColumn = Math.max(4, Math.floor((size.height - titleHeight) / rowHeight));
+    return Math.max(16, Math.min(180, perColumn * columns));
+  }, [size]);
+  const rendered = Math.max(requested, estimate);
+  return (
+    <div className="canvas-ep-virtual-list" ref={listRef}>
+      <div
+        className="canvas-ep-virtual-spacer"
+        style={{
+          height: Math.ceil(episodes.length / Math.max(1, Math.floor(size.width / 170))) * 40,
+        }}
+      >
+        {episodes.slice(0, rendered).map((ep) => {
+          const baseEpisodeLabel = fmtEp(ep.ep_id);
+          const episodeLabel = ep.title
+            && ep.title !== ep.ep_id
+            && ep.title !== baseEpisodeLabel
+            ? `${baseEpisodeLabel} · ${ep.title}`
+            : baseEpisodeLabel;
+          const planned = ep.shot_count ?? null;
+          const described = ep.described_count ?? null;
+          const partial = described !== null && planned !== null && described !== planned;
+          const badge = ep.final_ready
+            ? '成片'
+            : ep.partial_render
+              ? `残缺段 ${ep.segments_rendered ?? 0}/${ep.segments_total ?? 0}`
+              : partial
+                ? `${described}/${planned}镜`
+                : planned !== null
+                  ? `${planned}镜`
+                  : '待处理';
+          return (
+            <div key={ep.ep_id} className={`canvas-ep-row ${currentEp === ep.ep_id ? 'is-active' : ''}`} role="listitem">
+              <button
+                type="button"
+                className="canvas-ep-select"
+                onClick={() => setCurrentEp(ep.ep_id)}
+                title={`${episodeLabel} · ${badge}`}
+              >
+                <span className="ep-name">{episodeLabel}</span>
+                <span className={`ep-badge ${ep.final_ready ? 'is-done' : ''} ${ep.partial_render || partial ? 'is-partial' : ''}`}>
+                  {ep.final_ready && <Check size={10} strokeWidth={2.6} aria-hidden="true" />}
+                  {badge}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="canvas-ep-more"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (currentEp !== ep.ep_id) setCurrentEp(ep.ep_id);
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setEpisodeMenu({
+                    epId: ep.ep_id,
+                    title: episodeLabel,
+                    left: rect.right - 8,
+                    top: rect.bottom + 4,
+                  });
+                }}
+                disabled={episodeDeleting}
+                aria-label={`${episodeLabel}操作`}
+                title="集数操作"
+              ><MoreHorizontal size={13} strokeWidth={2} aria-hidden="true" /></button>
+            </div>
+          );
+        })}
+        {rendered < episodes.length && (
+          <button
+            type="button"
+            className="canvas-ep-load-more"
+            onClick={() => setRequested((value) => Math.min(episodes.length, value + 80))}
+          >
+            加载更多（{rendered}/{episodes.length}）
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 type MediaNodeData = {
   node: CanvasMediaNode;
   renderMode?: 'overview' | 'compact' | 'full';
@@ -1320,6 +1526,7 @@ type MediaNodeData = {
   onEdit: (node: CanvasMediaNode) => void;
   /** 可引用资产候选（image/audio 节点），@资产 选择器用 */
   assets?: CanvasMediaNode[];
+  contentVisible?: boolean;
   catalog?: ModelCatalog | null;
   /** 提示词栏打开时高亮本卡片（即梦风：底部居中编辑栏 + 选中节点高亮） */
   active?: boolean;
@@ -2014,7 +2221,7 @@ async function inspectLocalMedia(file: File): Promise<{
 }
 
 function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
-  const {node, renderMode = 'full', onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed, onMediaAvailability} = data;
+  const {node, renderMode = 'full', contentVisible = true, onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed, onMediaAvailability} = data;
   const [menu, setMenu] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoShellRef = useRef<HTMLDivElement>(null);
@@ -2038,6 +2245,9 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   const [localUploadError, setLocalUploadError] = useState('');
   const [localDragOver, setLocalDragOver] = useState(false);
   const [mediaLoadFailed, setMediaLoadFailed] = useState(false);
+  const [mediaLoaded, setMediaLoaded] = useState(false);
+  const [videoSourceReady, setVideoSourceReady] = useState(false);
+  const [videoCoverUrl, setVideoCoverUrl] = useState('');
   const meta = MEDIA_KIND_META[node.kind];
   const isText = node.kind === 'text';
   const localAccept = node.kind === 'image'
@@ -2162,6 +2372,76 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
     setMediaLoadFailed(node.mediaAvailability === 'missing');
   }, [node.id, node.mediaUrl, node.mediaAvailability]);
   useEffect(() => {
+    setMediaLoaded(false);
+    setVideoSourceReady(false);
+    setVideoCoverUrl('');
+  }, [node.mediaUrl]);
+  useEffect(() => {
+    if (node.kind !== 'video') return;
+    const persisted = String(node.thumbUrl || '').trim();
+    if (persisted) setVideoCoverUrl(persisted);
+  }, [node.kind, node.mediaUrl, node.thumbUrl]);
+  useEffect(() => {
+    if (
+      node.kind !== 'video'
+      || !node.mediaUrl
+      || videoCoverUrl
+      || !contentVisible
+      || videoSourceReady
+    ) {
+      return;
+    }
+    let cancelled = false;
+    const video = document.createElement('video');
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      video.onloadeddata = null;
+      video.onerror = null;
+      video.removeAttribute('src');
+      video.load();
+    };
+    const fallbackTimer = window.setTimeout(settle, 8_000);
+    video.preload = 'auto';
+    video.muted = true;
+    video.playsInline = true;
+    video.onloadeddata = () => {
+      if (cancelled) return;
+      try {
+        const width = video.videoWidth || 320;
+        const height = video.videoHeight || 180;
+        const scale = Math.min(1, 640 / Math.max(width, height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
+        canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+        setVideoCoverUrl(canvas.toDataURL('image/jpeg', 0.78));
+      } catch {
+        // Canvas extraction can fail for codecs/CORS; the play control remains.
+      }
+      window.clearTimeout(fallbackTimer);
+      settle();
+    };
+    video.onerror = () => {
+      window.clearTimeout(fallbackTimer);
+      settle();
+    };
+    video.src = node.mediaUrl;
+    video.load();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(fallbackTimer);
+      video.onloadeddata = null;
+      video.onerror = null;
+      settle();
+    };
+  }, [contentVisible, node.kind, node.mediaUrl, videoCoverUrl, videoSourceReady]);
+  useEffect(() => {
+    if (!videoPlaying) return;
+    setVideoSourceReady(true);
+  }, [videoPlaying]);
+  useEffect(() => {
     if (node.kind !== 'audio' || !node.mediaUrl || node.mediaUrl.startsWith('data:')) return;
     if (node.source?.type === 'local' && Number(node.source.size || 0) > 16 * 1024 * 1024) {
       setAudioWaveBars(AUDIO_WAVE_BARS);
@@ -2214,6 +2494,8 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   const toggleVideoPlayback = () => {
     const video = videoRef.current;
     if (!video) return;
+    setVideoSourceReady(true);
+    video.preload = 'auto';
     if (video.paused) {
       void video.play().catch(() => setVideoPlaying(false));
     } else {
@@ -2238,6 +2520,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   const toggleVideoFullscreen = () => {
     const shell = videoShellRef.current;
     if (!shell) return;
+    setVideoSourceReady(true);
     if (document.fullscreenElement) {
       void document.exitFullscreen();
     } else {
@@ -2780,33 +3063,43 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
             </div>
           )
         ) : node.mediaUrl && !mediaMissing ? (
-          node.kind === 'image'
+          !contentVisible
+            ? <span className="canvas-media-image-lazy" aria-label={`${meta.label}尚未进入可视区域`}>
+                <KindIcon kind={node.kind} size={21} aria-hidden="true" />
+              </span>
+          : node.kind === 'image'
             // Image cards fill the content area; rounded clipping stays on the card.
-            ? <img
-                className="canvas-media-preview is-photo"
-                src={node.mediaUrl}
-                alt={node.title}
-                loading="lazy"
-                decoding="async"
-                onLoad={() => {
-                  setMediaLoadFailed(false);
-                  if (node.mediaAvailability !== 'available') onMediaAvailability?.(node.id, 'available');
-                }}
-                onError={() => {
-                  setMediaLoadFailed(true);
-                  if (node.mediaAvailability !== 'missing') onMediaAvailability?.(node.id, 'missing');
-                }}
-              />
-            : node.kind === 'video'
+            ? <span className={`canvas-media-image-frame${mediaLoaded ? ' is-loaded' : ' is-loading'}`}>
+                <LazyCanvasImage
+                  className="canvas-media-preview is-photo"
+                  src={node.mediaUrl}
+                  alt={node.title}
+                  onLoad={() => {
+                    setMediaLoaded(true);
+                    setMediaLoadFailed(false);
+                    if (node.mediaAvailability !== 'available') onMediaAvailability?.(node.id, 'available');
+                  }}
+                  onError={() => {
+                    setMediaLoaded(false);
+                    setMediaLoadFailed(true);
+                    if (node.mediaAvailability !== 'missing') onMediaAvailability?.(node.id, 'missing');
+                  }}
+                />
+              </span>
+          : node.kind === 'video'
               ? <div
                   ref={videoShellRef}
-                  className={`canvas-video-shell ${videoPlaying ? 'is-playing' : 'is-paused'}`}
+                  className={`canvas-video-shell ${videoPlaying ? 'is-playing' : 'is-paused'}${videoSourceReady ? ' is-source-ready' : ' is-source-deferred'}`}
                   onDoubleClick={(event) => {
                     event.stopPropagation();
                     cancelOpen();
+                    setVideoSourceReady(true);
                     toggleVideoFullscreen();
                   }}
                 >
+                  {!videoSourceReady && videoCoverUrl && (
+                    <img className="canvas-video-lazy-poster is-cover" src={videoCoverUrl} alt="" draggable={false} />
+                  )}
                   <video
                     ref={videoRef}
                     className="canvas-media-preview is-video nodrag nowheel"
@@ -2820,6 +3113,16 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
                       setVideoDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
                       setMediaLoadFailed(false);
                       if (node.mediaAvailability !== 'available') onMediaAvailability?.(node.id, 'available');
+                      try {
+                        // Metadata-only preloads can show a blank first frame in
+                        // some browsers. Seek a few milliseconds to paint the
+                        // cover without starting playback or loading the file.
+                        if (event.currentTarget.currentTime === 0) {
+                          event.currentTarget.currentTime = 0.01;
+                        }
+                      } catch {
+                        // Codec may not allow seeking yet; playback still works.
+                      }
                     }}
                     onError={() => {
                       setMediaLoadFailed(true);
@@ -2846,9 +3149,6 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
                     onClick={(event) => {
                       event.stopPropagation();
                       toggleVideoPlayback();
-                    }}
-                    onPointerEnter={() => {
-                      if (videoRef.current) videoRef.current.preload = 'auto';
                     }}
                     onPointerDown={(event) => event.stopPropagation()}
                   >
@@ -7473,6 +7773,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // 这里累积变更后用 rAF 合入一次；canvas 切换/卸载时丢弃在途探测，避免串数据与卸载后 setState。
   const assetRatiosRef = useRef<Record<string, number>>({});
   const [assetRatios, setAssetRatios] = useState<Record<string, number>>({});
+  const ratioProbeStartedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!canvas) return;
     let alive = true;
@@ -7490,26 +7791,77 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       flushHandle = requestAnimationFrame(flush);
     };
     const items = [...canvas.characters, ...canvas.scenes, ...canvas.props].filter((i) => i.image_url);
-    items.forEach((it) => {
-      const url = it.image_url as string;
-      if (assetRatiosRef.current[url]) return;
-      const img = new Image();
-      img.onload = () => {
-        const r = img.naturalWidth > 0 ? img.naturalHeight / img.naturalWidth : 1;
-        pending[url] = r;
-        scheduleFlush();
-      };
-      img.onerror = () => {
-        pending[url] = 1;
-        scheduleFlush();
-      };
-      img.src = url;
-    });
+    const probe = () => {
+      if (!alive) return;
+      items.forEach((it) => {
+        const url = it.image_url as string;
+        if (
+          assetRatiosRef.current[url]
+          || ratioProbeStartedRef.current.has(url)
+        ) {
+          return;
+        }
+        ratioProbeStartedRef.current.add(url);
+        const img = new Image();
+        img.onload = () => {
+          const r = img.naturalWidth > 0 ? img.naturalHeight / img.naturalWidth : 1;
+          pending[url] = r;
+          scheduleFlush();
+        };
+        img.onerror = () => {
+          pending[url] = 1;
+          scheduleFlush();
+        };
+        img.src = url;
+      });
+    };
+    let cancelIdleProbe: (() => void) | null = null;
+    if ('requestIdleCallback' in window) {
+      const idleHandle = window.requestIdleCallback(probe, {timeout: 800});
+      cancelIdleProbe = () => window.cancelIdleCallback(idleHandle);
+    } else {
+      const timeoutHandle = globalThis.setTimeout(probe, 160);
+      cancelIdleProbe = () => globalThis.clearTimeout(timeoutHandle);
+    }
     return () => {
       alive = false;
+      cancelIdleProbe?.();
       if (flushHandle !== null) cancelAnimationFrame(flushHandle);
     };
-  }, [canvas]);
+  }, [canvas?.meta.session_id]);
+
+  useEffect(() => {
+    if (!canvas) return;
+    const recoverPendingRatios = () => {
+      if (document.visibilityState !== 'visible') return;
+      const items = [
+        ...canvas.characters,
+        ...canvas.scenes,
+        ...canvas.props,
+      ].filter((item) => item.image_url);
+      for (const item of items) {
+        const url = String(item.image_url || '');
+        if (!url || assetRatiosRef.current[url] || ratioProbeStartedRef.current.has(url)) {
+          continue;
+        }
+        ratioProbeStartedRef.current.add(url);
+        const image = new Image();
+        image.onload = () => {
+          assetRatiosRef.current[url] = image.naturalWidth > 0
+            ? image.naturalHeight / image.naturalWidth
+            : 1;
+          setAssetRatios({...assetRatiosRef.current});
+        };
+        image.src = url;
+      }
+    };
+    document.addEventListener('visibilitychange', recoverPendingRatios);
+    window.addEventListener('focus', recoverPendingRatios);
+    return () => {
+      document.removeEventListener('visibilitychange', recoverPendingRatios);
+      window.removeEventListener('focus', recoverPendingRatios);
+    };
+  }, [canvas?.meta.session_id]);
 
   // 视频真实宽高比探测：<video> onloadedmetadata 时读 videoWidth/videoHeight，
   // 按真实横/竖屏决定缩略图与播放框形状（横屏给横框、竖屏给竖框）。
@@ -7777,6 +8129,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   //   卡片位置，点「第01集」会因 key 切换读不到而全部回落到载荷默认位置（实测"排序乱"）。
   const isSingleEpProject = !!canvas && canvas.meta.episodes.length <= 1;
   const layoutKey = `vimax.canvas.layout.${session}.${isSingleEpProject ? 'all' : (currentEp ?? 'all')}`;
+  const viewportIndexKey = canvasViewportIndexKey(session);
 
   // ── 编组（用户要求：可以批量编组、可以解组、编组后按组拖动）───────────────
   // 设计取舍：**不做 React Flow 的 parentId 容器**，只维护一张「组 → 成员 flow id」表。
@@ -7858,16 +8211,21 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       try {
         const raw = localStorage.getItem(layoutKey);
         const saved = raw ? JSON.parse(raw) : {};
+        const indexRaw = localStorage.getItem(viewportIndexKey);
+        const index = indexRaw ? JSON.parse(indexRaw) : [];
+        const scope = currentEp ?? '__project__';
+        const nextIndex = viewportIndexForSave(index, scope, {scope, viewport});
         localStorage.setItem(layoutKey, JSON.stringify({
           ...saved,
           viewport,
           viewportPolicyVersion: CANVAS_VIEWPORT_POLICY_VERSION,
         }));
+        localStorage.setItem(viewportIndexKey, JSON.stringify(nextIndex));
       } catch {
         // View persistence is best-effort and must not affect canvas interaction.
       }
     }, 220);
-  }, [layoutKey]);
+  }, [currentEp, layoutKey, viewportIndexKey]);
 
   // ── 编组操作 ──────────────────────────────────────────────────────
   // 编组：把当前选中的卡片收进一个新组。已属于其它组的成员会自动离组（一个人只能在一个组里）。
@@ -7997,6 +8355,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const mediaNodesRef = useRef<CanvasMediaNode[]>([]);
   const workspaceRefreshInFlightRef = useRef<Promise<void> | null>(null);
   const workspaceRefreshQueuedRef = useRef(false);
+  const workspaceRetryAttemptRef = useRef(0);
+  const workspaceRetryTimerRef = useRef<number | null>(null);
+  const refreshWorkspaceFactsRef = useRef<() => Promise<void>>(async () => {});
   const workspaceScopeRef = useRef({session, episode: currentEp});
   workspaceScopeRef.current = {session, episode: currentEp};
   const workspaceLoadEpochRef = useRef(0);
@@ -8006,6 +8367,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     if (workspaceRefreshInFlightRef.current) {
       workspaceRefreshQueuedRef.current = true;
       return workspaceRefreshInFlightRef.current;
+    }
+    if (workspaceRetryTimerRef.current !== null) {
+      window.clearTimeout(workspaceRetryTimerRef.current);
+      workspaceRetryTimerRef.current = null;
     }
     const run = async (): Promise<void> => {
       const loadEpoch = workspaceLoadEpochRef.current;
@@ -8063,18 +8428,38 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         };
       }));
       projectConnectionsRef.current = workspace.connections;
+      workspaceRetryAttemptRef.current = 0;
     };
     workspaceRefreshQueuedRef.current = false;
-    let failed = false;
     const task: Promise<void> = run()
       .catch((error: unknown) => {
-        failed = true;
         // A silent reconciliation failure is indistinguishable from "no new
         // results" and leaves a completed provider task invisible until reload.
-        setSaveError(
-          `画布同步失败：${error instanceof Error ? error.message : String(error)}`,
-        );
-        workspaceRefreshQueuedRef.current = true;
+        const attempt = workspaceRetryAttemptRef.current + 1;
+        workspaceRetryAttemptRef.current = attempt;
+        const decision = workspaceRetryDecision({
+          error,
+          attempt,
+          online: typeof navigator === 'undefined' ? true : navigator.onLine,
+        });
+        const reason = error instanceof Error ? error.message : String(error);
+        const suffix = decision.retry
+          ? `；将在 ${Math.round(decision.delayMs / 1000)} 秒后重试（${attempt}/4）`
+          : decision.kind === 'offline'
+            ? '；网络恢复后自动同步'
+            : '；请手动刷新或检查服务状态';
+        setSaveError(`画布同步失败：${reason}${suffix}`);
+        workspaceRefreshQueuedRef.current = false;
+        if (decision.retry) {
+          workspaceRetryTimerRef.current = window.setTimeout(() => {
+            workspaceRetryTimerRef.current = null;
+            if (document.visibilityState !== 'hidden') {
+              void refreshWorkspaceFactsRef.current().catch(() => {});
+            } else {
+              workspaceRefreshQueuedRef.current = true;
+            }
+          }, decision.delayMs);
+        }
       })
       .finally(() => {
         if (workspaceRefreshInFlightRef.current === task) {
@@ -8082,19 +8467,24 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         }
         if (workspaceRefreshQueuedRef.current) {
           workspaceRefreshQueuedRef.current = false;
-          const retryDelay = failed ? 1_500 : 80;
-          window.setTimeout(() => {
-            if (document.visibilityState !== 'hidden') {
-              void refreshWorkspaceFacts().catch(() => {});
-            } else {
-              workspaceRefreshQueuedRef.current = true;
-            }
-          }, retryDelay);
+          // A queued refresh represents a newer fact, not a retry of a failed
+          // request. It is safe to collect it immediately, but never bypass a
+          // scheduled backoff created by the failure above.
+          if (workspaceRetryTimerRef.current === null) {
+            window.setTimeout(() => {
+              if (document.visibilityState !== 'hidden') {
+                void refreshWorkspaceFactsRef.current().catch(() => {});
+              } else {
+                workspaceRefreshQueuedRef.current = true;
+              }
+            }, 80);
+          }
         }
       });
     workspaceRefreshInFlightRef.current = task;
     return task;
   }, []);
+  refreshWorkspaceFactsRef.current = refreshWorkspaceFacts;
   useEffect(() => {
     if (mediaNodes.length === 0) return;
     const key = currentEp || '__project__';
@@ -8740,6 +9130,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     setSavedFlash({});
     setSelectedId(null);
     setSaveError('');
+    workspaceRetryAttemptRef.current = 0;
+    if (workspaceRetryTimerRef.current !== null) {
+      window.clearTimeout(workspaceRetryTimerRef.current);
+      workspaceRetryTimerRef.current = null;
+    }
     succeededRefreshRef.current = '';
     workspaceRefreshQueuedRef.current = false;
     workspaceRefreshInFlightRef.current = null;
@@ -9991,9 +10386,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     let lastRefreshAt = 0;
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'hidden') return;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
       const now = Date.now();
       if (now - lastRefreshAt < 250) return;
       lastRefreshAt = now;
+      workspaceRetryAttemptRef.current = 0;
       void refreshWorkspaceFacts().catch(() => {});
     };
     document.addEventListener('visibilitychange', refreshWhenVisible);
@@ -10005,6 +10402,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       window.removeEventListener('online', refreshWhenVisible);
     };
   }, [refreshWorkspaceFacts]);
+  useEffect(() => () => {
+    if (workspaceRetryTimerRef.current !== null) {
+      window.clearTimeout(workspaceRetryTimerRef.current);
+      workspaceRetryTimerRef.current = null;
+    }
+  }, []);
 
   // 用户手动连线：把来源媒体节点写进目标节点的 params.refs / voiceRef，
   // 让连线真正参与生成（生成时还会再次扫描边，但此处让弹窗即时反映连接）
@@ -13156,7 +13559,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     }
     return filterMediaNodesInBounds(
       mediaNodes,
-      largeCanvasVisibleBounds,
+      viewportLoadBounds(
+        largeCanvasVisibleBounds,
+        viewportRef.current.zoom,
+      ),
       (node) => ({
         w: MEDIA_KIND_META[node.kind].w,
         h: MEDIA_KIND_META[node.kind].h + 44,
@@ -13262,6 +13668,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             item,
             refs: assetUse[`${g.kind}-${origIdx}`]?.refs ?? 0,
             clips: assetUse[`${g.kind}-${origIdx}`]?.clips ?? 0,
+                    contentVisible: mediaRenderMode !== 'overview',
             onDetail: (kind: string, item: CanvasAssetItem) => setAssetDetail({kind, item}),
             onZoom,
           } satisfies AssetCardNodeData,
@@ -13384,6 +13791,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       });
     });
 
+    const mediaLoadOrder = new Map(visibleMediaNodes.map((node, index) => [node.id, index]));
     visibleMediaNodes.forEach((mn) => {
       // 初始尺寸必须显式给足（header ~32px + 预览区按比例换算 + 卡片 padding）：
       // React Flow 对无 initialWidth/Height 的节点走 ResizeObserver 测量，若测量链路
@@ -13414,6 +13822,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         data: {
           node: mn,
           renderMode: mediaRenderMode,
+          contentVisible: shouldLoadMediaForViewport({
+            contentVisible: editNode?.id === mn.id || mediaRenderMode !== 'overview',
+            index: mediaLoadOrder.get(mn.id) ?? -1,
+            total: visibleMediaNodes.length,
+            budget: 12,
+          }),
           onChange: updateMediaNode,
           onGenerate: onGenerateMediaNode,
           onDelete: requestDeleteMediaNode,
@@ -13451,7 +13865,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       return saved ? {...node, position: saved} : node;
     });
     return placed;
-  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasOverview, editNode?.id]);
+  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasVisibleBounds, largeCanvasOverview, editNode?.id]);
   const renderedEdges = useMemo(() => {
     if (largeCanvasOverview) return [];
     const ids = new Set(flowNodes.map((node) => node.id));
@@ -13774,9 +14188,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const shouldFit = fittedScopeRef.current !== scope;
     if (shouldFit) fittedScopeRef.current = scope;
     let savedViewport: {x: number; y: number; zoom: number} | null = null;
-    if (!didInitialLayoutRef.current) {
+    if (shouldFit || !didInitialLayoutRef.current) {
       didInitialLayoutRef.current = true;
-      savedLayoutScopeRef.current = `${session}:${currentEp ?? 'all'}`;
+      savedLayoutScopeRef.current = scope;
       const saved = loadPersistedLayoutRef.current();
       const remoteUserEdges = projectConnectionsRef.current
         .filter((connection) => connection.source === 'user')
@@ -13805,10 +14219,24 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         }
         if (saved.positions) positionRef.current = {...positionRef.current, ...saved.positions};
         if (Array.isArray(saved.deletedAuto) && saved.deletedAuto.length > 0) setDeletedAutoEdgeIds(new Set(saved.deletedAuto));
-      } else {
+      } else if (!positionRef.current || Object.keys(positionRef.current).length === 0) {
         autoLayoutRef.current();
       }
-      setUserEdges(uniqueUserEdges);
+      if (shouldFit || uniqueUserEdges.length > 0) {
+        setUserEdges(uniqueUserEdges);
+      }
+    }
+    if (shouldFit && !savedViewport) {
+      try {
+        const raw = localStorage.getItem(viewportIndexKey);
+        const index = raw ? JSON.parse(raw) : [];
+        savedViewport = initialViewportForScope(
+          Array.isArray(index) ? index : [],
+          currentEp ?? '__project__',
+        )?.viewport || null;
+      } catch {
+        savedViewport = null;
+      }
     }
     // 画布适配必须等节点 DOM 挂载后再执行：React Flow 对未测量节点保持
     // visibility:hidden（hasDimensions 为 false），首次 fitBounds 若在节点挂载前
@@ -13826,7 +14254,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         }
       });
     }
-  }, [loading, canvas, session, currentEp]);
+  }, [loading, canvas, session, currentEp, viewportIndexKey]);
 
   // 通用文本下载（导出分镜 Markdown / 镜头 CSV / 布局 JSON）
   const downloadText = useCallback((filename: string, text: string, mime = 'text/plain') => {
@@ -14519,8 +14947,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           )}
           <aside className={`canvas-ep-list ${epListOpen ? 'is-open' : ''}`} aria-hidden={!epListOpen}>
             <header className="canvas-ep-list-header">
-              <strong>{railTab === 'eps' ? '画布列表' : '资产托盘'}</strong>
-              <span className="canvas-ep-list-count">{railTab === 'eps' ? (canvas.meta.episodes.length || 1) : (canvas.characters.length + canvas.scenes.length + canvas.props.length + canvas.voices.length)}</span>
+              <div className="canvas-ep-list-heading">
+                <strong>{railTab === 'eps' ? '画布列表' : '资产托盘'}</strong>
+                <span className="canvas-ep-list-count">{railTab === 'eps' ? (canvas.meta.episodes.length || 1) : (canvas.characters.length + canvas.scenes.length + canvas.props.length + canvas.voices.length)}</span>
+              </div>
               {railTab === 'eps' && (
                 <button
                   type="button"
@@ -14599,8 +15029,17 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               </form>
             )}
             {railTab === 'eps' ? (
-              <div className="canvas-ep-list-body">
-                {canvas.meta.episodes.map((ep) => {
+              <div className="canvas-ep-list-body" role="list">
+                {canvas.meta.episodes.length > 120 ? (
+                  <EpisodeRows
+                    episodes={canvas.meta.episodes}
+                    currentEp={currentEp}
+                    episodeDeleting={episodeDeleting}
+                    fmtEp={fmtEp}
+                    setCurrentEp={setCurrentEp}
+                    setEpisodeMenu={setEpisodeMenu}
+                  />
+                ) : canvas.meta.episodes.map((ep) => {
                   const baseEpisodeLabel = fmtEp(ep.ep_id);
                   const episodeLabel = ep.title
                     && ep.title !== ep.ep_id
@@ -14627,7 +15066,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                       <button
                         type="button"
                         className="canvas-ep-select"
-                        onClick={() => setCurrentEp(ep.ep_id)}
+                        onClick={() => {
+                          setEpListOpen(false);
+                          setCurrentEp(ep.ep_id);
+                        }}
                         title={`${episodeLabel} · ${badge}${partial ? '（分镜未完成，续跑后自动补齐）' : ''}${ep.partial_render ? '（成片残缺，续跑补全缺失段后再拼成片）' : ''}${ep.final_ready ? ' · 已成片' : ''}`}
                       >
                         <span className="ep-name">{episodeLabel}</span>
@@ -14717,8 +15159,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                           <span className={`canvas-tray-thumb-wrap is-${g.key}`}>
                             {mn.mediaUrl && mn.kind !== 'audio'
                               ? mn.kind === 'video'
-                                ? <video className="canvas-tray-thumb" src={mn.mediaUrl} muted playsInline preload="metadata" aria-hidden="true" />
-                                : <img className="canvas-tray-thumb" src={mn.mediaUrl} alt="" loading="lazy" />
+                                ? <video className="canvas-tray-thumb" src={mn.mediaUrl} muted playsInline preload="none" aria-hidden="true" />
+                                : <img className="canvas-tray-thumb" src={mn.mediaUrl} alt="" loading="lazy" decoding="async" />
                               : <span className={`canvas-tray-thumb is-placeholder is-${g.key}`}>
                                   <g.Icon size={17} strokeWidth={1.65} aria-hidden="true" />
                                 </span>}

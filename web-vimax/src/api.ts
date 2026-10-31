@@ -3,6 +3,7 @@
 // 生成：轮询器检测 generating 节点 → POST generate → done/error 事件
 
 import {latestTaskByNode} from './generationPresentation';
+import {withRequestStatus} from './requestRetry';
 
 declare global {
   interface Window {
@@ -455,6 +456,8 @@ export type CanvasMediaNode = {
   title: string;
   prompt: string;
   mediaUrl?: string;
+  /** Persisted video cover. Never used as the playable video source. */
+  thumbUrl?: string;
   /** Runtime readiness of the stored URL; not persisted as generation state. */
   mediaAvailability?: 'unknown' | 'available' | 'missing';
   status?: 'idle' | 'generating' | 'done' | 'failed';
@@ -749,7 +752,10 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
       || code === 'ORIGIN_REJECTED'
       || code === 'CSRF_REJECTED'
     );
-    throw new Error(preserveServerMessage ? raw : friendlyRequestError(response.status, raw));
+    throw withRequestStatus(
+      new Error(preserveServerMessage ? raw : friendlyRequestError(response.status, raw)),
+      response.status,
+    );
   }
   return payload as T;
 }
@@ -1250,13 +1256,25 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
   const rawPreviewUrl = urlOf(n)
     || (typeof rawParams.thumbUrl === 'string' ? rawParams.thumbUrl : '')
     || (typeof (m as Record<string, unknown>).thumbnail === 'string' ? String((m as Record<string, unknown>).thumbnail) : '');
-  const previewUrl = /^(?:https?:\/\/|\/uploads\/|data:|blob:)/.test(rawPreviewUrl) ? rawPreviewUrl : '';
+  // Video playback must use metadata.content; thumbUrl is only a poster.
+  const mediaUrl = kind === 'video'
+    ? urlOf(n)
+    : rawPreviewUrl;
+  const normalizedMediaUrl = /^(?:https?:\/\/|\/uploads\/|data:|blob:)/.test(mediaUrl)
+    ? mediaUrl
+    : '';
+  const videoThumbUrl = kind === 'video'
+    && typeof rawParams.thumbUrl === 'string'
+    && /^(?:https?:\/\/|\/uploads\/|data:|blob:)/.test(rawParams.thumbUrl)
+    ? rawParams.thumbUrl
+    : undefined;
   return {
     id: n.id,
     kind,
     title: n.title || '',
     prompt: m.prompt || '',
-    mediaUrl: previewUrl || undefined,
+    mediaUrl: normalizedMediaUrl || undefined,
+    thumbUrl: kind === 'video' && normalizedMediaUrl ? videoThumbUrl : undefined,
     status: ((m.status as string) || 'idle') as CanvasMediaNode['status'],
     lastError: typeof m.lastError === 'string' ? (friendlyMediaError(m.lastError) || undefined) : undefined,
     generationStartedAt: typeof m.generationStartedAt === 'string' ? m.generationStartedAt : undefined,
@@ -1681,7 +1699,10 @@ export async function deleteCanvasMediaNode(sessionId: string, nodeId: string) {
   const res = await fetch(apiUrl(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}`), {method: 'DELETE', credentials: 'include'});
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
-    throw new Error((payload as {error?: string}).error || `删除失败，HTTP ${res.status}`);
+    throw withRequestStatus(
+      new Error((payload as {error?: string}).error || `删除失败，HTTP ${res.status}`),
+      res.status,
+    );
   }
   return {ok: true};
 }

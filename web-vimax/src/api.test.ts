@@ -57,6 +57,32 @@ afterEach(() => {
 });
 
 describe('api request recovery', () => {
+  it('keeps a video thumbUrl separate from the playable video URL', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'project-1',
+      title: 'author:user:project:1',
+      payload: {
+        nodes: [{
+          id: 'video-1',
+          type: 'video',
+          title: 'video',
+          metadata: {
+            content: '/uploads/video.mp4',
+            params: {thumbUrl: '/uploads/video-cover.jpg'},
+          },
+        }],
+        connections: [],
+        episodeImports: [],
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    })));
+    const [node] = await getCanvasMediaNodes('project-1');
+    expect(node.mediaUrl).toBe('/uploads/video.mp4');
+    expect(node.thumbUrl).toBe('/uploads/video-cover.jpg');
+  });
+
   it('creates a manual canvas episode through the project endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,

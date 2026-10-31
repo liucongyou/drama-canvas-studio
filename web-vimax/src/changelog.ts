@@ -1,19 +1,48 @@
 export type ChangelogEntry = {
   version: string;
   date: string;
+  releasedAt: string;
   title: string;
   changes: string[];
 };
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.31.4';
+export const APP_VERSION = '2026.10.31.6';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.10.31.6',
+    date: '2026-10-31',
+    releasedAt: '2026-10-31 09:25:00 +08:00',
+    title: '画布列表、集数视口与首屏加载体验修复',
+    changes: [
+      '新建集数按钮、标题与关闭按钮统一按垂直中线对齐，消除不同字号下的偏上偏移。',
+      '画布列表只渲染当前可见高度所需条目，大集数项目进入资产页时不预挂全部集数；切集后列表立即收起，减少重绘和遮挡。',
+      '每集独立保存缩放、平移位置；切集时恢复该集上次视口，不再一律回到 100%。',
+      '项目首屏枚举与轮询请求合并去重；项目卡直接显示集数与节点数，加载超过 1.5 秒时记录性能告警。',
+      '图片宽高比探测延迟到浏览器空闲时段，避免首屏同时解码大量原图拖慢项目加载。',
+    ],
+  },
+  {
+    version: '2026.10.31.5',
+    date: '2026-10-31',
+    releasedAt: '2026-10-31 08:10:00 +08:00',
+    title: '画布同步重试、图片懒加载与更新时间修复',
+    changes: [
+      '画布事实同步只在网络中断、限流和 5xx 时按 1.5、3、6、12 秒有限指数退避，最多重试 4 次；鉴权失败、4xx 和参数错误立即停止。',
+      '浏览器离线时暂停轮询同步，恢复联网后只触发一次对账；同步成功后自动清除旧的同步失败提示。',
+      '图片节点进入视口附近后才请求原图；大型画布只渲染视口及预加载带内节点，避免一次解码整张画布的大图。',
+      '视频节点优先显示已保存封面；新生成和导入视频会自动生成并保存一张轻量封面，旧视频在服务启动时补齐。用户点击播放或全屏后才开始播放并加载完整视频数据。',
+      '图片加载期间显示固定尺寸占位与加载指示，成功解码后淡入，布局不会因图片尺寸变化而跳动。',
+      '更新记录新增精确到秒的本地发布时间，历史版本使用对应版本首次提交时间，不再只显示日期。',
+    ],
+  },
+  {
     version: '2026.10.31.4',
     date: '2026-10-31',
+    releasedAt: '2026-10-31 06:43:32 +08:00',
     title: '画布布局往返与项目切换体验修复',
     changes: [
       '修复布局 JSON 导入后媒体卡坐标只在当前画面生效、刷新又回到旧位置的问题；导入坐标现在会直接写入当前集布局并持久化。',
@@ -26,9 +55,10 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.31.3',
     date: '2026-10-31',
+    releasedAt: '2026-10-31 04:47:20 +08:00',
     title: '生成回写同步失败可见化与落盘收尾修复',
     changes: [
-      '画布同步对账失败不再静默吞掉：顶部状态会显示同步失败原因，并在短暂退避后自动重试，不会让已完成结果一直停在旧画面。',
+      '画布同步对账失败不再静默吞掉：顶部状态会显示同步失败原因，并对可重试错误做有限次数的读取重试，不会让已完成结果一直停在旧画面。',
       '视频校验和对象存储归档改为在节点、任务和画布事件终态提交成功之后启动，避免后台收尾结果被更晚的终态快照覆盖。',
       '生成提交只由任务 worker 写入一次“生成中”状态，移除接口侧重复整节点写入，缩小并发旧快照覆盖新结果的窗口。',
       '视频音色参考会在提交供应商前校验本地文件真实存在；文件丢失会直接提示重新生成或导入，不会先发出一次无效付费请求。',
@@ -43,6 +73,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.31.2',
     date: '2026-10-31',
+    releasedAt: '2026-10-31 04:28:49 +08:00',
     title: '生成资产终态与画布实时回写稳定修复',
     changes: [
       '生成结果、任务成功状态和画布事件改为同一次持久化提交，不再出现节点已出图但任务仍显示生成中的竞态。',
@@ -56,6 +87,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.31.1',
     date: '2026-10-31',
+    releasedAt: '2026-10-31 01:43:53 +08:00',
     title: '项目切换、任务终态与对象存储修复',
     changes: [
       '刷新后项目列表返回时会自动进入有效项目，不再停在“还没有项目”的空状态。',
@@ -68,6 +100,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.14',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 21:08:16 +08:00',
     title: '视频断线恢复与真实任务回写',
     changes: [
       '服务重启后，已取得供应商任务号的任务即使曾被旧执行线程误标失败，也会从恢复日志重新接管并继续查询原任务。',
@@ -87,6 +120,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.13',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 20:41:50 +08:00',
     title: '供应商余额错误与模型切换回归',
     changes: [
       '火山方舟等供应商返回账户欠费时，任务卡直接显示“供应商账户余额不足或已欠费”，不再误报成 New API 鉴权失败。',
@@ -98,6 +132,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.12',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 19:07:05 +08:00',
     title: '视频生成主链路稳定修复',
     changes: [
       '供应商生成请求只提交一次；遇到超时、断网或结果不明时保留任务号继续查询，不会自动重复提交。',
@@ -111,6 +146,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.11',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 19:07:05 +08:00',
     title: '本地上传素材同步转存对象存储',
     changes: [
       '画布上传图片、视频和音频时会先完整保存到本地，再按当前启用的 OSS、TOS 或七牛云配置同步转存。',
@@ -122,6 +158,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.10',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 19:07:05 +08:00',
     title: '生成任务终态与恢复稳定性修复',
     changes: [
       '任务的完成、失败和中断结果不会被迟到的旧进度覆盖；成功结果不会再被后续对账改回失败。',
@@ -134,6 +171,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.9',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 11:23:26 +08:00',
     title: '模型接口按文档目录精确路由',
     changes: [
       '图片与视频模型接口改为读取官方接口文档的机器目录，按精确模型 ID 获取 profile、提交路径、查询路径和结果字段。',
@@ -145,6 +183,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.8',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 10:26:13 +08:00',
     title: '统一异步任务持久化约束',
     changes: [
       '所有异步供应商统一要求先保存任务号再轮询；任务号写入失败时立即进入“结果待确认”，不会继续查询或重复提交。',
@@ -156,6 +195,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.7',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 10:00:18 +08:00',
     title: '生成任务号可靠落库',
     changes: [
       '图片任务取得供应商任务号后立即写入任务中心，查询和刷新不再依赖当前请求进程。',
@@ -166,6 +206,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.6',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 03:36:12 +08:00',
     title: '视频生成参数面板重构',
     changes: [
       '视频参数弹窗改为独立紧凑布局：比例、分辨率、生成数量单行展示，常见窗口内一屏完整可见。',
@@ -176,6 +217,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.5',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 03:17:46 +08:00',
     title: 'New API 中转图片任务收口',
     changes: [
       '即梦图片模型按 New API 中转接口合同使用 aspect_ratio 与 1K/2K 分辨率，不再把视频清晰度参数带入图片请求。',
@@ -186,6 +228,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.4',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 03:02:46 +08:00',
     title: '生成任务体验细节打磨',
     changes: [
       '已结束任务不再持续按运行中刷新，完成后的耗时显示为“完成于”，等待和运行状态区分更清楚。',
@@ -196,6 +239,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.3',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 02:54:09 +08:00',
     title: '生成状态与弹窗体验修复',
     changes: [
       '生成过程中不再把内部阶段值当作虚假百分比显示；画布显示“生成中”和真实等待时间，只有供应商返回有效进度时才显示百分比。',
@@ -206,6 +250,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.2',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 02:54:09 +08:00',
     title: '切换模型保留画幅与生成参数',
     changes: [
       '切换模型时保留用户已选择的画幅、分辨率、时长和生成参数，不再重置为新模型默认值。',
@@ -216,6 +261,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.30.1',
     date: '2026-10-30',
+    releasedAt: '2026-10-30 02:24:43 +08:00',
     title: '生成结果即时显示与素材后台归档',
     changes: [
       '图片、视频生成成功后先显示结果，本地缓存和 TOS 转存改为后台完成；存储失败不会把已生成素材改判为失败。',
@@ -227,6 +273,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.27',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 23:57:47 +08:00',
     title: '生成请求恢复直达供应商',
     changes: [
       '恢复图片同步直连、视频异步任务直连，生成结果直接回写画布节点，不再先返回“后台提交中”。',
@@ -237,6 +284,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.26',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 22:06:15 +08:00',
     title: '同步图片与音频改用供应商真实响应模型',
     changes: [
       '图片和音频按供应商同步返回结果处理，不再错误套用异步任务 ID 判定。',
@@ -246,6 +294,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.25',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 21:48:10 +08:00',
     title: '生成任务改为后台持久化执行',
     changes: [
       '提交生成后立即返回任务 ID，供应商调用、下载与落库由后台任务继续执行，浏览器断开不再影响结果。',
@@ -255,6 +304,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.24',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 21:29:08 +08:00',
     title: '模型能力与适配器联动修复',
     changes: [
       '切换模型能力时会自动切换到匹配的适配器，避免保存后仍被判定为视频模型。',
@@ -264,6 +314,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.23',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 21:16:46 +08:00',
     title: '画布细节维护',
     changes: [
       '优化长时间使用时的界面状态与后台稳定性。',
@@ -272,6 +323,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.20',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 20:39:59 +08:00',
     title: '聚焦恢复选中卡片自适应比例',
     changes: [
       '聚焦已选卡片恢复为此前“适应所选”的自适应比例：按选中卡片实际尺寸和当前视口计算，不再固定成偏小的 50%。',
@@ -280,9 +332,10 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.19',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 20:20:53 +08:00',
     title: '统一供应商提交运行时与工具栏聚焦修复',
     changes: [
-      '图片、视频、音色等任务型供应商提交统一使用同一套超时与重试机制；429、队列繁忙和 5xx 会按退避策略自动重试，结果不明确的超时不会重复提交。',
+      '图片、视频、音色等任务型供应商提交统一使用同一套超时规则；提交请求只发一次，不因 429、队列繁忙或 5xx 自动重提，结果不明确的超时也不会重复提交。',
       '供应商繁忙重试期间任务中心会显示明确阶段，不再只停留在“生成中”；单个供应商打补丁的做法收口为统一运行时。',
       '“适应”只负责查看整张画布，“聚焦”只聚焦已选节点并固定 50%；未选中时聚焦不可用，工具栏不再重复出现“适应所选”。',
     ],
@@ -290,6 +343,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.18',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 19:47:39 +08:00',
     title: '历史英文错误也统一中文化',
     changes: [
       '数据进入画布前统一转换历史任务里的英文错误，旧任务也不会再显示 The read/write operation timed out。',
@@ -300,6 +354,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.17',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 19:39:21 +08:00',
     title: '记住当前集并支持 URL 恢复',
     changes: [
       '点击某一集后会写入 URL（?ep=EP001）并记住该项目的上次选择，刷新不再跳回最近活动的其它集。',
@@ -310,6 +365,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.16',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 19:32:06 +08:00',
     title: '生成前鉴权预检与提交超时收口',
     changes: [
       '生成前先对当前供应商做非计费鉴权预检，API Key 无效或余额不足时直接拦截，不再进入付费提交。',
@@ -320,6 +376,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.15',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 18:36:15 +08:00',
     title: '根治节点拖动撤销回弹',
     changes: [
       '修复媒体节点位置真源未随撤销恢复，导致节点闪一下又回到拖动后位置的问题。',
@@ -330,6 +387,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.14',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 17:48:08 +08:00',
     title: '阻止迟到位置写入覆盖撤销',
     changes: [
       '位置接口记录每个标签页的单调写入序号，迟到的拖动保存会被服务端拒绝。',
@@ -340,6 +398,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.13',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 17:41:39 +08:00',
     title: '模型下拉显示数量与滚动',
     changes: [
       '模型下拉固定最大高度并启用内部滚动，图片模型的 23 个选项不再被弹层裁掉。',
@@ -350,6 +409,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.12',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 17:36:22 +08:00',
     title: '彻底修复拖拽撤销回弹',
     changes: [
       '拖动历史从仅媒体卡扩展为所有可拖节点：媒体卡、分段卡、备注、编组框和子卡。',
@@ -360,6 +420,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.11',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 17:31:16 +08:00',
     title: '修复拖动撤销后回弹',
     changes: [
       '撤销拖动时先取消尚未发送的位置保存，避免拖动结束后的排队写入把卡片推回原点。',
@@ -370,6 +431,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.10',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 17:26:54 +08:00',
     title: '修复拖动节点后的撤销',
     changes: [
       '拖动媒体卡片开始时改为记录位置快照，Ctrl+Z 现在能真正恢复到拖动前的坐标。',
@@ -380,6 +442,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.9',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 17:26:54 +08:00',
     title: '修复提示词编辑后的 Ctrl+Z',
     changes: [
       '提示词输入框关闭后仍保留焦点时，Ctrl+Z 不再被输入态快捷键让位规则吞掉。',
@@ -390,6 +453,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.8',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 17:17:47 +08:00',
     title: '模型无通道提示与图片参数修正',
     changes: [
       '供应商返回 model_not_found 或没有可用通道时，明确提示模型路由问题，不再误报参考素材错误。',
@@ -400,6 +464,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.7',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 17:08:13 +08:00',
     title: '模型发现搜索与筛选导入',
     changes: [
       '拉取模型后可按名称、模型 ID、能力和适配器即时搜索。',
@@ -410,6 +475,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.6',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 17:06:05 +08:00',
     title: '中转供应商视频与图片模型识别',
     changes: [
       '新增 OpenAI 兼容中转站的视频协议支持，模型生成改走 /v1/videos 异步任务。',
@@ -421,6 +487,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.5',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 15:45:54 +08:00',
     title: '模型设置窄屏适配',
     changes: [
       '修复模型设置里参数表与计费表在中等窗口宽度下被挤到屏幕外的问题。',
@@ -431,6 +498,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.4',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 15:28:30 +08:00',
     title: '供应商模型自动发现',
     changes: [
       '供应商设置新增“拉取模型”，配置 API Key 后可直接读取远程模型列表。',
@@ -441,6 +509,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.3',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 15:14:00 +08:00',
     title: '集数删除、位置撤销与模型参数可视化',
     changes: [
       '画布列表新增集数操作菜单，空集可直接删除，有节点时会先阻止并提示。',
@@ -452,6 +521,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.2',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 13:38:07 +08:00',
     title: '手动集数管理与更新记录',
     changes: [
       '画布列表新增手动创建集数入口，支持输入集编号和自定义标题。',
@@ -462,6 +532,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: '2026.10.29.1',
     date: '2026-10-29',
+    releasedAt: '2026-10-29 13:38:07 +08:00',
     title: '引用与操作稳定性',
     changes: [
       '手动连线、引用和项目连接关系改为持久化保存。',

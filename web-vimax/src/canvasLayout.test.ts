@@ -1,5 +1,37 @@
 import {describe, expect, it} from 'vitest';
-import {absolutePositionOf, ALIGN_VISIBLE_PX, applyLayoutPositions, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches} from './canvasLayout';
+import {absolutePositionOf, ALIGN_VISIBLE_PX, applyLayoutPositions, canvasViewportIndexKey, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, initialViewportForScope, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, viewportIndexForSave, workspaceScopeMatches} from './canvasLayout';
+
+describe('canvas viewport scope', () => {
+  it('restores the active episode before the project fallback', () => {
+    const scopes = [
+      {scope: '__project__', zoom: 0.4},
+      {scope: 'EP010', zoom: 0.72},
+    ];
+    expect(initialViewportForScope(scopes, 'EP010')?.zoom).toBe(0.72);
+    expect(initialViewportForScope(scopes, 'EP011')?.zoom).toBe(0.4);
+    expect(initialViewportForScope([], 'EP011')).toBeNull();
+  });
+
+  it('replaces only the active episode viewport entry', () => {
+    const next = viewportIndexForSave(
+      [
+        {scope: '__project__', zoom: 0.4},
+        {scope: 'EP010', zoom: 0.6},
+      ],
+      'EP010',
+      {scope: 'EP010', zoom: 0.75},
+    );
+    expect(next).toEqual([
+      {scope: '__project__', zoom: 0.4},
+      {scope: 'EP010', zoom: 0.75},
+    ]);
+  });
+
+  it('uses one stable viewport index per project', () => {
+    expect(canvasViewportIndexKey('project-1'))
+      .toBe('vimax.canvas.viewports.project-1');
+  });
+});
 
 describe('canvas layout import', () => {
   it('projects media and note coordinates without losing unchanged nodes', () => {

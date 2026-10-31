@@ -795,6 +795,8 @@ def _generation_terminal_event_payload(node_id, updates, *, task=None):
             payload["mediaVersions"] = params_patch["mediaVersions"]
         if "mediaVersionIndex" in params_patch:
             payload["mediaVersionIndex"] = params_patch["mediaVersionIndex"]
+        if "thumbUrl" in params_patch:
+            payload["thumbUrl"] = params_patch["thumbUrl"]
     if task:
         payload["taskId"] = str(task.get("id") or "")
         payload["taskStatus"] = str((task or {}).get("status") or "")
@@ -1084,11 +1086,14 @@ def queue_generated_video_finalize(
             if not local_url.startswith("/uploads/"):
                 local_url = persist_generated_media(local_url, ".mp4")
             validation = validate_generated_video(local_url)
+            video_thumb_url = ensure_video_thumbnail(local_url)
             updates.update({
                 "content": local_url,
                 "videoValidation": validation,
                 "actualDuration": validation.get("duration"),
             })
+            if video_thumb_url:
+                updates["_paramsPatch"] = {"thumbUrl": video_thumb_url}
             storage_cfg = provider_catalog.storage_config()
             if (
                 storage_cfg.get("enabled")
@@ -1221,6 +1226,90 @@ def validate_generated_video(url, expected_duration=None):
         }
     except Exception as exc:
         return {"status": "invalid", "message": f"文件校验失败：{exc}"}
+
+
+def ensure_video_thumbnail(url):
+    """Create a small persisted cover from the first decoded video frame."""
+    raw = str(url or "").strip()
+    if not raw.startswith("/uploads/"):
+        return ""
+    path = os.path.join(_upload_dir(), raw[len("/uploads/"):])
+    if not os.path.isfile(path):
+        return ""
+    stem, _ext = os.path.splitext(path)
+    cover_path = f"{stem}-cover.jpg"
+    if os.path.isfile(cover_path) and os.path.getsize(cover_path) > 0:
+        return f"/uploads/{os.path.basename(cover_path)}"
+    ffmpeg = provider_client._ffmpeg_executable()
+    if not ffmpeg:
+        return ""
+    temp_path = f"{cover_path}.tmp.jpg"
+    try:
+        proc = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                "0.15",
+                "-i",
+                path,
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale='min(640,iw)':-2",
+                "-q:v",
+                "3",
+                temp_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if proc.returncode != 0 or not os.path.isfile(temp_path):
+            raise RuntimeError((proc.stderr or "ffmpeg 未生成视频封面").strip()[:300])
+        os.replace(temp_path, cover_path)
+        return f"/uploads/{os.path.basename(cover_path)}"
+    except Exception as exc:
+        print(f"[video-thumbnail] {raw[:120]}: {exc}", file=sys.stderr)
+        return ""
+    finally:
+        try:
+            if os.path.isfile(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+
+
+def backfill_generated_video_thumbnails():
+    updated = 0
+    for project_row in store.list_projects():
+        project = store.get_project(project_row.get("id"))
+        if not project:
+            continue
+        for node in project["payload"].get("nodes", []):
+            if node.get("type") != "video":
+                continue
+            meta = node.get("metadata") or {}
+            params = meta.get("params") or {}
+            if params.get("thumbUrl"):
+                continue
+            url = str(meta.get("content") or "")
+            if not url.startswith("/uploads/"):
+                continue
+            thumb_url = ensure_video_thumbnail(url)
+            if not thumb_url:
+                continue
+            commit_node_metadata(project["id"], node["id"], {
+                "_paramsPatch": {"thumbUrl": thumb_url},
+            })
+            updated += 1
+    if updated:
+        print(f"[video-thumbnail] backfilled {updated}", file=sys.stderr)
+    return updated
 
 
 def backfill_generated_video_validation():
@@ -2106,6 +2195,7 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
         )
     _record_video_version(meta, generated_url, task_id, generated_at)
     validation = validate_generated_video(generated_url, (meta.get("params") or {}).get("duration"))
+    video_thumb_url = ensure_video_thumbnail(generated_url)
     versions = (meta.get("params") or {}).get("videoVersions") or []
     if versions:
         versions[-1]["actualDuration"] = validation.get("duration")
@@ -2124,6 +2214,10 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
         "providerTaskPhase": "已完成",
         "generationFinishedAt": generated_at,
         "videoValidation": validation,
+        "params": {
+            **((meta.get("params") or {})),
+            **({"thumbUrl": video_thumb_url} if video_thumb_url else {}),
+        },
         "actualDuration": validation.get("duration"),
         "provider": provider.get("id"),
         "model": model.get("id"),
@@ -2158,6 +2252,7 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
             "mediaVersionIndex": meta["params"].get("mediaVersionIndex", 0),
             "videoVersions": meta["params"].get("videoVersions", []),
             "videoVersionIndex": meta["params"].get("videoVersionIndex", 0),
+            **({"thumbUrl": video_thumb_url} if video_thumb_url else {}),
         },
     }
     committed = commit_generation_terminal(
@@ -4506,6 +4601,11 @@ class Handler(BaseHTTPRequestHandler):
             for project in projects:
                 project_data = store.get_project(project["id"])
                 nodes = project_data["payload"].get("nodes", []) if project_data else []
+                project["node_count"] = len(nodes)
+                project["episode_count"] = len(
+                    (project_data["payload"].get("episodeImports") or [])
+                    if project_data else []
+                ) or 1
                 task_rows = tasks_by_project.get(project["id"], [])
                 project["running_count"] = sum(
                     1 for node in nodes
@@ -6933,6 +7033,9 @@ class Handler(BaseHTTPRequestHandler):
                     str(result.get("taskId") or ""),
                     generated_at,
                 )
+                video_thumb_url = ensure_video_thumbnail(generated_url)
+                if video_thumb_url:
+                    meta.setdefault("params", {})["thumbUrl"] = video_thumb_url
                 meta["content"] = generated_url
                 meta["status"] = "done"
                 meta["lastNote"] = missing_note(missing)
@@ -7457,6 +7560,12 @@ def main():
             print(f"已校验 {validated} 个历史视频")
     except Exception as exc:
         print(f"[video-validation] 回填失败：{exc}", file=sys.stderr)
+    try:
+        covers = _run_for_active_tenants(backfill_generated_video_thumbnails)
+        if covers:
+            print(f"已补齐 {covers} 个历史视频封面")
+    except Exception as exc:
+        print(f"[video-thumbnail] 回填失败：{exc}", file=sys.stderr)
     try:
         _run_for_active_tenants(store.interrupt_orphan_generation_tasks)
     except Exception as exc:

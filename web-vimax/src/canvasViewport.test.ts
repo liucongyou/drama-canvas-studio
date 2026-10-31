@@ -4,7 +4,9 @@ import {
   filterMediaNodesInBounds,
   focusedNodeVisibleBounds,
   shouldUseLargeCanvasOverview,
+  shouldLoadMediaForViewport,
   viewportForCanvasBounds,
+  viewportLoadBounds,
   visibleBoundsForViewport,
 } from './canvasViewport';
 
@@ -75,6 +77,37 @@ describe('large canvas viewport', () => {
       () => ({w: 20, h: 20}),
     );
     expect(visible.map((node) => node.id)).toEqual(['inside', 'edge']);
+  });
+
+  it('preloads a screen-space overscan band without loading the whole graph', () => {
+    expect(viewportLoadBounds(
+      {x1: 100, y1: 200, x2: 500, y2: 600},
+      0.5,
+      640,
+    )).toEqual({
+      x1: -1180,
+      y1: -1080,
+      x2: 1780,
+      y2: 1880,
+    });
+  });
+
+  it('limits deferred media loading to a bounded first-screen budget', () => {
+    expect(shouldLoadMediaForViewport({
+      contentVisible: true,
+      index: 50,
+      total: 200,
+    })).toBe(true);
+    expect(shouldLoadMediaForViewport({
+      contentVisible: false,
+      index: 11,
+      total: 200,
+    })).toBe(true);
+    expect(shouldLoadMediaForViewport({
+      contentVisible: false,
+      index: 12,
+      total: 200,
+    })).toBe(false);
   });
 
   it('centers a focused node inside a tight preload window', () => {
