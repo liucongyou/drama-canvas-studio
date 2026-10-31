@@ -849,9 +849,12 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
       <div style={{flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column'}}>
         {!projectsLoaded && !pid ? (
           <div className="canvas-empty-state" aria-live="polite">
-            <div className="app-initializing-spinner" />
-            <h2>正在加载项目</h2>
-            <p>恢复上次打开的画布，请稍候。</p>
+            <span className="canvas-empty-icon"><FolderOpen size={22} strokeWidth={1.7} /></span>
+            <h2>正在恢复工作台</h2>
+            <p>读取项目列表并打开上次的画布。</p>
+            <button type="button" onClick={() => void loadProjects()}>
+              重新读取
+            </button>
           </div>
         ) : pid ? (
           // 画布单独一层边界：画布崩了顶栏还在，能直接切项目自救，不用整页重开

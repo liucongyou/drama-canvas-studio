@@ -60,6 +60,7 @@ import {
   Eye,
   EyeOff,
   Film,
+  FolderOpen,
   Group,
   Hand,
   History,
@@ -15031,6 +15032,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
 
       {!dataReady ? (
         <div className="ledger-loading" role="status">
+          <span className="canvas-empty-icon" aria-hidden="true">
+            <FolderOpen size={22} strokeWidth={1.7} />
+          </span>
           <span>
             {loadingSlow
               ? '正在整理画布素材，项目内容较多，请稍候…'
