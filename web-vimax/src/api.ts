@@ -1659,18 +1659,20 @@ export async function saveCanvasMediaNodes(
         content: mediaStorageUrl(n.mediaUrl),
         refs: n.params?.refs || [],
         params: normalizeParamsForStorage(n.params) || {},
-        source: n.source,
-        storage: n.storage,
-        storageError: n.storageError,
+        ...(n.source ? {source: n.source} : {}),
+        ...(n.storage !== undefined ? {storage: n.storage} : {}),
+        ...(n.storageError !== undefined ? {storageError: n.storageError} : {}),
         ...(n._mediaImport === true ? {_mediaImport: true} : {}),
         ...(n._mediaVersionSelection === true ? {_mediaVersionSelection: true} : {}),
-        generationStartedAt: n.generationStartedAt,
-        generationFinishedAt: n.generationFinishedAt,
-        providerTaskStatus: n.providerTaskStatus,
-        providerTaskPhase: n.providerTaskPhase,
-        providerTaskProgress: n.providerTaskProgress,
-        actualDuration: n.actualDuration,
-        videoValidation: n.videoValidation,
+        ...(n.generationStartedAt ? {generationStartedAt: n.generationStartedAt} : {}),
+        ...(n.generationFinishedAt ? {generationFinishedAt: n.generationFinishedAt} : {}),
+        ...(n.providerTaskStatus ? {providerTaskStatus: n.providerTaskStatus} : {}),
+        ...(n.providerTaskPhase ? {providerTaskPhase: n.providerTaskPhase} : {}),
+        ...(n.providerTaskProgress !== undefined
+          ? {providerTaskProgress: n.providerTaskProgress}
+          : {}),
+        ...(n.actualDuration !== undefined ? {actualDuration: n.actualDuration} : {}),
+        ...(n.videoValidation ? {videoValidation: n.videoValidation} : {}),
         // JSON.stringify drops undefined keys, so a successful retry used to
         // leave the previous 429 message in backend metadata forever. Send an
         // explicit null for non-failed states so the server-side merge clears it.
@@ -1826,19 +1828,23 @@ export async function patchMediaNodesFields(
         content: mediaStorageUrl(node.mediaUrl),
         refs: node.params?.refs || [],
         params: normalizeParamsForStorage(node.params) || {},
-        source: node.source,
-        storage: node.storage,
-        providerResultUrl: node.providerResultUrl,
-        storageError: node.storageError,
+        ...(node.source ? {source: node.source} : {}),
+        ...(node.storage !== undefined ? {storage: node.storage} : {}),
+        ...(node.providerResultUrl !== undefined
+          ? {providerResultUrl: node.providerResultUrl}
+          : {}),
+        ...(node.storageError !== undefined ? {storageError: node.storageError} : {}),
         ...(node._mediaImport === true ? {_mediaImport: true} : {}),
         ...(node._mediaVersionSelection === true ? {_mediaVersionSelection: true} : {}),
-        generationStartedAt: node.generationStartedAt,
-        generationFinishedAt: node.generationFinishedAt,
-        providerTaskStatus: node.providerTaskStatus,
-        providerTaskPhase: node.providerTaskPhase,
-        providerTaskProgress: node.providerTaskProgress,
-        actualDuration: node.actualDuration,
-        videoValidation: node.videoValidation,
+        ...(node.generationStartedAt ? {generationStartedAt: node.generationStartedAt} : {}),
+        ...(node.generationFinishedAt ? {generationFinishedAt: node.generationFinishedAt} : {}),
+        ...(node.providerTaskStatus ? {providerTaskStatus: node.providerTaskStatus} : {}),
+        ...(node.providerTaskPhase ? {providerTaskPhase: node.providerTaskPhase} : {}),
+        ...(node.providerTaskProgress !== undefined
+          ? {providerTaskProgress: node.providerTaskProgress}
+          : {}),
+        ...(node.actualDuration !== undefined ? {actualDuration: node.actualDuration} : {}),
+        ...(node.videoValidation ? {videoValidation: node.videoValidation} : {}),
         lastError: node.status === 'failed' ? (node.lastError || '生成失败') : null,
       },
     })),
@@ -2288,8 +2294,18 @@ export async function generateCanvasNodeNow(
       taskId?: string;
       url?: string;
       text?: string;
+      nodeId?: string;
       params?: CanvasMediaParams;
+      storage?: CanvasMediaNode['storage'];
+      storageError?: string;
+      source?: CanvasMediaNode['source'];
+      providerResultUrl?: string;
+      finalizePending?: boolean;
       status?: string;
+      providerTaskStatus?: string;
+      providerTaskPhase?: string;
+      providerTaskProgress?: number;
+      generationFinishedAt?: string;
       code?: string;
       replayed?: boolean;
     };
@@ -2305,10 +2321,19 @@ export async function generateCanvasNodeNow(
     emit({
       type: 'done',
       sessionId,
-      nodeId,
+      nodeId: result.nodeId || nodeId,
       url: result.url,
       text: result.text,
       params: result.params,
+      storage: result.storage,
+      storageError: result.storageError,
+      source: result.source,
+      providerResultUrl: result.providerResultUrl,
+      finalizePending: result.finalizePending,
+      providerTaskStatus: result.providerTaskStatus,
+      providerTaskPhase: result.providerTaskPhase,
+      providerTaskProgress: result.providerTaskProgress,
+      generationFinishedAt: result.generationFinishedAt,
     });
     return {deferred: false, ...result};
   } catch (error) {

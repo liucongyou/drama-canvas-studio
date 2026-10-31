@@ -930,6 +930,29 @@ describe('api request recovery', () => {
     expect(video).toHaveLength(2);
   });
 
+  it('includes the current generated URL even when version metadata is stale', () => {
+    const versions = mediaVersionList({
+      id: 'media-1',
+      kind: 'image',
+      title: '素材',
+      prompt: '',
+      status: 'done',
+      mediaUrl: 'https://cdn.example.com/final.png',
+      x: 0,
+      y: 0,
+      updatedAt: '2026-10-31T09:00:00Z',
+      params: {
+        mediaVersions: [{url: '/uploads/old.png'}],
+        mediaVersionIndex: 0,
+      },
+    });
+
+    expect(versions.map((version) => version.url)).toEqual([
+      '/uploads/old.png',
+      'https://cdn.example.com/final.png',
+    ]);
+  });
+
   it('computes the gate badge from passed segments instead of a fixed score', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       passed: false,
@@ -967,6 +990,57 @@ describe('api request recovery', () => {
       sessionId: 'project-1',
       nodeId: 'node-1',
       url: '/uploads/generated-second.png',
+    }));
+    unsubscribe();
+  });
+
+  it('forwards the final storage URL and receipt with the synchronous done event', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const unsubscribe = subscribeToEvents((event) => events.push(event), () => {});
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      nodeId: 'node-1',
+      status: 'done',
+      url: 'https://cdn.example.com/final.png',
+      providerTaskStatus: 'completed',
+      providerTaskPhase: '已完成',
+      providerTaskProgress: 100,
+      generationFinishedAt: '2026-10-31T09:00:00Z',
+      storage: {
+        status: 'stored',
+        provider: 'qiniu',
+        url: 'https://cdn.example.com/final.png',
+      },
+      storageError: '',
+      params: {
+        mediaVersions: [{
+          url: 'https://cdn.example.com/final.png',
+          sourceType: 'generated',
+        }],
+        mediaVersionIndex: 0,
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await generateCanvasNodeNow('project-1', 'node-1');
+
+    expect(result).toMatchObject({
+      deferred: false,
+      url: 'https://cdn.example.com/final.png',
+      providerTaskStatus: 'completed',
+      storage: {status: 'stored', provider: 'qiniu'},
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'done',
+      sessionId: 'project-1',
+      nodeId: 'node-1',
+      url: 'https://cdn.example.com/final.png',
+      providerTaskStatus: 'completed',
+      providerTaskPhase: '已完成',
+      providerTaskProgress: 100,
+      storage: expect.objectContaining({status: 'stored', provider: 'qiniu'}),
     }));
     unsubscribe();
   });

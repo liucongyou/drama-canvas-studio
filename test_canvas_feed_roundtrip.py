@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
 import copy
 import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import canvas_feed_contract
+import canvas_store
+import tenant_context
 from canvas_feed_contract import issue_dict, prepare_import
 from import_feed import repair_payload_prompt_mentions, repair_prompt_mentions
 
@@ -262,6 +268,58 @@ class CanvasFeedRoundTripTests(unittest.TestCase):
         })
 
         self.assertEqual(ep1_semantic_before, ep1_semantic_after)
+
+    def test_legacy_payload_imports_into_database_authoritative_store(self):
+        first = self.import_feed(
+            {"nodes": [], "connections": [], "episodeImports": []},
+            self.episode_feed(1, "EP001"),
+            1,
+        )
+        legacy_payload = copy.deepcopy(first.merged_payload)
+        legacy_payload["episodeImports"][0]["nodeIds"] = ["stale-ghost"]
+
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, {
+                "CANVAS_MULTI_TENANT": "1",
+                "CANVAS_TENANT_DATA_ROOT": temp,
+            }):
+                context = tenant_context.make_context(
+                    "import-migration",
+                    "import-migration",
+                )
+                tenant_context.ensure_context_dirs(context)
+                with tenant_context.use_context(context):
+                    project_id = canvas_store.create_project(
+                        "legacy-import",
+                        legacy_payload,
+                    )
+                    current = canvas_store.get_project(project_id)
+                    plan = prepare_import(
+                        current["payload"],
+                        self.episode_feed(2, "EP002"),
+                        project_id,
+                        current["revision"],
+                    )
+                    self.assertTrue(plan.ok, [issue_dict(item) for item in plan.errors])
+                    canvas_feed_contract.commit_import(
+                        plan,
+                        if_revision=plan.revision,
+                    )
+                    ep1 = canvas_store.get_project_workspace_nodes(
+                        project_id,
+                        "EP001",
+                    )
+                    ep2 = canvas_store.get_project_workspace_nodes(
+                        project_id,
+                        "EP002",
+                    )
+                    ep1_ids = {node["id"] for node in ep1["nodes"]}
+                    ep2_ids = {node["id"] for node in ep2["nodes"]}
+
+        self.assertTrue(ep1_ids)
+        self.assertTrue(ep2_ids)
+        self.assertFalse(ep1_ids & ep2_ids)
+        self.assertNotIn("stale-ghost", ep1_ids)
 
 
 if __name__ == "__main__":

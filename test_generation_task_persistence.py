@@ -2279,6 +2279,177 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             "failed",
         )
 
+    def test_image_storage_receipt_replaces_current_version_url(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("image-storage-swap")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "image-storage-node",
+                    "type": "image",
+                    "title": "角色｜存储回执",
+                    "metadata": {
+                        "status": "done",
+                        "content": "/uploads/local.png",
+                        "storage": {},
+                        "params": {
+                            "mediaVersions": [{
+                                "url": "/uploads/local.png",
+                                "taskId": "task-image-storage",
+                                "sourceType": "generated",
+                                "providerResultUrl": "https://provider.example/tmp.png",
+                            }],
+                            "mediaVersionIndex": 0,
+                        },
+                    },
+                }],
+                episode_id="EP001",
+            )
+            project = canvas_store.get_project(project_id)
+            node = next(
+                item for item in project["payload"]["nodes"]
+                if item["id"] == "image-storage-node"
+            )
+            stored = {
+                "status": "stored",
+                "provider": "qiniu",
+                "url": "https://cdn.example/final.png",
+            }
+            with (
+                patch.object(
+                    server,
+                    "archive_generated_image",
+                    return_value=stored,
+                ),
+                patch.object(
+                    server.threading,
+                    "Thread",
+                ) as thread_cls,
+            ):
+                server.queue_generated_image_tos_archive(
+                    project_id,
+                    node["id"],
+                    "/uploads/local.png",
+                    {"id": "provider"},
+                    {"id": "model"},
+                    "task-image-storage",
+                    "2026-10-31T09:00:00Z",
+                )
+                target = thread_cls.call_args.kwargs["target"]
+                target_args = thread_cls.call_args.kwargs.get("args") or ()
+                target(*target_args)
+            saved = canvas_store.get_projection_node(
+                project_id,
+                "image-storage-node",
+            )
+
+        metadata = saved["metadata"]
+        version = metadata["params"]["mediaVersions"][-1]
+        self.assertEqual(metadata["content"], "https://cdn.example/final.png")
+        self.assertEqual(version["url"], "https://cdn.example/final.png")
+        self.assertEqual(version["storage"], stored)
+        self.assertEqual(
+            version["providerResultUrl"],
+            "https://provider.example/tmp.png",
+        )
+
+    def test_video_storage_receipt_replaces_current_version_url(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("video-storage-swap")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "video-storage-node",
+                    "type": "video",
+                    "title": "视频｜存储回执",
+                    "metadata": {
+                        "status": "done",
+                        "content": "/uploads/local.mp4",
+                        "storage": {},
+                        "params": {
+                            "mediaVersions": [{
+                                "url": "/uploads/local.mp4",
+                                "taskId": "task-video-storage",
+                                "sourceType": "generated",
+                                "providerResultUrl": "https://provider.example/tmp.mp4",
+                            }],
+                            "videoVersions": [{
+                                "url": "/uploads/local.mp4",
+                                "taskId": "task-video-storage",
+                                "sourceType": "generated",
+                                "providerResultUrl": "https://provider.example/tmp.mp4",
+                            }],
+                            "mediaVersionIndex": 0,
+                            "videoVersionIndex": 0,
+                            "thumbUrl": "/uploads/local-thumb.jpg",
+                        },
+                    },
+                }],
+                episode_id="EP001",
+            )
+            stored = {
+                "status": "stored",
+                "provider": "aliyun_oss",
+                "url": "https://cdn.example/final.mp4",
+            }
+            with (
+                patch.object(
+                    server,
+                    "validate_generated_video",
+                    return_value={"status": "valid", "duration": 5.0},
+                ),
+                patch.object(
+                    server,
+                    "ensure_video_thumbnail",
+                    return_value="/uploads/local-thumb.jpg",
+                ),
+                patch.object(
+                    server.provider_catalog,
+                    "storage_config",
+                    return_value={"enabled": True, "auto_persist_videos": True},
+                ),
+                patch.object(
+                    server.media_storage,
+                    "persist_local_url",
+                    return_value=stored,
+                ),
+                patch.object(server.threading, "Thread") as thread_cls,
+            ):
+                server.queue_generated_video_finalize(
+                    project_id,
+                    "video-storage-node",
+                    "/uploads/local.mp4",
+                    {"id": "provider"},
+                    {"id": "model"},
+                    "task-video-storage",
+                    "2026-10-31T09:00:00Z",
+                )
+                target = thread_cls.call_args.kwargs["target"]
+                target_args = thread_cls.call_args.kwargs.get("args") or ()
+                target(*target_args)
+            saved = canvas_store.get_projection_node(
+                project_id,
+                "video-storage-node",
+            )
+
+        metadata = saved["metadata"]
+        media_version = next(
+            item for item in metadata["params"]["mediaVersions"]
+            if item.get("taskId") == "task-video-storage"
+        )
+        video_version = next(
+            item for item in metadata["params"]["videoVersions"]
+            if item.get("taskId") == "task-video-storage"
+        )
+        self.assertEqual(metadata["content"], "https://cdn.example/final.mp4")
+        self.assertEqual(media_version["url"], "https://cdn.example/final.mp4")
+        self.assertEqual(video_version["url"], "https://cdn.example/final.mp4")
+        self.assertEqual(media_version["storage"], stored)
+        self.assertEqual(
+            media_version["providerResultUrl"],
+            "https://provider.example/tmp.mp4",
+        )
+
     def test_downloaded_image_is_persisted_before_canvas_write(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("persisted-image")

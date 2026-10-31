@@ -10258,6 +10258,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             ? String(event.message || '生成失败')
             : undefined,
           generationFinishedAt: finishedAt,
+          finalizePending: event.type === 'done' ? false : n.finalizePending,
+          source: event.type === 'done' && event.source && typeof event.source === 'object'
+            ? event.source as CanvasMediaNode['source']
+            : n.source,
+          providerResultUrl: event.type === 'done' && typeof event.providerResultUrl === 'string'
+            ? event.providerResultUrl
+            : n.providerResultUrl,
           providerTaskStatus: event.type === 'error' ? 'failed' : 'completed',
           providerTaskPhase: event.type === 'error' ? '生成失败' : '已完成',
           providerTaskProgress: event.type === 'error' ? n.providerTaskProgress : 100,
@@ -10523,6 +10530,42 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             : (nextStatus === 'done' ? undefined : node.lastError),
           updatedAt: new Date().toISOString(),
         };
+        if (
+          url
+          && node.kind !== 'text'
+          && !updated.params?.mediaVersions?.some((version) => version.url === url)
+        ) {
+          const versions = [
+            ...(updated.params?.mediaVersions || []),
+            {
+              url,
+              sourceType: 'generated' as const,
+              generatedAt:
+                typeof data.generationFinishedAt === 'string'
+                  ? data.generationFinishedAt
+                  : undefined,
+              providerResultUrl:
+                typeof data.providerResultUrl === 'string'
+                  ? data.providerResultUrl
+                  : undefined,
+              storage:
+                data.storage && typeof data.storage === 'object'
+                  ? data.storage as CanvasMediaNode['storage']
+                  : undefined,
+            },
+          ];
+          updated.params = {
+            ...(updated.params || {}),
+            mediaVersions: versions,
+            mediaVersionIndex: versions.length - 1,
+            ...(node.kind === 'video'
+              ? {
+                  videoVersions: versions,
+                  videoVersionIndex: versions.length - 1,
+                }
+              : {}),
+          };
+        }
         const copy = prev.slice();
         copy[index] = updated;
         return copy;

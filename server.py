@@ -1024,12 +1024,6 @@ def queue_generated_image_tos_archive(
         )
         storage = storage if isinstance(storage, dict) else {}
         storage_error = str(storage.get("error") or "")
-        commit_node_metadata(project_id, node_id, {
-            "storage": storage,
-            "storageError": storage_error,
-        })
-        if not storage.get("status") == "stored":
-            return
         with project_write_lock(project_id):
             current = store.get_project(project_id)
             if not current:
@@ -1046,13 +1040,43 @@ def queue_generated_image_tos_archive(
             meta = current_node.setdefault("metadata", {})
             params = meta.setdefault("params", {})
             versions = params.get("mediaVersions") or []
-            changed = False
+            stored_url = (
+                str(storage.get("url") or local_url)
+                if storage.get("status") == "stored"
+                else ""
+            )
             for item in versions:
-                if isinstance(item, dict) and item.get("url") == local_url:
-                    item["storage"] = storage
-                    changed = True
-            if changed:
-                store.update_project(project_id, payload=current["payload"])
+                if not isinstance(item, dict):
+                    continue
+                if (
+                    item.get("url") != local_url
+                    and str(item.get("taskId") or "") != str(task_id or "")
+                ):
+                    continue
+                item["storage"] = storage
+                if stored_url:
+                    original_url = str(item.get("url") or "")
+                    item["url"] = stored_url
+                    item["providerResultUrl"] = str(
+                        item.get("providerResultUrl")
+                        or original_url
+                        or ""
+                    )
+            meta["storage"] = storage
+            meta["storageError"] = storage_error
+            if stored_url:
+                meta["content"] = stored_url
+            current_node["updatedAt"] = store._now_iso()
+            store.update_project(project_id, payload=current["payload"])
+            _publish_node_metadata_event(
+                project_id,
+                node_id,
+                {
+                    "content": meta.get("content"),
+                    "storage": storage,
+                    "storageError": storage_error,
+                },
+            )
 
     threading.Thread(
         target=_run_in_tenant,
@@ -1120,6 +1144,64 @@ def queue_generated_video_finalize(
                         f"[storage] failed to archive generated video {local_url[:120]}: {exc}",
                         file=sys.stderr,
                     )
+            stored_url = (
+                str(updates["storage"].get("url") or local_url)
+                if updates["storage"].get("status") == "stored"
+                else ""
+            )
+            if stored_url:
+                updates["content"] = stored_url
+                with project_write_lock(project_id):
+                    current = store.get_project(project_id)
+                    if current:
+                        current_node = next(
+                            (
+                                item for item in current["payload"].get("nodes", [])
+                                if item.get("id") == node_id
+                            ),
+                            None,
+                        )
+                        if current_node:
+                            meta = current_node.setdefault("metadata", {})
+                            versions = (meta.get("params") or {}).get("mediaVersions") or []
+                            for version in versions:
+                                if not isinstance(version, dict):
+                                    continue
+                                if (
+                                    version.get("url") != local_url
+                                    and str(version.get("taskId") or "") != str(task_id or "")
+                                ):
+                                    continue
+                                version["providerResultUrl"] = str(
+                                    version.get("providerResultUrl")
+                                    or version.get("url")
+                                    or ""
+                                )
+                                version["url"] = stored_url
+                                version["storage"] = updates["storage"]
+                            video_versions = (
+                                (meta.get("params") or {}).get("videoVersions")
+                                or []
+                            )
+                            for version in video_versions:
+                                if not isinstance(version, dict):
+                                    continue
+                                if (
+                                    version.get("url") != local_url
+                                    and str(version.get("taskId") or "") != str(task_id or "")
+                                ):
+                                    continue
+                                version["providerResultUrl"] = str(
+                                    version.get("providerResultUrl")
+                                    or version.get("url")
+                                    or ""
+                                )
+                                version["url"] = stored_url
+                                version["storage"] = updates["storage"]
+                            meta["content"] = stored_url
+                            meta["storage"] = updates["storage"]
+                            meta["updatedAt"] = store._now_iso()
+                            store.update_project(project_id, payload=current["payload"])
             commit_node_metadata(project_id, node_id, updates)
         except Exception as exc:
             commit_node_metadata(project_id, node_id, {
@@ -7858,6 +7940,11 @@ class Handler(BaseHTTPRequestHandler):
             "providerTaskStatus": str(meta.get("providerTaskStatus") or "completed"),
             "providerTaskPhase": str(meta.get("providerTaskPhase") or "已完成"),
             "providerTaskProgress": 100,
+            "storage": meta.get("storage") or {},
+            "storageError": str(meta.get("storageError") or ""),
+            "source": meta.get("source") if isinstance(meta.get("source"), dict) else {},
+            "providerResultUrl": str(meta.get("providerResultUrl") or ""),
+            "finalizePending": False,
             "generationFinishedAt": str(
                 meta.get("generationFinishedAt") or node_written_at
             ),
