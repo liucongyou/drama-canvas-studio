@@ -28,6 +28,23 @@ export function useDialogFocusTrap<T extends HTMLElement>(
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Tab' || !rootRef.current) return;
+      const active = document.activeElement;
+      const portalRoot = active instanceof HTMLElement
+        ? active.closest<HTMLElement>('[data-dialog-portal="true"]')
+        : null;
+      if (portalRoot && !event.shiftKey) {
+        const portalFocusable = [...portalRoot.querySelectorAll<HTMLElement>(FOCUSABLE)]
+          .filter((item) => item.offsetParent !== null || item === document.activeElement);
+        const portalLast = portalFocusable[portalFocusable.length - 1];
+        if (active === portalLast) {
+          event.preventDefault();
+          rootRef.current.focus({preventScroll: true});
+        }
+        return;
+      }
+      if (portalRoot) {
+        return;
+      }
       const focusable = [...rootRef.current.querySelectorAll<HTMLElement>(FOCUSABLE)]
         .filter((item) => item.offsetParent !== null || item === document.activeElement);
       if (focusable.length === 0) {
@@ -37,7 +54,6 @@ export function useDialogFocusTrap<T extends HTMLElement>(
       }
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
       if (event.shiftKey && (active === first || active === rootRef.current)) {
         event.preventDefault();
         last.focus();

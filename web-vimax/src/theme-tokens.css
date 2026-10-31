@@ -1503,3 +1503,719 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
   border-color: var(--v-border) !important;
   box-shadow: var(--v-shadow-overlay) !important;
 }
+
+/* ============================================================
+   Canvas object theme contract
+   ============================================================
+   The canvas has older, highly-specific card rules that still carry
+   neutral colors from the original dark palette. Keep those rules for
+   dimension and interaction, but bind every object surface to the
+   selected theme here. New canvas objects should reuse these selectors
+   instead of introducing another local grayscale.
+*/
+.canvas-flow,
+.canvas-stage {
+  background-color: var(--v-canvas) !important;
+}
+
+.canvas-node.canvas-media-node {
+  --card-c1: var(--v-card-1);
+  --card-c2: var(--v-card-2);
+  --card-c3: var(--v-card-3);
+  color: var(--v-text-2);
+}
+
+.canvas-node.canvas-media-node .canvas-media-card {
+  --card-c1: var(--v-card-1);
+  --card-c2: var(--v-card-2);
+  --card-c3: var(--v-card-3);
+  background:
+    radial-gradient(130% 100% at 50% 0%, var(--v-border-hair), transparent 68%),
+    linear-gradient(
+      180deg,
+      var(--card-c1) 0%,
+      var(--card-c2) 58%,
+      var(--card-c3) 100%
+    ) !important;
+  border-color: transparent !important;
+  box-shadow: var(--v-shadow-card) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-card:hover {
+  --card-c1: var(--v-surface-hover);
+  --card-c2: var(--v-card-1);
+  --card-c3: var(--v-card-2);
+  box-shadow:
+    0 18px 38px -10px color-mix(in srgb, var(--v-shadow-panel) 88%, transparent),
+    var(--v-shadow-card) !important;
+}
+
+.canvas-node.canvas-media-node.is-done .canvas-media-card {
+  --card-c1: var(--v-card-1);
+  --card-c2: var(--v-card-2);
+  --card-c3: var(--v-card-3);
+}
+
+.canvas-node.canvas-media-node.is-busy .canvas-media-card {
+  --card-c1: color-mix(in srgb, var(--v-warn) 9%, var(--v-card-1));
+  --card-c2: color-mix(in srgb, var(--v-warn) 6%, var(--v-card-2));
+  --card-c3: color-mix(in srgb, var(--v-warn) 4%, var(--v-card-3));
+}
+
+.canvas-node.canvas-media-node.is-failed .canvas-media-card {
+  --card-c1: color-mix(in srgb, var(--v-danger) 9%, var(--v-card-1));
+  --card-c2: color-mix(in srgb, var(--v-danger) 6%, var(--v-card-2));
+  --card-c3: color-mix(in srgb, var(--v-danger) 4%, var(--v-card-3));
+}
+
+.canvas-node.canvas-media-node.is-active .canvas-media-card {
+  --card-c1: color-mix(in srgb, var(--v-accent) 8%, var(--v-card-1));
+  --card-c2: color-mix(in srgb, var(--v-accent) 5%, var(--v-card-2));
+  --card-c3: color-mix(in srgb, var(--v-accent) 3%, var(--v-card-3));
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--v-accent) 18%, transparent),
+    var(--v-shadow-card) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-preview,
+.canvas-node.canvas-media-node .canvas-media-image-frame,
+.canvas-node.canvas-media-node .canvas-media-image-lazy,
+.canvas-node.canvas-media-node .canvas-media-placeholder {
+  background-color: var(--v-surface-sunken) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-placeholder {
+  background:
+    radial-gradient(130% 100% at 50% 0%, var(--v-border-hair), transparent 68%),
+    repeating-linear-gradient(
+      45deg,
+      var(--v-card-3) 0 10px,
+      var(--v-surface-sunken) 10px 20px
+    ) !important;
+  color: var(--v-text-4) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-placeholder-ico {
+  color: var(--v-text-3) !important;
+  background: linear-gradient(180deg, var(--v-surface), var(--v-surface-hover)) !important;
+  box-shadow: var(--v-shadow-panel) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-head-name {
+  color: var(--v-text-3) !important;
+}
+
+.canvas-node.canvas-media-node:hover .canvas-media-head-name,
+.canvas-node.canvas-media-node.is-active .canvas-media-head-name {
+  color: var(--v-text) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-foot-main {
+  color: var(--v-text-2) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-foot-sub {
+  color: var(--v-text-5) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-foot-ico,
+.canvas-node.canvas-media-node .canvas-media-reuse-badge,
+.canvas-node.canvas-media-node .canvas-media-source-badge {
+  color: var(--v-text-4) !important;
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-foot-main.is-done,
+.canvas-node.canvas-media-node .canvas-media-preview.is-audio {
+  color: var(--v-success) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-foot-main.is-busy {
+  color: var(--v-warn) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-foot-main.is-failed {
+  color: var(--v-danger) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-card-menu button {
+  color: var(--v-text-2) !important;
+  background: color-mix(in srgb, var(--v-surface-raised) 92%, transparent) !important;
+  border: 1px solid var(--v-border-hair) !important;
+  box-shadow:
+    0 4px 12px color-mix(in srgb, var(--v-shadow-panel) 72%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--v-text) 8%, transparent) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-card-menu button:hover {
+  color: var(--v-accent-mid) !important;
+  background: var(--v-accent-soft) !important;
+  border-color: var(--v-accent-line) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-card-menu button.is-del:hover {
+  color: var(--v-danger) !important;
+  background: var(--v-danger) !important;
+  border-color: var(--v-danger) !important;
+}
+
+.canvas-flow .canvas-node.canvas-media-node .canvas-media-port::before {
+  color: var(--v-text-3) !important;
+  background-color: color-mix(in srgb, var(--v-surface-sunken) 92%, transparent) !important;
+  border-color: var(--v-border-strong) !important;
+  box-shadow:
+    0 2px 7px color-mix(in srgb, var(--v-shadow-panel) 72%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--v-text) 8%, transparent) !important;
+}
+
+.canvas-flow .canvas-node.canvas-media-node .canvas-media-port .canvas-port-icon {
+  color: var(--v-text-3) !important;
+}
+
+.canvas-flow .canvas-node.canvas-media-node .canvas-media-port:hover::before,
+.canvas-flow .canvas-node.canvas-media-node:hover .canvas-media-port::before {
+  color: var(--v-accent-mid) !important;
+  background-color: color-mix(in srgb, var(--v-accent) 16%, var(--v-surface)) !important;
+  border-color: var(--v-accent-line) !important;
+}
+
+.canvas-flow .canvas-node.canvas-media-node .canvas-media-port:hover .canvas-port-icon,
+.canvas-flow .canvas-node.canvas-media-node:hover .canvas-media-port .canvas-port-icon {
+  color: var(--v-accent-mid) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-busy-mask {
+  color: var(--v-warn) !important;
+  background: color-mix(in srgb, var(--v-surface-sunken) 84%, transparent) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-background-chip {
+  color: var(--v-warn) !important;
+  background: var(--v-surface) !important;
+  border-color: color-mix(in srgb, var(--v-warn) 30%, var(--v-border)) !important;
+  box-shadow: var(--v-shadow-panel) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-foot-pop {
+  color: var(--v-text-2) !important;
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-overlay) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-foot-pop button {
+  color: var(--v-text-2) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-foot-pop button:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+}
+
+.canvas-node.canvas-media-node .canvas-media-version-nav {
+  color: var(--v-text-4) !important;
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-media-overview-card {
+  color: var(--v-text-2) !important;
+  background: var(--v-card-2) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-card) !important;
+}
+
+.canvas-media-overview-icon,
+.canvas-media-overview-title {
+  color: var(--v-text-2) !important;
+}
+
+.canvas-media-overview-badge {
+  color: var(--v-text-4) !important;
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-audio-shell {
+  color: var(--v-text-2) !important;
+  background:
+    radial-gradient(120% 100% at 50% 0%, var(--v-border-hair), transparent 68%),
+    linear-gradient(
+      180deg,
+      var(--card-c1, var(--v-card-1)) 0%,
+      var(--card-c2, var(--v-card-2)) 58%,
+      var(--card-c3, var(--v-card-3)) 100%
+    ) !important;
+}
+
+.canvas-audio-note,
+.canvas-audio-controls button {
+  color: var(--v-text-2) !important;
+  background: var(--v-surface-hover) !important;
+}
+
+.canvas-audio-title,
+.canvas-audio-controls span {
+  color: var(--v-text-4) !important;
+}
+
+.canvas-audio-wave i {
+  background: var(--v-border-strong) !important;
+}
+
+.canvas-audio-wave i.is-played,
+.canvas-audio-shell.is-playing .canvas-audio-wave i.is-played {
+  background: var(--v-text-2) !important;
+}
+
+.canvas-asset-card {
+  color: var(--v-text) !important;
+  background: linear-gradient(180deg, var(--v-card-1), var(--v-card-3)) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-card) !important;
+}
+
+.canvas-asset-card:hover {
+  border-color: var(--v-accent-mid) !important;
+  box-shadow: var(--v-shadow-panel) !important;
+}
+
+.canvas-asset-card-media,
+.canvas-asset-card-img,
+.canvas-asset-card-audio {
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-asset-card-name {
+  color: var(--v-text) !important;
+}
+
+.canvas-asset-card-badge {
+  color: var(--v-text-3) !important;
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-asset-card-badge.is-clip {
+  color: var(--v-success) !important;
+  background: var(--v-success-soft) !important;
+  border-color: color-mix(in srgb, var(--v-success) 30%, transparent) !important;
+}
+
+.canvas-segment,
+.canvas-node.canvas-segment {
+  color: var(--v-text-2) !important;
+  background: var(--v-card-2) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-card) !important;
+}
+
+.canvas-segment .canvas-segment-title,
+.canvas-segment header {
+  color: var(--v-text-2) !important;
+}
+
+.canvas-segment .canvas-shot-refs,
+.canvas-segment .canvas-shot-summary-row {
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-node.canvas-shot {
+  color: var(--v-text-2) !important;
+  background: var(--v-card-2) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-card) !important;
+}
+
+.canvas-node.canvas-shot.is-empty,
+.canvas-node.canvas-shot.is-dirty {
+  border-color: color-mix(in srgb, var(--v-warn) 45%, var(--v-border)) !important;
+}
+
+.canvas-shot-summary-label {
+  color: var(--v-accent-mid) !important;
+}
+
+.canvas-shot-summary-text,
+.canvas-shot-prompts-tip,
+.canvas-shot-summary-empty {
+  color: var(--v-text-4) !important;
+}
+
+.react-flow__node-note .canvas-note {
+  --note-c1: var(--v-card-1);
+  --note-c2: var(--v-card-2);
+  --note-c3: var(--v-card-3);
+  color: var(--v-text) !important;
+  background:
+    radial-gradient(120% 100% at 50% 0%, var(--v-border-hair), transparent 68%),
+    linear-gradient(180deg, var(--note-c1), var(--note-c2) 58%, var(--note-c3)) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-card) !important;
+}
+
+.react-flow__node-note .canvas-note-text {
+  color: var(--v-text) !important;
+}
+
+.react-flow__node-note .canvas-note-text::placeholder {
+  color: var(--v-text-5) !important;
+}
+
+.canvas-ep-box,
+.canvas-node.canvas-ep-box {
+  color: var(--v-text-2) !important;
+  background: color-mix(in srgb, var(--v-surface) 76%, transparent) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-toolbar,
+.canvas-tools,
+.canvas-selbar,
+.canvas-context-menu,
+.canvas-media-pill-pop,
+.canvas-media-foot-pop {
+  color: var(--v-text-2) !important;
+  background-color: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-overlay) !important;
+}
+
+.canvas-stage[data-bg='dots'] {
+  background-image: radial-gradient(circle, var(--v-dot) 1px, transparent 1px) !important;
+}
+
+.canvas-stage[data-bg='lines'] {
+  background-image:
+    linear-gradient(var(--v-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--v-grid-line) 1px, transparent 1px) !important;
+}
+
+/* The canvas is the work surface, not a decorative backdrop. Keep optional
+   grid modes, but no latent diagonal stroke layer may sit underneath nodes. */
+.canvas-flow,
+.canvas-stage {
+  background-image: none;
+}
+.canvas-stage[data-bg='dots'] {
+  background-image: radial-gradient(circle, var(--v-dot) 1px, transparent 1px) !important;
+}
+.canvas-stage[data-bg='lines'] {
+  background-image:
+    linear-gradient(var(--v-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--v-grid-line) 1px, transparent 1px) !important;
+}
+
+.canvas-minimap .react-flow__minimap-node {
+  fill: var(--v-border-strong) !important;
+}
+
+/* Inner controls on canvas objects follow the same surface contract. */
+.canvas-media-head,
+.canvas-media-foot,
+.canvas-segment header,
+.canvas-segment .canvas-seg-planning,
+.canvas-segment .canvas-seg-gallery,
+.canvas-node.canvas-shot > header {
+  color: var(--v-text-2) !important;
+}
+
+.canvas-media-head-name,
+.canvas-media-foot-main,
+.canvas-segment .canvas-segment-title,
+.canvas-shot-summary-text {
+  color: var(--v-text-3) !important;
+}
+
+.canvas-media-node.is-active .canvas-media-head-name,
+.canvas-media-node:hover .canvas-media-head-name {
+  color: var(--v-text) !important;
+}
+
+.canvas-media-foot-sub,
+.canvas-shot-prompts-tip,
+.canvas-shot-summary-empty,
+.canvas-shot-summary-label {
+  color: var(--v-text-4) !important;
+}
+
+.canvas-shot-summary-label {
+  color: var(--v-accent-mid) !important;
+}
+
+.canvas-segment .canvas-seg-planning,
+.canvas-segment .canvas-seg-gallery {
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-segment .canvas-seg-shot,
+.canvas-segment .canvas-seg-cell {
+  color: var(--v-text-2) !important;
+  background: var(--v-card-3) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-segment .canvas-seg-shot:hover,
+.canvas-segment .canvas-seg-cell:hover {
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border-strong) !important;
+}
+
+.canvas-segment .canvas-seg-shot-dur,
+.canvas-segment .canvas-seg-scene-meta,
+.canvas-segment .canvas-seg-meta {
+  color: var(--v-text-5) !important;
+}
+
+.canvas-shot-summary-row,
+.canvas-ref-chip,
+.canvas-ref-chip.is-static {
+  color: var(--v-text-2) !important;
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-ref-chip:hover,
+.canvas-ref-chip.is-static:hover {
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border-strong) !important;
+}
+
+.canvas-ref-kind {
+  color: var(--v-accent-mid) !important;
+}
+
+.canvas-ref-name {
+  color: var(--v-text-2) !important;
+}
+
+.canvas-ref-remove {
+  color: var(--v-text-5) !important;
+}
+
+.canvas-ref-chip:hover .canvas-ref-remove {
+  color: var(--v-danger) !important;
+}
+
+.canvas-media-count-badge,
+.canvas-media-connection-badge,
+.canvas-media-foot-more {
+  color: var(--v-text-4) !important;
+}
+
+.canvas-media-count-badge,
+.canvas-media-connection-badge {
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-media-count-badge:hover,
+.canvas-media-connection-badge:hover,
+.canvas-media-foot-more > button:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+}
+
+.canvas-media-pill,
+.canvas-media-bar,
+.canvas-media-params,
+.canvas-media-params label,
+.canvas-media-params select,
+.canvas-media-params input,
+.canvas-media-bar-params label,
+.canvas-media-bar-params select,
+.canvas-media-bar-params input {
+  color: var(--v-text-2) !important;
+  background-color: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-media-pill:hover,
+.canvas-media-pill.is-open {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border-strong) !important;
+}
+
+.canvas-media-pill.is-action {
+  color: var(--v-accent-mid) !important;
+  background: var(--v-accent-soft) !important;
+  border-color: var(--v-accent-line) !important;
+}
+
+.canvas-media-pill-label,
+.canvas-media-pill-caret,
+.canvas-media-size-hint {
+  color: var(--v-text-5) !important;
+}
+
+.canvas-media-pill-value {
+  color: var(--v-text) !important;
+}
+
+.canvas-media-pill-pop {
+  color: var(--v-text-2) !important;
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-overlay) !important;
+}
+
+.canvas-media-pill-opt {
+  color: var(--v-text-2) !important;
+}
+
+.canvas-media-pill-opt:hover,
+.canvas-media-pill-opt.is-active {
+  color: var(--v-text) !important;
+  background: var(--v-selected) !important;
+}
+
+.canvas-media-bar-head .canvas-kind,
+.canvas-media-bar-badge {
+  color: var(--v-text-2) !important;
+}
+
+.canvas-media-bar-badge {
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-media-bar .canvas-media-prompt {
+  color: var(--v-text) !important;
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-media-bar .canvas-media-prompt:focus {
+  border-color: var(--v-accent-line) !important;
+  box-shadow: 0 0 0 2px var(--v-accent-soft) !important;
+}
+
+.canvas-media-gen-btn {
+  color: var(--v-text-inverse) !important;
+  background: linear-gradient(135deg, var(--v-accent-solid), var(--v-accent-mid)) !important;
+}
+
+.canvas-media-del-btn,
+.canvas-media-edit-tools button,
+.canvas-media-ref-chip button {
+  color: var(--v-danger) !important;
+}
+
+.canvas-context-menu button,
+.canvas-tools-menu button,
+.canvas-status-menu button,
+.canvas-header-menu button {
+  color: var(--v-text-2) !important;
+  background: transparent !important;
+}
+
+.canvas-context-menu button:hover,
+.canvas-tools-menu button:hover,
+.canvas-status-menu button:hover,
+.canvas-header-menu button:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+}
+
+.canvas-toolbar,
+.canvas-tools {
+  color: var(--v-text-3) !important;
+}
+
+.canvas-toolbar button,
+.canvas-tools button {
+  color: var(--v-text-3) !important;
+}
+
+.canvas-toolbar button:hover,
+.canvas-tools button:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+}
+
+.canvas-toolbar button.is-active,
+.canvas-tools button.is-active,
+.canvas-selbar button.is-active {
+  color: var(--v-text) !important;
+  background: var(--v-selected) !important;
+}
+
+.canvas-media-overview-card:hover {
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-border-strong) !important;
+}
+
+.canvas-media-overview-badge {
+  color: var(--v-text-4) !important;
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+}
+
+.canvas-media-overview-status {
+  background: var(--v-dot-idle) !important;
+}
+
+.canvas-media-overview-node.is-done .canvas-media-overview-status {
+  background: var(--v-success) !important;
+}
+
+.canvas-media-overview-node.is-busy .canvas-media-overview-status {
+  background: var(--v-warn) !important;
+}
+
+.canvas-media-overview-node.is-failed .canvas-media-overview-status {
+  background: var(--v-danger) !important;
+}
+
+/* Portaled node-toolbar popovers sit outside .jim-bar, so theme colors must be
+   bound here as well. Geometry remains owned by the shared anchoring component. */
+.jim-pop.jim-pop-anchored {
+  color: var(--v-text-2) !important;
+  background: var(--v-surface) !important;
+  border-color: var(--v-border) !important;
+  box-shadow: var(--v-shadow-overlay) !important;
+}
+.jim-pop-anchored .jim-pop-title,
+.jim-pop-anchored .jim-model-desc {
+  color: var(--v-text-4) !important;
+}
+.jim-pop-anchored .jim-model-name {
+  color: var(--v-text) !important;
+}
+.jim-pop-anchored .jim-model-item,
+.jim-pop-anchored .jim-radio-item {
+  color: var(--v-text-2) !important;
+}
+.jim-pop-anchored .jim-model-item:hover,
+.jim-pop-anchored .jim-radio-item:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+}
+.jim-pop-anchored .jim-model-item.is-active,
+.jim-pop-anchored .jim-radio-item.is-active {
+  color: var(--v-text) !important;
+  background: var(--v-selected) !important;
+}
+.jim-pop-anchored .jim-ratio-item,
+.jim-pop-anchored .jim-chip {
+  color: var(--v-text-2) !important;
+  background: var(--v-surface-sunken) !important;
+  border-color: var(--v-border) !important;
+}
+.jim-pop-anchored .jim-ratio-item:hover,
+.jim-pop-anchored .jim-chip:hover {
+  color: var(--v-text) !important;
+  background: var(--v-surface-hover) !important;
+  border-color: var(--v-accent-line) !important;
+}
+.jim-pop-anchored .jim-ratio-item.is-active,
+.jim-pop-anchored .jim-chip.is-active {
+  color: var(--v-accent-mid) !important;
+  background: var(--v-accent-soft) !important;
+  border-color: var(--v-accent-line) !important;
+}

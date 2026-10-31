@@ -3578,6 +3578,92 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   );
 }
 
+/**
+ * 提示词工具栏浮层统一锚定到触发按钮。
+ *
+ * 这些浮层原先挂在整条 `.jim-bar` 的上方，而不是按钮上方，弹窗靠近屏幕顶部时
+ * 会盖住节点标题或超出视口。这里用 portal + 按钮 rect 定位，既不受弹窗内部
+ * overflow/transform 影响，也能保证每一类浮层始终和真正打开它的按钮对齐。
+ */
+function AnchoredJimPopover({owner, className = '', children}: {
+  owner: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{left: number; top: number; maxHeight: number} | null>(null);
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const panel = panelRef.current;
+      const anchor = document.querySelector<HTMLElement>(`[data-pop-owner="${owner}"]`);
+      if (!panel || !anchor) return;
+
+      const margin = 8;
+      const gap = 6;
+      const rect = anchor.getBoundingClientRect();
+      const width = Math.min(panel.offsetWidth, window.innerWidth - margin * 2);
+      const naturalHeight = Math.max(panel.offsetHeight, panel.scrollHeight);
+      const availableAbove = Math.max(0, rect.top - gap - margin);
+      const availableBelow = Math.max(0, window.innerHeight - rect.bottom - gap - margin);
+      const minUsefulHeight = Math.min(naturalHeight, 180);
+      let placeAbove = availableAbove >= minUsefulHeight || availableAbove >= availableBelow;
+      let available = placeAbove ? availableAbove : availableBelow;
+      if (available < 120) {
+        placeAbove = availableBelow >= availableAbove;
+        available = Math.max(availableAbove, availableBelow);
+      }
+      const height = Math.min(naturalHeight, available);
+
+      // Match reference picker behavior: the panel's left edge follows the
+      // trigger's left edge, then clamps only when it would leave the viewport.
+      let left = rect.left;
+      left = Math.max(margin, Math.min(window.innerWidth - width - margin, left));
+
+      const top = placeAbove
+        ? Math.max(margin, rect.top - gap - height)
+        : Math.min(window.innerHeight - margin - height, rect.bottom + gap);
+
+      setPos({left, top, maxHeight: Math.max(1, available)});
+    };
+
+    measure();
+    const frame = window.requestAnimationFrame(measure);
+    const observer = new ResizeObserver(measure);
+    if (panelRef.current) observer.observe(panelRef.current);
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure, true);
+    };
+  }, [owner]);
+
+  return createPortal(
+    <div
+      ref={panelRef}
+      className={`jim-pop jim-pop-anchored ${className}`.trim()}
+      data-dialog-portal="true"
+      style={{
+        position: 'fixed',
+        left: pos?.left ?? -9999,
+        top: pos?.top ?? -9999,
+        right: 'auto',
+        bottom: 'auto',
+        maxHeight: pos?.maxHeight,
+        overflowY: 'auto',
+        overscrollBehavior: 'contain',
+        visibility: pos ? 'visible' : 'hidden',
+      }}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 /** 媒体节点提示词栏（即梦风：底部居中浮动编辑栏 + 内联参数 pill + 图标下拉面板） */
 function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onDelete, onClose, onRemoveRef, onUploadRef, onPickRef, onBackdropPick, onRevealAt, anchor}: {
   node: CanvasMediaNode | null;
@@ -3630,13 +3716,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const barRef = useRef<HTMLDivElement>(null);
   useDialogFocusTrap(barRef);
   const promptAreaRef = useRef<HTMLDivElement>(null);
-  const paramsPanelRef = useRef<HTMLDivElement>(null);
   const atButtonRef = useRef<HTMLButtonElement>(null);
-  const atPopRef = useRef<HTMLDivElement>(null);
-  const [atPopPos, setAtPopPos] = useState<{left: number; top: number; maxHeight: number} | null>(null);
-  const atViewportShiftedRef = useRef(0);
-  const atRevealDoneRef = useRef(false);
-  const [paramsPanelPos, setParamsPanelPos] = useState<{left: number; top: number} | null>(null);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [canvasPickOpen, setCanvasPickOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -3687,119 +3767,6 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   // 最近一次写入的 params：同一 tick 内连发 patch（选比例 = ratio + size）时要基于它叠加，
   // 否则第二份快照里的旧值会把第一次写的覆盖掉（★ hook 必须在条件 return 之前）
   const paramsRef = useRef<CanvasMediaParams>(node?.params || {});
-
-  useLayoutEffect(() => {
-    if (openMenu !== 'params') {
-      setParamsPanelPos(null);
-      return;
-    }
-    const placePanel = () => {
-      const panel = paramsPanelRef.current;
-      const bar = barRef.current;
-      if (!panel || !bar) return;
-      const panelRect = panel.getBoundingClientRect();
-      const barRect = bar.getBoundingClientRect();
-      const margin = 8;
-      const sideGap = 10;
-      let left = barRect.right + sideGap;
-      if (left + panelRect.width > window.innerWidth - margin) {
-        left = barRect.left - panelRect.width - sideGap;
-      }
-      let top = barRect.top;
-      if (left < margin || left + panelRect.width > window.innerWidth - margin) {
-        left = Math.max(
-          margin,
-          Math.min(
-            window.innerWidth - panelRect.width - margin,
-            barRect.left + 12,
-          ),
-        );
-        top = barRect.top - panelRect.height - margin;
-        if (top < margin) top = barRect.bottom + margin;
-      }
-      top = Math.max(margin, Math.min(window.innerHeight - panelRect.height - margin, top));
-      setParamsPanelPos({left, top});
-    };
-    /**
-     * ★ 第 36 轮：先**同步**定位一次，再挂 rAF 兜底。
-     * 原来只走 `requestAnimationFrame`：那一帧不一定赶得上（实测开面板后要等
-     * 一次 resize 事件才会落位，期间面板停在 `left/top:-9999` 且 `visibility:hidden`，
-     * 用户看到的就是"点了没反应"）。同步跑一次即可保证首帧就带着正确坐标绘制，
-     * rAF 仍然保留，用来吸收字体/滚动条导致的二次尺寸变化。
-     */
-    placePanel();
-    const frame = window.requestAnimationFrame(placePanel);
-    window.addEventListener('resize', placePanel);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener('resize', placePanel);
-    };
-  }, [openMenu, node?.id]);
-
-  useLayoutEffect(() => {
-    if (!atOpen) {
-      setAtPopPos(null);
-      return;
-    }
-    const place = () => {
-      const button = atButtonRef.current;
-      const panel = atPopRef.current;
-      if (!button) return;
-      const rect = button.getBoundingClientRect();
-      const width = panel?.offsetWidth || 360;
-      const height = panel?.offsetHeight || 280;
-      const margin = 8;
-      const left = Math.max(
-        margin,
-        Math.min(rect.left, window.innerWidth - width - margin),
-      );
-      const below = rect.bottom + margin;
-      const top = below + height <= window.innerHeight - margin
-        ? below
-        : Math.max(margin, rect.top - height - margin);
-      const shift = popupRevealShift(
-        {top, bottom: top + height},
-        window.innerHeight,
-        {topInset: 12, bottomInset: 12},
-      );
-      if (onRevealAt && shift !== 0) {
-        const delta = shift - atViewportShiftedRef.current;
-        if (Math.abs(delta) >= 1) {
-          onRevealAt(delta);
-          atViewportShiftedRef.current = shift;
-        }
-      }
-      setAtPopPos({
-        left,
-        top,
-        maxHeight: Math.max(120, window.innerHeight - top - margin),
-      });
-    };
-    place();
-    const frame = window.requestAnimationFrame(place);
-    window.addEventListener('resize', place);
-    document.addEventListener('scroll', place, true);
-    window.addEventListener('scroll', place, true);
-    const observer = typeof ResizeObserver !== 'undefined'
-      ? new ResizeObserver(place)
-      : null;
-    const popup = atPopRef.current;
-    if (popup) observer?.observe(popup);
-    observer?.observe(document.body);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener('resize', place);
-      document.removeEventListener('scroll', place, true);
-      window.removeEventListener('scroll', place, true);
-      observer?.disconnect();
-    };
-  }, [atOpen, atCands.length, onRevealAt]);
-  useEffect(() => {
-    if (!atOpen) {
-      atRevealDoneRef.current = false;
-      atViewportShiftedRef.current = 0;
-    }
-  }, [atOpen]);
 
   // 提示词框高度：**由内容决定**（对齐即梦 —— 用户明确要求"没内容的时候高度和有内容的高度不一样"）。
   //   空态只有一行占位文案 → 框很矮；写下内容后随行数长高，到上限才内部滚动。
@@ -4338,15 +4305,6 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
           ? '输入要用指定音色合成的台词或旁白；音色 ID 在上方参数栏填写'
           : '描述角色的音色特征（年龄、音区、音色、语速、情绪），百炼会据此创建音色并返回试听')
       : '描述你想生成的画面内容，输入 @ 可快速调用参考内容（如 @图片1 模仿 @视频1 的动作，音色参考 @音频1）';
-  const barRect = barRef.current?.getBoundingClientRect();
-  const promptAreaRect = promptAreaRef.current?.getBoundingClientRect();
-  const atPopBottom = barRect && promptAreaRect
-    ? Math.max(18, promptAreaRect.bottom - barRect.top + 14)
-    : undefined;
-  const atPopMaxHeight = barRect
-    ? Math.max(80, Math.min(320, barRect.top - 24))
-    : 280;
-
   // 提示词框的两种高度已在 hook 之前定义。这里只保留自适应逻辑，读取 taExpanded 最新值。
   const growTa = () => {
     const ta = taRef.current;
@@ -4827,10 +4785,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
             </div>
           </div>
           {atOpen && (
-            <div
-              className="jim-at-pop"
-              style={{bottom: atPopBottom, maxHeight: atPopMaxHeight}}
-            >
+            <AnchoredJimPopover owner="at" className="jim-at-pop">
               <div className="jim-at-title">
                 <span>@ 引用素材（点击插入）</span>
                 <span className="jim-at-kbd">↑↓ 选择 · 回车 插入 · Esc 关闭</span>
@@ -4868,7 +4823,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 </button>
               ))}
               </div>
-            </div>
+            </AnchoredJimPopover>
           )}
           {/* 从画布选择：列出画布上可作参考的其它卡片（图片/音频），点一下即加为引用 */}
           {canvasPickOpen && (
@@ -5086,7 +5041,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
 
         {/* ---- 下拉面板（统一向上弹出） ---- */}
         {openMenu === 'model' && (
-          <div className="jim-pop jim-pop-model">
+          <AnchoredJimPopover owner="model" className="jim-pop-model">
             <div className="jim-model-search">
               <Search size={12} strokeWidth={1.9} aria-hidden="true" />
               <input
@@ -5158,20 +5113,10 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 {visibleModelOptions.length === 0 && <div className="jim-model-empty">没有匹配模型</div>}
               </div>
             </div>
-          </div>
+          </AnchoredJimPopover>
         )}
-        {openMenu === 'params' && ReactDOM.createPortal(
-          <div
-            ref={paramsPanelRef}
-            className="jim-pop jim-params-panel"
-            style={{
-              position: 'fixed',
-              left: paramsPanelPos?.left ?? -9999,
-              top: paramsPanelPos?.top ?? -9999,
-              bottom: 'auto',
-              visibility: paramsPanelPos ? 'visible' : 'hidden',
-            }}
-          >
+        {openMenu === 'params' && (
+          <AnchoredJimPopover owner="params" className="jim-params-panel">
             {!isVid && (
               <div className="jim-params-head">
                 <strong>生成参数</strong>
@@ -5319,11 +5264,10 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
             )}
             </div>
 
-          </div>,
-          document.body,
+          </AnchoredJimPopover>
         )}
         {openMenu === 'ttsmode' && (
-          <div className="jim-pop">
+          <AnchoredJimPopover owner="ttsmode">
             <div className="jim-pop-title">音色生成方式</div>
             <button
               type="button"
@@ -5341,10 +5285,10 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
               <span className="jim-model-name">指定音色合成<i className="jim-model-badge">语音</i></span>
               <span className="jim-model-desc">使用已创建的音色 ID 合成提示词中的台词</span>
             </button>
-          </div>
+          </AnchoredJimPopover>
         )}
         {openMenu === 'ttsformat' && (
-          <div className="jim-pop">
+          <AnchoredJimPopover owner="ttsformat">
             <div className="jim-pop-title">音频输出参数</div>
             <div className="jim-pop-title">格式</div>
             <div className="jim-chip-row">
@@ -5358,16 +5302,16 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 <button key={rate} type="button" className={`jim-chip ${Number(p.sampleRate || 24000) === rate ? 'is-active' : ''}`} onClick={() => patch('sampleRate', rate)}>{rate}</button>
               ))}
             </div>
-          </div>
+          </AnchoredJimPopover>
         )}
         {openMenu === 'advanced' && (
-          <div className="jim-pop jim-pop-clarity">
+          <AnchoredJimPopover owner="advanced" className="jim-pop-clarity">
             <div className="jim-pop-title">模型自定义参数</div>
             {renderExtraParamControls()}
-          </div>
+          </AnchoredJimPopover>
         )}
         {openMenu === 'ratio' && (
-          <div className="jim-pop jim-pop-ratio">
+          <AnchoredJimPopover owner="ratio" className="jim-pop-ratio">
             <div className="jim-pop-title">画幅比例</div>
             <div className="jim-ratio-grid">
               {ratioOptions.map((r) => (
@@ -5382,10 +5326,10 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 </button>
               ))}
             </div>
-          </div>
+          </AnchoredJimPopover>
         )}
         {openMenu === 'clarity' && (
-          <div className="jim-pop jim-pop-clarity">
+          <AnchoredJimPopover owner="clarity" className="jim-pop-clarity">
             <div className="jim-pop-title">清晰度</div>
             <div className="jim-chip-row">
               {clarityOptions.map((c) => (
@@ -5411,28 +5355,28 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 </div>
               </>
             )}
-          </div>
+          </AnchoredJimPopover>
         )}
         {openMenu === 'style' && (
-          <div className="jim-pop jim-pop-style">
+          <AnchoredJimPopover owner="style" className="jim-pop-style">
             <div className="jim-pop-title">推理强度</div>
             <div className="jim-chip-row">
               {guidanceOptions.map((g) => (
                 <button key={g} type="button" className={`jim-chip ${guidanceLabel === g ? 'is-active' : ''}`} onClick={() => { patch('guidance', g); setOpenMenu(null); }}>{g}</button>
               ))}
             </div>
-          </div>
+          </AnchoredJimPopover>
         )}
         {openMenu === 'res' && (
-          <div className="jim-pop jim-pop-res">
+          <AnchoredJimPopover owner="params" className="jim-pop-res">
             <div className="jim-pop-title">分辨率</div>
             {resolutionOptions.map((r) => (
               <button key={r} type="button" className={`jim-radio-item ${resLabel === r ? 'is-active' : ''}`} onClick={() => { patch('resolution', r); setOpenMenu(null); }}><i />{r}</button>
             ))}
-          </div>
+          </AnchoredJimPopover>
         )}
         {openMenu === 'dur' && (
-          <div className="jim-pop jim-pop-dur jim-dur-panel">
+          <AnchoredJimPopover owner="dur" className="jim-pop-dur jim-dur-panel">
             <div className="jim-dur-head">
               <span>选择视频生成时长</span>
             </div>
@@ -5513,10 +5457,10 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 </label>
               )}
             </div>
-          </div>
+          </AnchoredJimPopover>
         )}
         {openMenu === 'len' && (
-          <div className="jim-pop jim-pop-len">
+          <AnchoredJimPopover owner="len" className="jim-pop-len">
             <div className="jim-pop-title">生成长度</div>
             <div className="jim-chip-row">
               {TEXT_LEN_OPTS.map((o) => (
@@ -5541,7 +5485,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
               />
               <span className="jim-dur-val">{Number(p.temperature ?? 0.7).toFixed(1)}</span>
             </div>
-          </div>
+          </AnchoredJimPopover>
         )}
       </div>
       {mentionPreview && (
@@ -7945,7 +7889,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     return () => document.removeEventListener('pointerdown', close, true);
   }, [episodeMenu]);
   // 画布底纹（复刻 BeefTV appearance）：dots 点阵 / lines 细线网格 / blank 空白
-  const [bgMode, setBgMode] = useState<'dots' | 'lines' | 'blank'>('dots');
+  const [bgMode, setBgMode] = useState<'dots' | 'lines' | 'blank'>('blank');
   // ＋添加节点菜单开关
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   // 画布舞台容器 ref：右键菜单视口坐标 → 舞台相对坐标换算
