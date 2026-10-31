@@ -91,6 +91,22 @@ export function selectEpisodeViewport(
   return null;
 }
 
+export function selectCanvasViewport(
+  viewports: Record<string, unknown> | null | undefined,
+  episodeId: string | null | undefined,
+  projectId: string,
+  singleEpisode: boolean,
+): CanvasViewport | null {
+  return (
+    selectEpisodeViewport(viewports, episodeId, projectId)
+    || (
+      singleEpisode
+        ? validRestoredViewport(viewports?.[projectId])
+        : null
+    )
+  );
+}
+
 export function episodeIdFromWorkspace(
   currentEpisode: string | null | undefined,
   mediaNodes: Array<{episodeId?: string | null}>,

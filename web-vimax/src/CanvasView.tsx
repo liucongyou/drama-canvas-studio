@@ -159,6 +159,7 @@ import {
   shouldUseLargeCanvasOverview,
   mergeEpisodeViewport,
   selectEpisodeViewport,
+  selectCanvasViewport,
   viewportForCanvasBounds,
   viewportLoadBounds,
   validRestoredViewport,
@@ -7636,6 +7637,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [loading, setLoading] = useState(true);
   const [loadingSlow, setLoadingSlow] = useState(false);
   const [dataReady, setDataReady] = useState(false);
+  const [viewportReady, setViewportReady] = useState(false);
   const [pidRetry, setPidRetry] = useState(0);
   const workspaceLoadStartedAtRef = useRef(0);
   const [zoomTarget, setZoomTarget] = useState<string | null>(null);
@@ -8194,6 +8196,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const lastPersistedViewportRef = useRef<{key: string; viewport: {x: number; y: number; zoom: number}} | null>(null);
 
   const beginViewportRestore = useCallback(() => {
+    setViewportReady(false);
     viewportRestoreInFlightRef.current = true;
     if (viewportRestoreReleaseTimer.current) {
       clearTimeout(viewportRestoreReleaseTimer.current);
@@ -8207,6 +8210,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     }
     viewportRestoreReleaseTimer.current = setTimeout(() => {
       viewportRestoreInFlightRef.current = false;
+      setViewportReady(true);
       viewportRestoreReleaseTimer.current = null;
     }, Math.max(0, delayMs));
   }, []);
@@ -8277,12 +8281,17 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [layoutKey, loadPersistedLayout]);
   const rememberViewport = useCallback((viewport: {x: number; y: number; zoom: number}) => {
     viewportRef.current = viewport;
-    const viewportEpisode = activeWorkspaceEpisodeRef.current || currentEp;
+    const viewportEpisode = isSingleEpProject
+      ? null
+      : (activeWorkspaceEpisodeRef.current || currentEp);
     const snapshotKey = `${session}:${viewportEpisode || '__project__'}`;
+    const currentSnapshotKey = `${session}:${
+      isSingleEpProject ? '__project__' : (currentEp || '__project__')
+    }`;
     if (!shouldSaveViewport(
       viewportRestoreInFlightRef.current,
       snapshotKey,
-      `${session}:${currentEp || '__project__'}`,
+      currentSnapshotKey,
     )) {
       return;
     }
@@ -8342,20 +8351,26 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         // View persistence is best-effort and must not affect canvas interaction.
       }
     }, 220);
-  }, [currentEp, layoutKey, session]);
+  }, [currentEp, isSingleEpProject, layoutKey, session]);
 
   const flushViewportNow = useCallback(() => {
+    const viewportScope = isSingleEpProject
+      ? '__project__'
+      : (activeWorkspaceEpisodeRef.current || currentEp || '__project__');
+    const currentScope = isSingleEpProject
+      ? '__project__'
+      : (currentEp || '__project__');
     if (!shouldSaveViewport(
       viewportRestoreInFlightRef.current,
-      `${session}:${activeWorkspaceEpisodeRef.current || currentEp || '__project__'}`,
-      `${session}:${currentEp || '__project__'}`,
+      `${session}:${viewportScope}`,
+      `${session}:${currentScope}`,
     )) return;
     if (viewportSaveTimer.current) {
       clearTimeout(viewportSaveTimer.current);
       viewportSaveTimer.current = null;
     }
     rememberViewport(viewportRef.current);
-  }, [rememberViewport]);
+  }, [currentEp, isSingleEpProject, rememberViewport, session]);
 
   const switchEpisode = useCallback((episodeId: string) => {
     if (episodeId === currentEp) return;
@@ -8369,7 +8384,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       viewportSaveTimer.current = null;
     }
     const remembered = {...viewportRef.current};
-    const leavingEpisode = activeWorkspaceEpisodeRef.current || currentEp;
+    const leavingEpisode = isSingleEpProject
+      ? null
+      : (activeWorkspaceEpisodeRef.current || currentEp);
     serverEpisodeViewportsRef.current = mergeEpisodeViewport(
       serverEpisodeViewportsRef.current,
       leavingEpisode,
@@ -8398,7 +8415,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     // here causes onMove/fitView from the leaving canvas to be saved as the
     // newly selected episode's viewport.
     activeWorkspaceEpisodeRef.current = String(leavingEpisode || '').trim().toUpperCase() || null;
-  }, [currentEp, session]);
+  }, [currentEp, isSingleEpProject, session]);
 
   // ── 编组操作 ──────────────────────────────────────────────────────
   // 编组：把当前选中的卡片收进一个新组。已属于其它组的成员会自动离组（一个人只能在一个组里）。
@@ -14489,10 +14506,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         setUserEdges(uniqueUserEdges);
       }
     }
-    const serverViewport = selectEpisodeViewport(
+    const serverViewport = selectCanvasViewport(
       serverEpisodeViewportsRef.current,
       currentEp,
       session,
+      isSingleEpProject,
     );
     // The in-memory map is updated immediately by onMove, so an episode that
     // was just visited has a fresher value than the last persisted payload.
@@ -14515,10 +14533,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           || fittedScopeRef.current !== scope
         ) return;
         if (attempts > 180) {
-          const fallback = selectEpisodeViewport(
+          const fallback = selectCanvasViewport(
             serverEpisodeViewportsRef.current,
             currentEp,
             session,
+            isSingleEpProject,
           );
           if (fallback) {
             viewportRef.current = fallback;
@@ -14537,10 +14556,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           window.requestAnimationFrame(restoreWhenSettled);
           return;
         }
-        const freshServerViewport = selectEpisodeViewport(
+        const freshServerViewport = selectCanvasViewport(
           serverEpisodeViewportsRef.current,
           currentEp,
           session,
+          isSingleEpProject,
         );
         if (freshServerViewport) {
           savedViewport = freshServerViewport;
@@ -14556,7 +14576,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       };
       window.requestAnimationFrame(restoreWhenSettled);
     }
-  }, [loading, canvas, session, currentEp, beginViewportRestore, endViewportRestore]);
+  }, [loading, canvas, session, currentEp, isSingleEpProject, beginViewportRestore, endViewportRestore]);
 
   // 通用文本下载（导出分镜 Markdown / 镜头 CSV / 布局 JSON）
   const downloadText = useCallback((filename: string, text: string, mime = 'text/plain') => {
@@ -15559,7 +15579,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             </div>
           )}
           <ReactFlow
-            className={`canvas-flow ${draggingNode ? 'is-node-dragging' : ''} ${connecting ? 'is-connecting' : ''} ${selectedCount >= 2 ? 'has-multi-selection' : ''} ${edgesHidden ? 'is-edges-hidden' : ''}`}
+            className={`canvas-flow ${viewportReady ? 'is-viewport-ready' : 'is-viewport-restoring'} ${draggingNode ? 'is-node-dragging' : ''} ${connecting ? 'is-connecting' : ''} ${selectedCount >= 2 ? 'has-multi-selection' : ''} ${edgesHidden ? 'is-edges-hidden' : ''}`}
             onConnectStart={() => setConnecting(true)}
             onConnectEnd={() => setConnecting(false)}
             data-mouse-mode={mouseMode}

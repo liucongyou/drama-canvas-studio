@@ -7414,6 +7414,13 @@ html[data-theme='dark'] .dialog-actions button.primary:hover:not(:disabled) {
   min-width: 0;
   min-height: 0;
 }
+.canvas-stage .canvas-flow.is-viewport-restoring {
+  visibility: hidden;
+  pointer-events: none;
+}
+.canvas-stage .canvas-flow.is-viewport-ready {
+  visibility: visible;
+}
 
 /* 左侧画布列表（滑出式：与右侧镜头顺序对称，收起时贴左竖条，点击滑出；高度按内容自适应） */
 .canvas-ep-list {

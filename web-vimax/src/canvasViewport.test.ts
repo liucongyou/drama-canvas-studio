@@ -7,6 +7,7 @@ import {
   shouldLoadMediaForViewport,
   mergeEpisodeViewport,
   selectEpisodeViewport,
+  selectCanvasViewport,
   episodeIdFromWorkspace,
   shouldPersistViewport,
   shouldSaveViewport,
@@ -88,6 +89,24 @@ describe('episode viewport map', () => {
   it('resolves the effective workspace episode even before currentEp commits', () => {
     expect(episodeIdFromWorkspace(null, [{episodeId: 'EP002'}])).toBe('EP002');
     expect(episodeIdFromWorkspace('ep001', [{episodeId: 'EP002'}])).toBe('EP001');
+  });
+
+  it('uses the project-scoped viewport for a single-episode project', () => {
+    const viewports = {
+      'project-id': {x: -804.5, y: 92, zoom: 0.38},
+    };
+    expect(selectCanvasViewport(
+      viewports,
+      'EP003',
+      'project-id',
+      true,
+    )).toEqual({x: -804.5, y: 92, zoom: 0.38});
+    expect(selectCanvasViewport(
+      viewports,
+      'EP003',
+      'unrelated-project',
+      false,
+    )).toBeNull();
   });
 });
 
