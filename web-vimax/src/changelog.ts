@@ -8,10 +8,22 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.31.15';
+export const APP_VERSION = '2026.10.31.16';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.31.16',
+    date: '2026-10-31',
+    releasedAt: '2026-11-01 00:25:00 +08:00',
+    title: '设置弹窗改为预取后首帧终态',
+    changes: [
+      '工作台在空闲时预取存储配置、模型目录和管理员账号快照；打开设置前只等待未完成的同一请求，不在弹窗里临时加载。',
+      '存储弹窗首帧直接使用已加载的供应商和字段初始化，不再先显示默认 TOS 再跳转到阿里云 OSS。',
+      '模型设置与账号管理同样使用预取快照初始化，避免默认空数据和 0 在线人数闪现。',
+      '设置读取失败会停留在菜单并明确提示，不打开半加载弹窗。',
+    ],
+  },
   {
     version: '2026.10.31.15',
     date: '2026-10-31',

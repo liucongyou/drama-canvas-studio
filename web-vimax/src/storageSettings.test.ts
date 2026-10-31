@@ -1,6 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import {
   draftForProvider,
+  draftFromStorage,
   mergeSavedStorageState,
   mergeStorageProfile,
   storedProviderState,
@@ -181,5 +182,29 @@ describe('storage provider form isolation', () => {
     );
     expect(next.enabled).toBe(false);
     expect(next.provider).toBe('aliyun_oss');
+  });
+
+  it('initializes the first render from the loaded active provider', () => {
+    const next = draftFromStorage({
+      ...storage,
+      provider: 'aliyun_oss',
+      active_provider: 'aliyun_oss',
+      profiles: {
+        aliyun_oss: {
+          bucket: 'yjhuabu',
+          region: 'cn-beijing',
+          endpoint: 'oss-cn-beijing.aliyuncs.com',
+          internal_endpoint: '',
+          public_domain: '',
+          prefix: 'drama-canvas/',
+          url_ttl_seconds: 3600,
+          has_access_key: true,
+          has_secret_key: true,
+        },
+      },
+    });
+    expect(next.provider).toBe('aliyun_oss');
+    expect(next.bucket).toBe('yjhuabu');
+    expect(next.enabled).toBe(true);
   });
 });

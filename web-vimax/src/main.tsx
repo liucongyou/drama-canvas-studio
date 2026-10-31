@@ -11,7 +11,7 @@ import {reconcileSelectedProjectId} from './projectSelection';
 // ★ 全局对话框：替换原生 prompt/confirm/alert（2026-10-25）
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
 import {DialogHost, dialog} from './GDialog';
-import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, getAuthSession, getManagedAccounts, loginAccount, logoutAccount, resetManagedAccountPassword, setManagedAccountStatus, type ManagedAccount} from './api';
+import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, getAuthSession, getManagedAccounts, getModelCatalog, getStorageConfig, loginAccount, logoutAccount, resetManagedAccountPassword, setManagedAccountStatus, type ManagedAccount, type ManagedAccountsSnapshot, type ModelCatalog, type StorageSpec} from './api';
 import {APP_VERSION, CHANGELOG, RELEASE_SEEN_KEY, type ChangelogEntry} from './changelog';
 import './styles.css';
 import './ui-refinements.css';
@@ -128,6 +128,10 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
   const [tosSettingsOpen, setTosSettingsOpen] = useState(false);
+  const [settingsOpening, setSettingsOpening] = useState<'models' | 'storage' | 'accounts' | ''>('');
+  const [modelCatalogSnapshot, setModelCatalogSnapshot] = useState<ModelCatalog | null>(null);
+  const [storageSnapshot, setStorageSnapshot] = useState<StorageSpec | null>(null);
+  const [accountsSnapshot, setAccountsSnapshot] = useState<ManagedAccountsSnapshot | null>(null);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [adminAccountsOpen, setAdminAccountsOpen] = useState(false);
   const [changelogOpen, setChangelogOpen] = useState(false);
@@ -140,6 +144,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
   });
   const [theme, setTheme] = useState<Theme>(bootTheme);
   const settingsWrapRef = useRef<HTMLDivElement | null>(null);
+  const settingsRequestsRef = useRef<Record<string, Promise<unknown> | undefined>>({});
 
   useEffect(() => {
     applyTheme(theme);
@@ -257,6 +262,66 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
       window.clearInterval(timer);
     };
   }, [isAdmin]);
+
+  const prefetchSettings = async (kind: 'models' | 'storage' | 'accounts') => {
+    if (kind === 'models') {
+      const snapshot = await getModelCatalog();
+      setModelCatalogSnapshot(snapshot);
+      return;
+    }
+    if (kind === 'storage') {
+      const snapshot = await getStorageConfig();
+      setStorageSnapshot(snapshot);
+      return;
+    }
+    const snapshot = await getManagedAccounts();
+    setAccountsSnapshot(snapshot);
+    setOnlineCount(snapshot.onlineCount);
+  };
+
+  const requestSettings = (kind: 'models' | 'storage' | 'accounts') => {
+    let request = settingsRequestsRef.current[kind] as Promise<unknown> | undefined;
+    if (!request) {
+      request = prefetchSettings(kind).finally(() => {
+        if (settingsRequestsRef.current[kind] === request) {
+          delete settingsRequestsRef.current[kind];
+        }
+      });
+      settingsRequestsRef.current[kind] = request;
+    }
+    return request;
+  };
+
+  useEffect(() => {
+    // Preload while the canvas is idle so opening settings is a pure state switch.
+    const preload = () => {
+      void requestSettings('storage').catch(() => undefined);
+      void requestSettings('models').catch(() => undefined);
+      if (isAdmin) void requestSettings('accounts').catch(() => undefined);
+    };
+    const timer = window.setTimeout(preload, 0);
+    return () => window.clearTimeout(timer);
+  }, [isAdmin]);
+
+  const openSettings = async (kind: 'models' | 'storage' | 'accounts') => {
+    if (settingsOpening) return;
+    setSettingsOpening(kind);
+    try {
+      await requestSettings(kind);
+      setSettingsOpen(false);
+      if (kind === 'models') setModelSettingsOpen(true);
+      if (kind === 'storage') setTosSettingsOpen(true);
+      if (kind === 'accounts') setAdminAccountsOpen(true);
+    } catch (error) {
+      await dialog.alert({
+        title: '设置读取失败',
+        message: error instanceof Error ? error.message : String(error),
+        tone: 'danger',
+      });
+    } finally {
+      setSettingsOpening('');
+    }
+  };
 
   // 点外面收起项目与设置弹层（捕获阶段：内部面板会 stopPropagation）
   useEffect(() => {
@@ -733,7 +798,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
                 <button
                   type="button"
                   className="shell-tools-menu-item"
-                  onClick={() => { setSettingsOpen(false); setModelSettingsOpen(true); }}
+                  onClick={() => void openSettings('models')}
                 >
                   <Settings size={13} strokeWidth={1.9} aria-hidden="true" />
                   <span>供应商、模型和参数范围</span>
@@ -745,7 +810,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
                 <button
                   type="button"
                   className="shell-tools-menu-item"
-                  onClick={() => { setSettingsOpen(false); setTosSettingsOpen(true); }}
+                  onClick={() => void openSettings('storage')}
                 >
                   <CloudUpload size={13} strokeWidth={1.9} aria-hidden="true" />
                   <span>对象存储 TOS</span>
@@ -770,7 +835,7 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
                   <button
                     type="button"
                     className="shell-tools-menu-item"
-                    onClick={() => { setSettingsOpen(false); setAdminAccountsOpen(true); }}
+                    onClick={() => void openSettings('accounts')}
                   >
                     <Plus size={13} strokeWidth={1.9} aria-hidden="true" />
                     <span>创建账号</span>
@@ -873,8 +938,8 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
           </div>
         )}
       </div>
-      {modelSettingsOpen && <ModelSettingsDialog onClose={() => setModelSettingsOpen(false)} />}
-      {tosSettingsOpen && <TosSettingsDialog onClose={() => setTosSettingsOpen(false)} />}
+      {modelSettingsOpen && modelCatalogSnapshot && <ModelSettingsDialog initialCatalog={modelCatalogSnapshot} onClose={() => setModelSettingsOpen(false)} />}
+      {tosSettingsOpen && storageSnapshot && <TosSettingsDialog initialStorage={storageSnapshot} onClose={() => setTosSettingsOpen(false)} />}
       {passwordOpen && <ChangePasswordDialog onClose={() => setPasswordOpen(false)} />}
       {isAdmin && adminAccountsOpen && <AdminAccountsDialog onClose={() => setAdminAccountsOpen(false)} />}
       {changelogOpen && <ChangelogDialog entries={CHANGELOG} onClose={() => setChangelogOpen(false)} />}
@@ -882,9 +947,15 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
   );
 }
 
-function AdminAccountsDialog({onClose}: {onClose: () => void}) {
-  const [accounts, setAccounts] = useState<ManagedAccount[]>([]);
-  const [onlineCount, setOnlineCount] = useState(0);
+function AdminAccountsDialog({
+  onClose,
+  initialSnapshot,
+}: {
+  onClose: () => void;
+  initialSnapshot: ManagedAccountsSnapshot;
+}) {
+  const [accounts, setAccounts] = useState<ManagedAccount[]>(initialSnapshot.accounts);
+  const [onlineCount, setOnlineCount] = useState(initialSnapshot.onlineCount);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [resetTarget, setResetTarget] = useState<ManagedAccount | null>(null);
@@ -922,7 +993,6 @@ function AdminAccountsDialog({onClose}: {onClose: () => void}) {
   };
 
   useEffect(() => {
-    void load();
     const timer = window.setInterval(() => { void load(); }, 30_000);
     return () => window.clearInterval(timer);
   }, []);

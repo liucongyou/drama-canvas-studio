@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'react';
+import {useState} from 'react';
 import {Check, CloudUpload, KeyRound, RefreshCw, Save, ShieldCheck, X} from 'lucide-react';
 import {
   activateStorage,
@@ -10,6 +10,7 @@ import {
 } from './api';
 import {
   draftForProvider,
+  draftFromStorage,
   mergeSavedStorageState,
   mergeStorageProfile,
   storedProviderState,
@@ -40,31 +41,6 @@ const DEFAULT_DRAFT: StorageDraft = {
   secret_key: '',
 };
 
-function draftFromStorage(storage: StorageSpec): StorageDraft {
-  const selectedProfile = storage.profiles?.[storage.provider];
-  return {
-    enabled: storage.enabled,
-    provider: storage.provider === 'aliyun_oss'
-      ? 'aliyun_oss'
-      : storage.provider === 'qiniu'
-        ? 'qiniu'
-        : 'tos',
-    bucket: selectedProfile?.bucket || storage.bucket,
-    region: selectedProfile?.region || storage.region || 'cn-beijing',
-    endpoint: selectedProfile?.endpoint || storage.endpoint || 'tos-cn-beijing.volces.com',
-    internal_endpoint: selectedProfile?.internal_endpoint || storage.internal_endpoint || 'tos-cn-beijing.ivolces.com',
-    public_domain: selectedProfile?.public_domain || storage.public_domain || '',
-    prefix: selectedProfile?.prefix || storage.prefix || 'drama-canvas/',
-    url_ttl_seconds: String(selectedProfile?.url_ttl_seconds || storage.url_ttl_seconds || 3600),
-    auto_persist_images: storage.auto_persist_images !== false,
-    auto_persist_videos: storage.auto_persist_videos !== false,
-    auto_persist_audio: storage.auto_persist_audio !== false,
-    require_for_ark_portrait: storage.require_for_ark_portrait !== false,
-    access_key: '',
-    secret_key: '',
-  };
-}
-
 function Switch({
   checked,
   label,
@@ -88,9 +64,15 @@ function Switch({
   );
 }
 
-export function TosSettingsDialog({onClose}: {onClose: () => void}) {
-  const [storage, setStorage] = useState<StorageSpec | null>(null);
-  const [draft, setDraft] = useState<StorageDraft>({...DEFAULT_DRAFT});
+export function TosSettingsDialog({
+  onClose,
+  initialStorage,
+}: {
+  onClose: () => void;
+  initialStorage: StorageSpec;
+}) {
+  const [storage, setStorage] = useState<StorageSpec>(initialStorage);
+  const [draft, setDraft] = useState<StorageDraft>(() => draftFromStorage(initialStorage));
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testingProvider, setTestingProvider] = useState<'tos' | 'aliyun_oss' | 'qiniu' | null>(null);
@@ -111,10 +93,6 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
   };
-
-  useEffect(() => {
-    void load();
-  }, []);
 
   const update = <K extends keyof StorageDraft>(key: K, value: StorageDraft[K]) => {
     setDraft((current) => ({...current, [key]: value}));

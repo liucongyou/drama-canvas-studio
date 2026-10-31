@@ -571,10 +571,31 @@ function ModelSelect({value, options, onChange, open, onToggle, ariaLabel}: {
   );
 }
 
-export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
-  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
-  const [provider, setProvider] = useState<ProviderDraft>({...EMPTY_PROVIDER});
-  const [model, setModel] = useState<ModelDraft>({...EMPTY_MODEL});
+function initialProviderDraft(catalog: ModelCatalog): ProviderDraft {
+  return catalog.providers.length
+    ? providerDraft(catalog.providers[0])
+    : {...EMPTY_PROVIDER};
+}
+
+function initialModelDraft(catalog: ModelCatalog): ModelDraft {
+  return catalog.models.length
+    ? modelDraft(catalog.models[0])
+    : {
+        ...EMPTY_MODEL,
+        providerId: catalog.providers[0]?.id || '',
+      };
+}
+
+export function ModelSettingsDialog({
+  onClose,
+  initialCatalog,
+}: {
+  onClose: () => void;
+  initialCatalog: ModelCatalog;
+}) {
+  const [catalog, setCatalog] = useState<ModelCatalog>(initialCatalog);
+  const [provider, setProvider] = useState<ProviderDraft>(() => initialProviderDraft(initialCatalog));
+  const [model, setModel] = useState<ModelDraft>(() => initialModelDraft(initialCatalog));
   const [providerBusy, setProviderBusy] = useState(false);
   const [providerIconBusy, setProviderIconBusy] = useState(false);
   const [modelBusy, setModelBusy] = useState(false);
@@ -589,14 +610,21 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
   const [discoverMessage, setDiscoverMessage] = useState('');
   // 4 个自绘下拉共用一份"当前打开的是哪个"，保证同一时刻只开一个
   const [openSelect, setOpenSelect] = useState<'' | 'protocol' | 'providerId' | 'capability' | 'adapter'>('');
-  const [detailKind, setDetailKind] = useState<'provider' | 'model'>('provider');
+  const [detailKind, setDetailKind] = useState<'provider' | 'model'>(
+    initialCatalog.models.length ? 'model' : 'provider',
+  );
   const [advancedOpen, setAdvancedOpen] = useState({
     defaultParams: false,
     params: false,
     pricing: false,
   });
-  const [parameterRows, setParameterRows] = useState<ParameterDraftRow[]>([]);
-  const [pricingRows, setPricingRows] = useState(() => pricingRowsFromJson('{}'));
+  const initialModel = initialModelDraft(initialCatalog);
+  const [parameterRows, setParameterRows] = useState<ParameterDraftRow[]>(
+    () => parameterRowsFromModel(initialModel),
+  );
+  const [pricingRows, setPricingRows] = useState(
+    () => pricingRowsFromJson(initialCatalog.models[0]?.pricing),
+  );
   const providerIconInputRef = useRef<HTMLInputElement | null>(null);
 
   const providerModels = (catalog?.models || []).filter(
@@ -704,8 +732,6 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
   };
-
-  useEffect(() => { void reload(); }, []);
 
   useEffect(() => {
     if (detailKind !== 'model') return;

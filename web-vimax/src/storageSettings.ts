@@ -37,6 +37,40 @@ export function mergeStorageProfile(
   };
 }
 
+export function draftFromStorage(storage: StorageSpec): StorageDraft {
+  const provider: StorageDraft['provider'] = storage.provider === 'aliyun_oss'
+    ? 'aliyun_oss'
+    : storage.provider === 'qiniu'
+      ? 'qiniu'
+      : 'tos';
+  const profile = storage.profiles?.[provider];
+  return {
+    enabled: storage.enabled,
+    provider,
+    bucket: profile?.bucket || storage.bucket || '',
+    region: profile?.region || storage.region || 'cn-beijing',
+    endpoint: profile?.endpoint || storage.endpoint || (
+      provider === 'qiniu'
+        ? ''
+        : provider === 'aliyun_oss'
+          ? 'oss-cn-beijing.aliyuncs.com'
+          : 'tos-cn-beijing.volces.com'
+    ),
+    internal_endpoint: profile?.internal_endpoint
+      || storage.internal_endpoint
+      || 'tos-cn-beijing.ivolces.com',
+    public_domain: profile?.public_domain || storage.public_domain || '',
+    prefix: profile?.prefix || storage.prefix || 'drama-canvas/',
+    url_ttl_seconds: String(profile?.url_ttl_seconds || storage.url_ttl_seconds || 3600),
+    auto_persist_images: storage.auto_persist_images !== false,
+    auto_persist_videos: storage.auto_persist_videos !== false,
+    auto_persist_audio: storage.auto_persist_audio !== false,
+    require_for_ark_portrait: storage.require_for_ark_portrait !== false,
+    access_key: '',
+    secret_key: '',
+  };
+}
+
 export function mergeSavedStorageState(
   current: StorageDraft,
   response: StorageSpec,
