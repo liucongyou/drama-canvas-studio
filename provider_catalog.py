@@ -1468,6 +1468,30 @@ def storage_config() -> dict[str, Any]:
     return resolved
 
 
+def storage_profile_config(provider: str) -> dict[str, Any]:
+    """Resolve one saved storage profile without changing the active backend."""
+    selected = str(provider or "").strip().lower()
+    if selected not in {"tos", "aliyun_oss", "qiniu"}:
+        return {}
+    cfg = load_config()
+    storage = cfg.get("storage")
+    resolved = copy.deepcopy(storage if isinstance(storage, dict) else DEFAULT_STORAGE)
+    profiles = resolved.get("providers")
+    profile = (
+        profiles.get(selected)
+        if isinstance(profiles, dict)
+        and isinstance(profiles.get(selected), dict)
+        else None
+    )
+    if not profile:
+        return {}
+    merged = {**resolved, **copy.deepcopy(profile)}
+    merged["provider"] = selected
+    merged["active_provider"] = selected
+    merged["enabled"] = bool(profile)
+    return merged
+
+
 def public_storage_config() -> dict[str, Any]:
     return _public_storage(storage_config())
 

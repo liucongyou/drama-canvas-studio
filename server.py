@@ -2007,6 +2007,7 @@ LOCAL_VALIDATION_MARKERS = (
     "音色节点尚未生成",
     "源节点尚未生成",
     "原始产物转存到 TOS",
+    "Seedream 5.0 角色图进入 Seedance",
     "信任窗口只有",
 )
 
@@ -3585,6 +3586,11 @@ def backfill_local_media_storage():
                 )
             except Exception as exc:
                 meta["storageError"] = str(exc)
+                if str(model.get("adapter") or "") == "ark_video":
+                    raise RuntimeError(
+                        f"{label} 无法转存到火山 TOS：{exc}。"
+                        "请先在设置中完成“测试 火山 TOS”"
+                    ) from exc
                 print(
                     f"[storage] legacy upload migration failed {content[:120]}: {exc}",
                     file=sys.stderr,
@@ -6771,7 +6777,9 @@ class Handler(BaseHTTPRequestHandler):
                     kind == "image"
                     and str(model.get("adapter") or "") == "ark_video"
                     and not (isinstance(storage, dict) and storage.get("key"))
-                    and tos_storage.is_ready()
+                    and tos_storage.is_verified(
+                        provider_catalog.storage_profile_config("tos")
+                    )
                 ):
                     try:
                         storage = tos_storage.ensure_local_image(
@@ -6789,6 +6797,10 @@ class Handler(BaseHTTPRequestHandler):
                             source_meta["storageError"] = ""
                     except Exception as exc:
                         source_meta["storageError"] = str(exc)
+                        raise RuntimeError(
+                            f"{label} 无法转存到火山 TOS：{exc}。"
+                            "请先在设置中完成“测试 火山 TOS”"
+                        ) from exc
                 resolved.append({
                     "kind": kind,
                     "url": url,

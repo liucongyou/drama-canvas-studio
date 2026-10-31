@@ -51,22 +51,16 @@ def _config() -> dict[str, Any]:
 
 def test_connection_for(provider: str) -> dict[str, Any]:
     """Test the selected backend using its own stored credential profile."""
-    storage = provider_catalog.storage_config()
     provider = str(
         provider
-        or storage.get("active_provider")
-        or storage.get("provider")
+        or provider_catalog.storage_config().get("active_provider")
+        or provider_catalog.storage_config().get("provider")
         or "tos"
     ).strip().lower()
-    profiles = storage.get("providers")
-    if not isinstance(profiles, dict) or not isinstance(profiles.get(provider), dict):
+    profile_config = provider_catalog.storage_profile_config(provider)
+    if not profile_config:
         raise MediaStorageError(f"服务商 {provider} 尚未保存配置")
-    cfg = {
-        **storage,
-        **profiles[provider],
-        "enabled": True,
-        "provider": provider,
-    }
+    cfg = {**profile_config, "enabled": True, "provider": provider}
     data = (
         b"drama-canvas storage test "
         + datetime.now(timezone.utc).isoformat().encode()

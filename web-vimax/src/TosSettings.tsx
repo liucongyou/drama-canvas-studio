@@ -210,6 +210,17 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
     && (draft.provider !== 'qiniu' || draft.public_domain.trim())
     && (draft.provider === 'qiniu' || draft.endpoint.trim()),
   );
+  const selectedProfileTest = storage?.profiles?.[draft.provider];
+  const selectedProviderActive = Boolean(
+    storage?.enabled && storage.provider === draft.provider,
+  );
+  const selectedProviderReady = (
+    draft.provider === 'tos'
+      ? storage?.tos_ready
+      : draft.provider === 'aliyun_oss'
+        ? storage?.oss_ready
+        : storage?.qiniu_ready
+  );
 
   return (
     <div className="canvas-help-backdrop model-settings-backdrop">
@@ -226,7 +237,7 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
           <div className="model-settings-header-actions">
             <span className={`tos-state-pill ${storage?.ready ? 'is-ready' : ''}`}>
               {storage?.ready ? <Check size={12} /> : <CloudUpload size={12} />}
-              {storage?.ready ? `${storageLabel(storage.provider)} 已启用` : '未启用'}
+              {storage?.ready ? `${storageLabel(storage.provider)} 自动转存已启用` : '未启用'}
             </span>
             <button type="button" onClick={() => void load()} title="刷新存储配置"><RefreshCw size={14} />刷新</button>
             <button type="button" className="canvas-inspector-close" onClick={onClose} aria-label="关闭"><X size={15} /></button>
@@ -239,8 +250,10 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
           <div className="tos-settings-hero">
             <span className="tos-settings-hero-icon"><ShieldCheck size={20} /></span>
             <div>
-              <strong>选择自动转存目标</strong>
-              <p>只使用当前选中的一个存储，未选择时不自动上传。</p>
+              <strong>对象存储与 Seedance 原始图</strong>
+              <p>
+                自动转存只使用一个存储；火山 TOS 可独立保存并用于 Seedance 角色图。
+              </p>
             </div>
           </div>
           <div className="storage-provider-picker">
@@ -251,21 +264,24 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
             >不转存</button>
             <button
               type="button"
-              className={draft.enabled && draft.provider === 'tos' ? 'is-active' : ''}
+              className={draft.provider === 'tos' ? 'is-active' : ''}
               onClick={() => {
                 selectProvider('tos');
               }}
-            >火山 TOS</button>
+            >
+              火山 TOS
+              {storage?.profiles?.tos && <small>{selectedProviderActive ? '自动转存' : '仅 Seedance'}</small>}
+            </button>
             <button
               type="button"
-              className={draft.enabled && draft.provider === 'aliyun_oss' ? 'is-active' : ''}
+              className={draft.provider === 'aliyun_oss' ? 'is-active' : ''}
               onClick={() => {
                 selectProvider('aliyun_oss');
               }}
             >阿里云 OSS</button>
             <button
               type="button"
-              className={draft.enabled && draft.provider === 'qiniu' ? 'is-active' : ''}
+              className={draft.provider === 'qiniu' ? 'is-active' : ''}
               onClick={() => {
                 selectProvider('qiniu');
               }}
@@ -352,6 +368,17 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
             </div>
           </div>
 
+          {draft.provider === 'tos' && storage?.profiles?.tos && (
+            <div className={`tos-test-result ${selectedProviderReady ? 'is-ok' : ''}`}>
+              {selectedProviderReady ? <Check size={13} /> : <CloudUpload size={13} />}
+              <span>
+                {selectedProviderActive
+                  ? 'TOS 已用于全局自动转存，并可用于 Seedance 原始角色图。'
+                  : 'TOS 配置已独立保存；即使 OSS 是全局自动转存，Seedance 也可单独使用 TOS 原始图。'}
+              </span>
+            </div>
+          )}
+
           {testState && (
             <div className={`tos-test-result ${testState.ok ? 'is-ok' : 'is-error'}`}>
               {testState.ok ? <Check size={13} /> : <X size={13} />}
@@ -363,10 +390,10 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
               <span>正在上传测试文件并检查公网访问…</span>
             </div>
           )}
-          {!testState && testingProvider === null && storage?.provider === draft.provider && storage.last_test_ok === false && storage.last_test_error && (
+          {!testState && testingProvider === null && selectedProfileTest?.last_test_ok === false && selectedProfileTest.last_test_error && (
             <div className="tos-test-result is-error">
               <X size={13} />
-              <span>{storage.last_test_error}</span>
+              <span>{selectedProfileTest.last_test_error}</span>
             </div>
           )}
         </div>
@@ -378,8 +405,12 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
           <button type="button" disabled={testing || !canTest} onClick={() => void test()}>
             {testing ? '测试中…' : `测试 ${storageLabel(draft.provider)}`}
           </button>
-          <button type="button" disabled={busy || !canTest} onClick={() => void activate()}>
-            {storage?.enabled && storage.provider === draft.provider ? '已启用' : '启用此存储'}
+          <button
+            type="button"
+            disabled={busy || !canTest || (draft.provider === 'tos' && !storage?.profiles?.tos) || selectedProviderActive}
+            onClick={() => void activate()}
+          >
+            {selectedProviderActive ? '自动转存已启用' : '设为自动转存'}
           </button>
           {storage?.enabled && (
             <button type="button" disabled={busy} onClick={() => void deactivate()}>

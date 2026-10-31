@@ -958,7 +958,13 @@ def _ark_reference_url(ref: dict[str, Any]) -> str:
             pass
     if isinstance(storage, dict) and storage.get("provider") == "tos" and storage.get("key"):
         return tos_storage.internal_presigned_url(storage)
-    if kind == "image" and raw.startswith("/uploads/") and tos_storage.is_ready():
+    if (
+        kind == "image"
+        and raw.startswith("/uploads/")
+        and tos_storage.is_verified(
+            provider_catalog.storage_profile_config("tos")
+        )
+    ):
         descriptor = tos_storage.ensure_local_image(
             raw,
             source={
@@ -970,6 +976,7 @@ def _ark_reference_url(ref: dict[str, Any]) -> str:
             },
         )
         if descriptor:
+            provider_catalog.record_storage_test_success(provider="tos")
             return tos_storage.internal_presigned_url(descriptor)
     if (
         kind == "image"
@@ -978,7 +985,7 @@ def _ark_reference_url(ref: dict[str, Any]) -> str:
     ):
         raise RuntimeError(
             "Seedream 5.0 角色图进入 Seedance 前必须先把原始产物转存到 TOS；"
-            "请先在设置中启用对象存储 TOS 并完成连接测试"
+            "请先保存火山 TOS 配置并完成“测试 火山 TOS”"
         )
     return _asset_url_for_provider(raw)
 

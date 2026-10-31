@@ -85,6 +85,34 @@ class StorageConfigTests(unittest.TestCase):
                 self.assertEqual(profile["access_key"], "AK-test-value")
                 self.assertEqual(profile["secret_key"], "SK-test-value")
 
+    def test_saved_tos_profile_resolves_when_oss_is_active(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = os.path.join(tmp, "config.local.json")
+            with mock.patch.object(provider_catalog, "LOCAL_CONFIG_PATH", config_path):
+                provider_catalog.save_storage_config({
+                    "provider": "tos",
+                    "bucket": "tos-originals",
+                    "region": "cn-beijing",
+                    "endpoint": "tos-cn-beijing.volces.com",
+                    "internal_endpoint": "tos-cn-beijing.ivolces.com",
+                    "prefix": "drama-canvas/",
+                    "access_key": "tos-ak",
+                    "secret_key": "tos-sk",
+                })
+                provider_catalog.save_storage_config({
+                    "provider": "aliyun_oss",
+                    "bucket": "oss-originals",
+                    "region": "cn-beijing",
+                    "endpoint": "oss-cn-beijing.aliyuncs.com",
+                    "access_key": "oss-ak",
+                    "secret_key": "oss-sk",
+                })
+                provider_catalog.activate_storage_provider("aliyun_oss")
+                resolved = provider_catalog.storage_profile_config("tos")
+        self.assertEqual(resolved["provider"], "tos")
+        self.assertEqual(resolved["bucket"], "tos-originals")
+        self.assertEqual(resolved["access_key"], "tos-ak")
+
 class TosStorageTests(unittest.TestCase):
     def setUp(self):
         self.client = FakeTosClient()
@@ -208,6 +236,110 @@ class TosStorageTests(unittest.TestCase):
                     "kind": "image",
                     "sourceModel": "doubao-seedream-5-0-pro-260628",
                 })
+
+    def test_seedream_uses_verified_tos_profile_when_oss_is_active(self):
+        profile = {
+            "provider": "tos",
+            "active_provider": "tos",
+            "enabled": True,
+            "bucket": "tos-originals",
+            "region": "cn-beijing",
+            "endpoint": "tos-cn-beijing.volces.com",
+            "internal_endpoint": "tos-cn-beijing.ivolces.com",
+            "prefix": "drama-canvas/",
+            "access_key": "tos-ak",
+            "secret_key": "tos-sk",
+            "url_ttl_seconds": 3600,
+            "last_test_ok": True,
+        }
+        descriptor = {
+            "provider": "tos",
+            "bucket": "tos-originals",
+            "key": "drama-canvas/image/role.png",
+            "last_test_ok": True,
+        }
+        with (
+            mock.patch.object(
+                provider_catalog,
+                "storage_config",
+                return_value={
+                    "enabled": True,
+                    "provider": "aliyun_oss",
+                    "active_provider": "aliyun_oss",
+                    "require_for_ark_portrait": True,
+                },
+            ),
+            mock.patch.object(
+                provider_catalog,
+                "storage_profile_config",
+                return_value=profile,
+            ),
+            mock.patch.object(
+                tos_storage,
+                "ensure_local_image",
+                return_value=descriptor,
+            ) as ensure,
+            mock.patch.object(
+                tos_storage,
+                "internal_presigned_url",
+                return_value="https://tos.internal/role?sig=ok",
+            ),
+        ):
+            url = provider_client._ark_reference_url({
+                "url": "/uploads/role.png",
+                "kind": "image",
+                "sourceModel": "doubao-seedream-5-0-pro-260628",
+            })
+        self.assertEqual(url, "https://tos.internal/role?sig=ok")
+        ensure.assert_called_once()
+
+    def test_seedream_does_not_use_unverified_tos_profile(self):
+        profile = {
+            "provider": "tos",
+            "enabled": True,
+            "bucket": "tos-originals",
+            "region": "cn-beijing",
+            "endpoint": "tos-cn-beijing.volces.com",
+            "internal_endpoint": "tos-cn-beijing.ivolces.com",
+            "access_key": "tos-ak",
+            "secret_key": "tos-sk",
+            "last_test_ok": None,
+        }
+        with (
+            mock.patch.object(
+                provider_catalog,
+                "storage_config",
+                return_value={"require_for_ark_portrait": True},
+            ),
+            mock.patch.object(
+                provider_catalog,
+                "storage_profile_config",
+                return_value=profile,
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "完成.*测试"):
+                provider_client._ark_reference_url({
+                    "url": "/uploads/role.png",
+                    "kind": "image",
+                    "sourceModel": "doubao-seedream-5-0-pro-260628",
+                })
+
+    def test_seedream_profile_completion_requires_persisted_test_result(self):
+        profile = {
+            "provider": "tos",
+            "enabled": True,
+            "bucket": "tos-originals",
+            "region": "cn-beijing",
+            "endpoint": "tos-cn-beijing.volces.com",
+            "internal_endpoint": "tos-cn-beijing.ivolces.com",
+            "access_key": "tos-ak",
+            "secret_key": "tos-sk",
+            "last_test_ok": None,
+        }
+        self.assertTrue(tos_storage.is_ready(profile))
+        self.assertFalse(tos_storage.is_verified(profile))
+        profile["last_test_ok"] = True
+        self.assertTrue(tos_storage.is_verified(profile))
 
     def test_seedream_reference_older_than_trust_window_is_blocked(self):
         with mock.patch.object(

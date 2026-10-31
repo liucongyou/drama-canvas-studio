@@ -2024,6 +2024,7 @@ def is_local_validation_error(message):
         "音色节点尚未生成",
         "源节点尚未生成",
         "原始产物转存到 TOS",
+        "Seedream 5.0 角色图进入 Seedance",
         "信任窗口只有",
     )
     return any(marker in text for marker in markers)

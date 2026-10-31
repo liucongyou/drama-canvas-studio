@@ -58,7 +58,8 @@ def _tos():
 
 
 def _config() -> dict[str, Any]:
-    return provider_catalog.storage_config()
+    profile = provider_catalog.storage_profile_config("tos")
+    return profile or provider_catalog.storage_config()
 
 
 def is_ready(config: dict[str, Any] | None = None) -> bool:
@@ -73,6 +74,11 @@ def is_ready(config: dict[str, Any] | None = None) -> bool:
         and cfg.get("access_key")
         and cfg.get("secret_key")
     )
+
+
+def is_verified(config: dict[str, Any] | None = None) -> bool:
+    cfg = config or _config()
+    return bool(is_ready(cfg) and cfg.get("last_test_ok") is True)
 
 
 def _client(*, internal: bool = False):
@@ -377,7 +383,7 @@ def internal_presigned_url(
     key = str(storage.get("key") or "").strip()
     if not bucket or not key:
         raise TosStorageError("TOS 对象信息不完整")
-    cfg = _config()
+    cfg = provider_catalog.storage_profile_config("tos") or _config()
     ttl = int(expires or cfg.get("url_ttl_seconds") or 3600)
     tos = _tos()
     try:
@@ -404,7 +410,7 @@ def public_presigned_url(
     key = str(storage.get("key") or "").strip()
     if not bucket or not key:
         raise TosStorageError("TOS 对象信息不完整")
-    cfg = _config()
+    cfg = provider_catalog.storage_profile_config("tos") or _config()
     ttl = int(expires or cfg.get("url_ttl_seconds") or 3600)
     tos = _tos()
     try:
