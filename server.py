@@ -8223,6 +8223,20 @@ def main():
             )
     except Exception as exc:
         print(f"[schema] tenant migration failed: {exc}", file=sys.stderr)
+
+    # Bind the API before historical backfills. Those jobs can touch every
+    # project in a large tenant and previously kept port 8890 closed for
+    # minutes, which made the frontend retry saves against a dead socket.
+    server = CanvasHTTPServer(("127.0.0.1", PORT), Handler)
+    http_thread = threading.Thread(
+        target=server.serve_forever,
+        name="canvas-http-server",
+        daemon=True,
+    )
+    http_thread.start()
+    print(f"戏剧画布工作流系统已启动： http://127.0.0.1:{PORT}", flush=True)
+    print("关闭：Ctrl+C", flush=True)
+
     try:
         recovered = _run_for_active_tenants(store.backfill_video_version_history)
         if recovered:
@@ -8322,12 +8336,11 @@ def main():
         start_pending_video_resumers()
     except Exception as exc:
         print(f"[video-resume] 恢复进行中任务失败：{exc}", file=sys.stderr)
-    server = CanvasHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"戏剧画布工作流系统已启动： http://127.0.0.1:{PORT}")
-    print("关闭：Ctrl+C")
     try:
-        server.serve_forever()
+        while http_thread.is_alive():
+            http_thread.join(timeout=1)
     except KeyboardInterrupt:
+        server.shutdown()
         print("\n已停止")
 
 

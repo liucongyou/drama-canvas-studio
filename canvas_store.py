@@ -893,31 +893,51 @@ def replace_episode_notes(
 
     def write(con):
         row = con.execute(
-            "SELECT revision FROM canvas_projects WHERE id=?",
+            "SELECT 1 FROM canvas_projects WHERE id=?",
             (project_id,),
         ).fetchone()
         if not row:
             return None
-        current_revision = int(row[0] or 0)
-        if (
-            if_revision is not None
-            and current_revision != int(if_revision)
-        ):
-            raise RevisionConflictError(
-                f"项目已更新：期望 revision={if_revision}，"
-                f"实际 revision={current_revision}"
-            )
+        current_revision = None
+        if if_revision is not None:
+            revision_row = con.execute(
+                "SELECT revision FROM canvas_projects WHERE id=?",
+                (project_id,),
+            ).fetchone()
+            current_revision = int(revision_row[0] or 0) if revision_row else 0
+            if current_revision != int(if_revision):
+                raise RevisionConflictError(
+                    f"项目已更新：期望 revision={if_revision}，"
+                    f"实际 revision={current_revision}"
+                )
         stamp = _now_iso()
-        con.execute(
-            "DELETE FROM canvas_projection_notes "
-            "WHERE project_id=? AND episode_id=?",
-            (project_id, normalized),
-        )
+        existing_note_ids = {
+            str(row[0])
+            for row in con.execute(
+                "SELECT note_id FROM canvas_projection_notes "
+                "WHERE project_id=? AND episode_id=?",
+                (project_id, normalized),
+            )
+        }
+        next_note_ids = {note["id"] for note in normalized_notes}
+        removed_note_ids = existing_note_ids - next_note_ids
+        if removed_note_ids:
+            placeholders = ",".join("?" for _ in removed_note_ids)
+            con.execute(
+                f"DELETE FROM canvas_projection_notes "
+                f"WHERE project_id=? AND episode_id=? "
+                f"AND note_id IN ({placeholders})",
+                (project_id, normalized, *sorted(removed_note_ids)),
+            )
         for note in normalized_notes:
             con.execute(
                 "INSERT INTO canvas_projection_notes("
                 "project_id,episode_id,note_id,text,position_x,position_y,"
-                "note_json,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                "note_json,updated_at) VALUES(?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(project_id,episode_id,note_id) DO UPDATE SET "
+                "text=excluded.text,position_x=excluded.position_x,"
+                "position_y=excluded.position_y,note_json=excluded.note_json,"
+                "updated_at=excluded.updated_at",
                 (
                     project_id,
                     normalized,
@@ -929,12 +949,10 @@ def replace_episode_notes(
                     note["updatedAt"] or stamp,
                 ),
             )
-        revision = current_revision + 1
-        con.execute(
-            "UPDATE canvas_projects SET revision=?,updated_at=? "
-            "WHERE id=? AND revision=?",
-            (revision, stamp, project_id, current_revision),
-        )
+        # Notes are an independent fact table. Bumping the canvas project
+        # revision here made concurrent saves from different episodes collide
+        # and delayed project edits for a change that never touched the graph.
+        revision = current_revision
         return {
             "episodeId": normalized,
             "notes": normalized_notes,
@@ -1645,6 +1663,82 @@ def claim_nodes_for_episode(
         )
 
 
+def sync_projection_nodes_batch(
+    con,
+    project_id,
+    nodes,
+    *,
+    episode_id="",
+    updated_at="",
+):
+    """Write node rows and their episode roster in one bounded pass."""
+    items = [
+        item
+        for item in (nodes or [])
+        if isinstance(item, dict) and item.get("id")
+    ]
+    if not items:
+        return 0
+    stamp = str(updated_at or _now_iso())
+    normalized = str(episode_id or "").strip().upper()
+    node_ids = sorted({str(item["id"]) for item in items})
+    previous_owners = set()
+    if node_ids:
+        placeholders = ",".join("?" for _ in node_ids)
+        previous_owners = {
+            str(row[0] or "").strip().upper()
+            for row in con.execute(
+                f"SELECT DISTINCT episode_id FROM canvas_projection_nodes "
+                f"WHERE project_id=? AND node_id IN ({placeholders})",
+                (project_id, *node_ids),
+            )
+            if str(row[0] or "").strip()
+        }
+    written = 0
+    for item in items:
+        metadata = item.get("metadata")
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        ownership = normalized or str(
+            item.get("episodeId") or metadata.get("episodeId") or ""
+        ).strip().upper() or _UNASSIGNED_EPISODE_ID
+        if normalized:
+            metadata["episodeId"] = normalized
+            item["metadata"] = metadata
+        item.setdefault("updatedAt", stamp)
+        con.execute(
+            "INSERT INTO canvas_projection_nodes("
+            "project_id,node_id,episode_id,node_type,title,position_x,position_y,"
+            "position_updated_at,metadata_json,node_json,updated_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(project_id,node_id) DO UPDATE SET "
+            "episode_id=excluded.episode_id,node_type=excluded.node_type,"
+            "title=excluded.title,position_x=excluded.position_x,"
+            "position_y=excluded.position_y,"
+            "position_updated_at=excluded.position_updated_at,"
+            "metadata_json=excluded.metadata_json,node_json=excluded.node_json,"
+            "updated_at=excluded.updated_at",
+            _projection_node_values(
+                project_id,
+                item,
+                episode_id=ownership,
+                stamp=stamp,
+            ),
+        )
+        written += 1
+    touched = {
+        owner for owner in previous_owners | {normalized}
+        if owner and owner != _UNASSIGNED_EPISODE_ID
+    }
+    for owner in sorted(touched):
+        refresh_projection_episode_membership(
+            con,
+            project_id,
+            owner,
+            updated_at=stamp,
+        )
+    return written
+
+
 def replace_projection_nodes(con, project_id, nodes, *, updated_at=""):
     """Replace only changed node rows; delete rows absent from the payload."""
     if not isinstance(nodes, list):
@@ -1652,7 +1746,6 @@ def replace_projection_nodes(con, project_id, nodes, *, updated_at=""):
     stamp = str(updated_at or _now_iso())
     keep = set()
     owners = {}
-    touched_episodes = set()
     for item in nodes:
         if not isinstance(item, dict) or not item.get("id"):
             continue
@@ -1662,15 +1755,6 @@ def replace_projection_nodes(con, project_id, nodes, *, updated_at=""):
         owners[node_id] = str(
             item.get("episodeId") or metadata.get("episodeId") or ""
         ).upper()
-        previous = con.execute(
-            "SELECT episode_id FROM canvas_projection_nodes "
-            "WHERE project_id=? AND node_id=?",
-            (project_id, node_id),
-        ).fetchone()
-        if previous and previous[0]:
-            touched_episodes.add(str(previous[0]).strip().upper())
-        if owners[node_id]:
-            touched_episodes.add(owners[node_id])
         encoded = json.dumps(item, ensure_ascii=False, sort_keys=True)
         current = con.execute(
             "SELECT node_json FROM canvas_projection_nodes "
@@ -1699,26 +1783,10 @@ def replace_projection_nodes(con, project_id, nodes, *, updated_at=""):
     }
     stale = existing - keep
     for node_id in stale:
-        previous = con.execute(
-            "SELECT episode_id FROM canvas_projection_nodes "
-            "WHERE project_id=? AND node_id=?",
-            (project_id, node_id),
-        ).fetchone()
-        if previous and previous[0]:
-            touched_episodes.add(str(previous[0]).strip().upper())
         con.execute(
             "DELETE FROM canvas_projection_nodes "
             "WHERE project_id=? AND node_id=?",
             (project_id, node_id),
-        )
-    touched_episodes.discard("")
-    touched_episodes.discard(_UNASSIGNED_EPISODE_ID)
-    for episode_id in touched_episodes:
-        refresh_projection_episode_membership(
-            con,
-            project_id,
-            episode_id,
-            updated_at=stamp,
         )
 
 
@@ -3093,13 +3161,6 @@ def insert_project_nodes(
         normalized_episode = str(episode_id or "").strip().upper()
         if not normalized_episode:
             raise ValueError("新建节点必须指定所属集")
-        claim_nodes_for_episode(
-            con,
-            project_id,
-            normalized_episode,
-            [item.get("id") for item in items],
-            updated_at=stamp,
-        )
         for item in items:
             metadata = item.get("metadata")
             metadata = dict(metadata) if isinstance(metadata, dict) else {}
@@ -3377,50 +3438,25 @@ def update_project_nodes(
                 metadata["episodeId"] = normalized_episode
                 item["metadata"] = metadata
             item.setdefault("updatedAt", stamp)
-            cursor = con.execute(
-                "SELECT 1 FROM canvas_projection_nodes "
-                "WHERE project_id=? AND node_id=?",
-                (project_id, str(item["id"])),
-            ).fetchone()
-            if not cursor:
-                continue
-            sync_projection_node(
-                con,
-                project_id,
-                item,
-                episode_id=normalized_episode,
-                updated_at=stamp,
+        existing_ids = {
+            str(row[0])
+            for row in con.execute(
+                "SELECT node_id FROM canvas_projection_nodes "
+                "WHERE project_id=?",
+                (project_id,),
             )
-            updated += 1
-            if normalized_episode:
-                group_row = con.execute(
-                    "SELECT group_json,connection_ids_json "
-                    "FROM canvas_projection_episodes "
-                    "WHERE project_id=? AND episode_id=?",
-                    (project_id, normalized_episode),
-                ).fetchone()
-                if group_row:
-                    try:
-                        group = json.loads(group_row[0] or "{}")
-                        connection_ids = json.loads(group_row[1] or "[]")
-                    except (TypeError, ValueError):
-                        group, connection_ids = {}, []
-                    if isinstance(group, dict):
-                        group["id"] = normalized_episode
-                        group["nodeIds"] = []
-                        group["videoNodeIds"] = []
-                        group["connectionIds"] = (
-                            connection_ids
-                            if isinstance(connection_ids, list)
-                            else []
-                        )
-                        sync_projection_episode(
-                            con,
-                            project_id,
-                            normalized_episode,
-                            group,
-                            updated_at=stamp,
-                        )
+        }
+        existing_items = [
+            item for item in items
+            if str(item.get("id")) in existing_ids
+        ]
+        updated = sync_projection_nodes_batch(
+            con,
+            project_id,
+            existing_items,
+            episode_id=normalized_episode,
+            updated_at=stamp,
+        )
         stats = refresh_project_projection_stats(con, project_id)
         revision = current_revision + 1
         con.execute(

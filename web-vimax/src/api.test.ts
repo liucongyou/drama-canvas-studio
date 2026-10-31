@@ -288,7 +288,13 @@ describe('api request recovery', () => {
               revision: 1,
               updatedAt: '2026-10-28T00:00:00Z',
               projectMeta: {title: '测试项目', extras: {notes: [{id: 'note-1', text: '备注', x: 0, y: 0, updatedAt: '2026-10-28T00:00:00Z'}]}},
-              episodes: [{id: 'EP001', title: '第01集', nodeIds: ['video-1']}],
+              episodes: [{
+                id: 'EP001',
+                title: '第01集',
+                nodeIds: ['video-1'],
+                shot_count: 7,
+                described_count: 7,
+              }],
               episodeViewports: {EP001: {x: 12, y: 34, zoom: 0.66}},
             }
           : target.includes('/workspace-nodes')
@@ -357,6 +363,11 @@ describe('api request recovery', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(workspace.canvas).not.toHaveProperty('empty');
     expect(workspace.notes).toHaveLength(1);
+    expect(workspace.canvas.meta.episodes[0]).toMatchObject({
+      ep_id: 'EP001',
+      shot_count: 7,
+      described_count: 7,
+    });
     expect(workspace.mediaNodes).toMatchObject([{id: 'video-1', x: 10, y: 20}]);
     expect(workspace.activeEpisodeId).toBe('EP001');
     expect(workspace.episodeViewports).toMatchObject({

@@ -1096,6 +1096,9 @@ type Payload = {
     videoNodeIds?: string[];
     connectionIds?: string[];
     importedAt?: string;
+    shot_count?: number;
+    described_count?: number;
+    storyboard_ready?: boolean;
   }>;
   episodeLayouts?: Record<string, Record<string, {x: number; y: number}>>;
 };
@@ -1381,9 +1384,16 @@ function getCanvasSync(
       ep_id: group.id,
       title: group.title || `${group.id} · ${title}`,
       progress: null,
-      storyboard_ready: true,
-      shot_count: groupShots.length,
-      described_count: groupShots.length,
+      // The workspace index already knows each episode's planned shot count.
+      // Deriving all episodes from the current episode's nodes makes every
+      // unopened episode look like "0镜" until it is selected.
+      storyboard_ready: group.storyboard_ready ?? true,
+      shot_count: typeof group.shot_count === 'number'
+        ? group.shot_count
+        : groupShots.length,
+      described_count: typeof group.described_count === 'number'
+        ? group.described_count
+        : groupShots.length,
       keyframes: 0,
       clips: groupShots.filter((shot) => shot.clip_url).length,
       final_ready: false,

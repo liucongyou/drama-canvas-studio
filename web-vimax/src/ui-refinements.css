@@ -3306,6 +3306,9 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 .canvas-ep-list-body button.is-active .ep-badge{color:#c9c9cc;background:rgba(255,255,255,.1)}
 .canvas-ep-list-body button.is-active .ep-badge.is-done{color:#6fd39c;background:rgba(111,211,156,.18)}
 .canvas-ep-list-body button.is-active .ep-badge.is-partial{color:#e0b46a;background:rgba(224,180,106,.18)}
+.canvas-ep-list-body button .ep-badge{color:var(--v-text-3);background:var(--v-surface-sunken);opacity:1}
+.canvas-ep-list-body button:hover .ep-badge{color:var(--v-text-2);background:var(--v-surface-hover)}
+.canvas-ep-list-body button.is-active .ep-badge{color:var(--v-text-2);background:var(--v-surface-hover)}
 /* 右侧镜头条目：与左侧列表同一套选中语言（中性底 + 2px 中性竖条） */
 .canvas-shotlist-item.is-active{
   background:var(--v-selected);
