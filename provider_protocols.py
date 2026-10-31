@@ -86,6 +86,36 @@ PROTOCOLS: dict[str, ProviderProtocol] = {
         failure_statuses=COMMON_FAILURE,
         result_retention_seconds=24 * 60 * 60,
     ),
+    "fourstoken_image": ProviderProtocol(
+        adapter="fourstoken_image",
+        label="4SToken 图片",
+        submit="POST /v1/images/generations | POST /v1/images/edits",
+        query="GET /v1/images/tasks/{task_id}",
+        task_id_fields=("task_id", "taskId"),
+        success_statuses=COMMON_SUCCESS,
+        failure_statuses=COMMON_FAILURE,
+        result_retention_seconds=24 * 60 * 60,
+    ),
+    "fourstoken_video": ProviderProtocol(
+        adapter="fourstoken_video",
+        label="4SToken 视频任务",
+        submit="POST /v1/videos",
+        query="GET /v1/videos/{task_id}",
+        task_id_fields=("task_id", "taskId"),
+        success_statuses=COMMON_SUCCESS,
+        failure_statuses=COMMON_FAILURE | frozenset({"canceled"}),
+        result_retention_seconds=24 * 60 * 60,
+    ),
+    "fourstoken_newapi_video": ProviderProtocol(
+        adapter="fourstoken_newapi_video",
+        label="4SToken New API 视频任务",
+        submit="POST /v1/video/generations",
+        query="GET /v1/video/generations/{task_id}",
+        task_id_fields=("task_id", "taskId"),
+        success_statuses=COMMON_SUCCESS,
+        failure_statuses=COMMON_FAILURE,
+        result_retention_seconds=24 * 60 * 60,
+    ),
 }
 
 

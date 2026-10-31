@@ -1,5 +1,25 @@
 import {describe, expect, it} from 'vitest';
-import {absolutePositionOf, ALIGN_VISIBLE_PX, applyLayoutPositions, canvasViewportIndexKey, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, initialViewportForScope, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, viewportFromPayload, viewportIndexForSave, workspaceScopeMatches} from './canvasLayout';
+import {absolutePositionOf, ALIGN_VISIBLE_PX, applyLayoutPositions, canvasIdlePresentation, canvasViewportIndexKey, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, initialViewportForScope, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, resolveLoadedEpisodeId, segShotIdxsOf, solveAlignSnap, validUserConnections, viewportFromPayload, viewportIndexForSave, workspaceScopeMatches} from './canvasLayout';
+
+describe('canvas idle presentation', () => {
+  it('shows the empty workspace only after the target episode is fully loaded', () => {
+    expect(canvasIdlePresentation({
+      dataReady: false,
+      mediaCount: 0,
+      noteCount: 0,
+    }).showEmptyWorkspace).toBe(false);
+    expect(canvasIdlePresentation({
+      dataReady: true,
+      mediaCount: 0,
+      noteCount: 0,
+    }).showEmptyWorkspace).toBe(true);
+    expect(canvasIdlePresentation({
+      dataReady: true,
+      mediaCount: 0,
+      noteCount: 1,
+    }).showEmptyWorkspace).toBe(false);
+  });
+});
 
 describe('canvas viewport scope', () => {
   it('restores the active episode before the project fallback', () => {
@@ -103,6 +123,45 @@ describe('resolveInitialEpisode', () => {
   it('没有 URL 和本地记忆时返回 null，交给默认集策略', () => {
     expect(resolveInitialEpisode('', null)).toBeNull();
     expect(resolveInitialEpisode('', '')).toBeNull();
+  });
+});
+
+describe('resolveLoadedEpisodeId', () => {
+  const episodes = [
+    {ep_id: 'EP001'},
+    {ep_id: 'EP002'},
+    {ep_id: 'EP010'},
+  ];
+
+  it('uses the server active episode after the workspace has loaded', () => {
+    expect(resolveLoadedEpisodeId({
+      activeEpisodeId: 'EP002',
+      episodes,
+      preferredEpisodeId: 'EP010',
+    })).toBe('EP002');
+  });
+
+  it('keeps a valid URL or remembered episode when the server omits an active id', () => {
+    expect(resolveLoadedEpisodeId({
+      activeEpisodeId: null,
+      episodes,
+      preferredEpisodeId: 'ep010',
+    })).toBe('EP010');
+  });
+
+  it('rejects a stale cross-project episode and falls back to the first valid episode', () => {
+    expect(resolveLoadedEpisodeId({
+      activeEpisodeId: null,
+      episodes,
+      preferredEpisodeId: 'EP099',
+    })).toBe('EP001');
+  });
+
+  it('binds an empty project to EP001 instead of leaving a writable null scope', () => {
+    expect(resolveLoadedEpisodeId({
+      activeEpisodeId: null,
+      episodes: [],
+    })).toBe('EP001');
   });
 });
 

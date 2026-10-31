@@ -1654,6 +1654,167 @@ def _openai_image(
     return _parse_image_result(response, provider)
 
 
+def _fourstoken_public_url(url: str) -> str:
+    raw = str(url or "").strip()
+    if not raw:
+        raise RuntimeError("4SToken 参考素材缺少 URL")
+    if raw.startswith(("https://", "http://")):
+        return raw
+    return _canvaspro_asset_url(raw)
+
+
+def _fourstoken_multipart(
+    url: str,
+    key: str,
+    fields: list[tuple[str, Any]],
+    files: list[tuple[str, tuple[str, str, bytes]]],
+    *,
+    timeout: float,
+) -> dict[str, Any]:
+    boundary = f"----drama-canvas-{secrets.token_hex(12)}"
+    chunks: list[bytes] = []
+    for name, value in fields:
+        chunks.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode("utf-8")
+        )
+    for name, (filename, mime, payload) in files:
+        chunks.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                f"Content-Type: {mime}\r\n\r\n"
+            ).encode("utf-8")
+        )
+        chunks.append(payload)
+        chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode("ascii"))
+    body = b"".join(chunks)
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+            "Connection": "close",
+        },
+    )
+    try:
+        with network_security.safe_urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ProviderHTTPError(
+            exc.code,
+            detail,
+            getattr(exc, "headers", None),
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        raise ProviderOutcomeUncertain(
+            f"供应商请求已发出，但未收到可确认结果：{exc}",
+            submitted_at=datetime.now(timezone.utc).isoformat(),
+        ) from exc
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"供应商返回不是 JSON：{raw[:300]!r}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("供应商返回不是 JSON 对象")
+    return payload
+
+
+def _fourstoken_image(
+    provider: dict[str, Any],
+    model: dict[str, Any],
+    prompt: str,
+    params: dict[str, Any],
+    refs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    image_refs = [
+        ref
+        for ref in refs
+        if ref.get("kind") == "image" and ref.get("url")
+    ]
+    image_urls = [
+        _fourstoken_public_url(str(ref["url"]))
+        for ref in image_refs
+    ]
+    size = str(
+        params.get("size")
+        or params.get("resolution")
+        or "1024x1024"
+    ).strip()
+    image_size = str(
+        params.get("imageSize")
+        or params.get("clarity")
+        or ""
+    ).strip().upper()
+    quality = str(params.get("quality") or "").strip()
+    n = _safe_int(params.get("n"), 1, 1, 4)
+    key = provider_catalog.provider_key(provider)
+    base = str(provider["base_url"]).rstrip("/")
+    origin = (
+        _newapi_api_origin(base)
+        if base.endswith("/v1")
+        else base
+    )
+    semantic_prompt = _reference_prompt(prompt, image_refs)
+    if image_urls:
+        files = _newapi_image_files(image_urls, base=base, key=key)
+        fields: list[tuple[str, Any]] = [
+            ("model", model["remoteModel"]),
+            ("prompt", semantic_prompt),
+            ("n", str(n)),
+            ("size", size),
+        ]
+        if quality:
+            fields.append(("quality", quality))
+        if image_size:
+            fields.append(("image_size", image_size))
+        response = _fourstoken_multipart(
+            f"{origin}/v1/images/edits",
+            key,
+            fields,
+            [("image", item) for item in files],
+            timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
+        )
+    else:
+        body: dict[str, Any] = {
+            "model": model["remoteModel"],
+            "prompt": semantic_prompt,
+            "n": n,
+            "size": size,
+        }
+        if quality:
+            body["quality"] = quality
+        if image_size:
+            body["image_size"] = image_size
+        _apply_declared_params(body, model, params)
+        response = _submit_json(
+            "POST",
+            f"{origin}/v1/images/generations",
+            key,
+            body,
+            timeout=SYNC_MEDIA_TIMEOUT_SECONDS,
+        )
+    result = _parse_image_result(response, provider)
+    task_id = str(
+        response.get("task_id")
+        or response.get("taskId")
+        or ""
+    ).strip()
+    if task_id:
+        result["taskId"] = task_id
+    return result
+
+
 def _agnes_image_prompt(prompt: str, image_refs: list[dict[str, Any]], text_refs: list[dict[str, Any]]) -> str:
     text = prompt
     if image_refs:
@@ -1963,6 +2124,174 @@ def _newapi_video_url_from_task(task: dict[str, Any]) -> str:
             if output.get(key):
                 return str(output[key])
     return _video_url_from_task(task)
+
+
+def _fourstoken_video_url_from_task(task: dict[str, Any]) -> str:
+    data = task.get("data")
+    if isinstance(data, dict):
+        data = [data]
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                for key in ("video_url", "url"):
+                    if item.get(key):
+                        return str(item[key])
+    for key in ("video_url", "url"):
+        if task.get(key):
+            return str(task[key])
+    return ""
+
+
+def _fourstoken_video(
+    provider: dict[str, Any],
+    model: dict[str, Any],
+    prompt: str,
+    params: dict[str, Any],
+    refs: list[dict[str, Any]],
+    voices: list[dict[str, Any]],
+    *,
+    on_task_created: TaskEventCallback | None = None,
+    on_task_update: TaskEventCallback | None = None,
+) -> dict[str, Any]:
+    base = str(provider["base_url"]).rstrip("/")
+    key = provider_catalog.provider_key(provider)
+    image_urls = [
+        _fourstoken_public_url(str(ref["url"]))
+        for ref in refs
+        if ref.get("kind") == "image" and ref.get("url")
+    ]
+    video_urls = [
+        _fourstoken_public_url(str(ref["url"]))
+        for ref in refs
+        if ref.get("kind") == "video" and ref.get("url")
+    ]
+    audio_urls = [
+        _fourstoken_public_url(str(ref["url"]))
+        for ref in voices
+        if ref.get("url")
+    ]
+    contract = provider_catalog.documented_fourstoken_video_contract(
+        model.get("remoteModel")
+    ) or {}
+    limits = contract.get("maxReferences") or {}
+    if len(image_urls) > int(limits.get("images") or 0):
+        raise RuntimeError(
+            f"{model.get('remoteModel')} 最多 {limits.get('images')} 张参考图，"
+            f"实际 {len(image_urls)} 张"
+        )
+    if len(video_urls) > int(limits.get("videos") or 0):
+        raise RuntimeError(
+            f"{model.get('remoteModel')} 最多 {limits.get('videos')} 个参考视频，"
+            f"实际 {len(video_urls)} 个"
+        )
+    if len(audio_urls) > int(limits.get("audios") or 0):
+        raise RuntimeError(
+            f"{model.get('remoteModel')} 最多 {limits.get('audios')} 个参考音频，"
+            f"实际 {len(audio_urls)} 个"
+        )
+    durations = [int(value) for value in contract.get("durations") or []]
+    duration = _safe_int(
+        params.get("duration") or params.get("seconds"),
+        5,
+        durations[0] if durations else 1,
+        durations[-1] if durations else 30,
+    )
+    if durations and duration not in durations:
+        raise RuntimeError(
+            f"{model.get('remoteModel')} 不支持 {duration} 秒，"
+            f"可用范围 {durations[0]}-{durations[-1]} 秒"
+        )
+    ratios = [str(value) for value in contract.get("ratios") or []]
+    ratio = str(params.get("ratio") or "9:16").strip()
+    if ratios and ratio not in ratios:
+        raise RuntimeError(
+            f"{model.get('remoteModel')} 不支持画幅 {ratio}，可用：{ratios}"
+        )
+    resolutions = [str(value) for value in contract.get("resolutions") or []]
+    resolution = str(
+        params.get("resolution") or "720P"
+    ).strip().upper()
+    if resolutions and resolution not in resolutions:
+        raise RuntimeError(
+            f"{model.get('remoteModel')} 不支持分辨率 {resolution}，"
+            f"可用：{resolutions}"
+        )
+    body: dict[str, Any] = {
+        "model": model["remoteModel"],
+        "prompt": prompt,
+        "duration": duration,
+        "ratio": ratio,
+        "resolution": resolution.lower(),
+    }
+    if image_urls:
+        body["image_url"] = image_urls[0]
+    if len(image_urls) > 1:
+        body["image_urls"] = image_urls
+    if video_urls:
+        body["video_reference"] = [{"url": url} for url in video_urls]
+    if audio_urls:
+        body["audio_reference"] = [{"url": url} for url in audio_urls]
+    if params.get("generateAudio") is not None:
+        body["generate_audio"] = bool(params.get("generateAudio"))
+    if params.get("watermark") is not None:
+        body["watermark"] = bool(params.get("watermark"))
+    if params.get("seed") not in (None, ""):
+        body["seed"] = _safe_int(params.get("seed"), -1, -1, 2**31 - 1)
+    _apply_declared_params(body, model, params)
+    submit_base = (
+        _newapi_api_origin(base)
+        if base.endswith("/v1")
+        else base
+    )
+    response = _submit_json(
+        "POST",
+        f"{submit_base}/v1/videos",
+        key,
+        body,
+        timeout=NEWAPI_VIDEO_SUBMIT_TIMEOUT_SECONDS,
+        on_task_update=on_task_update,
+    )
+    task_id = newapi_video_contract.task_id_from_response(
+        response,
+        ["task_id", "taskId", "id"],
+    )
+    _emit_task_created(on_task_created, {
+        "taskId": task_id,
+        "status": "queued",
+        "progress": response.get("progress") or 0,
+        "createdAt": time.time(),
+    })
+    poll_url = (
+        f"{submit_base}/v1/videos/"
+        f"{urllib.parse.quote(task_id, safe='')}"
+    )
+    deadline = time.time() + 3600
+    poll_started = time.time()
+    while time.time() < deadline:
+        task = _poll_json(poll_url, key, timeout=30)
+        status = str(task.get("status") or "").lower()
+        _emit_task_event(on_task_update, {
+            "taskId": task_id,
+            "status": status or "running",
+            "progress": task.get("progress"),
+        })
+        if status in provider_protocols.for_adapter("fourstoken_video").success_statuses:
+            url = _fourstoken_video_url_from_task(task)
+            if not url:
+                raise RuntimeError(
+                    "4SToken 视频已完成但没有 video_url："
+                    f"{json.dumps(task, ensure_ascii=False)[:600]}"
+                )
+            return {"url": url, "raw": task, "taskId": task_id}
+        if status in provider_protocols.for_adapter("fourstoken_video").failure_statuses:
+            error = task.get("error")
+            detail = error.get("message") if isinstance(error, dict) else error
+            raise RuntimeError(
+                f"4SToken 视频生成失败："
+                f"{detail or json.dumps(task, ensure_ascii=False)[:600]}"
+            )
+        time.sleep(poll_delay(time.time() - poll_started))
+    raise RuntimeError(f"4SToken 视频任务超时（3600s，任务 {task_id}）")
 
 
 def _newapi_video(
@@ -2790,6 +3119,10 @@ def generate_image(
             provider, model, prompt, params, refs,
             on_task_created=on_task_created,
         )
+    if adapter == "fourstoken_image":
+        return _fourstoken_image(
+            provider, model, prompt, params, refs,
+        )
     if adapter == "agnes_image":
         return _agnes_image(provider, model, prompt, params, refs)
     raise RuntimeError(f"图片模型适配器未实现：{adapter}")
@@ -2815,6 +3148,12 @@ def generate_video(
         )
     if adapter in {"canvaspro_video", "openai_video"}:
         return _newapi_video(
+            provider, model, prompt, params, refs, voices,
+            on_task_created=on_task_created,
+            on_task_update=on_task_update,
+        )
+    if adapter in {"fourstoken_video", "fourstoken_newapi_video"}:
+        return _fourstoken_video(
             provider, model, prompt, params, refs, voices,
             on_task_created=on_task_created,
             on_task_update=on_task_update,
@@ -2865,6 +3204,19 @@ def check_video_task(
             raise RuntimeError(f"New API 视频线路模板未实现：{profile}")
         base = _newapi_api_origin(provider["base_url"])
         poll_url = base + newapi_video_contract.build_query_path(template, task_id)
+    elif adapter in {"fourstoken_video", "fourstoken_newapi_video"}:
+        base = str(provider["base_url"]).rstrip("/")
+        path = (
+            "/v1/video/generations/"
+            if adapter == "fourstoken_newapi_video"
+            else "/v1/videos/"
+        )
+        origin = (
+            _newapi_api_origin(base)
+            if base.endswith("/v1")
+            else base
+        )
+        poll_url = f"{origin}{path}{urllib.parse.quote(task_id, safe='')}"
     else:
         raise RuntimeError(f"不支持恢复的视频适配器：{adapter}")
     task = _poll_json(poll_url, key, timeout=30)
@@ -2879,6 +3231,8 @@ def check_video_task(
         url = (
             _newapi_video_url_from_task(task)
             if adapter in {"canvaspro_video", "openai_video"}
+            else _fourstoken_video_url_from_task(task)
+            if adapter in {"fourstoken_video", "fourstoken_newapi_video"}
             else _video_url_from_task(task)
         )
         if not url:
@@ -2917,8 +3271,45 @@ def check_image_task(
         raise RuntimeError("图片任务 ID 为空")
     adapter = str(model.get("adapter") or "")
     protocol = provider_protocols.for_adapter(adapter)
-    if protocol is None or adapter != "newapi_image":
+    if protocol is None or adapter not in {"newapi_image", "fourstoken_image"}:
         raise RuntimeError(f"不支持恢复的图片适配器：{model.get('adapter')}")
+    if adapter == "fourstoken_image":
+        base = str(provider["base_url"]).rstrip("/")
+        origin = (
+            _newapi_api_origin(base)
+            if base.endswith("/v1")
+            else base
+        )
+        task = _poll_json(
+            f"{origin}/v1/images/tasks/{urllib.parse.quote(task_id, safe='')}",
+            provider_catalog.provider_key(provider),
+            timeout=30,
+        )
+        raw_status = str(task.get("status") or "").lower()
+        if raw_status in protocol.success_statuses:
+            result = _parse_image_result(task, provider)
+            return {
+                "taskId": task_id,
+                "status": "completed",
+                "rawStatus": raw_status,
+                "url": str(result.get("url") or ""),
+                "error": "",
+                "raw": task,
+            }
+        error = task.get("error")
+        detail = error.get("message") if isinstance(error, dict) else error
+        return {
+            "taskId": task_id,
+            "status": (
+                "failed"
+                if raw_status in protocol.failure_statuses
+                else "running"
+            ),
+            "rawStatus": raw_status,
+            "url": "",
+            "error": detail or "",
+            "raw": task,
+        }
     profile = str(model.get("profile") or "").strip()
     if not profile:
         raise RuntimeError(

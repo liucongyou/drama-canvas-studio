@@ -16,6 +16,154 @@ import provider_client
 
 
 class ProviderCatalogTests(unittest.TestCase):
+    def test_fourstoken_image_with_references_uses_edits_multipart(self):
+        provider = {
+            "id": "4stoken",
+            "name": "4SToken",
+            "base_url": "https://api.4stoken.cn/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "seedream-image",
+            "remoteModel": "seedream-image",
+            "adapter": "fourstoken_image",
+            "profile": "fourstoken-image",
+            "params": {},
+        }
+        calls = []
+
+        def fake_multipart(url, key, fields, files, *, timeout):
+            calls.append((url, key, fields, files))
+            return {
+                "task_id": "image-task-1",
+                "data": [{"url": "https://example.com/image.png"}],
+            }
+
+        with (
+            patch.object(provider_client, "_newapi_image_files", return_value=[
+                ("reference.png", "image/png", b"image"),
+            ]),
+            patch.object(
+                provider_client,
+                "_fourstoken_multipart",
+                side_effect=fake_multipart,
+            ),
+        ):
+            result = provider_client.generate_image(
+                provider,
+                model,
+                "参考角色生成街景",
+                {"size": "1024x1024", "imageSize": "2K"},
+                [{
+                    "kind": "image",
+                    "url": "https://example.com/reference.png",
+                    "label": "角色",
+                }],
+            )
+
+        self.assertEqual(result["url"], "https://example.com/image.png")
+        self.assertEqual(result["taskId"], "image-task-1")
+        self.assertEqual(calls[0][0], "https://api.4stoken.cn/v1/images/edits")
+        self.assertEqual(calls[0][2][0], ("model", "seedream-image"))
+        self.assertTrue(any(
+            name == "image_size" and value == "2K"
+            for name, value in calls[0][2]
+        ))
+
+    def test_fourstoken_video_persists_task_before_polling(self):
+        provider = {
+            "id": "4stoken",
+            "name": "4SToken",
+            "base_url": "https://api.4stoken.cn/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "4sdance431",
+            "remoteModel": "4sdance431",
+            "adapter": "fourstoken_video",
+            "profile": "fourstoken-video",
+            "params": {},
+        }
+        calls = []
+        created = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            if method == "POST":
+                return {
+                    "task_id": "video-task-1",
+                    "taskId": "video-task-1",
+                    "status": "pending",
+                }
+            return {
+                "task_id": "video-task-1",
+                "taskId": "video-task-1",
+                "status": "succeeded",
+                "data": [{"video_url": "https://example.com/video.mp4"}],
+            }
+
+        with (
+            patch.object(provider_client, "_request_json", side_effect=fake_request),
+            patch.object(provider_client.time, "sleep"),
+        ):
+            result = provider_client.generate_video(
+                provider,
+                model,
+                "generate",
+                {"duration": 5, "ratio": "9:16", "resolution": "720P"},
+                [],
+                [],
+                on_task_created=created.append,
+            )
+
+        self.assertEqual(created[0]["taskId"], "video-task-1")
+        self.assertEqual(calls[0][1], "https://api.4stoken.cn/v1/videos")
+        self.assertEqual(
+            calls[0][2],
+            {
+                "model": "4sdance431",
+                "prompt": "generate",
+                "duration": 5,
+                "ratio": "9:16",
+                "resolution": "720p",
+            },
+        )
+        self.assertEqual(calls[1][1], "https://api.4stoken.cn/v1/videos/video-task-1")
+        self.assertEqual(result["url"], "https://example.com/video.mp4")
+
+    def test_fourstoken_resumed_task_uses_the_original_url_field(self):
+        provider = {
+            "id": "4stoken",
+            "name": "4SToken",
+            "base_url": "https://api.4stoken.cn/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "4sdance431",
+            "remoteModel": "4sdance431",
+            "adapter": "fourstoken_newapi_video",
+            "profile": "fourstoken-newapi-video",
+            "params": {},
+        }
+
+        with patch.object(
+            provider_client,
+            "_poll_json",
+            return_value={
+                "task_id": "task-1",
+                "status": "completed",
+                "url": "https://example.com/newapi-video.mp4",
+            },
+        ) as poll:
+            result = provider_client.check_video_task(provider, model, "task-1")
+
+        self.assertEqual(
+            poll.call_args.args[0],
+            "https://api.4stoken.cn/v1/video/generations/task-1",
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["url"], "https://example.com/newapi-video.mp4")
+
     def test_curl_post_parses_body_and_status_separately(self):
         def fake_run(command, **kwargs):
             output_path = command[command.index("--output") + 1]
@@ -1210,6 +1358,62 @@ class ProviderCatalogTests(unittest.TestCase):
                     "adapter": "ark_image",
                     "remoteModel": "wrong-model",
                 })
+
+    def test_provider_icon_is_optional_and_round_trips(self):
+        cfg = {
+            "providers": [{
+                "id": "custom",
+                "name": "Custom",
+                "protocol": "openai",
+                "base_url": "https://api.example.com/v1",
+                "api_key": "x",
+                "enabled": True,
+            }],
+            "models": [],
+        }
+        with patch.object(provider_catalog, "load_config", return_value=copy.deepcopy(cfg)), \
+                patch.object(provider_catalog, "save_config") as save:
+            catalog = provider_catalog.upsert_provider({
+                "id": "custom",
+                "name": "Custom",
+                "protocol": "openai",
+                "base_url": "https://api.example.com/v1",
+                "icon": "https://cdn.example/custom.png",
+            })
+        saved_provider = next(
+            item for item in catalog["providers"]
+            if item["id"] == "custom"
+        )
+        self.assertEqual(saved_provider["icon"], "https://cdn.example/custom.png")
+        persisted = save.call_args.args[0]["providers"][0]
+        self.assertEqual(persisted["icon"], "https://cdn.example/custom.png")
+
+    def test_provider_icon_can_be_cleared(self):
+        cfg = {
+            "providers": [{
+                "id": "custom",
+                "name": "Custom",
+                "protocol": "openai",
+                "base_url": "https://api.example.com/v1",
+                "api_key": "x",
+                "icon": "https://cdn.example/old.png",
+            }],
+            "models": [],
+        }
+        with patch.object(provider_catalog, "load_config", return_value=copy.deepcopy(cfg)), \
+                patch.object(provider_catalog, "save_config"):
+            catalog = provider_catalog.upsert_provider({
+                "id": "custom",
+                "name": "Custom",
+                "protocol": "openai",
+                "base_url": "https://api.example.com/v1",
+                "icon": "",
+            })
+        saved_provider = next(
+            item for item in catalog["providers"]
+            if item["id"] == "custom"
+        )
+        self.assertEqual(saved_provider["icon"], "")
 
     def test_canvaspro_video_adapter_is_supported(self):
         cfg = {

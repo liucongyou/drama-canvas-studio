@@ -227,6 +227,15 @@ DEFAULT_PROVIDERS = [
         "test_path": "/models",
     },
     {
+        "id": "4stoken",
+        "name": "4SToken",
+        "protocol": "openai",
+        "base_url": "https://api.4stoken.cn/v1",
+        "api_key": "",
+        "enabled": True,
+        "test_path": "/models",
+    },
+    {
         "id": "aliyun_bailian",
         "name": "阿里云百炼 TTS",
         "protocol": "dashscope",
@@ -514,8 +523,70 @@ def _is_newapi_relay(provider: dict[str, Any]) -> bool:
     )
 
 
+def _is_fourstoken_relay(provider: dict[str, Any]) -> bool:
+    base_url = str(provider.get("base_url") or "").strip().lower()
+    provider_id = str(provider.get("id") or "").strip().lower()
+    return (
+        provider_id in {"4stoken", "4stoken.cn"}
+        or "4stoken.cn" in base_url
+    )
+
+
 def _is_openai_video_relay(provider: dict[str, Any]) -> bool:
-    return _is_newapi_relay(provider)
+    return _is_newapi_relay(provider) or _is_fourstoken_relay(provider)
+
+
+def _fourstoken_model_name(value: Any) -> str | None:
+    marker = str(value or "").strip().lower()
+    if not marker:
+        return None
+    if any(
+        token in marker
+        for token in (
+            "embedding",
+            "embed-",
+            "rerank",
+            "whisper",
+            "tts",
+            "speech",
+            "moderation",
+        )
+    ):
+        return None
+    if any(token in marker for token in ("seedance", "4sdance", "video")):
+        return "video"
+    if _looks_like_image_model(marker):
+        return "image"
+    return None
+
+
+def _fourstoken_video_contract(remote_model: Any) -> dict[str, Any]:
+    """Conservatively documented capability gate for 4SToken video models.
+
+    The model list is the source of model IDs; OpenAPI documents the request and
+    task protocol but does not expose a stable public model registry. Unknown
+    contracts stay importable and are validated on the first paid request.
+    """
+    marker = str(remote_model or "").strip().lower()
+    image_limit = 9 if "933" in marker else 4
+    audio_limit = 3 if "933" in marker else 1
+    if "seedance-2" in marker or "seedance-2.5" in marker:
+        return {
+            "durations": list(range(4, 31)),
+            "resolutions": ["480P", "720P", "1080P"],
+            "ratios": ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+            "images": image_limit,
+            "videos": 3,
+            "audios": audio_limit,
+        }
+    return {
+        "durations": list(range(1, 31)),
+        "resolutions": ["480P", "720P", "1080P"],
+        "ratios": ["16:9", "9:16", "1:1"],
+        "images": 4,
+        "videos": 0,
+        "audios": 0,
+    }
 
 
 def _model_profile_catalog() -> dict[str, dict[str, Any]]:
@@ -957,6 +1028,38 @@ def _documented_provider_capability(
     return None
 
 
+def _fourstoken_documented_video_spec(remote_model: Any) -> dict[str, Any] | None:
+    marker = str(remote_model or "").strip().lower()
+    if "video" not in marker and "seedance" not in marker:
+        return None
+    contract = _fourstoken_video_contract(remote_model)
+    return {
+        "durations": list(contract["durations"]),
+        "durationDefault": contract["durations"][0],
+        "resolutions": list(contract["resolutions"]),
+        "ratios": list(contract["ratios"]),
+        "maxReferences": {
+            "images": int(contract["images"]),
+            "videos": int(contract["videos"]),
+            "audios": int(contract["audios"]),
+            "texts": 4,
+        },
+        "referenceTotalMax": 0,
+        "referenceCombinations": [],
+        "modes": [],
+        "audioOnly": False,
+        "profile": "fourstoken-video",
+    }
+
+
+def documented_fourstoken_video_contract(remote_model: Any) -> dict[str, Any] | None:
+    return _fourstoken_documented_video_spec(remote_model)
+
+
+def fourstoken_video_contract(remote_model: Any) -> dict[str, Any]:
+    return _fourstoken_video_contract(remote_model)
+
+
 def load_config(*, migrate: bool = True) -> dict[str, Any]:
     cfg: dict[str, Any] = {}
     local_path = _local_config_path()
@@ -1134,6 +1237,8 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
                 "newapi_video",
                 "canvaspro_video",
                 "openai_video",
+                "fourstoken_video",
+                "fourstoken_newapi_video",
             }:
                 model["adapter"] = (
                     "canvaspro_video"
@@ -1214,6 +1319,24 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
                 else "openai_image"
             )
         if (
+            _is_fourstoken_relay(provider)
+            and model.get("capability") == "image"
+            and model.get("adapter")
+            not in {"newapi_image", "ark_image", "agnes_image"}
+        ):
+            model["adapter"] = "fourstoken_image"
+            model["profile"] = "fourstoken-image"
+        if (
+            _is_fourstoken_relay(provider)
+            and model.get("capability") == "video"
+            and model.get("adapter") not in {
+                "fourstoken_video",
+                "fourstoken_newapi_video",
+            }
+        ):
+            model["adapter"] = "fourstoken_video"
+            model["profile"] = "fourstoken-video"
+        if (
             provider.get("protocol") == "openai"
             and model.get("capability") == "image"
             and _looks_like_image_model(model_ref)
@@ -1236,6 +1359,29 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
             documented = _documented_model_entry(model.get("remoteModel"))
             if documented and documented.get("profile"):
                 model["profile"] = str(documented["profile"])
+        if _is_fourstoken_relay(provider):
+            if model.get("capability") == "image":
+                if model.get("adapter") in {"", "openai_image"}:
+                    model["adapter"] = "fourstoken_image"
+                    model["profile"] = "fourstoken-image"
+                defaults = model.setdefault("defaultParams", {})
+                defaults.setdefault("imageSize", "1K")
+                defaults.pop("clarity", None)
+                defaults.pop("resolution", None)
+                schema = model.setdefault("params", {})
+                schema["imageSize"] = _select(["1K", "2K", "4K"])
+                schema.pop("clarity", None)
+            elif model.get("capability") == "video":
+                if model.get("adapter") not in {
+                    "fourstoken_video",
+                    "fourstoken_newapi_video",
+                }:
+                    model["adapter"] = "fourstoken_video"
+                model["profile"] = (
+                    "fourstoken-newapi-video"
+                    if model.get("adapter") == "fourstoken_newapi_video"
+                    else "fourstoken-video"
+                )
         if model.get("capability") == "video" and model.get("adapter") == "newapi_video":
             model["adapter"] = (
                 "canvaspro_video"
@@ -1271,6 +1417,7 @@ def _public_provider(provider: dict[str, Any]) -> dict[str, Any]:
         "protocol": provider.get("protocol", "openai"),
         "base_url": provider.get("base_url", ""),
         "workspace_id": provider.get("workspace_id", ""),
+        "icon": str(provider.get("icon") or "").strip(),
         "enabled": provider.get("enabled", True) is not False,
         "has_api_key": bool(key.strip()),
         "api_key_hint": _hint(key) if key.strip() else "",
@@ -1811,6 +1958,39 @@ def normalize_provider_id(value: str) -> str:
     return slug[:48]
 
 
+_PROVIDER_ICON_PATH_RE = re.compile(
+    r"^/uploads/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:png|jpe?g|webp|gif)$",
+    re.IGNORECASE,
+)
+
+
+def normalize_provider_icon(value: Any) -> str:
+    """Validate the provider icon reference accepted by the public catalog.
+
+    The browser uploads an icon to this deployment first, so new values are
+    either a single local image path or a remote HTTPS image. Reject data,
+    blob, javascript and executable paths: this field is rendered by <img> and
+    persisted in tenant configuration.
+    """
+    icon = str(value or "").strip()
+    if not icon:
+        return ""
+    if len(icon) > 2048:
+        raise ValueError("供应商图标地址过长")
+    if _PROVIDER_ICON_PATH_RE.fullmatch(icon):
+        return icon
+    parsed = urllib.parse.urlparse(icon)
+    if (
+        parsed.scheme.lower() == "https"
+        and parsed.netloc
+        and not parsed.username
+        and not parsed.password
+        and parsed.path.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+    ):
+        return icon
+    raise ValueError("供应商图标必须是本地上传的 PNG/JPG/WebP/GIF 或 HTTPS 图片地址")
+
+
 def upsert_provider(input_data: dict[str, Any]) -> dict[str, Any]:
     cfg = load_config()
     source = input_data.get("provider") if isinstance(input_data.get("provider"), dict) else input_data
@@ -1838,6 +2018,8 @@ def upsert_provider(input_data: dict[str, Any]) -> dict[str, Any]:
         "base_url": base_url[:500],
         "enabled": bool(source.get("enabled", current.get("enabled", True))),
     })
+    if "icon" in source:
+        current["icon"] = normalize_provider_icon(source.get("icon"))
     if "workspace_id" in source:
         current["workspace_id"] = str(source.get("workspace_id") or "").strip()[:128]
     if isinstance(source.get("api_key"), str) and source["api_key"].strip():
@@ -1870,6 +2052,9 @@ ADAPTER_CAPABILITIES = {
     "newapi_video": "video",
     "canvaspro_video": "video",
     "openai_video": "video",
+    "fourstoken_image": "image",
+    "fourstoken_video": "video",
+    "fourstoken_newapi_video": "video",
     "openai_chat": "text",
     "dashscope_tts": "audio",
 }
@@ -1946,8 +2131,16 @@ def upsert_model(input_data: dict[str, Any]) -> dict[str, Any]:
         if _is_newapi_relay(provider_record)
         else None
     )
+    fourstoken = _is_fourstoken_relay(provider_record)
     if adapter == "newapi_video":
         adapter = "canvaspro_video" if documented_entry else "openai_video"
+    if fourstoken:
+        expected_adapter = {
+            "image": "fourstoken_image",
+            "video": "fourstoken_video",
+        }.get(capability)
+        if expected_adapter:
+            adapter = expected_adapter
     adapter_capability = ADAPTER_CAPABILITIES[adapter]
     if capability != adapter_capability:
         raise ValueError(f"适配器 {adapter} 只能用于 {adapter_capability} 模型")
@@ -2061,6 +2254,48 @@ def upsert_model(input_data: dict[str, Any]) -> dict[str, Any]:
             "maxTextRefs": int(limits_spec.get("texts") or 0),
             **({"maxPromptChars": 10000} if documented_video.get("profile") == "aistars-video" else {}),
         })
+    if fourstoken and capability == "video":
+        contract = _fourstoken_video_contract(remote_model)
+        current["adapter"] = "fourstoken_video"
+        current["profile"] = "fourstoken-video"
+        current["defaultParams"] = {
+            "ratio": "9:16",
+            "resolution": "480P",
+            "duration": 5,
+        }
+        current["params"] = {
+            "ratio": _select(contract["ratios"]),
+            "resolution": _select(contract["resolutions"]),
+            "duration": {
+                "type": "range",
+                "min": contract["durations"][0],
+                "max": contract["durations"][-1],
+                "step": 1,
+            },
+        }
+        current["limits"] = _normalize_model_limits({
+            "maxImages": contract["images"],
+            "maxVideos": contract["videos"],
+            "maxAudios": contract["audios"],
+        })
+    elif fourstoken and capability == "image":
+        current["adapter"] = "fourstoken_image"
+        current["profile"] = "fourstoken-image"
+        current["defaultParams"] = {
+            "ratio": "1:1",
+            "size": "1024x1024",
+            "imageSize": "1K",
+        }
+        current["params"] = {
+            "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"]),
+            "size": {"type": "text"},
+            "imageSize": _select(["1K", "2K", "4K"]),
+        }
+        current["limits"] = _normalize_model_limits({
+            "maxImages": 4,
+            "maxTextRefs": 4,
+        })
+
     save_config(cfg)
     return public_catalog()
 
@@ -2442,6 +2677,7 @@ def _infer_discovered_model(
 ) -> dict[str, Any]:
     """Create a conservative editable draft from a provider /models row."""
     name = remote_model.lower()
+    fourstoken = _is_fourstoken_relay(provider)
     endpoint_marker = " ".join(
         str(item).lower() for item in (supported_endpoint_types or [])
     )
@@ -2452,9 +2688,10 @@ def _infer_discovered_model(
         endpoint_marker,
     ])
     capability = (
-        declared_capability
+        _capability_from_endpoint_types(supported_endpoint_types)
+        or declared_capability
         or _documented_provider_capability(provider, remote_model)
-        or _capability_from_endpoint_types(supported_endpoint_types)
+        or (_fourstoken_model_name(remote_model) if fourstoken else None)
         or (
             "video"
             if _is_newapi_relay(provider) and _looks_like_video_model(remote_model)
@@ -2478,6 +2715,8 @@ def _infer_discovered_model(
             video_adapter = "ark_video"
         elif str(provider.get("id") or "").strip().lower() == "agnes-ai":
             video_adapter = "agnes_video"
+        elif fourstoken:
+            video_adapter = "fourstoken_video"
         else:
             video_adapter = (
                 "canvaspro_video"
@@ -2495,6 +2734,8 @@ def _infer_discovered_model(
             )
             else ("ark_image" if provider.get("protocol") == "ark" else "openai_image")
         )
+        if fourstoken:
+            image_adapter = "fourstoken_image"
         adapter = {
             "video": video_adapter,
             "image": image_adapter,
@@ -2513,7 +2754,20 @@ def _infer_discovered_model(
     model_id = normalize_model_id(remote_model)
     if capability == "video":
         default_params = {"ratio": "9:16", "resolution": "480P", "duration": 5}
-        if provider.get("protocol") == "ark":
+        if fourstoken:
+            contract = _fourstoken_video_contract(remote_model)
+            params = {
+                "ratio": _select(contract["ratios"]),
+                "resolution": _select(contract["resolutions"]),
+                "duration": {
+                    "type": "range",
+                    "min": contract["durations"][0],
+                    "max": contract["durations"][-1],
+                    "step": 1,
+                },
+            }
+            default_params["resolution"] = contract["resolutions"][0]
+        elif provider.get("protocol") == "ark":
             ark_video = _ark_video_contract(remote_model)
             params = {
                 "ratio": _select(["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"]),
@@ -2533,11 +2787,27 @@ def _infer_discovered_model(
                 "duration": {"type": "range", "min": 1, "max": 30, "step": 1},
             }
     elif capability == "image":
-        default_params = {"ratio": "1:1", "size": "1024x1024"}
-        params = {
-            "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"]),
-            "size": {"type": "text"},
-        }
+        default_params = (
+            {
+                "ratio": "1:1",
+                "size": "1024x1024",
+                "imageSize": "1K",
+            }
+            if fourstoken
+            else {"ratio": "1:1", "size": "1024x1024"}
+        )
+        params = (
+            {
+                "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"]),
+                "size": {"type": "text"},
+                "imageSize": _select(["1K", "2K", "4K"]),
+            }
+            if fourstoken
+            else {
+                "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"]),
+                "size": {"type": "text"},
+            }
+        )
     elif capability == "audio":
         default_params = {"format": "mp3", "duration": 4.5}
         params = {
@@ -2565,7 +2835,11 @@ def _infer_discovered_model(
         "pricing": {},
         "discovered": True,
         "profile": (
-            _video_profile_for_model(
+            "fourstoken-image"
+            if capability == "image" and fourstoken
+            else "fourstoken-video"
+            if capability == "video" and fourstoken
+            else _video_profile_for_model(
                 {"remoteModel": remote_model},
                 provider,
             )
@@ -2595,12 +2869,26 @@ def _infer_discovered_model(
                 else {}
             ),
         })
+    elif capability == "video" and fourstoken:
+        contract = _fourstoken_video_contract(remote_model)
+        result["limits"] = _normalize_model_limits({
+            "maxImages": contract["images"],
+            "maxVideos": contract["videos"],
+            "maxAudios": contract["audios"],
+        })
+        if not declared_capability and not (
+            _capability_from_endpoint_types(supported_endpoint_types) == "video"
+        ):
+            result["description"] += "；参数合同待首次生成确认"
     elif capability == "video":
-        result["disabled"] = True
-        result["disabledReason"] = (
-            "该型号不在当前 CanvasPro 接口文档目录中；"
-            "禁止按猜测字段提交"
-        )
+        documented = _documented_model_entry(remote_model)
+        if (
+            provider.get("protocol") != "ark"
+            and not documented
+        ):
+            result["profile"] = "openai-video"
+            result["adapter"] = "openai_video"
+            result["description"] += "；兼容参数合同，实际能力以首次生成为准"
     return result
 
 

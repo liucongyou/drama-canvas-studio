@@ -342,7 +342,6 @@ export type DiscoveredModelSpec = {
   limits: Record<string, unknown>;
   pricing: Record<string, unknown>;
   alreadyConfigured?: boolean;
-  disabled?: boolean;
 };
 
 export type ProviderSpec = {
@@ -351,6 +350,7 @@ export type ProviderSpec = {
   protocol: 'ark' | 'openai' | 'dashscope' | string;
   base_url: string;
   workspace_id?: string;
+  icon?: string;
   enabled: boolean;
   has_api_key: boolean;
   api_key_hint?: string;
@@ -1521,9 +1521,11 @@ export function clearRefRemoved(sessionId: string, targetId: string, refNodeId: 
 
 export async function getCanvasMediaNodes(
   sessionId: string,
-  epId?: string | null,
+  epId: string,
   projectSnapshot?: ProjectResponse | null,
 ): Promise<CanvasMediaNode[]> {
+  const normalizedEpisode = String(epId || '').trim().toUpperCase();
+  if (!normalizedEpisode) throw new Error('读取画布节点必须指定集号');
   const proj = projectSnapshot === undefined
     ? await getProject(sessionId).catch(() => null)
     : projectSnapshot;
@@ -1531,8 +1533,10 @@ export async function getCanvasMediaNodes(
   // 文本节点（type === 'text'）此前被整类过滤掉，导致：① ＋添加里没有文本节点入口，
   // ② 导入生成的剧本头卡等文本资产在画布上根本不显示。现已作为一等公民纳入。
   const allNodes = proj.payload.nodes;
-  const episodeGroup = epId
-    ? (proj.payload.episodeImports || []).find((group) => group.id === epId)
+  const episodeGroup = normalizedEpisode
+    ? (proj.payload.episodeImports || []).find((group) => (
+        String(group.id || '').toUpperCase() === normalizedEpisode
+      ))
     : null;
   const allowedIds = episodeGroup ? new Set(episodeGroup.nodeIds || []) : null;
   const ownedIds = new Set(
@@ -1566,8 +1570,8 @@ export async function getCanvasMediaNodes(
   };
   // 用户显式删过的 (目标节点::引用节点)：不要再从 connections 补回来
   const removed = loadRemovedRefs(sessionId);
-  const episodePositions = epId
-    ? proj.payload.episodeLayouts?.[epId]
+  const episodePositions = normalizedEpisode
+    ? proj.payload.episodeLayouts?.[normalizedEpisode]
     : undefined;
   return nodes.map((node) => ({
     ...toMediaNode(node),
@@ -1643,8 +1647,12 @@ export async function getCanvasMediaNodes(
 export async function saveCanvasMediaNodes(
   sessionId: string,
   nodes: CanvasMediaNode[],
-  episodeId?: string | null,
+  episodeId: string,
 ) {
+  const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
+  if (!normalizedEpisode) {
+    throw new Error('新建节点必须指定所属集');
+  }
   // 批量保存：一次性 PUT 全部节点。
   // 旧实现按节点逐个 PUT，而后端每次写库都要重写整个 DB（实测 ~250ms/次），
   // 22 个节点全量保存需 5~6 秒，新建节点排在数组末尾常常还没轮到就被刷新掉 ——
@@ -1711,7 +1719,7 @@ export async function saveCanvasMediaNodes(
     }>;
   }>(`/api/projects/${encodeURIComponent(sessionId)}/nodes`, {
     method: 'PUT',
-    body: JSON.stringify({nodes: payload, episodeId: episodeId || null}),
+    body: JSON.stringify({nodes: payload, episodeId: normalizedEpisode}),
   });
   return result;
 }
@@ -1725,9 +1733,13 @@ export type CanvasPositionMove = {
 export async function saveCanvasMediaNodePositions(
   sessionId: string,
   moves: CanvasPositionMove[],
-  epId?: string | null,
+  epId: string,
   writeOwner?: string,
 ) {
+  const normalizedEpisode = String(epId || '').trim().toUpperCase();
+  if (!normalizedEpisode) {
+    throw new Error('保存节点位置必须指定所属集');
+  }
   return request<{
     ok: boolean;
     updated: number;
@@ -1742,7 +1754,7 @@ export async function saveCanvasMediaNodePositions(
   }>(`/api/projects/${encodeURIComponent(sessionId)}/nodes/positions`, {
     method: 'PUT',
     body: JSON.stringify({
-      episodeId: epId || null,
+      episodeId: normalizedEpisode,
       positions: moves,
       writeOwner,
     }),
@@ -1752,9 +1764,13 @@ export async function saveCanvasMediaNodePositions(
 export async function saveCanvasEpisodeViewport(
   sessionId: string,
   viewport: {x: number; y: number; zoom: number},
-  epId?: string | null,
+  epId: string,
   options?: {keepalive?: boolean},
 ) {
+  const normalizedEpisode = String(epId || '').trim().toUpperCase();
+  if (!normalizedEpisode) {
+    throw new Error('保存视口必须指定所属集');
+  }
   return request<{
     ok: boolean;
     viewport: {x: number; y: number; zoom: number};
@@ -1763,7 +1779,7 @@ export async function saveCanvasEpisodeViewport(
     method: 'PUT',
     body: JSON.stringify({
       viewport,
-      episodeId: epId || null,
+      episodeId: normalizedEpisode,
     }),
     keepalive: options?.keepalive === true,
   });
@@ -1772,8 +1788,12 @@ export async function saveCanvasEpisodeViewport(
 export async function saveCanvasConnections(
   sessionId: string,
   connections: Array<{id: string; fromNodeId: string; toNodeId: string}>,
-  episodeId?: string | null,
+  episodeId: string,
 ) {
+  const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
+  if (!normalizedEpisode) {
+    throw new Error('保存连线必须指定所属集');
+  }
   return request<{
     ok: boolean;
     total: number;
@@ -1785,7 +1805,7 @@ export async function saveCanvasConnections(
     {
       method: 'PUT',
       body: JSON.stringify({
-        episodeId: episodeId || null,
+        episodeId: normalizedEpisode,
         connections,
       }),
     },
@@ -1833,9 +1853,15 @@ export async function deleteCanvasEpisode(
 export async function patchMediaNodesFields(
   sessionId: string,
   nodes: CanvasMediaNode[],
+  episodeId: string,
   options?: {keepalive?: boolean},
 ): Promise<{ok: boolean}> {
+  const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
+  if (!normalizedEpisode) {
+    throw new Error('保存节点必须指定所属集');
+  }
   const body = {
+    episodeId: normalizedEpisode,
     nodes: nodes.map((node) => ({
       id: node.id,
       type: node.kind,
@@ -1880,8 +1906,9 @@ export async function patchMediaNodesFields(
 export async function patchMediaNodeFields(
   sessionId: string,
   node: CanvasMediaNode,
+  episodeId: string,
 ): Promise<{ok: boolean}> {
-  return patchMediaNodesFields(sessionId, [node]);
+  return patchMediaNodesFields(sessionId, [node], episodeId);
 }
 
 // ---------- notes ----------
@@ -2146,13 +2173,12 @@ export async function getCanvasWorkspace(
       || '',
     ).trim().toUpperCase()
     || null;
+  const mediaEpisode = currentEpisode || 'EP001';
   const canvas = await getCanvas(sessionId, currentEpisode, project);
   const [notes, mediaNodes, tasks] = await Promise.all([
-    currentEpisode
-      ? getCanvasNotes(sessionId, currentEpisode)
-      : Promise.resolve([]),
-    getCanvasMediaNodes(sessionId, currentEpisode, project),
-    getGenerationTasks(sessionId, 80, currentEpisode),
+    getCanvasNotes(sessionId, mediaEpisode),
+    getCanvasMediaNodes(sessionId, mediaEpisode, project),
+    getGenerationTasks(sessionId, 80, mediaEpisode),
   ]);
   const activeByNode = new Map(
     [...latestTaskByNode(tasks).values()]
@@ -2232,11 +2258,11 @@ export async function getCanvasWorkspace(
 export async function saveCanvasNotes(
   sessionId: string,
   notes: CanvasNote[],
-  episodeId?: string | null,
+  episodeId: string,
   ifRevision?: number | null,
 ) {
   const normalizedEpisode = String(
-    episodeId || notes[0]?.episodeId || '',
+    episodeId || '',
   ).trim().toUpperCase();
   if (!normalizedEpisode) throw new Error('保存备注必须指定集号');
   if (notes.some((note) => note.episodeId !== normalizedEpisode)) {
@@ -2256,13 +2282,25 @@ export async function saveCanvasNotes(
 }
 
 // ---------- shot patch（段/镜头编辑 → 存回节点 metadata.shotPatch） ----------
-export async function saveCanvasShot(sessionId: string, shotIdx: number, patch: Record<string, unknown>, epId?: string | null) {
+export async function saveCanvasShot(sessionId: string, shotIdx: number, patch: Record<string, unknown>, epId: string) {
+  const normalizedEpisode = String(epId || '').trim().toUpperCase();
+  if (!normalizedEpisode) throw new Error('保存镜头必须指定所属集');
   const proj = await getProject(sessionId).catch(() => null);
-  const videos = proj?.payload?.nodes?.filter(n => n.type === 'video') || [];
+  const episodeGroup = (proj?.payload?.episodeImports || []).find((group) => (
+    String(group.id || '').toUpperCase() === normalizedEpisode
+  ));
+  const episodeNodeIds = new Set(episodeGroup?.nodeIds || []);
+  const videos = (proj?.payload?.nodes || []).filter((node) => (
+    node.type === 'video' && episodeNodeIds.has(node.id)
+  ));
   const node = videos[shotIdx];
   if (!node) return {ok: false};
   await request(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(node.id)}`, {
-    method: 'PUT', body: JSON.stringify({metadata: {shotPatch: patch}}),
+    method: 'PUT',
+    body: JSON.stringify({
+      episodeId: normalizedEpisode,
+      metadata: {shotPatch: patch},
+    }),
   }).catch(() => {});
   return {ok: true};
 }
@@ -2324,8 +2362,11 @@ export async function generateCanvasNodeNow(
     prompt?: string;
     params?: CanvasMediaParams;
     clientOperationId?: string;
+    episodeId?: string;
   },
 ) {
+  const normalizedEpisode = String(payload?.episodeId || '').trim().toUpperCase();
+  if (!normalizedEpisode) throw new Error('提交生成必须指定所属集');
   const key = `${sessionId}::${nodeId}`;
   if (inflight.has(key)) {
     return {deferred: true, reason: '该节点正在提交生成'};
@@ -2335,7 +2376,7 @@ export async function generateCanvasNodeNow(
   try {
     const result = await request(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/generate`, {
       method: 'POST',
-      body: JSON.stringify(payload || {}),
+      body: JSON.stringify({...payload, episodeId: normalizedEpisode}),
     }) as {
       accepted?: boolean;
       taskId?: string;
@@ -2588,6 +2629,11 @@ export function uploadWorkspaceFileWithProgress(
 
 export async function uploadWorkspaceFile(sessionId: string, file: File) {
   return uploadWorkspaceFileWithProgress(sessionId, file);
+}
+
+export async function uploadProviderIcon(file: File): Promise<string> {
+  const uploaded = await uploadWorkspaceFileWithProgress('provider-icon', file);
+  return mediaStorageUrl(uploaded.url);
 }
 
 export default {};

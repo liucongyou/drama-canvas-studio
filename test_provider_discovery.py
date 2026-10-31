@@ -213,6 +213,99 @@ class ProviderDiscoveryTests(unittest.TestCase):
         self.assertEqual(result["models"][0]["capability"], "image")
         self.assertEqual(result["models"][0]["adapter"], "newapi_image")
 
+    def test_fourstoken_models_use_dedicated_image_and_video_adapters(self):
+        self.config["providers"][0].update({
+            "id": "4stoken",
+            "name": "4SToken",
+            "base_url": "https://api.4stoken.cn/v1",
+        })
+        result = self.discover(
+            '{"data":['
+            '{"id":"seedream-image","supported_endpoint_types":["openai_image"]},'
+            '{"id":"4sdance431","supported_endpoint_types":["openai_video"]}'
+            ']}'
+        )
+        self.assertEqual(
+            [item["adapter"] for item in result["models"]],
+            ["fourstoken_image", "fourstoken_video"],
+        )
+        self.assertEqual(
+            result["models"][0]["profile"],
+            "fourstoken-image",
+        )
+        self.assertEqual(
+            result["models"][1]["profile"],
+            "fourstoken-video",
+        )
+        self.assertFalse(result["models"][0].get("disabled", False))
+        self.assertEqual(
+            result["models"][0]["defaultParams"]["imageSize"],
+            "1K",
+        )
+        self.assertEqual(result["models"][1]["limits"]["maxImages"], 4)
+
+    def test_undeclared_video_contracts_remain_importable_for_any_provider(self):
+        self.config["providers"][0].update({
+            "id": "generic-relay",
+            "name": "Generic Relay",
+            "base_url": "https://api.generic.example/v1",
+        })
+        result = self.discover(
+            '{"data":[{"id":"unknown-video-model",'
+            '"supported_endpoint_types":["openai_video"]}]}'
+        )
+        draft = result["models"][0]
+        self.assertFalse(draft.get("disabled", False))
+        self.assertEqual(draft["capability"], "video")
+        self.assertEqual(draft["adapter"], "openai_video")
+        self.assertIn("首次生成", draft["description"])
+
+    def test_unknown_generic_relay_models_can_still_be_imported(self):
+        self.config["providers"][0].update({
+            "id": "generic-relay",
+            "name": "Generic Relay",
+            "base_url": "https://api.generic.example/v1",
+        })
+        draft = self.discover(
+            '{"data":[{"id":"vendor-new-video",'
+            '"supported_endpoint_types":["openai_video"]}]}'
+        )["models"][0]
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+            os.environ,
+            {"CANVAS_TENANT_DATA_ROOT": root, "CANVAS_MULTI_TENANT": "1"},
+        ):
+            path = os.path.join(root, "tenants", "alpha", "config.local.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(self.config, handle, ensure_ascii=False)
+            with tenant_context.use_tenant("alpha", "alpha"):
+                catalog = provider_catalog.upsert_model({
+                    **draft,
+                    "capability": "video",
+                    "enabled": True,
+                })
+        saved = next(
+            item
+            for item in catalog["models"]
+            if item["remoteModel"] == "vendor-new-video"
+        )
+        self.assertEqual(saved["adapter"], "openai_video")
+
+    def test_fourstoken_video_without_a_declared_contract_is_not_locked(self):
+        self.config["providers"][0].update({
+            "id": "4stoken",
+            "name": "4SToken",
+            "base_url": "https://api.4stoken.cn/v1",
+        })
+        result = self.discover(
+            '{"data":[{"id":"future-video-model"}]}'
+        )
+        draft = result["models"][0]
+        self.assertFalse(draft.get("disabled", False))
+        self.assertEqual(draft["capability"], "video")
+        self.assertEqual(draft["adapter"], "fourstoken_video")
+        self.assertIn("首次生成", draft["description"])
+
     def test_documented_video_profiles_are_loaded_by_exact_model_id(self):
         self.assertEqual(
             provider_catalog._documented_model_profile(
@@ -237,6 +330,66 @@ class ProviderDiscoveryTests(unittest.TestCase):
         )
         self.assertEqual(result["models"][0]["capability"], "image")
         self.assertEqual(result["models"][0]["adapter"], "openai_image")
+
+    def test_provider_icon_accepts_uploaded_image_and_https_only(self):
+        self.assertEqual(
+            provider_catalog.normalize_provider_icon("/uploads/provider-icon.png"),
+            "/uploads/provider-icon.png",
+        )
+        self.assertEqual(
+            provider_catalog.normalize_provider_icon(
+                "https://cdn.example.com/provider.webp"
+            ),
+            "https://cdn.example.com/provider.webp",
+        )
+        for invalid in (
+            "javascript:alert(1)",
+            "data:image/png;base64,AAAA",
+            "blob:https://example.com/id",
+            "http://cdn.example.com/provider.png",
+            "/uploads/../config.json",
+            "/uploads/provider.svg",
+            "https://cdn.example.com/provider.exe",
+        ):
+            with self.subTest(icon=invalid):
+                with self.assertRaises(ValueError):
+                    provider_catalog.normalize_provider_icon(invalid)
+
+    def test_upsert_provider_persists_uploaded_icon_and_can_clear_it(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+            os.environ,
+            {"CANVAS_TENANT_DATA_ROOT": root, "CANVAS_MULTI_TENANT": "1"},
+        ):
+            path = os.path.join(root, "tenants", "alpha", "config.local.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(self.config, handle, ensure_ascii=False)
+            with tenant_context.use_tenant("alpha", "alpha"):
+                provider_catalog.upsert_provider({
+                    "id": "demo",
+                    "name": "Demo",
+                    "protocol": "openai",
+                    "base_url": "https://api.example.com/v1",
+                    "icon": "/uploads/provider-icon.png",
+                    "enabled": True,
+                })
+                catalog = provider_catalog.public_catalog()
+                saved_provider = next(
+                    item for item in catalog["providers"] if item["id"] == "demo"
+                )
+                self.assertEqual(saved_provider["icon"], "/uploads/provider-icon.png")
+                catalog = provider_catalog.upsert_provider({
+                    "id": "demo",
+                    "name": "Demo",
+                    "protocol": "openai",
+                    "base_url": "https://api.example.com/v1",
+                    "icon": "",
+                    "enabled": True,
+                })
+                saved_provider = next(
+                    item for item in catalog["providers"] if item["id"] == "demo"
+                )
+                self.assertEqual(saved_provider["icon"], "")
 
     def test_relay_image_migration_repairs_legacy_parameters(self):
         with tempfile.TemporaryDirectory() as root, patch.dict(

@@ -2112,7 +2112,72 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
   animation:jim-fade .12s ease;
 }
 .jim-pop-title{font-size:10.5px;color:#8a8a8f;letter-spacing:.4px;padding:4px 8px 7px}
-.jim-pop-model{left:12px;min-width:300px;max-height:min(320px,calc(100vh - 220px));display:flex;flex-direction:column;gap:2px;overflow:hidden}
+.jim-pop-model{
+  left:12px;
+  width:400px;
+  min-width:400px;
+  height:320px;
+  max-width:calc(100vw - 48px);
+  max-height:calc(100vh - 220px);
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  overflow:hidden;
+}
+.jim-model-browser{
+  min-height:0;
+  flex:1;
+  height:0;
+  display:grid;
+  grid-template-columns:118px minmax(0,1fr);
+  grid-template-rows:minmax(0,1fr);
+  gap:6px;
+  overflow:hidden;
+}
+.jim-model-providers{
+  min-height:0;
+  overflow-y:auto;
+  padding:2px;
+  border-right:1px solid #2d2d31;
+}
+.jim-model-provider{
+  width:100%;
+  min-height:31px;
+  padding:5px 8px;
+  border:0;
+  border-radius:7px;
+  background:transparent;
+  color:#8f9aab;
+  font-size:11px;
+  text-align:left;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  gap:7px;
+}
+.jim-model-provider:hover{background:#24272c;color:#d7dbe2}
+.jim-model-provider.is-active{background:#2b2e34;color:#eef1f6;box-shadow:inset 0 0 0 1px #444851}
+.jim-model-provider-icon,
+.canvas-batch-provider-icon{
+  flex:none;
+  width:16px;
+  height:16px;
+  display:inline-grid;
+  place-items:center;
+  overflow:hidden;
+  border-radius:4px;
+  color:var(--v-text-4);
+}
+.jim-model-provider-icon img,
+.canvas-batch-provider-icon img{
+  width:100%;
+  height:100%;
+  display:block;
+  object-fit:contain;
+}
 .jim-pop-model .jim-model-list{min-height:0;display:flex;flex-direction:column;gap:2px;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
 .jim-model-search{
   height:30px;
@@ -4190,6 +4255,13 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 .jim-tool:hover .jim-caret,
 .jim-tool.is-open .jim-caret{opacity:.95}
 .jim-tool.is-open .jim-caret{transform:rotate(180deg)}
+.jim-tool.is-model{gap:5px;max-width:min(300px,48vw)}
+.jim-model-trigger-name{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
 /* 2) 工具栏纯图标按钮（快捷模板 ＋ / @ / 清空 / 生成）换成 SVG 后要给等宽盒子，
       否则 inline-flex 的 gap 会把图标和 padding 叠加成不同宽度，一排按钮参差不齐。 */
 .jim-toolbar>.jim-tool:not(.is-model):not(.is-input){min-width:32px;justify-content:center}
@@ -4510,6 +4582,107 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 .model-settings-form label.is-wide,
 .model-settings-form label.is-full {
   grid-column: 1 / -1;
+}
+
+.model-provider-icon-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: var(--v-text-4);
+  font-size: 11px;
+  letter-spacing: .01em;
+}
+
+.model-provider-icon-control {
+  min-width: 0;
+  min-height: 58px;
+  padding: 8px 9px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--v-border);
+  border-radius: var(--v-radius-sm);
+  background: var(--v-surface-sunken);
+}
+
+.model-provider-icon-preview {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: var(--v-text-4);
+  border: 1px solid var(--v-border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--v-surface) 74%, transparent);
+}
+
+.model-provider-icon-preview.has-image {
+  padding: 4px;
+  background: var(--v-surface);
+}
+
+.model-provider-icon-preview img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.model-provider-icon-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  flex: 1;
+}
+
+.model-provider-icon-copy strong {
+  overflow: hidden;
+  color: var(--v-text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-provider-icon-copy small {
+  overflow: hidden;
+  color: var(--v-text-5);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-provider-icon-control > button {
+  height: 30px;
+  padding: 0 9px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--v-text-2);
+  font-size: 11px;
+  white-space: nowrap;
+  border: 1px solid var(--v-border);
+  border-radius: var(--v-radius-sm);
+  background: var(--v-surface);
+  cursor: pointer;
+}
+
+.model-provider-icon-control > button:hover:not(:disabled) {
+  border-color: var(--v-border-strong);
+  background: color-mix(in srgb, var(--v-surface) 82%, var(--v-text) 4%);
+}
+
+.model-provider-icon-control > button.is-danger {
+  color: var(--v-danger, #ef7777);
+}
+
+.model-provider-icon-control > button:disabled {
+  opacity: .55;
+  cursor: wait;
 }
 
 .model-settings-form label i {
@@ -6543,6 +6716,8 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 @media (max-width: 560px) {
   .model-settings-limit-grid { grid-template-columns: 1fr; }
   .model-settings-limit-panel > header { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .model-provider-icon-control { align-items: flex-start; flex-wrap: wrap; }
+  .model-provider-icon-copy { width: calc(100% - 48px); flex: none; }
 }
 /* 11) 引用缩略图的「移除」角标：原为 13×13 且 opacity:0（仅 hover 显形），
        实际几乎点不到 —— 用户反馈"显示图片删不掉"。
@@ -7656,6 +7831,27 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 .canvas-batch-select-label>span,
 .canvas-batch-select-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .canvas-batch-select svg{flex:none;color:var(--v-text-4)}
+.canvas-batch-provider-name{
+  flex:none;
+  color:var(--v-text-4);
+  font-size:10.5px;
+}
+.jim-model-trigger-provider-icon{
+  width:18px;
+  height:18px;
+  flex:none;
+  display:inline-grid;
+  place-items:center;
+  overflow:hidden;
+  border-radius:4px;
+  color:var(--v-text-3);
+}
+.jim-model-trigger-provider-icon img{
+  width:100%;
+  height:100%;
+  object-fit:contain;
+  display:block;
+}
 /* 模型徽章：中性底 + 弱字，不用彩色（四色徽章曾是"颜色不统一"的典型） */
 .canvas-batch-badge{
   flex:none;
@@ -7696,9 +7892,52 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   right:auto;
   /* 必须高于弹窗与 backdrop 的所有层；弹窗在 help-backdrop 里，backdrop 约 z=60 */
   z-index:200;
-  /* 高度上限按视口而非内容：靠边时列表可能只有不到 260px 可用 */
-  max-height:min(264px, calc(100dvh - 24px));
+  /* Fixed height in the same family as the single-node picker. Models and
+     providers scroll independently, so choosing a category cannot resize
+     the floating panel. */
+  height:min(320px, calc(100dvh - 24px));
+  max-height:min(320px, calc(100dvh - 24px));
 }
+.canvas-batch-provider-dialog{
+  display:grid;
+  grid-template-columns:124px minmax(0,1fr);
+  grid-template-rows:minmax(0,1fr);
+  gap:6px;
+  padding:6px;
+  overflow:hidden;
+}
+.canvas-batch-provider-tabs{
+  min-height:0;
+  overflow-y:auto;
+  padding-right:5px;
+  border-right:1px solid var(--v-border);
+}
+.canvas-batch-provider-dialog > [role='listbox']{
+  min-height:0;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+}
+.canvas-batch-provider-tab{
+  width:100%;
+  min-height:32px;
+  padding:0 8px;
+  border:0;
+  border-radius:var(--v-radius-sm);
+  background:transparent;
+  color:var(--v-text-3);
+  font-size:11.5px;
+  text-align:left;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  gap:6px;
+}
+.canvas-batch-provider-tab:hover{background:var(--v-surface-hover);color:var(--v-text)}
+.canvas-batch-provider-tab.is-active{background:var(--v-selected);color:var(--v-text)}
 .canvas-batch-dropgroup+.canvas-batch-dropgroup{margin-top:4px}
 .canvas-batch-dropgroup-title{
   padding:5px 8px 4px;

@@ -8,6 +8,7 @@ import {
   pricingRowsFromDraft,
   rowsToParamsJson,
   pricingJsonFromRows,
+  providerIconFileError,
 } from './ModelSettings';
 
 describe('model settings visual editors', () => {
@@ -60,12 +61,15 @@ describe('model settings visual editors', () => {
       'newapi_image',
       'agnes_image',
       'openai_image',
+      'fourstoken_image',
     ]);
     expect(adaptersForCapability('video').map((item) => item.value)).toEqual([
       'ark_video',
       'canvaspro_video',
       'openai_video',
       'agnes_video',
+      'fourstoken_video',
+      'fourstoken_newapi_video',
     ]);
     expect(defaultAdapterForCapability('image')).toBe('ark_image');
     expect(adaptersForCapability('image').some((item) => item.value === 'canvaspro_video')).toBe(false);
@@ -76,7 +80,20 @@ describe('model settings visual editors', () => {
     expect(defaultAdapterForProvider('video', 'agnes-ai')).toBe('agnes_video');
     expect(defaultAdapterForProvider('image', 'new-apl')).toBe('newapi_image');
     expect(defaultAdapterForProvider('video', 'new-apl')).toBe('canvaspro_video');
+    expect(defaultAdapterForProvider('image', '4stoken')).toBe('fourstoken_image');
+    expect(defaultAdapterForProvider('video', '4stoken')).toBe('fourstoken_video');
     expect(defaultAdapterForProvider('video', 'other-relay')).toBe('openai_video');
     expect(defaultAdapterForProvider('video', 'ark')).toBe('ark_video');
+  });
+
+  it('accepts only supported provider icon files up to 5MB', () => {
+    expect(providerIconFileError({name: 'logo.png', type: 'image/png', size: 1024})).toBe('');
+    expect(providerIconFileError({name: 'logo.webp', type: 'image/webp', size: 1024})).toBe('');
+    expect(providerIconFileError({name: 'logo.svg', type: 'image/svg+xml', size: 1024}))
+      .toContain('PNG');
+    expect(providerIconFileError({name: 'logo.png', type: 'image/png', size: 5 * 1024 * 1024 + 1}))
+      .toContain('5MB');
+    expect(providerIconFileError({name: 'logo.png', type: 'image/png', size: 0}))
+      .toContain('为空');
   });
 });

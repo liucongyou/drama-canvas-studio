@@ -140,6 +140,12 @@ import {
   inheritModelParams,
   migrateUnavailableModelParams,
 } from './modelParamInheritance';
+import {
+  activeProviderGroup,
+  favoriteModelsForProvider,
+  groupModelsByProvider,
+  pickerProviderGroups,
+} from './modelPickerGroups';
 import {validateModelParams} from './modelParamContract';
 import {VideoParamsPanel} from './VideoParamsPanel';
 import {
@@ -148,7 +154,7 @@ import {
   modelMaxRefs,
   type BatchGenerationCandidate,
 } from './batchGeneration';
-import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, applyLayoutPositions, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
+import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, applyLayoutPositions, canvasIdlePresentation, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, resolveLoadedEpisodeId, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
 import {
   CANVAS_VIEWPORT_POLICY_VERSION,
   filterMediaNodesInBounds,
@@ -3594,6 +3600,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const [prepareSelected, setPrepareSelected] = useState<string[]>([]);
   const [prepareMessage, setPrepareMessage] = useState('');
   const [modelSearch, setModelSearch] = useState('');
+  const [modelProviderId, setModelProviderId] = useState('');
   const [favoriteModelIds, setFavoriteModelIds] = useState<string[]>(() => readStoredStringArray(MODEL_FAVORITES_KEY));
   const [recentModelIds, setRecentModelIds] = useState<string[]>(() => readStoredStringArray(MODEL_RECENT_KEY));
   const [draggedRefIndex, setDraggedRefIndex] = useState<number | null>(null);
@@ -3895,6 +3902,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   //   这里以 node.id 为界做一次全量复位。
   useEffect(() => {
     setOpenMenu(null);
+    setModelProviderId('');
     setAtOpen(false);
     setAtIdx(0);
     setAddMenuOpen(false);
@@ -3962,12 +3970,28 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   // catalog loaded successfully but a provider/model was disabled, showing the
   // built-in list again would let users select a model the backend cannot use.
   const modelOptions = catalog ? catalogModels : fallbackModelSpecs(node.kind);
-  const normalizedModelSearch = modelSearch.trim().toLowerCase();
-  const visibleModelOptions = modelOptions
-    .filter((item) => !normalizedModelSearch || [
-      item.label, item.id, item.remoteModel, item.description, item.providerId,
-    ].join(' ').toLowerCase().includes(normalizedModelSearch))
-    .sort((left, right) => {
+  const storedModel = canonicalModelId(p.model || p.ttsModel);
+  const modelPickerGroups = groupModelsByProvider(modelOptions, catalog?.providers, modelSearch);
+  const favoriteModelOptions = favoriteModelsForProvider(modelOptions, favoriteModelIds);
+  const modelProviderGroups = pickerProviderGroups(
+    modelPickerGroups,
+    favoriteModelOptions.map((item) => ({id: item.id})),
+  );
+  const activeModelProvider = modelProviderId === '__favorites__'
+    ? modelProviderGroups.find((item) => item.id === '__favorites__') ?? null
+    : activeProviderGroup(
+      modelPickerGroups,
+      modelProviderId,
+      storedModel,
+    );
+  const selectedModelGroup = modelPickerGroups.find(
+    (group) => group.id === activeModelProvider?.id,
+  ) ?? null;
+  const visibleModelOptions = (
+    modelProviderId === '__favorites__'
+      ? favoriteModelOptions
+      : selectedModelGroup?.models ?? []
+  ).sort((left, right) => {
       const favoriteDelta = Number(favoriteModelIds.includes(right.id)) - Number(favoriteModelIds.includes(left.id));
       if (favoriteDelta) return favoriteDelta;
       const leftRecent = recentModelIds.indexOf(left.id);
@@ -3979,12 +4003,21 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
       }
       return 0;
     });
-  const storedModel = canonicalModelId(p.model || p.ttsModel);
   const requestedProvider = String(p.provider || '');
   const curModelSpec = modelOptions.find((item) => item.id === storedModel || item.remoteModel === storedModel)
     || modelOptions.find((item) => item.providerId === requestedProvider)
     || modelOptions[0];
   const curModel = curModelSpec?.id || storedModel || '';
+  const activeProviderName = modelProviderId === '__favorites__'
+    ? '收藏'
+    : activeModelProvider?.name
+      || catalog?.providers.find((item) => item.id === curModelSpec?.providerId)?.name
+      || '供应商';
+  const activeProviderIcon = modelProviderId === '__favorites__'
+    ? ''
+    : activeModelProvider?.icon
+      || catalog?.providers.find((item) => item.id === curModelSpec?.providerId)?.icon
+      || '';
   const promptLimit = Math.max(1, Number(curModelSpec?.limits?.maxPromptChars || 4000));
   const overPromptLimit = node.prompt.length > promptLimit;
   const activeProvider = catalog?.providers.find((item) => item.id === curModelSpec?.providerId);
@@ -4968,9 +5001,23 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
           </div>
           <div className="jim-toolbar-right">
           {modelOptions.length > 0 && (
-            <button type="button" className={`jim-tool is-model ${openMenu === 'model' ? 'is-open' : ''}`} data-pop-owner="model" onClick={() => toggle('model')} title={curModelSpec?.label || curModel}>
-              <i className="jim-model-dot" style={{background: MODEL_META[curModel]?.tone || '#4d9fff'}} />
-              {curModelSpec?.label || MODEL_META[curModel]?.label || curModel}<ChevronDown size={11} strokeWidth={2.4} className="jim-caret" aria-hidden="true" />
+            <button
+              type="button"
+              className={`jim-tool is-model ${openMenu === 'model' ? 'is-open' : ''}`}
+              data-pop-owner="model"
+              onClick={() => toggle('model')}
+              title={`${activeProviderName} · ${curModelSpec?.label || MODEL_META[curModel]?.label || curModel}`}
+              aria-label={`当前模型：${activeProviderName} ${curModelSpec?.label || MODEL_META[curModel]?.label || curModel}`}
+            >
+              <span className="jim-model-trigger-provider-icon" aria-hidden="true">
+                {activeProviderIcon ? (
+                  <img src={mediaSourceUrl(activeProviderIcon)} alt="" loading="lazy" />
+                ) : (
+                  <Sparkles size={16} strokeWidth={1.8} />
+                )}
+              </span>
+              <span className="jim-model-trigger-name">{curModelSpec?.label || MODEL_META[curModel]?.label || curModel}</span>
+              <ChevronDown size={11} strokeWidth={2.4} className="jim-caret" aria-hidden="true" />
             </button>
           )}
           {isAud ? (
@@ -5030,37 +5077,66 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
               />
               {modelSearch && <button type="button" onClick={() => setModelSearch('')} aria-label="清空模型搜索"><X size={10} /></button>}
             </div>
-            <div className="jim-model-list">
-              {visibleModelOptions.map((m) => {
-                const favorite = favoriteModelIds.includes(m.id);
-                return (
-                  <div key={m.id} className="jim-model-row">
-                    <button type="button" className={`jim-model-item ${curModel === m.id ? 'is-active' : ''}`} onClick={() => selectModel(m)}>
-                      <span className="jim-model-name">
-                        {favorite && <Star size={10} fill="currentColor" aria-hidden="true" />}
-                        {m.label || MODEL_META[m.id]?.label || m.id}
-                        <i className="jim-model-badge">{m.badge || MODEL_META[m.id]?.badge || 'M'}</i>
-                      </span>
-                      <span className="jim-model-desc">{m.description || MODEL_META[m.id]?.desc || m.remoteModel}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className={`jim-model-favorite ${favorite ? 'is-active' : ''}`}
-                      title={favorite ? '取消收藏' : '收藏模型'}
-                      aria-label={favorite ? '取消收藏模型' : '收藏模型'}
-                      onClick={() => {
-                        const next = favorite ? favoriteModelIds.filter((id) => id !== m.id) : [m.id, ...favoriteModelIds];
-                        setFavoriteModelIds(next);
-                        writeStoredStringArray(MODEL_FAVORITES_KEY, next);
-                      }}
-                    >
-                      <Star size={11} fill={favorite ? 'currentColor' : 'none'} strokeWidth={1.8} aria-hidden="true" />
-                    </button>
-                  </div>
-                );
-              })}
+            <div className="jim-model-browser">
+              <div className="jim-model-providers" role="tablist" aria-label="供应商分类">
+                {modelProviderGroups.map((provider) => (
+                  <button
+                    key={provider.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={
+                      (modelProviderId || activeModelProvider?.id) === provider.id
+                    }
+                    className={`jim-model-provider ${
+                      (modelProviderId || activeModelProvider?.id) === provider.id
+                        ? 'is-active'
+                        : ''
+                    }`}
+                    onClick={() => setModelProviderId(provider.id)}
+                  >
+                    <span className="jim-model-provider-icon" aria-hidden="true">
+                      {provider.icon ? (
+                        <img src={mediaSourceUrl(provider.icon)} alt="" loading="lazy" />
+                      ) : (
+                        <Box size={12} strokeWidth={1.9} />
+                      )}
+                    </span>
+                    <span>{provider.name}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="jim-model-list" role="listbox" aria-label="模型">
+                {visibleModelOptions.map((m) => {
+                  const favorite = favoriteModelIds.includes(m.id);
+                  return (
+                    <div key={m.id} className="jim-model-row">
+                      <button type="button" className={`jim-model-item ${curModel === m.id ? 'is-active' : ''}`} onClick={() => selectModel(m)}>
+                        <span className="jim-model-name">
+                          {favorite && <Star size={10} fill="currentColor" aria-hidden="true" />}
+                          {m.label || MODEL_META[m.id]?.label || m.id}
+                          <i className="jim-model-badge">{m.badge || MODEL_META[m.id]?.badge || 'M'}</i>
+                        </span>
+                        <span className="jim-model-desc">{m.description || MODEL_META[m.id]?.desc || m.remoteModel}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`jim-model-favorite ${favorite ? 'is-active' : ''}`}
+                        title={favorite ? '取消收藏' : '收藏模型'}
+                        aria-label={favorite ? '取消收藏模型' : '收藏模型'}
+                        onClick={() => {
+                          const next = favorite ? favoriteModelIds.filter((id) => id !== m.id) : [m.id, ...favoriteModelIds];
+                          setFavoriteModelIds(next);
+                          writeStoredStringArray(MODEL_FAVORITES_KEY, next);
+                        }}
+                      >
+                        <Star size={11} fill={favorite ? 'currentColor' : 'none'} strokeWidth={1.8} aria-hidden="true" />
+                      </button>
+                    </div>
+                  );
+                })}
+                {visibleModelOptions.length === 0 && <div className="jim-model-empty">没有匹配模型</div>}
+              </div>
             </div>
-            {visibleModelOptions.length === 0 && <div className="jim-model-empty">没有匹配模型</div>}
           </div>
         )}
         {openMenu === 'params' && ReactDOM.createPortal(
@@ -6585,6 +6661,7 @@ function BatchParamsDialog({targets, catalog, onClose, onApply}: {
                 <BatchModelPicker
                   kindLabel="图片"
                   models={modelsOf('image')}
+                  providers={catalog?.providers || []}
                   value={imageModelId}
                   open={modelOpen === 'image'}
                   disabled={!useModel}
@@ -6599,6 +6676,7 @@ function BatchParamsDialog({targets, catalog, onClose, onApply}: {
                 <BatchModelPicker
                   kindLabel="视频"
                   models={modelsOf('video')}
+                  providers={catalog?.providers || []}
                   value={videoModelId}
                   open={modelOpen === 'video'}
                   disabled={!useModel}
@@ -6616,6 +6694,7 @@ function BatchParamsDialog({targets, catalog, onClose, onApply}: {
                 <BatchModelPicker
                   kindLabel="音频"
                   models={modelsOf('audio')}
+                  providers={catalog?.providers || []}
                   value={audioModelId}
                   open={modelOpen === 'audio'}
                   disabled={!useModel}
@@ -6632,6 +6711,7 @@ function BatchParamsDialog({targets, catalog, onClose, onApply}: {
                 <BatchModelPicker
                   kindLabel="文本"
                   models={modelsOf('text')}
+                  providers={catalog?.providers || []}
                   value={textModelId}
                   open={modelOpen === 'text'}
                   disabled={!useModel}
@@ -6946,9 +7026,10 @@ function BatchToggle({on, onChange, label}: {on: boolean; onChange: (v: boolean)
  * ★ `badge` 用模型自带的（Pro / mini / 2.5…），与「模型接口」列表里显示的一致，
  *   用户能直接把两边对起来看。
  */
-function BatchModelPicker({kindLabel, models, value, open, disabled, onToggle, onChange}: {
+function BatchModelPicker({kindLabel, models, providers: catalogProviders, value, open, disabled, onToggle, onChange}: {
   kindLabel: string;
   models: ModelSpec[];
+  providers: ModelCatalog['providers'];
   value: string;
   open: boolean;
   disabled: boolean;
@@ -6977,18 +7058,30 @@ function BatchModelPicker({kindLabel, models, value, open, disabled, onToggle, o
    *     阈值用真实列表高度（items×32 + padding 12），不写死数字。
    */
   const [pos, setPos] = useState<{top: number; left: number; width: number; up: boolean} | null>(null);
+  const [providerId, setProviderId] = useState('');
+  const groups = groupModelsByProvider(models, catalogProviders);
+  const activeGroup = activeProviderGroup(groups, providerId, value);
+  const visibleModels = activeGroup?.models ?? [];
+  const visiblePickedGroup = groups.find((group) => (
+    group.models.some((model) => model.id === value)
+  ));
+  const displayProvider = visiblePickedGroup?.name || activeGroup?.name || '';
+  useEffect(() => {
+    if (!open) setProviderId('');
+  }, [open]);
   useLayoutEffect(() => {
     if (!open || disabled) { setPos(null); return; }
     const measure = () => {
       const el = wrapRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      const need = Math.min(models.length * 32 + 12, 264);
+      const need = Math.min(320, Math.max(0, window.innerHeight - 24));
       const below = window.innerHeight - r.bottom - 8;
       const above = r.top - 8;
       const up = below < need && above > below;
+      const height = Math.min(need, up ? above : below);
       setPos({
-        top: up ? Math.max(8, r.top - Math.min(need, above) - 6) : r.bottom + 6,
+        top: up ? Math.max(8, r.top - height - 6) : r.bottom + 6,
         left: r.left,
         width: r.width,
         up,
@@ -7002,7 +7095,7 @@ function BatchModelPicker({kindLabel, models, value, open, disabled, onToggle, o
       window.removeEventListener('resize', measure);
       window.removeEventListener('scroll', measure, true);
     };
-  }, [open, disabled, models.length]);
+  }, [open, disabled]);
   /**
    * badge 只在**确实补足了信息**时才显示。
    * ★ 踩过两次：
@@ -7026,30 +7119,57 @@ function BatchModelPicker({kindLabel, models, value, open, disabled, onToggle, o
         aria-label={`${kindLabel}模型`}
       >
         <span className="canvas-batch-select-label">
-          {picked ? picked.label : `选择${kindLabel}模型`}
+          {picked ? (
+            <>
+              <span className="canvas-batch-provider-name">{displayProvider}</span>
+              <span>{picked.label}</span>
+            </>
+          ) : `选择${kindLabel}模型`}
           {showBadge && <em className="canvas-batch-badge">{picked!.badge}</em>}
         </span>
         <ChevronDown size={13} strokeWidth={2.2} aria-hidden="true" />
       </button>
       {open && !disabled && pos && (
         <div
-          className="canvas-batch-dropdown is-fixed"
-          role="listbox"
+          className="canvas-batch-dropdown is-fixed canvas-batch-provider-dialog"
           style={{top: pos.top, left: pos.left, width: pos.width}}
         >
-          {models.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              role="option"
-              aria-selected={value === m.id}
-              className={`canvas-batch-dropitem ${value === m.id ? 'is-active' : ''}`}
-              onClick={() => onChange(m.id)}
-            >
-              <span>{m.label}</span>
-              {value === m.id && <Check size={13} strokeWidth={2.4} aria-hidden="true" />}
-            </button>
-          ))}
+          <div className="canvas-batch-provider-tabs" role="tablist" aria-label={`${kindLabel}供应商`}>
+            {groups.map((group) => (
+              <button
+                key={group.id}
+                type="button"
+                role="tab"
+                aria-selected={activeGroup?.id === group.id}
+                className={`canvas-batch-provider-tab ${activeGroup?.id === group.id ? 'is-active' : ''}`}
+                onClick={() => setProviderId(group.id)}
+              >
+                <span className="canvas-batch-provider-icon" aria-hidden="true">
+                  {group.icon ? (
+                    <img src={mediaSourceUrl(group.icon)} alt="" loading="lazy" />
+                  ) : (
+                    <Box size={12} strokeWidth={1.9} />
+                  )}
+                </span>
+                <span>{group.name}</span>
+              </button>
+            ))}
+          </div>
+          <div role="listbox" aria-label={`${kindLabel}模型`}>
+            {visibleModels.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                role="option"
+                aria-selected={value === m.id}
+                className={`canvas-batch-dropitem ${value === m.id ? 'is-active' : ''}`}
+                onClick={() => onChange(m.id)}
+              >
+                <span>{m.label}</span>
+                {value === m.id && <Check size={13} strokeWidth={2.4} aria-hidden="true" />}
+              </button>
+            ))}
+          </div>
           {models.length === 0 && <p className="canvas-batch-note">这一类没有可用模型，请到「模型接口」启用</p>}
         </div>
       )}
@@ -8168,7 +8288,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [segDetail, setSegDetail] = useState<CanvasSegment | null>(null);
   const didInitialLayoutRef = useRef(false);
   const fittedScopeRef = useRef('');
-  const autoEpAppliedRef = useRef(false);
   // 布局按集持久化：整剧总览用 'all'，切集互不污染。
   // ★ 单集项目（≤1 集）：整剧总览与「第01集」共用同一布局 key——否则整剧总览里拖好的
   //   卡片位置，点「第01集」会因 key 切换读不到而全部回落到载荷默认位置（实测"排序乱"）。
@@ -8259,6 +8378,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     viewportRef.current = viewport;
     setCanvasViewport(viewport);
     const viewportEpisode = activeWorkspaceEpisodeRef.current || currentEp;
+    if (!viewportEpisode) return;
     const snapshotKey = `${session}:${viewportEpisode || '__project__'}`;
     serverEpisodeViewportsRef.current = mergeEpisodeViewport(
       serverEpisodeViewportsRef.current,
@@ -8336,6 +8456,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     }
     const remembered = {...viewportRef.current};
     const leavingEpisode = activeWorkspaceEpisodeRef.current || currentEp;
+    if (!leavingEpisode) {
+      setToast('画布尚未绑定集数，无法切换集');
+      return;
+    }
     serverEpisodeViewportsRef.current = mergeEpisodeViewport(
       serverEpisodeViewportsRef.current,
       leavingEpisode,
@@ -8364,7 +8488,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     // here causes onMove/fitView from the leaving canvas to be saved as the
     // newly selected episode's viewport.
     activeWorkspaceEpisodeRef.current = String(leavingEpisode || '').trim().toUpperCase() || null;
-  }, [currentEp, session]);
+  }, [currentEp, session, setToast]);
 
   // ── 编组操作 ──────────────────────────────────────────────────────
   // 编组：把当前选中的卡片收进一个新组。已属于其它组的成员会自动离组（一个人只能在一个组里）。
@@ -8514,6 +8638,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const run = async (): Promise<void> => {
       const loadEpoch = workspaceLoadEpochRef.current;
       const scope = workspaceScopeRef.current;
+      if (!scope.episode) {
+        throw new Error('画布尚未绑定集数，无法同步');
+      }
       const workspace = await getCanvasWorkspace(scope.session, scope.episode);
       if (loadEpoch !== workspaceLoadEpochRef.current) return;
       const activeScope = workspaceScopeRef.current;
@@ -8813,6 +8940,13 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const snapshots = [...pendingMediaNodeSavesRef.current.values()];
     pendingMediaNodeSavesRef.current.clear();
     if (snapshots.length === 0) return;
+    if (!currentEp) {
+      for (const snapshot of snapshots) {
+        pendingMediaNodeSavesRef.current.set(snapshot.id, snapshot);
+      }
+      setSaveError('画布尚未绑定集数，暂不能保存节点');
+      return;
+    }
     beginSave();
     let task: Promise<void>;
     task = saveCanvasMediaNodes(session, snapshots, currentEp)
@@ -8890,14 +9024,22 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [flushPendingMediaDeletes]);
 
   const persistMediaNodes = useCallback((next: CanvasMediaNode[], nodesToSave: CanvasMediaNode[] = next) => {
+    if (!currentEp) {
+      setSaveError('画布尚未绑定集数，暂不能保存节点');
+      return;
+    }
     for (const node of nodesToSave) pendingMediaNodeSavesRef.current.set(node.id, node);
     if (mediaBatchSaveTimer.current) clearTimeout(mediaBatchSaveTimer.current);
     mediaBatchSaveTimer.current = setTimeout(flushMediaNodeSaves, 600);
-  }, [flushMediaNodeSaves]);
+  }, [currentEp, flushMediaNodeSaves]);
   const persistMediaPositions = useCallback((
     _next: CanvasMediaNode[],
     nodesToSave: CanvasMediaNode[] = [],
   ) => {
+    if (!currentEp) {
+      setSaveError('画布尚未绑定集数，暂不能保存位置');
+      return;
+    }
     for (const node of nodesToSave) {
       const seq = ++positionMutationSeqRef.current;
       pendingPositionSavesRef.current.set(node.id, {x: node.x, y: node.y, seq});
@@ -8970,6 +9112,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       if (message.sourceId === syncInstanceIdRef.current) return;
       if (message.type === 'canvas-connections-updated') {
         if (pendingConnectionsRef.current || connectionSaveInFlightRef.current) return;
+        if (!currentEp) return;
         void getCanvasWorkspace(session, currentEp)
           .then(({connections}) => {
             projectConnectionsRef.current = connections;
@@ -8988,6 +9131,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         return;
       }
       if (message.type !== 'canvas-nodes-updated') return;
+      if (!currentEp) return;
       const requested = new Set(message.nodeIds || []);
       void getCanvasMediaNodes(session, currentEp)
         .then((remoteNodes) => {
@@ -9132,8 +9276,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     }
     mediaNodesRef.current = next;
     setMediaNodes(next);
-    void patchMediaNodesFields(session, changed).catch(() => {});
-  }, [modelCatalog, mediaNodes, session, setToast]);
+    if (!currentEp) return;
+    void patchMediaNodesFields(session, changed, currentEp).catch(() => {});
+  }, [currentEp, modelCatalog, mediaNodes, session, setToast]);
 
   // 清理「连线 → 引用参数」的联动（三个入口共用）：
   //   deleteEdgeById（点剪刀）、removeRefAndEdge（弹窗里点 ✕）、onEdgesDelete（Del/Backspace）。
@@ -9363,10 +9508,18 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             console.warn(`[canvas-load] workspace took ${Math.round(elapsed)}ms`);
           }
         }
-        const normalizedActiveEpisode = String(activeEpisodeId || '')
-          .trim()
-          .toUpperCase() || null;
+        const normalizedActiveEpisode = resolveLoadedEpisodeId({
+          activeEpisodeId,
+          episodes: 'empty' in data ? [] : data.meta.episodes,
+          preferredEpisodeId: currentEp,
+          fallbackEpisodeId: pickDefaultEpisode(
+            'empty' in data ? [] : data.meta.episodes,
+          ),
+        });
         activeWorkspaceEpisodeRef.current = normalizedActiveEpisode;
+        if (normalizedActiveEpisode !== currentEp) {
+          setCurrentEp(normalizedActiveEpisode);
+        }
         setShellEpisodeId(null);
         serverEpisodeViewportsRef.current = episodeViewports || {};
         taskLoadGenerationRef.current += 1;
@@ -9375,20 +9528,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           setCanvas(null);
         } else {
           setCanvas(data);
-          const currentExists = currentEp
-            ? data.meta.episodes.some((episode) => episode.ep_id === currentEp)
-            : false;
-          // 多集长剧：默认进入一集，避免整剧总览一次性渲染全部资产/镜头导致卡死
-          if (!autoEpAppliedRef.current) {
-            autoEpAppliedRef.current = true;
-            if (!currentExists && data.meta.episodes.length > 1) {
-              // 默认进入"最近活动且有内容"的一集（pickDefaultEpisode 纯函数，见 canvasLayout.ts）。
-              // 旧逻辑只看 updated_at：120 集剧本刚拆完时最后被触碰的一集常常只有 0 镜
-              // （实测 ep02），画布于是开在空集上——表现为"场景/镜头都不显示"。
-              const target = pickDefaultEpisode(data.meta.episodes);
-              if (target) setCurrentEp(target);
-            }
-          }
         }
         startTransition(() => {
           setNotes(noteList);
@@ -9502,6 +9641,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const saveShot = useCallback(async (shotIdx: number) => {
     const draft = drafts[shotIdx];
     if (!draft) return;
+    if (!currentEp) {
+      setSaveError('画布尚未绑定集数，暂不能保存镜头');
+      return;
+    }
     setSavingShot(shotIdx);
     setSaveError('');
     const patch: Record<string, unknown> = {
@@ -9573,6 +9716,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // 通用内容节点（文本/图片/音频/视频空节点，复刻 BeefTV 画布）
   // ★ mediaNodes state 与 persistMediaNodes 已上移到 deleteEdgeById 之前（那里需要用它清 refs）
   const addMediaNode = useCallback((kind: CanvasMediaNodeKind, x: number, y: number) => {
+    if (!currentEp) {
+      setToast('画布尚未绑定集数，请稍后再添加节点');
+      return;
+    }
     const titles: Record<CanvasMediaNodeKind, string> = {text: '文本节点', image: '图片节点', audio: '音频节点', video: '视频节点'};
     const defaultModel = modelCatalog?.models.find((item) => item.enabled !== false && item.capability === kind);
     const node: CanvasMediaNode = {
@@ -9581,7 +9728,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       title: titles[kind],
       prompt: '',
       status: 'idle',
-      episodeId: currentEp || undefined,
+      episodeId: currentEp,
       x,
       y,
       updatedAt: new Date().toISOString(),
@@ -9594,7 +9741,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     };
     pushHistory(userEdgesRef.current, notesRef.current, {removeAddedMedia: true});
     setMediaNodes((prev) => { const next = [...prev, node]; persistMediaNodes(next, [node]); return next; });
-  }, [currentEp, modelCatalog, persistMediaNodes, pushHistory]);
+  }, [currentEp, modelCatalog, persistMediaNodes, pushHistory, setToast]);
   const updateMediaNode = useCallback((
     id: string,
     patch: Partial<CanvasMediaNode>,
@@ -9683,7 +9830,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             if (snapshots.length === 0) return;
             beginSave();
             setSaveError('');
-            void patchMediaNodesFields(session, snapshots)
+            if (!currentEp) {
+              finishSave(false);
+              setSaveError('画布尚未绑定集数，暂不能保存节点');
+              return;
+            }
+            void patchMediaNodesFields(session, snapshots, currentEp)
               .then(() => {
                 finishSave(true);
                 broadcastMediaChange(snapshots.map((snapshot) => snapshot.id));
@@ -9744,6 +9896,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       onProgress?: (percent: number) => void;
     },
   ) => {
+    if (!currentEp) throw new Error('画布尚未绑定集数，暂不能导入素材');
     const fileKind = localFileKind(file);
     if (!fileKind || fileKind !== target.kind) {
       throw new Error(`请选择${target.kind === 'image' ? '图片' : target.kind === 'audio' ? '音频' : '视频'}文件`);
@@ -9841,10 +9994,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       params: {...(latestTarget.params || {}), ...(nextPatch.params || {})},
       updatedAt: latestTarget.updatedAt,
       _mediaImport: true,
-    });
+    }, currentEp);
     updateMediaNode(target.id, {...nextPatch, updatedAt: persistedAt}, {persist: false});
     setToast(`${latestTarget.mediaUrl ? '已添加本地版本' : '已导入本地素材'}：${file.name}`);
-  }, [session, setToast, updateMediaNode]);
+  }, [currentEp, session, setToast, updateMediaNode]);
 
   const openNodeLocalUpload = useCallback((node: CanvasMediaNode) => {
     if (node.kind === 'text') return;
@@ -9894,7 +10047,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       const snapshots = [...pendingMediaPatchesRef.current.values()];
       pendingMediaPatchesRef.current.clear();
       if (snapshots.length === 0) return;
-      void patchMediaNodesFields(session, snapshots, {keepalive: true}).catch(() => {
+      if (!currentEp) {
+        setSaveError('画布尚未绑定集数，暂不能保存节点');
+        return;
+      }
+      void patchMediaNodesFields(session, snapshots, currentEp, {keepalive: true}).catch(() => {
         // Navigation is already underway; recovery on the next edit is preferable
         // to blocking the page unload with an alert.
       });
@@ -9908,7 +10065,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pagehide', flushPendingMediaPatches);
     };
-  }, [session]);
+  }, [currentEp, session]);
 
   // 级联避让：同一坐标反复插入会把新节点完全叠在上一个下面（表现为"点了没反应"）。
   // 已占用则沿对角线让位，直到 50 次兜底。
@@ -9988,6 +10145,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
 
   // 上传文件并作为引用（「上传图片/音频」入口）：真上传 → 建节点 → 加引用
   const uploadRefFile = useCallback(async (target: CanvasMediaNode, file: File) => {
+    if (!currentEp) {
+      setToast('画布尚未绑定集数，请稍后再上传素材');
+      return;
+    }
     try {
       const uploaded = await uploadWorkspaceFile(session, file);
       const url = uploaded.url;
@@ -10017,7 +10178,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         prompt: '',
         mediaUrl: url,
         status: 'done',
-        episodeId: currentEp || undefined,
+        episodeId: currentEp,
         actualDuration: inspected.duration,
         source: {
           type: 'local',
@@ -10067,6 +10228,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     files: File[],
     origin?: {x: number; y: number},
   ) => {
+    if (!currentEp) {
+      setToast('画布尚未绑定集数，请稍后再上传素材');
+      return;
+    }
     const supported = files.filter((file) => !!localFileKind(file));
     if (supported.length === 0) {
       setToast('没有可导入的图片、音频或视频文件');
@@ -10125,7 +10290,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           prompt: '',
           mediaUrl: uploaded.url,
           status: 'done',
-          episodeId: currentEp || undefined,
+          episodeId: currentEp,
           actualDuration: inspected.duration,
           source: {
             type: 'local',
@@ -10328,6 +10493,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     let syncing = false;
     const syncTerminalState = async () => {
       if (syncing) return;
+      if (!currentEp) return;
       syncing = true;
       try {
         const remoteNodes = await getCanvasMediaNodes(session, currentEp);
@@ -10841,7 +11007,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const addNote = useCallback((x: number, y: number, text = '') => {
     const episodeId = String(currentEp || '').trim().toUpperCase();
     if (!episodeId) {
-      setToast('请先选择集数再添加备注');
+      setToast('画布尚未绑定集数，请稍后再添加备注');
       return;
     }
     const note: CanvasNote = {
@@ -10881,6 +11047,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     if (connectionSaveInFlightRef.current) return;
     const connections = pendingConnectionsRef.current;
     if (!connections) return;
+    if (!currentEp) {
+      setSaveError('画布尚未绑定集数，暂不能保存连线');
+      return;
+    }
     pendingConnectionsRef.current = null;
     connectionSaveInFlightRef.current = true;
     beginSave();
@@ -13091,7 +13261,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     mediaNodesRef.current = next;
     setMediaNodes(next);
     beginSave();
-    void patchMediaNodeFields(session, node)
+    if (!currentEp) return;
+    void patchMediaNodeFields(session, node, currentEp)
       .then(() => {
         finishSave(true);
         broadcastMediaChange([node.id]);
@@ -13100,7 +13271,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         finishSave(false);
         setSaveError(error instanceof Error ? error.message : String(error));
       });
-  }, [beginSave, broadcastMediaChange, finishSave, session]);
+  }, [beginSave, broadcastMediaChange, currentEp, finishSave, session]);
 
   const undo = useCallback(() => {
     cancelPendingMediaDeletes();
@@ -13685,6 +13856,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [allEdges, mediaNodes, modelCatalog, updateMediaNode, setNodes, groupMembersOf]);
 
   const onGenerateMediaNode = useCallback((node: CanvasMediaNode) => {
+    if (!currentEp) {
+      setToast('画布尚未绑定集数，请稍后再生成');
+      return false;
+    }
     if (node.status === 'generating') {
       setToast('该节点正在生成，请到任务中心查看进度');
       return false;
@@ -13785,6 +13960,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           prompt: node.prompt,
           params,
           clientOperationId,
+          episodeId: currentEp,
         });
         const result = await generationPromise;
         void getGenerationTasks(session, 80, currentEp)
@@ -15270,7 +15446,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           onDrop={handleCanvasDrop}
         >
           {dropArmed && <div className="canvas-drop-overlay">松开鼠标，素材将变成节点</div>}
-          {mediaNodes.length === 0 && notes.length === 0 && (
+          {canvasIdlePresentation({
+            dataReady,
+            mediaCount: mediaNodes.length,
+            noteCount: notes.length,
+          }).showEmptyWorkspace && (
             <div className="canvas-empty-workspace">
               <div className="canvas-empty-workspace-copy">
                 <strong>开始创建你的画布</strong>
@@ -15312,12 +15492,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               onFocus={focusOverviewNode}
               onClose={returnFromOverview}
             />
-          )}
-          {shellEpisodeId && mediaNodes.length === 0 && (
-            <div className="canvas-shell-nodes" role="status" aria-live="polite">
-              <span className="canvas-reload-spin" aria-hidden="true" />
-              <span>{fmtEp(shellEpisodeId)} 节点加载中</span>
-            </div>
           )}
           <div className="canvas-bg-switch" title="画布底纹">
             {([
@@ -15618,17 +15792,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               <span className="canvas-ep-list-rail-ico"><ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" /></span>
               <span>画布列表</span>
             </button>
-          )}
-          {/* 空集引导：0 镜时不显示"段 0 · 镜头 0"式的假空态，直接说明下一步该做什么 */}
-          {canvas && canvas.shots.length === 0 && (
-            <div className="canvas-empty-guide" role="status">
-              <strong>{currentEp ? `${fmtEp(currentEp)}` : '本项目'}暂无分镜镜头</strong>
-              <span>
-                {currentEp
-                  ? '先在「分镜」阶段为本集生成镜头（确认剧本后运行分镜生成），画布会自动汇入段卡、关键帧与片段。'
-                  : '各集都还没有镜头：先在第 1 集生成分镜，再回画布查看。'}
-              </span>
-            </div>
           )}
           <ReactFlow
             className={`canvas-flow ${draggingNode ? 'is-node-dragging' : ''} ${connecting ? 'is-connecting' : ''} ${selectedCount >= 2 ? 'has-multi-selection' : ''} ${edgesHidden ? 'is-edges-hidden' : ''}`}

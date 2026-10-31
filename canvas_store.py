@@ -2266,17 +2266,11 @@ def get_project_workspace_index(project_id):
         episodes.append({
             "id": "EP001",
             "title": project_row[1] or "画布工作流",
-            "nodeIds": [str(row[0]) for row in node_summary_rows],
-            "videoNodeIds": [
-                str(row[0]) for row in node_summary_rows if str(row[1]) == "video"
-            ],
+            "nodeIds": [],
+            "videoNodeIds": [],
             "connectionIds": [],
-            "shot_count": len([
-                row for row in node_summary_rows if str(row[1]) == "video"
-            ]),
-            "described_count": len([
-                row for row in node_summary_rows if str(row[1]) == "video"
-            ]),
+            "shot_count": 0,
+            "described_count": 0,
             "storyboard_ready": True,
         })
     return {

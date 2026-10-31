@@ -626,6 +626,16 @@ class CanvasProjectionTests(unittest.TestCase):
             ["new-node"],
         )
 
+    def test_new_project_workspace_index_is_empty_and_non_breaking(self):
+        project_id = canvas_store.create_project("new-empty-project")
+        workspace = canvas_store.get_project_workspace_index(project_id)
+        self.assertIsNotNone(workspace)
+        self.assertEqual(len(workspace["episodes"]), 1)
+        self.assertEqual(workspace["episodes"][0]["id"], "EP001")
+        self.assertEqual(workspace["episodes"][0]["nodeIds"], [])
+        self.assertEqual(workspace["episodes"][0]["videoNodeIds"], [])
+        self.assertEqual(workspace["episodes"][0]["shot_count"], 0)
+
     def test_old_generation_tasks_schema_migrates_before_episode_index(self):
         context = tenant_context.make_context("legacy-schema", "legacy-schema")
         tenant_context.ensure_context_dirs(context)

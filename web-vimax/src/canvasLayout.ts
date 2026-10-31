@@ -557,6 +557,36 @@ export function pickDefaultEpisode(episodes: CanvasEpisodeMetaLike[] | null | un
   }).ep_id;
 }
 
+/**
+ * A loaded canvas is always an editable episode canvas. URL/local memory are
+ * only hints; the server workspace is authoritative. Keep the first valid hint
+ * so stale cross-project episode ids do not leak into write requests.
+ */
+export function resolveLoadedEpisodeId(input: {
+  activeEpisodeId?: string | null;
+  episodes?: Array<{ep_id?: string | null}> | null;
+  preferredEpisodeId?: string | null;
+  fallbackEpisodeId?: string | null;
+}): string {
+  const available = new Set(
+    (input.episodes ?? [])
+      .map((episode) => String(episode?.ep_id || '').trim().toUpperCase())
+      .filter(Boolean),
+  );
+  const candidates = [
+    input.activeEpisodeId,
+    input.preferredEpisodeId,
+    input.fallbackEpisodeId,
+  ];
+  for (const candidate of candidates) {
+    const normalized = String(candidate || '').trim().toUpperCase();
+    if (normalized && (available.size === 0 || available.has(normalized))) {
+      return normalized;
+    }
+  }
+  return [...available].sort(epIdCompare)[0] || 'EP001';
+}
+
 export function workspaceScopeMatches(
   requested: {session: string; episode: string | null},
   active: {session: string; episode: string | null},
@@ -565,6 +595,22 @@ export function workspaceScopeMatches(
     requested.session === active.session
     && (requested.episode || null) === (active.episode || null)
   );
+}
+
+export function canvasIdlePresentation(input: {
+  dataReady: boolean;
+  mediaCount: number;
+  noteCount: number;
+}): {
+  showEmptyWorkspace: boolean;
+} {
+  return {
+    showEmptyWorkspace: (
+      input.dataReady
+      && input.mediaCount === 0
+      && input.noteCount === 0
+    ),
+  };
 }
 
 export function layoutPositionsForExport(input: {

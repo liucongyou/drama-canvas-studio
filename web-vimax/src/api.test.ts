@@ -78,7 +78,7 @@ describe('api request recovery', () => {
       status: 200,
       headers: {'Content-Type': 'application/json'},
     })));
-    const [node] = await getCanvasMediaNodes('project-1');
+    const [node] = await getCanvasMediaNodes('project-1', 'EP001');
     expect(node.mediaUrl).toBe('/uploads/video.mp4');
     expect(node.thumbUrl).toBe('/uploads/video-cover.jpg');
   });
@@ -139,6 +139,23 @@ describe('api request recovery', () => {
           episodeId: 'EP004',
         }),
       }),
+    );
+  });
+
+  it('rejects project or episode-less canvas writes instead of saving to a null scope', async () => {
+    await expect(saveCanvasMediaNodes('project-1', [], '')).rejects.toThrow(
+      '新建节点必须指定所属集',
+    );
+    await expect(saveCanvasMediaNodePositions('project-1', [], '')).rejects.toThrow(
+      '保存节点位置必须指定所属集',
+    );
+    await expect(saveCanvasEpisodeViewport(
+      'project-1',
+      {x: 0, y: 0, zoom: 1},
+      '',
+    )).rejects.toThrow('保存视口必须指定所属集');
+    await expect(getCanvasMediaNodes('project-1', '')).rejects.toThrow(
+      '读取画布节点必须指定集号',
     );
   });
 
@@ -412,7 +429,7 @@ describe('api request recovery', () => {
       headers: {'Content-Type': 'application/json'},
     })));
 
-    const nodes = await getCanvasMediaNodes('project-regenerating');
+    const nodes = await getCanvasMediaNodes('project-regenerating', 'EP001');
 
     expect(nodes).toHaveLength(1);
     expect(nodes[0]).toMatchObject({
@@ -450,7 +467,7 @@ describe('api request recovery', () => {
       headers: {'Content-Type': 'application/json'},
     })));
 
-    const nodes = await getCanvasMediaNodes('project-failed-regeneration');
+    const nodes = await getCanvasMediaNodes('project-failed-regeneration', 'EP001');
 
     expect(nodes).toHaveLength(1);
     expect(nodes[0]).toMatchObject({
@@ -638,9 +655,10 @@ describe('api request recovery', () => {
       x: 0,
       y: 0,
       updatedAt: '2026-10-31T01:00:00Z',
-    }]);
+    }], 'EP010');
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.episodeId).toBe('EP010');
     expect(body.nodes[0].metadata.storage).toEqual(storage);
     expect(body.nodes[0].metadata.storageError).toBe('');
   });
@@ -1001,7 +1019,9 @@ describe('api request recovery', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(generateCanvasNodeNow('project-1', 'node-1')).resolves.toMatchObject({
+    await expect(generateCanvasNodeNow('project-1', 'node-1', {
+      episodeId: 'EP001',
+    })).resolves.toMatchObject({
       deferred: false,
       url: '/uploads/generated-second.png',
     });
@@ -1045,7 +1065,9 @@ describe('api request recovery', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await generateCanvasNodeNow('project-1', 'node-1');
+    const result = await generateCanvasNodeNow('project-1', 'node-1', {
+      episodeId: 'EP001',
+    });
 
     expect(result).toMatchObject({
       deferred: false,
@@ -1077,7 +1099,9 @@ describe('api request recovery', () => {
       headers: {'Content-Type': 'application/json'},
     })));
 
-    await expect(generateCanvasNodeNow('project-2', 'node-2')).resolves.toMatchObject({
+    await expect(generateCanvasNodeNow('project-2', 'node-2', {
+      episodeId: 'EP001',
+    })).resolves.toMatchObject({
       deferred: true,
       accepted: true,
       taskId: 'local-task-1',
@@ -1096,11 +1120,13 @@ describe('api request recovery', () => {
     await generateCanvasNodeNow('project-1', 'node-1', {
       prompt: '角色定妆，正面半身像',
       params: {provider: 'agnes-ai', model: 'agnes-image-2.5-flash', ratio: '16:9'},
+      episodeId: 'EP001',
     });
 
     const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1].body));
     expect(requestBody).toMatchObject({
       prompt: '角色定妆，正面半身像',
+      episodeId: 'EP001',
       params: {
         provider: 'agnes-ai',
         model: 'agnes-image-2.5-flash',
@@ -1120,7 +1146,9 @@ describe('api request recovery', () => {
       headers: {'Content-Type': 'application/json'},
     })));
 
-    await expect(generateCanvasNodeNow('project-1', 'node-1')).rejects.toThrow('供应商鉴权失败');
+    await expect(generateCanvasNodeNow('project-1', 'node-1', {
+      episodeId: 'EP001',
+    })).rejects.toThrow('供应商鉴权失败');
     expect(dispatchEvent).not.toHaveBeenCalled();
   });
 
@@ -1133,7 +1161,7 @@ describe('api request recovery', () => {
       headers: {'Content-Type': 'application/json'},
     })));
 
-    await expect(saveCanvasMediaNodePositions('project-1', [])).rejects.toThrow('跨站请求已拒绝');
+    await expect(saveCanvasMediaNodePositions('project-1', [], 'EP001')).rejects.toThrow('跨站请求已拒绝');
   });
 
   it('logs out when the server reports an expired account session', async () => {

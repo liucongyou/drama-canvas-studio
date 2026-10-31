@@ -1,15 +1,17 @@
 import {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {dialog} from './GDialog';
 import {filterDiscoveredModels} from './modelDiscoveryFilter';
-import {Braces, Check, ChevronDown, Plus, RefreshCw, Save, Search, Trash2, X} from 'lucide-react';
+import {Box, Braces, Check, ChevronDown, Plus, RefreshCw, Save, Search, Trash2, Upload, X} from 'lucide-react';
 import {
   deleteModelConfig,
   deleteProviderConfig,
   discoverProviderModels,
   getModelCatalog,
+  mediaSourceUrl,
   saveModelConfig,
   saveProviderConfig,
   testProviderConfig,
+  uploadProviderIcon,
   type DiscoveredModelSpec,
   type ModelCatalog,
   type ModelParamSpec,
@@ -24,6 +26,7 @@ type ProviderDraft = {
   protocol: string;
   base_url: string;
   workspace_id: string;
+  icon: string;
   api_key: string;
   enabled: boolean;
 };
@@ -50,6 +53,7 @@ const EMPTY_PROVIDER: ProviderDraft = {
   protocol: 'openai',
   base_url: '',
   workspace_id: '',
+  icon: '',
   api_key: '',
   enabled: true,
 };
@@ -70,6 +74,27 @@ const EMPTY_MODEL: ModelDraft = {
   pricing: '{}',
 };
 
+const PROVIDER_ICON_MAX_BYTES = 5 * 1024 * 1024;
+const PROVIDER_ICON_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+]);
+const PROVIDER_ICON_EXTENSIONS = /\.(?:png|jpe?g|webp|gif)$/i;
+
+export function providerIconFileError(file: {name: string; type: string; size: number}): string {
+  if (!PROVIDER_ICON_TYPES.has(String(file.type || '').toLowerCase())) {
+    return '只支持 PNG、JPG、WebP 或 GIF 图片';
+  }
+  if (!PROVIDER_ICON_EXTENSIONS.test(String(file.name || ''))) {
+    return '文件扩展名必须是 PNG、JPG、WebP 或 GIF';
+  }
+  if (file.size <= 0) return '图标文件为空';
+  if (file.size > PROVIDER_ICON_MAX_BYTES) return '图标不能超过 5MB';
+  return '';
+}
+
 const CAPABILITIES = [
   ['image', '图片'],
   ['video', '视频'],
@@ -88,6 +113,9 @@ const ADAPTERS = [
   ['openai_chat', 'OpenAI 兼容 Chat Completions'],
   ['openai_image', 'OpenAI 兼容 Images'],
   ['dashscope_tts', '阿里云百炼 TTS'],
+  ['fourstoken_image', '4SToken 图片（专用合同）'],
+  ['fourstoken_video', '4SToken 视频（专用合同）'],
+  ['fourstoken_newapi_video', '4SToken New API 视频（专用合同）'],
 ] as const;
 
 const ADAPTER_CAPABILITIES: Record<string, string> = {
@@ -98,6 +126,9 @@ const ADAPTER_CAPABILITIES: Record<string, string> = {
   openai_video: 'video',
   agnes_image: 'image',
   agnes_video: 'video',
+  fourstoken_image: 'image',
+  fourstoken_video: 'video',
+  fourstoken_newapi_video: 'video',
   openai_chat: 'text',
   openai_image: 'image',
   dashscope_tts: 'audio',
@@ -130,6 +161,9 @@ export function defaultAdapterForProvider(
   if (normalized === 'teamorouter') {
     return capability === 'text' ? 'openai_chat' : defaultAdapterForCapability(capability);
   }
+  if (normalized === '4stoken' || normalized === '4stoken.cn') {
+    return capability === 'image' ? 'fourstoken_image' : capability === 'video' ? 'fourstoken_video' : defaultAdapterForCapability(capability);
+  }
   if (capability === 'video' && (normalized === 'new-apl' || normalized === 'new-api')) {
     return 'canvaspro_video';
   }
@@ -143,6 +177,7 @@ function providerDraft(provider?: ProviderSpec): ProviderDraft {
     protocol: provider.protocol,
     base_url: provider.base_url,
     workspace_id: provider.workspace_id || '',
+    icon: provider.icon || '',
     api_key: '',
     enabled: provider.enabled,
   } : {...EMPTY_PROVIDER};
@@ -541,6 +576,7 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
   const [provider, setProvider] = useState<ProviderDraft>({...EMPTY_PROVIDER});
   const [model, setModel] = useState<ModelDraft>({...EMPTY_MODEL});
   const [providerBusy, setProviderBusy] = useState(false);
+  const [providerIconBusy, setProviderIconBusy] = useState(false);
   const [modelBusy, setModelBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [testState, setTestState] = useState<{ok: boolean; message: string} | null>(null);
@@ -561,6 +597,7 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
   });
   const [parameterRows, setParameterRows] = useState<ParameterDraftRow[]>([]);
   const [pricingRows, setPricingRows] = useState(() => pricingRowsFromJson('{}'));
+  const providerIconInputRef = useRef<HTMLInputElement | null>(null);
 
   const providerModels = (catalog?.models || []).filter(
     (item) => Boolean(provider.id) && item.providerId === provider.id,
@@ -577,9 +614,7 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
     ),
     discoverQueryText,
   );
-  const selectableFilteredDiscoveredModels = filteredDiscoveredModels.filter(
-    (item) => !item.disabled,
-  );
+  const selectableFilteredDiscoveredModels = filteredDiscoveredModels;
   const discoveredSelectedCount = selectableFilteredDiscoveredModels.filter(
     (item) => discoveredSelected[`${item.providerId}:${item.remoteModel}`],
   ).length;
@@ -755,6 +790,26 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
     }
   };
 
+  const uploadProviderIconFile = async (file: File) => {
+    const error = providerIconFileError(file);
+    if (error) {
+      setStatus(error);
+      return;
+    }
+    setProviderIconBusy(true);
+    setStatus('正在上传供应商图标…');
+    try {
+      const icon = await uploadProviderIcon(file);
+      setProvider((current) => ({...current, icon}));
+      setStatus('图标已上传，保存供应商后生效');
+    } catch (uploadError) {
+      setStatus(uploadError instanceof Error ? uploadError.message : String(uploadError));
+    } finally {
+      setProviderIconBusy(false);
+      if (providerIconInputRef.current) providerIconInputRef.current.value = '';
+    }
+  };
+
   const testProvider = async () => {
     if (!provider.id) {
       setTestState({ok: false, message: '先保存供应商再测试'});
@@ -794,7 +849,7 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
   const importDiscoveredModels = async () => {
     const pending = filteredDiscoveredModels.filter((model) => {
       const key = `${model.providerId}:${model.remoteModel}`;
-      if (!discoveredSelected[key] || model.disabled) return false;
+      if (!discoveredSelected[key]) return false;
       const capability = model.capability === 'unknown'
         ? discoveredCapabilities[key]
         : model.capability;
@@ -1017,6 +1072,49 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
                     />
                   </label>
                   <label className="is-wide"><span>接口地址</span><input value={provider.base_url} onChange={(event) => setProvider({...provider, base_url: event.target.value})} placeholder="https://…/v1" /></label>
+                  <div className="is-wide model-provider-icon-field">
+                    <span>供应商图标（选填）</span>
+                    <div className="model-provider-icon-control">
+                      <span className={`model-provider-icon-preview ${provider.icon ? 'has-image' : ''}`} aria-hidden="true">
+                        {provider.icon
+                          ? <img src={mediaSourceUrl(provider.icon)} alt="" />
+                          : <Box size={20} strokeWidth={1.7} />}
+                      </span>
+                      <div className="model-provider-icon-copy">
+                        <strong>{provider.icon ? '已选择自定义图标' : '使用默认供应商图标'}</strong>
+                        <small>PNG、JPG、WebP 或 GIF，最大 5MB</small>
+                      </div>
+                      <input
+                        ref={providerIconInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        hidden
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (file) void uploadProviderIconFile(file);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => providerIconInputRef.current?.click()}
+                        disabled={providerIconBusy}
+                      >
+                        <Upload size={13} />
+                        {providerIconBusy ? '上传中…' : provider.icon ? '替换图标' : '上传图标'}
+                      </button>
+                      {provider.icon && (
+                        <button
+                          type="button"
+                          className="is-danger"
+                          onClick={() => setProvider({...provider, icon: ''})}
+                          disabled={providerIconBusy}
+                        >
+                          <Trash2 size={13} />
+                          清除
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   <label className="is-wide"><span>API Key {provider.api_key ? '' : <i>{catalog?.providers.find((item) => item.id === provider.id)?.api_key_hint || '未配置'}</i>}</span><input type="password" value={provider.api_key} onChange={(event) => setProvider({...provider, api_key: event.target.value})} placeholder="留空保留现有密钥" /></label>
                   <label><span>Workspace ID（百炼可选）</span><input value={provider.workspace_id} onChange={(event) => setProvider({...provider, workspace_id: event.target.value})} /></label>
                   <div className="model-settings-check">
@@ -1316,7 +1414,6 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
                       <input
                         type="checkbox"
                         checked={checked}
-                        disabled={Boolean(item.disabled)}
                         onChange={(event) => {
                           const nextChecked = event.target.checked;
                           setDiscoveredSelected((current) => ({
@@ -1360,11 +1457,7 @@ export function ModelSettingsDialog({onClose}: {onClose: () => void}) {
                       </select>
                     ) : (
                       <em>
-                        {item.disabled
-                          ? '暂不可用'
-                          : item.alreadyConfigured
-                            ? '已配置 · 可更新'
-                            : '待导入'}
+                        {item.alreadyConfigured ? '已配置 · 可更新' : '待导入'}
                       </em>
                     )}
                   </div>
