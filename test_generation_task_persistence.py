@@ -76,6 +76,39 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
                 }],
             )
 
+    def test_repair_episode_ownership_removes_explicit_cross_episode_membership(self):
+        project_id = canvas_store.create_project("episode-node-repair")
+        canvas_store.insert_project_nodes(
+            project_id,
+            [{
+                "id": "explicit-node",
+                "type": "video",
+                "title": "视频｜明确归属",
+                "metadata": {"episodeId": "EP001", "status": "idle"},
+            }],
+            episode_id="EP001",
+        )
+        project = canvas_store.get_project(project_id)
+        project["payload"]["episodeImports"].append({
+            "id": "EP002",
+            "nodeIds": ["explicit-node"],
+            "videoNodeIds": ["explicit-node"],
+        })
+        canvas_store.update_project(project_id, payload=project["payload"])
+        canvas_store.repair_episode_node_ownership(project_id)
+        project = canvas_store.get_project(project_id)
+        ep1 = next(
+            group for group in project["payload"]["episodeImports"]
+            if group["id"] == "EP001"
+        )
+        ep2 = next(
+            group for group in project["payload"]["episodeImports"]
+            if group["id"] == "EP002"
+        )
+        self.assertIn("explicit-node", ep1["nodeIds"])
+        self.assertNotIn("explicit-node", ep2["nodeIds"])
+        self.assertNotIn("explicit-node", ep2["videoNodeIds"])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root_override = patch.dict(

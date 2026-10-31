@@ -1952,6 +1952,27 @@ def repair_episode_node_ownership(project_id):
             owner = explicit or (candidates[0] if len(candidates) == 1 else "")
             if not owner:
                 continue
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                group_episode = str(group.get("id") or "").strip().upper()
+                if not group_episode or group_episode == owner:
+                    continue
+                before_node_ids = list(group.get("nodeIds") or [])
+                before_video_ids = list(group.get("videoNodeIds") or [])
+                group["nodeIds"] = [
+                    value for value in group.get("nodeIds") or []
+                    if str(value) != node_id
+                ]
+                group["videoNodeIds"] = [
+                    value for value in group.get("videoNodeIds") or []
+                    if str(value) != node_id
+                ]
+                if (
+                    group["nodeIds"] != before_node_ids
+                    or group["videoNodeIds"] != before_video_ids
+                ):
+                    repaired += 1
             if meta.get("episodeId") != owner:
                 meta["episodeId"] = owner
                 node["updatedAt"] = stamp
