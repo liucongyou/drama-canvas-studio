@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
 
 describe('project event cursor', () => {
   it('reconnects SSE from the last rendered events for this project', () => {
@@ -107,6 +107,37 @@ describe('api request recovery', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({episodeId: '2', title: '第二集'}),
+      }),
+    );
+  });
+
+  it('persists a per-episode viewport through the dedicated endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      viewport: {x: -120, y: 48, zoom: 0.72},
+      episodeId: 'EP004',
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(saveCanvasEpisodeViewport(
+      'project-1',
+      {x: -120, y: 48, zoom: 0.72},
+      'EP004',
+    )).resolves.toMatchObject({
+      episodeId: 'EP004',
+      viewport: {zoom: 0.72},
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/projects/project-1/viewport'),
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          viewport: {x: -120, y: 48, zoom: 0.72},
+          episodeId: 'EP004',
+        }),
       }),
     );
   });

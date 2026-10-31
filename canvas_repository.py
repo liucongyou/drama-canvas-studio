@@ -33,6 +33,12 @@ class CanvasRepository:
     def list_projects(self):
         return canvas_store.list_projects()
 
+    def list_project_summaries(self):
+        return canvas_store.list_project_summaries()
+
+    def project_activity_summaries(self):
+        return canvas_store.project_activity_summaries()
+
     def get_project(self, project_id):
         return canvas_store.get_project(project_id)
 

@@ -595,10 +595,10 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
                     <span className="canvas-project-menu-label">
                       <strong>{p.title}</strong>
                       <small>
-                        {(p.node_count || 0) > 0
-                          ? `${p.episode_count || 1} 集 · ${p.node_count || 0} 节点`
-                          : (p.running_count || 0) > 0
+                        {(p.running_count || 0) > 0
                           ? `${p.running_count} 个生成中`
+                          : (p.node_count || 0) > 0
+                          ? `${p.episode_count || 1} 集 · ${p.node_count || 0} 节点`
                           : (p.local_blocked_count || 0) > 0
                             ? `${p.local_blocked_count} 个素材待补`
                             : (p.failed_count || 0) > 0

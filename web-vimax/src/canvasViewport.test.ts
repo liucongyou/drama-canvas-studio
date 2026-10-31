@@ -5,10 +5,41 @@ import {
   focusedNodeVisibleBounds,
   shouldUseLargeCanvasOverview,
   shouldLoadMediaForViewport,
+  shouldPersistViewport,
+  validRestoredViewport,
   viewportForCanvasBounds,
   viewportLoadBounds,
   visibleBoundsForViewport,
 } from './canvasViewport';
+
+describe('restored canvas viewport validation', () => {
+  it('accepts a finite workspace viewport inside the interactive zoom range', () => {
+    expect(validRestoredViewport({x: -120, y: 48, zoom: 0.72}))
+      .toEqual({x: -120, y: 48, zoom: 0.72});
+    expect(validRestoredViewport({x: 40, y: 18, zoom: 3.2}))
+      .toEqual({x: 40, y: 18, zoom: 3.2});
+  });
+
+  it('rejects malformed or implausible saved values instead of restoring a bad zoom', () => {
+    expect(validRestoredViewport(null)).toBeNull();
+    expect(validRestoredViewport({x: 0, y: 0, zoom: 0})).toBeNull();
+    expect(validRestoredViewport({x: 0, y: 0, zoom: 20})).toBeNull();
+    expect(validRestoredViewport({x: 'bad', y: 0, zoom: 1})).toBeNull();
+  });
+});
+
+describe('canvas viewport persistence threshold', () => {
+  it('does not send a network write for identical movement callbacks', () => {
+    expect(shouldPersistViewport(
+      {x: 10, y: 20, zoom: 0.5},
+      {x: 10.2, y: 19.8, zoom: 0.50001},
+    )).toBe(false);
+    expect(shouldPersistViewport(
+      {x: 10, y: 20, zoom: 0.5},
+      {x: 11, y: 20, zoom: 0.5},
+    )).toBe(true);
+  });
+});
 
 describe('popupRevealShift', () => {
   it('moves canvas up only by the amount clipped at the bottom', () => {

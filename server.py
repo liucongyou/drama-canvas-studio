@@ -4594,44 +4594,14 @@ class Handler(BaseHTTPRequestHandler):
             with open(html_path, "rb") as f:
                 return self._send(200, raw=f.read(), content_type="text/html; charset=utf-8")
         if path == "/api/projects":
-            projects = store.list_projects()
-            tasks_by_project = {}
-            for task in store.list_generation_tasks(None, 500):
-                tasks_by_project.setdefault(task.get("project_id"), []).append(task)
+            projects = store.list_project_summaries()
+            activity_by_project = store.project_activity_summaries()
             for project in projects:
-                project_data = store.get_project(project["id"])
-                nodes = project_data["payload"].get("nodes", []) if project_data else []
-                project["node_count"] = len(nodes)
-                project["episode_count"] = len(
-                    (project_data["payload"].get("episodeImports") or [])
-                    if project_data else []
-                ) or 1
-                task_rows = tasks_by_project.get(project["id"], [])
-                project["running_count"] = sum(
-                    1 for node in nodes
-                    if (node.get("metadata") or {}).get("status") == "generating"
-                )
-                failed_nodes = [
-                    node for node in nodes
-                    if (node.get("metadata") or {}).get("status") == "failed"
-                ]
-                project["local_blocked_count"] = sum(
-                    1 for node in failed_nodes
-                    if is_local_validation_error((node.get("metadata") or {}).get("lastError"))
-                )
-                project["failed_count"] = sum(
-                    1 for node in nodes
-                    if (node.get("metadata") or {}).get("status") == "failed"
-                    and not is_local_validation_error((node.get("metadata") or {}).get("lastError"))
-                )
-                latest = task_rows[0] if task_rows else None
-                project["latest_task_status"] = latest.get("status") if latest else ""
-                project["latest_task_phase"] = latest.get("phase") if latest else ""
-                project["latest_task_error_kind"] = (
-                    "local_validation"
-                    if latest and latest.get("status") == "failed" and is_local_validation_error(latest.get("error"))
-                    else ("provider" if latest and latest.get("status") == "failed" else "")
-                )
+                activity = activity_by_project.get(project["id"], {})
+                project["running_count"] = int(activity.get("running_count") or 0)
+                project["latest_task_status"] = activity.get("latest_task_status") or ""
+                project["latest_task_phase"] = activity.get("latest_task_phase") or ""
+                project["latest_task_error_kind"] = activity.get("latest_task_error_kind") or ""
             return self._send(200, {"projects": projects})
         if path == "/api/storage":
             return self._send(200, {"storage": provider_catalog.public_storage_config()})
@@ -5794,6 +5764,43 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(409, {
                 "error": "项目正在被其他操作更新，请稍后重试连线保存",
                 "code": "CONNECTION_REVISION_CONFLICT",
+            })
+        # Position-only save: dragging/layout code must never write stale metadata
+        # (status/content/refs) back over another tab's newer generation state.
+        m = re.match(r"^/api/projects/([^/]+)/viewport$", path)
+        if m:
+            pid = unquote(m.group(1))
+            incoming = body.get("viewport")
+            if not isinstance(incoming, dict):
+                return self._send(400, {"error": "viewport 字段缺失或不是对象"})
+            try:
+                viewport = {
+                    "x": float(incoming.get("x")),
+                    "y": float(incoming.get("y")),
+                    "zoom": float(incoming.get("zoom")),
+                }
+            except (TypeError, ValueError):
+                return self._send(400, {"error": "viewport 的 x、y、zoom 必须是数字"})
+            if (
+                not all(math.isfinite(value) for value in viewport.values())
+                or not 0.12 <= viewport["zoom"] <= 8
+            ):
+                return self._send(400, {"error": "viewport 缩放范围无效"})
+            normalized_episode = str(body.get("episodeId") or "").strip().upper()
+            try:
+                saved = canvas_repository.CanvasRepository().save_viewport(
+                    pid,
+                    viewport,
+                    episode_id=normalized_episode or None,
+                )
+            except KeyError:
+                return self._send(404, {"error": "项目不存在"})
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
+            return self._send(200, {
+                "ok": True,
+                "viewport": saved,
+                "episodeId": normalized_episode,
             })
         # Position-only save: dragging/layout code must never write stale metadata
         # (status/content/refs) back over another tab's newer generation state.

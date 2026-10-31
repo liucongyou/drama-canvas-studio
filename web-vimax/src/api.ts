@@ -1071,6 +1071,7 @@ export async function saveBudgetConfig(budget: BudgetConfig): Promise<{ok: boole
 type Payload = {
   nodes?: PayloadNode[];
   connections?: {fromNodeId: string; toNodeId: string}[];
+  episodeViewports?: Record<string, unknown>;
   title?: string;
   extras?: {notes?: CanvasNote[]};
   episodeId?: string;
@@ -1582,6 +1583,24 @@ export async function saveCanvasMediaNodePositions(
   });
 }
 
+export async function saveCanvasEpisodeViewport(
+  sessionId: string,
+  viewport: {x: number; y: number; zoom: number},
+  epId?: string | null,
+) {
+  return request<{
+    ok: boolean;
+    viewport: {x: number; y: number; zoom: number};
+    episodeId: string;
+  }>(`/api/projects/${encodeURIComponent(sessionId)}/viewport`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      viewport,
+      episodeId: epId || null,
+    }),
+  });
+}
+
 export async function saveCanvasConnections(
   sessionId: string,
   connections: Array<{id: string; fromNodeId: string; toNodeId: string}>,
@@ -1724,6 +1743,7 @@ export async function getCanvasWorkspace(
   canvas: Canvas | {empty: true};
   notes: CanvasNote[];
   mediaNodes: CanvasMediaNode[];
+  episodeViewports: Record<string, unknown>;
   connections: Array<{
     id?: string;
     fromNodeId: string;
@@ -1824,6 +1844,7 @@ export async function getCanvasWorkspace(
     canvas,
     notes,
     mediaNodes: currentNodes,
+    episodeViewports: project?.payload?.episodeViewports || {},
     tasks,
     connections: Array.isArray(project?.payload?.connections)
       ? project.payload.connections

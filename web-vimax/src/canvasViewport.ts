@@ -3,6 +3,8 @@ export const LARGE_CANVAS_VIEWPORT_MARGIN_PX = 260;
 export const LARGE_CANVAS_OVERVIEW_CHUNK_SIZE = 220;
 export const CANVAS_VIEWPORT_POLICY_VERSION = 2;
 export const CANVAS_FOCUS_MIN_ZOOM = 0.5;
+export const CANVAS_RESTORE_MIN_ZOOM = 0.12;
+export const CANVAS_RESTORE_MAX_ZOOM = 8;
 
 export type CanvasViewport = {
   x: number;
@@ -23,6 +25,35 @@ export type CanvasBounds = {
   width: number;
   height: number;
 };
+
+export function validRestoredViewport(
+  value: unknown,
+): CanvasViewport | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<CanvasViewport>;
+  const x = Number(candidate.x);
+  const y = Number(candidate.y);
+  const zoom = Number(candidate.zoom);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom)) {
+    return null;
+  }
+  if (zoom < CANVAS_RESTORE_MIN_ZOOM || zoom > CANVAS_RESTORE_MAX_ZOOM) {
+    return null;
+  }
+  return {x, y, zoom};
+}
+
+export function shouldPersistViewport(
+  value: CanvasViewport,
+  lastStored: CanvasViewport | null | undefined,
+): boolean {
+  if (!lastStored) return true;
+  return (
+    Math.abs(value.x - lastStored.x) >= 0.5
+    || Math.abs(value.y - lastStored.y) >= 0.5
+    || Math.abs(value.zoom - lastStored.zoom) >= 0.0001
+  );
+}
 
 type ViewportNodeLike = {
   kind: string;

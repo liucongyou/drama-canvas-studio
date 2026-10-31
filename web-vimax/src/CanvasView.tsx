@@ -107,7 +107,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -147,7 +147,7 @@ import {
   modelMaxRefs,
   type BatchGenerationCandidate,
 } from './batchGeneration';
-import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, applyLayoutPositions, canvasViewportIndexKey, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, initialViewportForScope, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, viewportIndexForSave, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
+import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, applyLayoutPositions, canvasViewportIndexKey, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, initialViewportForScope, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, viewportFromPayload, viewportIndexForSave, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
 import {
   CANVAS_VIEWPORT_POLICY_VERSION,
   filterMediaNodesInBounds,
@@ -158,6 +158,8 @@ import {
   shouldUseLargeCanvasOverview,
   viewportForCanvasBounds,
   viewportLoadBounds,
+  validRestoredViewport,
+  shouldPersistViewport,
   visibleBoundsForViewport,
   type CanvasViewport,
   type CanvasVisibleBounds,
@@ -1396,6 +1398,7 @@ function EpisodeRows({
   episodeDeleting,
   fmtEp,
   setCurrentEp,
+  onClose,
   setEpisodeMenu,
 }: {
   episodes: Canvas['meta']['episodes'];
@@ -1403,13 +1406,14 @@ function EpisodeRows({
   episodeDeleting: boolean;
   fmtEp: (epId: string) => string;
   setCurrentEp: (epId: string) => void;
+  onClose: () => void;
   setEpisodeMenu: (menu: {epId: string; title: string; left: number; top: number}) => void;
 }) {
-  const [requested, setRequested] = useState(80);
+  const [scrollTop, setScrollTop] = useState(0);
   const [size, setSize] = useState({width: 320, height: 640});
   const listRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    setRequested(80);
+    setScrollTop(0);
   }, [episodes.length]);
   useLayoutEffect(() => {
     const element = listRef.current;
@@ -1427,21 +1431,34 @@ function EpisodeRows({
   }, []);
   const estimate = useMemo(() => {
     const rowHeight = 40;
-    const titleHeight = 34;
     const columns = Math.max(1, Math.floor(size.width / 170));
-    const perColumn = Math.max(4, Math.floor((size.height - titleHeight) / rowHeight));
-    return Math.max(16, Math.min(180, perColumn * columns));
+    const perColumn = Math.max(4, Math.ceil(size.height / rowHeight) + 6);
+    return Math.max(24, Math.min(180, perColumn * columns));
   }, [size]);
-  const rendered = Math.max(requested, estimate);
+  const columns = Math.max(1, Math.floor(size.width / 170));
+  const overscanRows = 6;
+  const firstColumnIndex = Math.max(
+    0,
+    Math.floor(scrollTop / (40 * columns)) * columns - overscanRows * columns,
+  );
+  const visibleCount = estimate;
+  const endExclusive = Math.min(episodes.length, firstColumnIndex + visibleCount);
+  const visibleEpisodes = episodes.slice(firstColumnIndex, endExclusive);
+  const loadedEnd = Math.min(episodes.length, firstColumnIndex + visibleCount * 2);
   return (
-    <div className="canvas-ep-virtual-list" ref={listRef}>
+    <div
+      className="canvas-ep-virtual-list"
+      ref={listRef}
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+    >
       <div
         className="canvas-ep-virtual-spacer"
         style={{
-          height: Math.ceil(episodes.length / Math.max(1, Math.floor(size.width / 170))) * 40,
+          height: Math.max(40, Math.ceil(episodes.length / columns) * 40),
+          paddingTop: Math.floor(firstColumnIndex / columns) * 40,
         }}
       >
-        {episodes.slice(0, rendered).map((ep) => {
+        {visibleEpisodes.map((ep) => {
           const baseEpisodeLabel = fmtEp(ep.ep_id);
           const episodeLabel = ep.title
             && ep.title !== ep.ep_id
@@ -1465,7 +1482,10 @@ function EpisodeRows({
               <button
                 type="button"
                 className="canvas-ep-select"
-                onClick={() => setCurrentEp(ep.ep_id)}
+                onClick={() => {
+                  onClose();
+                  setCurrentEp(ep.ep_id);
+                }}
                 title={`${episodeLabel} · ${badge}`}
               >
                 <span className="ep-name">{episodeLabel}</span>
@@ -1495,13 +1515,21 @@ function EpisodeRows({
             </div>
           );
         })}
-        {rendered < episodes.length && (
+        {loadedEnd < episodes.length && (
           <button
             type="button"
             className="canvas-ep-load-more"
-            onClick={() => setRequested((value) => Math.min(episodes.length, value + 80))}
+            onClick={() => {
+              const element = listRef.current;
+              if (!element) return;
+              const currentIndex = Math.round(element.scrollTop / 40) * columns;
+              element.scrollTo({
+                top: Math.max(0, currentIndex + visibleCount) / columns * 40,
+                behavior: 'smooth',
+              });
+            }}
           >
-            加载更多（{rendered}/{episodes.length}）
+            继续向下加载（{endExclusive}/{episodes.length}）
           </button>
         )}
       </div>
@@ -8144,6 +8172,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const overviewReturnViewportRef = useRef<CanvasViewport | null>(null);
   const focusSelectionRef = useRef<(showEmptyHint?: boolean) => void>(() => {});
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewportSnapshotRef = useRef({key: '', seq: 0});
+  const serverEpisodeViewportsRef = useRef<Record<string, unknown>>({});
+  const lastPersistedViewportRef = useRef<{key: string; viewport: {x: number; y: number; zoom: number}} | null>(null);
 
   const loadPersistedLayout = useCallback(() => {
     try {
@@ -8221,11 +8252,53 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           viewportPolicyVersion: CANVAS_VIEWPORT_POLICY_VERSION,
         }));
         localStorage.setItem(viewportIndexKey, JSON.stringify(nextIndex));
+        const snapshotKey = `${session}:${currentEp || '__project__'}`;
+        const lastPersisted = lastPersistedViewportRef.current;
+        if (
+          lastPersisted?.key === snapshotKey
+          && !shouldPersistViewport(viewport, lastPersisted.viewport)
+        ) return;
+        if (viewportSnapshotRef.current.key !== snapshotKey) {
+          viewportSnapshotRef.current = {key: snapshotKey, seq: 0};
+        }
+        const seq = viewportSnapshotRef.current.seq + 1;
+        viewportSnapshotRef.current.seq = seq;
+        lastPersistedViewportRef.current = {key: snapshotKey, viewport};
+        void saveCanvasEpisodeViewport(session, viewport, currentEp)
+          .then((result) => {
+            if (
+              viewportSnapshotRef.current.key !== snapshotKey
+              || viewportSnapshotRef.current.seq !== seq
+            ) return;
+            const episodeKey = String(currentEp || '').toUpperCase();
+            if (episodeKey) {
+              serverEpisodeViewportsRef.current = {
+                ...serverEpisodeViewportsRef.current,
+                [episodeKey]: result.viewport || viewport,
+              };
+            }
+          })
+          .catch(() => {
+            // Viewport persistence is best-effort; layout edits remain saved
+            // independently and a transient viewport failure must not surface
+            // as a project save error.
+            if (lastPersistedViewportRef.current?.key === snapshotKey) {
+              lastPersistedViewportRef.current = null;
+            }
+          });
       } catch {
         // View persistence is best-effort and must not affect canvas interaction.
       }
     }, 220);
-  }, [currentEp, layoutKey, viewportIndexKey]);
+  }, [currentEp, layoutKey, session, viewportIndexKey]);
+
+  const flushViewportNow = useCallback(() => {
+    if (viewportSaveTimer.current) {
+      clearTimeout(viewportSaveTimer.current);
+      viewportSaveTimer.current = null;
+    }
+    rememberViewport(viewportRef.current);
+  }, [rememberViewport]);
 
   // ── 编组操作 ──────────────────────────────────────────────────────
   // 编组：把当前选中的卡片收进一个新组。已属于其它组的成员会自动离组（一个人只能在一个组里）。
@@ -9145,10 +9218,12 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         canvas: data,
         notes: noteList,
         mediaNodes: mediaList,
+        episodeViewports,
         tasks: initialTasks,
         connections: projectConnections,
       }) => {
         if (loadEpoch !== workspaceLoadEpochRef.current) return;
+        serverEpisodeViewportsRef.current = episodeViewports || {};
         taskLoadGenerationRef.current += 1;
         projectConnectionsRef.current = projectConnections;
         startTransition(() => {
@@ -14209,14 +14284,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       setGroups(restoredGroups);
       groupsRef.current = restoredGroups;
       if (saved) {
-        savedViewport = saved.viewport || null;
-        if (
-          savedViewport
-          && Number(saved.viewportPolicyVersion || 1) < CANVAS_VIEWPORT_POLICY_VERSION
-          && savedViewport.zoom < 0.5
-        ) {
-          savedViewport = null;
-        }
+        savedViewport = validRestoredViewport(saved.viewport);
         if (saved.positions) positionRef.current = {...positionRef.current, ...saved.positions};
         if (Array.isArray(saved.deletedAuto) && saved.deletedAuto.length > 0) setDeletedAutoEdgeIds(new Set(saved.deletedAuto));
       } else if (!positionRef.current || Object.keys(positionRef.current).length === 0) {
@@ -14227,13 +14295,30 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       }
     }
     if (shouldFit && !savedViewport) {
+      savedViewport = validRestoredViewport(viewportFromPayload(
+        {episodeViewports: serverEpisodeViewportsRef.current},
+        session,
+        currentEp,
+      ));
+    }
+    // localStorage is device-local and can be stale or unavailable. When the
+    // project payload already owns this episode's viewport, use it as the
+    // cross-device source of truth instead of merely carrying local state.
+    if (serverEpisodeViewportsRef.current[String(currentEp || '').toUpperCase()]) {
+      savedViewport = validRestoredViewport(viewportFromPayload(
+        {episodeViewports: serverEpisodeViewportsRef.current},
+        session,
+        currentEp,
+      )) ?? savedViewport;
+    }
+    if (shouldFit && !savedViewport) {
       try {
         const raw = localStorage.getItem(viewportIndexKey);
         const index = raw ? JSON.parse(raw) : [];
-        savedViewport = initialViewportForScope(
+        savedViewport = validRestoredViewport(initialViewportForScope(
           Array.isArray(index) ? index : [],
           currentEp ?? '__project__',
-        )?.viewport || null;
+        )?.viewport);
       } catch {
         savedViewport = null;
       }
@@ -15030,13 +15115,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             )}
             {railTab === 'eps' ? (
               <div className="canvas-ep-list-body" role="list">
-                {canvas.meta.episodes.length > 120 ? (
+                {canvas.meta.episodes.length > 60 ? (
                   <EpisodeRows
                     episodes={canvas.meta.episodes}
                     currentEp={currentEp}
                     episodeDeleting={episodeDeleting}
                     fmtEp={fmtEp}
                     setCurrentEp={setCurrentEp}
+                    onClose={() => setEpListOpen(false)}
                     setEpisodeMenu={setEpisodeMenu}
                   />
                 ) : canvas.meta.episodes.map((ep) => {
@@ -15271,6 +15357,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               syncSelBar();
               syncGroupFrames();
             }}
+            onMoveEnd={() => flushViewportNow()}
             // 连线中点的剪断按钮挂在 EdgeLabelRenderer 里，会被画布的 zoom 一起缩放：
             // 缩到 38% 时 20px 的按钮只剩 7.6px，剪刀图标等于看不见。
             // 这里注入 1/zoom 让按钮恒为 20px 屏幕像素（钳到 6x 防极端缩放时爆掉）。

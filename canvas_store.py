@@ -81,7 +81,18 @@ def _connect():
                 payload_json TEXT,
                 revision INTEGER DEFAULT 1,
                 created_at TEXT,
-                updated_at TEXT
+                updated_at TEXT,
+                node_count INTEGER DEFAULT 0,
+                connection_count INTEGER DEFAULT 0,
+                episode_count INTEGER DEFAULT 1,
+                failed_count INTEGER DEFAULT 0,
+                local_blocked_count INTEGER DEFAULT 0
+            )"""
+            )
+            con.execute(
+            """CREATE TABLE IF NOT EXISTS canvas_meta(
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             )"""
             )
             con.execute(
@@ -273,6 +284,50 @@ def _connect():
                 con.execute(
                     "ALTER TABLE canvas_snapshots ADD COLUMN kind TEXT DEFAULT 'auto'"
                 )
+            project_columns = {
+                row[1] for row in con.execute("PRAGMA table_info(canvas_projects)")
+            }
+            for column, default in (
+                ("node_count", 0),
+                ("connection_count", 0),
+                ("episode_count", 1),
+                ("failed_count", 0),
+                ("local_blocked_count", 0),
+            ):
+                if column not in project_columns:
+                    con.execute(
+                        f"ALTER TABLE canvas_projects ADD COLUMN {column} "
+                        f"INTEGER DEFAULT {default}"
+                    )
+            stats_version = "project_stats_v3"
+            stats_migrated = con.execute(
+                "SELECT 1 FROM canvas_meta WHERE key=?",
+                (stats_version,),
+            ).fetchone()
+            # SQLite materializes defaults for existing rows, so checking NULL
+            # cannot distinguish an old project from a genuinely empty one.
+            # Use an explicit migration marker and backfill the payload-derived
+            # counters exactly once.
+            if not stats_migrated:
+                rows = con.execute(
+                    "SELECT id,payload_json FROM canvas_projects"
+                ).fetchall()
+                for project_id, raw_payload in rows:
+                    try:
+                        payload = json.loads(raw_payload or "{}")
+                    except (TypeError, ValueError):
+                        payload = {}
+                    con.execute(
+                        "UPDATE canvas_projects SET node_count=?,"
+                        "connection_count=?,episode_count=?,failed_count=?,"
+                        "local_blocked_count=? WHERE id=?",
+                        (*payload_stats(payload), project_id),
+                    )
+                con.execute(
+                    "INSERT INTO canvas_meta(key,value) VALUES(?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (stats_version, "1"),
+                )
             con.commit()
             _SCHEMA_READY_PATHS.add(path)
             _SCHEMA_READY = True
@@ -282,6 +337,36 @@ def _connect():
 def _is_retryable_write_error(exc: sqlite3.OperationalError) -> bool:
     message = str(exc).lower()
     return "database is locked" in message or "database is busy" in message
+
+
+def payload_stats(payload):
+    if not isinstance(payload, dict):
+        return 0, 0, 1, 0, 0
+    nodes = payload.get("nodes")
+    connections = payload.get("connections")
+    episodes = payload.get("episodeImports")
+    failed_count = 0
+    local_blocked_count = 0
+    if isinstance(nodes, list):
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            metadata = node.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            if str(metadata.get("status") or "") != "failed":
+                continue
+            if is_local_validation_error(metadata.get("lastError")):
+                local_blocked_count += 1
+            else:
+                failed_count += 1
+    return (
+        len(nodes) if isinstance(nodes, list) else 0,
+        len(connections) if isinstance(connections, list) else 0,
+        max(1, len(episodes)) if isinstance(episodes, list) else 1,
+        failed_count,
+        local_blocked_count,
+    )
 
 
 def _run_write_transaction(callback):
@@ -334,6 +419,48 @@ def list_projects():
     return [{"id": r[0], "title": r[1], "revision": r[2], "updated_at": r[3]} for r in rows]
 
 
+def list_project_summaries():
+    """Return project cards without parsing every full canvas payload.
+
+    The old /api/projects path loaded and JSON-decoded every project solely to
+    count nodes and failed generations. SQLite can aggregate the common counts
+    directly from the versioned snapshot metadata, while task/session state
+    still comes from their own indexed tables.
+    """
+    con = _connect()
+    rows = con.execute(
+        """
+        SELECT
+            p.id,
+            p.title,
+            p.revision,
+            p.updated_at,
+            COALESCE(p.node_count, 0) AS node_count,
+            COALESCE(p.connection_count, 0) AS connection_count,
+            COALESCE(p.episode_count, 1) AS episode_count,
+            COALESCE(p.failed_count, 0) AS failed_count,
+            COALESCE(p.local_blocked_count, 0) AS local_blocked_count
+        FROM canvas_projects p
+        ORDER BY p.updated_at DESC
+        """
+    ).fetchall()
+    con.close()
+    return [
+        {
+            "id": row[0],
+            "title": row[1],
+            "revision": row[2],
+            "updated_at": row[3],
+            "node_count": int(row[4] or 0),
+            "connection_count": int(row[5] or 0),
+            "episode_count": int(row[6] or 1),
+            "failed_count": int(row[7] or 0),
+            "local_blocked_count": int(row[8] or 0),
+        }
+        for row in rows
+    ]
+
+
 def get_project(pid):
     con = _connect()
     row = con.execute(
@@ -343,6 +470,76 @@ def get_project(pid):
     if not row:
         return None
     return {"id": row[0], "title": row[1], "payload": json.loads(row[2]), "revision": row[3]}
+
+
+def project_activity_summaries():
+    """Return project activity without scanning full canvas payloads.
+
+    running_count is useful UI truth. Legacy failed/local counts depended on
+    stale node metadata and were not reliable project-level facts; current
+    failure details live in tasks and the per-project task center.
+    """
+    con = _connect()
+    rows = con.execute(
+        """
+        SELECT
+            t.project_id,t.status,t.phase,t.error,
+            (
+                SELECT COUNT(*) FROM generation_tasks a
+                WHERE a.project_id=t.project_id
+                AND a.status IN ('queued','submitting','running')
+            ) AS running_count
+        FROM generation_tasks t
+        WHERE t.rowid IN (
+            SELECT t2.rowid
+            FROM generation_tasks t2
+            WHERE t2.project_id=t.project_id
+            ORDER BY t2.created_at DESC, t2.updated_at DESC, t2.rowid DESC
+            LIMIT 1
+        ) OR t.status IN ('queued','submitting','running')
+        ORDER BY t.created_at DESC, t.updated_at DESC, t.rowid DESC
+        """
+    ).fetchall()
+    con.close()
+    summaries = {}
+    for project_id, status, phase, error, running_count in rows:
+        key = str(project_id or "")
+        if not key:
+            continue
+        item = summaries.setdefault(key, {
+            "running_count": 0,
+            "failed_count": 0,
+            "local_blocked_count": 0,
+            "latest_task_status": "",
+            "latest_task_phase": "",
+            "latest_task_error_kind": "",
+        })
+        item["running_count"] = int(running_count or 0)
+        if not item["latest_task_status"]:
+            item["latest_task_status"] = str(status or "")
+            item["latest_task_phase"] = str(phase or "")
+            item["latest_task_error_kind"] = (
+                "local_validation"
+                if status == "failed" and is_local_validation_error(error)
+                else ("provider" if status == "failed" else "")
+            )
+    return summaries
+
+
+def is_local_validation_error(message):
+    text = str(message or "")
+    markers = (
+        "参考素材未就绪",
+        "参考素材缺失",
+        "引用节点不存在",
+        "提示词为空",
+        "当前模型最多",
+        "音色节点尚未生成",
+        "源节点尚未生成",
+        "原始产物转存到 TOS",
+        "信任窗口只有",
+    )
+    return any(marker in text for marker in markers)
 
 
 def create_project(title, payload=None):
@@ -376,7 +573,10 @@ def create_project(title, payload=None):
         payload.setdefault("title", title)
         payload.setdefault("revision", 1)
     con.execute(
-        "INSERT INTO canvas_projects(id,user_id,title,payload_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+        "INSERT INTO canvas_projects(id,user_id,title,payload_json,revision,"
+        "created_at,updated_at,node_count,connection_count,episode_count,"
+        "failed_count,local_blocked_count) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             pid,
             tenant_context.current_tenant_id(),
@@ -385,6 +585,7 @@ def create_project(title, payload=None):
             1,
             now,
             now,
+            *payload_stats(payload),
         ),
     )
     _snapshot(con, pid, title, payload, 1, kind="auto")
@@ -429,13 +630,16 @@ def update_project(
         new_payload["title"] = new_title
         new_payload["updatedAt"] = now
         cursor = con.execute(
-            "UPDATE canvas_projects SET title=?, payload_json=?, revision=?, updated_at=? "
+            "UPDATE canvas_projects SET title=?, payload_json=?, revision=?, updated_at=?, "
+            "node_count=?, connection_count=?, episode_count=?,"
+            "failed_count=?, local_blocked_count=? "
             "WHERE id=? AND revision=?",
             (
                 new_title,
                 json.dumps(new_payload, ensure_ascii=False),
                 new_rev,
                 now,
+                *payload_stats(new_payload),
                 pid,
                 current_revision,
             ),
@@ -889,12 +1093,15 @@ def commit_generation_terminal(
         new_payload["updatedAt"] = node_written_at
         title = row[0]
         cursor = con.execute(
-            "UPDATE canvas_projects SET payload_json=?,revision=?,updated_at=? "
+            "UPDATE canvas_projects SET payload_json=?,revision=?,updated_at=?,"
+            "node_count=?,connection_count=?,episode_count=?,"
+            "failed_count=?,local_blocked_count=? "
             "WHERE id=? AND revision=?",
             (
                 json.dumps(new_payload, ensure_ascii=False),
                 new_revision,
                 node_written_at,
+                *payload_stats(new_payload),
                 project_id,
                 current_revision,
             ),

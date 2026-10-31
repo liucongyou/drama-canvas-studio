@@ -7160,7 +7160,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
           再用 position:absolute 钉在右上角，任何标题/计数变化都不影响。 */
 .canvas-ep-list-header{
   position:relative;
-  padding-right:34px;
+  padding-right:12px;
 }
 .canvas-ep-list-header .canvas-ep-list-add,
 .canvas-ep-list-header .canvas-ep-list-close{
@@ -7168,24 +7168,12 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   flex:none;
 }
 .canvas-ep-list-header .canvas-ep-list-add{
-  margin-left:auto;
-  margin-top:-2px;
   padding:0;
   line-height:0;
-}
-.canvas-ep-list-header .canvas-ep-list-close{
-  margin-top:-1px;
 }
 .canvas-ep-list-header .canvas-ep-list-add svg,
 .canvas-ep-list-header .canvas-ep-list-close svg{
   display:block;
-}
-.canvas-ep-list-close{
-  position:absolute;
-  top:50%;
-  right:8px;
-  transform:translateY(-50%);
-  margin-left:0;
 }
 
 /* ② 点击列表项定位后，目标卡片要有明确的选中反馈。

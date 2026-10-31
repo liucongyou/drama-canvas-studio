@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import copy
 import os
 import tempfile
 import unittest
@@ -98,6 +99,28 @@ class CanvasRepositoryTests(unittest.TestCase):
             current["payload"]["nodes"][0]["metadata"]["prompt"],
             "v2",
         )
+        current = self.repo.get_project(project_id)
+        stale_revision = current["revision"]
+        stale_payload = copy.deepcopy(current["payload"])
+        viewport["zoom"] = 0.7
+        stale_payload.setdefault("episodeViewports", {})["EP01"] = viewport
+        canvas_store.update_project(
+            project_id,
+            payload=stale_payload,
+        )
+        # The repository lock is not shared with a generation worker. The
+        # revision CAS must reject the stale read even when the final payload
+        # already contains the requested viewport change.
+        concurrent = copy.deepcopy(stale_payload)
+        concurrent["nodes"][0]["metadata"]["content"] = "/uploads/new-video.mp4"
+        canvas_store.update_project(project_id, payload=concurrent)
+        with self.assertRaises(canvas_store.RevisionConflictError):
+            self.repo.save_viewport(
+                project_id,
+                {"x": 10, "y": 20, "zoom": 0.7},
+                episode_id="EP01",
+                if_revision=stale_revision,
+            )
         with self.assertRaises(canvas_store.RevisionConflictError):
             self.repo.patch_project_metadata(
                 project_id,

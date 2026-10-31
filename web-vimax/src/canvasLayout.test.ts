@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {absolutePositionOf, ALIGN_VISIBLE_PX, applyLayoutPositions, canvasViewportIndexKey, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, initialViewportForScope, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, viewportIndexForSave, workspaceScopeMatches} from './canvasLayout';
+import {absolutePositionOf, ALIGN_VISIBLE_PX, applyLayoutPositions, canvasViewportIndexKey, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, initialViewportForScope, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, viewportFromPayload, viewportIndexForSave, workspaceScopeMatches} from './canvasLayout';
 
 describe('canvas viewport scope', () => {
   it('restores the active episode before the project fallback', () => {
@@ -30,6 +30,28 @@ describe('canvas viewport scope', () => {
   it('uses one stable viewport index per project', () => {
     expect(canvasViewportIndexKey('project-1'))
       .toBe('vimax.canvas.viewports.project-1');
+  });
+
+  it('prefers the server viewport for the active episode', () => {
+    const payload = {
+      episodeViewports: {
+        EP004: {x: 10, y: 20, zoom: 0.75},
+        EP010: {x: 30, y: 40, zoom: 0.6},
+      },
+    };
+    expect(viewportFromPayload(payload, 'project-1', 'EP004'))
+      .toEqual({x: 10, y: 20, zoom: 0.75});
+    expect(viewportFromPayload(payload, 'project-1', null)).toBeNull();
+  });
+
+  it('falls back to the legacy project viewport for single-episode projects', () => {
+    const payload = {
+      episodeViewports: {
+        'project-1': {x: 5, y: 6, zoom: 0.8},
+      },
+    };
+    expect(viewportFromPayload(payload, 'project-1', null))
+      .toEqual({x: 5, y: 6, zoom: 0.8});
   });
 });
 

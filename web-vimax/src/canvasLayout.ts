@@ -609,6 +609,20 @@ export function canvasViewportIndexKey(projectId: string): string {
   return `vimax.canvas.viewports.${projectId}`;
 }
 
+export function viewportFromPayload(
+  payload: {episodeViewports?: Record<string, unknown>} | null | undefined,
+  projectId: string,
+  episodeId?: string | null,
+): unknown {
+  if (!payload || typeof payload.episodeViewports !== 'object') return null;
+  const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
+  if (normalizedEpisode) {
+    return payload.episodeViewports?.[normalizedEpisode] ?? null;
+  }
+  const legacy = payload.episodeViewports?.[projectId];
+  return legacy && typeof legacy === 'object' ? legacy : null;
+}
+
 export function applyLayoutPositions<
   Media extends {id: string; x: number; y: number},
   Note extends {id: string; x: number; y: number},
