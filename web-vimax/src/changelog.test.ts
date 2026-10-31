@@ -19,6 +19,18 @@ describe('frontend changelog', () => {
     }
   });
 
+  it('requires the currently deployed changelog entries to be present', () => {
+    const versions = new Set(CHANGELOG.map((entry) => entry.version));
+    for (const version of [
+      '2026.10.31.12',
+      '2026.10.31.13',
+      '2026.10.31.14',
+      '2026.10.31.15',
+    ]) {
+      expect(versions.has(version)).toBe(true);
+    }
+  });
+
   it('keeps the 2026.10.29.21 account presence work out of the visible release notes', () => {
     expect(CHANGELOG.some((entry) => entry.version === '2026.10.29.21')).toBe(false);
     expect(CHANGELOG.some((entry) => entry.version === '2026.10.29.22')).toBe(false);

@@ -1132,7 +1132,14 @@ function ChangelogDialog({entries, onClose}: {entries: ChangelogEntry[]; onClose
           ))}
         </div>
         <footer>
-          <span>版本记录与前端代码同仓维护</span>
+          <span>当前页面 v{APP_VERSION} · 记录与前端代码同仓维护</span>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            title="重新加载最新前端资源"
+          >
+            重新加载
+          </button>
           <button type="button" onClick={onClose}>知道了</button>
         </footer>
       </section>
