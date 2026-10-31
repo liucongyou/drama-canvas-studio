@@ -8,10 +8,23 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.31.19';
+export const APP_VERSION = '2026.10.31.20';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.31.20',
+    date: '2026-10-31',
+    releasedAt: '2026-11-01 01:55:00 +08:00',
+    title: '石墨蓝画布与供应商识别细节',
+    changes: [
+      '石墨蓝主题恢复为截图中的深石墨蓝卡片表面，卡片按钮和连接端口不再随其它主题染色；端口恢复中性灰玻璃样式。',
+      '模型浮层继续以触发按钮左缘对齐，避免视频参数面板偏左或覆盖弹窗标题。',
+      '模型按钮使用服务商自定义图标；未上传图标时显示统一默认图标，供应商列表左侧也增加同尺寸图标。',
+      '非选中状态的真实引用连线降低透明度，保留关系但不压过卡片内容；悬停或选中连线时恢复高亮。',
+      'New APl 的即梦-50-seedance-2.0-fast 视频链路已完成真实提交、同一任务查询、结果下载和视频文件校验。',
+    ],
+  },
   {
     version: '2026.10.31.19',
     date: '2026-10-31',
