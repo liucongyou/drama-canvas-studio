@@ -8,10 +8,23 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.31.9';
+export const APP_VERSION = '2026.10.31.10';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.31.10',
+    date: '2026-10-31',
+    releasedAt: '2026-10-31 14:06:00 +08:00',
+    title: 'Seedream 原图临时链接直连 Seedance',
+    changes: [
+      '图片生成成功后，供应商返回的原始 HTTPS 地址会和本地文件、对象存储回执一起写入节点。',
+      'Seedance 提交参考图时优先使用已有 TOS 原始对象；没有 TOS 时，先验证 Seedream 原始临时链接可访问再直接引用。',
+      '临时链接返回鉴权失败、404 或已过期时，在付费提交前明确停止，并提示重新生成图片或配置 TOS。',
+      'OSS 等转存镜像不会被误当成 Seedream 原始临时链接。',
+      '历史节点可从成功任务回执恢复供应商原链；从未保存过原链的旧图片不会伪造地址，需重新生成或转存 TOS。',
+    ],
+  },
   {
     version: '2026.10.31.9',
     date: '2026-10-31',
