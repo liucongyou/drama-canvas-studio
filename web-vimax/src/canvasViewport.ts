@@ -12,6 +12,8 @@ export type CanvasViewport = {
   zoom: number;
 };
 
+export type EpisodeViewportMap = Record<string, CanvasViewport>;
+
 export type CanvasVisibleBounds = {
   x1: number;
   y1: number;
@@ -53,6 +55,53 @@ export function shouldPersistViewport(
     || Math.abs(value.y - lastStored.y) >= 0.5
     || Math.abs(value.zoom - lastStored.zoom) >= 0.0001
   );
+}
+
+export function mergeEpisodeViewport(
+  current: Record<string, unknown> | null | undefined,
+  episodeId: string | null | undefined,
+  viewport: CanvasViewport,
+  projectId?: string,
+): EpisodeViewportMap {
+  const next: EpisodeViewportMap = {};
+  Object.entries(current || {}).forEach(([key, value]) => {
+    const valid = validRestoredViewport(value);
+    if (valid) next[key] = valid;
+  });
+  const scope = String(episodeId || '').trim().toUpperCase();
+  if (scope) {
+    next[scope] = validRestoredViewport(viewport) || viewport;
+  } else if (projectId) {
+    next[projectId] = validRestoredViewport(viewport) || viewport;
+  }
+  return next;
+}
+
+export function selectEpisodeViewport(
+  viewports: Record<string, unknown> | null | undefined,
+  episodeId: string | null | undefined,
+  projectId?: string,
+): CanvasViewport | null {
+  if (!viewports) return null;
+  const scope = String(episodeId || '').trim().toUpperCase();
+  if (scope && viewports[scope]) return validRestoredViewport(viewports[scope]);
+  if (projectId && viewports[projectId]) {
+    return validRestoredViewport(viewports[projectId]);
+  }
+  return null;
+}
+
+export function episodeIdFromWorkspace(
+  currentEpisode: string | null | undefined,
+  mediaNodes: Array<{episodeId?: string | null}>,
+): string | null {
+  const current = String(currentEpisode || '').trim().toUpperCase();
+  if (current) return current;
+  for (const node of mediaNodes) {
+    const episodeId = String(node.episodeId || '').trim().toUpperCase();
+    if (episodeId) return episodeId;
+  }
+  return null;
 }
 
 type ViewportNodeLike = {

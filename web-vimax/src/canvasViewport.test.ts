@@ -5,6 +5,9 @@ import {
   focusedNodeVisibleBounds,
   shouldUseLargeCanvasOverview,
   shouldLoadMediaForViewport,
+  mergeEpisodeViewport,
+  selectEpisodeViewport,
+  episodeIdFromWorkspace,
   shouldPersistViewport,
   validRestoredViewport,
   viewportForCanvasBounds,
@@ -38,6 +41,32 @@ describe('canvas viewport persistence threshold', () => {
       {x: 10, y: 20, zoom: 0.5},
       {x: 11, y: 20, zoom: 0.5},
     )).toBe(true);
+  });
+});
+
+describe('episode viewport map', () => {
+  it('keeps independent saved viewports and resolves only the active episode', () => {
+    const merged = mergeEpisodeViewport(
+      {EP002: {x: 20, y: 30, zoom: 0.5}},
+      'EP001',
+      {x: 10, y: 12, zoom: 0.66},
+    );
+    expect(selectEpisodeViewport(merged, 'EP001')).toEqual({
+      x: 10,
+      y: 12,
+      zoom: 0.66,
+    });
+    expect(selectEpisodeViewport(merged, 'EP002')).toEqual({
+      x: 20,
+      y: 30,
+      zoom: 0.5,
+    });
+    expect(selectEpisodeViewport(merged, 'EP003')).toBeNull();
+  });
+
+  it('resolves the effective workspace episode even before currentEp commits', () => {
+    expect(episodeIdFromWorkspace(null, [{episodeId: 'EP002'}])).toBe('EP002');
+    expect(episodeIdFromWorkspace('ep001', [{episodeId: 'EP002'}])).toBe('EP001');
   });
 });
 

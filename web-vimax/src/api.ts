@@ -1587,6 +1587,7 @@ export async function saveCanvasEpisodeViewport(
   sessionId: string,
   viewport: {x: number; y: number; zoom: number},
   epId?: string | null,
+  options?: {keepalive?: boolean},
 ) {
   return request<{
     ok: boolean;
@@ -1598,6 +1599,7 @@ export async function saveCanvasEpisodeViewport(
       viewport,
       episodeId: epId || null,
     }),
+    keepalive: options?.keepalive === true,
   });
 }
 
@@ -1739,11 +1741,13 @@ export async function getCanvasNotes(
 export async function getCanvasWorkspace(
   sessionId: string,
   epId?: string | null,
+  signal?: AbortSignal,
 ): Promise<{
   canvas: Canvas | {empty: true};
   notes: CanvasNote[];
   mediaNodes: CanvasMediaNode[];
   episodeViewports: Record<string, unknown>;
+  activeEpisodeId: string | null;
   connections: Array<{
     id?: string;
     fromNodeId: string;
@@ -1752,7 +1756,17 @@ export async function getCanvasWorkspace(
   }>;
   tasks: GenerationTask[];
 }> {
-  const project = await getProject(sessionId).catch(() => null);
+  const project = await request<ProjectResponse>(
+    `/api/projects/${encodeURIComponent(sessionId)}`,
+    {signal},
+  )
+    .then(normalizeProjectMediaUrls)
+    .catch((error) => {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw error;
+      }
+      return null;
+    });
   const requestedEpisode = String(epId || '').trim().toUpperCase();
   const projectEpisodes = new Set(
     Array.isArray(project?.payload?.episodeImports)
@@ -1772,8 +1786,8 @@ export async function getCanvasWorkspace(
       || '',
     ).trim().toUpperCase()
     || null;
-  const [canvas, notes, mediaNodes, tasks] = await Promise.all([
-    getCanvas(sessionId, currentEpisode, project),
+  const canvas = await getCanvas(sessionId, currentEpisode, project);
+  const [notes, mediaNodes, tasks] = await Promise.all([
     getCanvasNotes(sessionId, project),
     getCanvasMediaNodes(sessionId, currentEpisode, project),
     getGenerationTasks(sessionId, 80, currentEpisode),
@@ -1845,6 +1859,7 @@ export async function getCanvasWorkspace(
     notes,
     mediaNodes: currentNodes,
     episodeViewports: project?.payload?.episodeViewports || {},
+    activeEpisodeId: currentEpisode,
     tasks,
     connections: Array.isArray(project?.payload?.connections)
       ? project.payload.connections

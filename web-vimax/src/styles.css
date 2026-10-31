@@ -6679,6 +6679,22 @@ html[data-theme='dark'] .dialog-actions button.primary:hover:not(:disabled) {
   padding: 40px 16px;
 }
 .ledger-empty-state strong { color: var(--ink); font-size: 16px; }
+.ledger-loading-action {
+  margin-top: 4px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+.ledger-loading-hint {
+  max-width: 360px;
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.6;
+}
 .ledger-empty-state p { max-width: 380px; font-size: 13px; margin: 0; }
 .ledger-empty-state .primary-btn {
   margin-top: 6px;

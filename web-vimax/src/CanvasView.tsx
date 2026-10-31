@@ -147,7 +147,7 @@ import {
   modelMaxRefs,
   type BatchGenerationCandidate,
 } from './batchGeneration';
-import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, applyLayoutPositions, canvasViewportIndexKey, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, initialViewportForScope, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, viewportFromPayload, viewportIndexForSave, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
+import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, applyLayoutPositions, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
 import {
   CANVAS_VIEWPORT_POLICY_VERSION,
   filterMediaNodesInBounds,
@@ -156,6 +156,8 @@ import {
   popupRevealShift,
   shouldLoadMediaForViewport,
   shouldUseLargeCanvasOverview,
+  mergeEpisodeViewport,
+  selectEpisodeViewport,
   viewportForCanvasBounds,
   viewportLoadBounds,
   validRestoredViewport,
@@ -1398,6 +1400,7 @@ function EpisodeRows({
   episodeDeleting,
   fmtEp,
   setCurrentEp,
+  switchEpisode,
   onClose,
   setEpisodeMenu,
 }: {
@@ -1406,6 +1409,7 @@ function EpisodeRows({
   episodeDeleting: boolean;
   fmtEp: (epId: string) => string;
   setCurrentEp: (epId: string) => void;
+  switchEpisode: (epId: string) => void;
   onClose: () => void;
   setEpisodeMenu: (menu: {epId: string; title: string; left: number; top: number}) => void;
 }) {
@@ -1484,7 +1488,7 @@ function EpisodeRows({
                 className="canvas-ep-select"
                 onClick={() => {
                   onClose();
-                  setCurrentEp(ep.ep_id);
+                  switchEpisode(ep.ep_id);
                 }}
                 title={`${episodeLabel} · ${badge}`}
               >
@@ -1499,7 +1503,7 @@ function EpisodeRows({
                 className="canvas-ep-more"
                 onClick={(event) => {
                   event.stopPropagation();
-                  if (currentEp !== ep.ep_id) setCurrentEp(ep.ep_id);
+                  if (currentEp !== ep.ep_id) switchEpisode(ep.ep_id);
                   const rect = event.currentTarget.getBoundingClientRect();
                   setEpisodeMenu({
                     epId: ep.ep_id,
@@ -7624,6 +7628,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const [canvas, setCanvas] = useState<Canvas | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadingSlow, setLoadingSlow] = useState(false);
+  const [dataReady, setDataReady] = useState(false);
+  const [pidRetry, setPidRetry] = useState(0);
+  const workspaceLoadStartedAtRef = useRef(0);
   const [zoomTarget, setZoomTarget] = useState<string | null>(null);
   const [trayPreview, setTrayPreview] = useState<({url: string; label: string} & PreviewPlacement) | null>(null);
   const [notes, setNotes] = useState<CanvasNote[]>([]);
@@ -8157,7 +8165,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   //   卡片位置，点「第01集」会因 key 切换读不到而全部回落到载荷默认位置（实测"排序乱"）。
   const isSingleEpProject = !!canvas && canvas.meta.episodes.length <= 1;
   const layoutKey = `vimax.canvas.layout.${session}.${isSingleEpProject ? 'all' : (currentEp ?? 'all')}`;
-  const viewportIndexKey = canvasViewportIndexKey(session);
 
   // ── 编组（用户要求：可以批量编组、可以解组、编组后按组拖动）───────────────
   // 设计取舍：**不做 React Flow 的 parentId 容器**，只维护一张「组 → 成员 flow id」表。
@@ -8174,6 +8181,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewportSnapshotRef = useRef({key: '', seq: 0});
   const serverEpisodeViewportsRef = useRef<Record<string, unknown>>({});
+  const activeWorkspaceEpisodeRef = useRef<string | null>(null);
   const lastPersistedViewportRef = useRef<{key: string; viewport: {x: number; y: number; zoom: number}} | null>(null);
 
   const loadPersistedLayout = useCallback(() => {
@@ -8237,22 +8245,28 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [layoutKey, loadPersistedLayout]);
   const rememberViewport = useCallback((viewport: {x: number; y: number; zoom: number}) => {
     viewportRef.current = viewport;
+    const viewportEpisode = activeWorkspaceEpisodeRef.current || currentEp;
+    const snapshotKey = `${session}:${viewportEpisode || '__project__'}`;
+    serverEpisodeViewportsRef.current = mergeEpisodeViewport(
+      serverEpisodeViewportsRef.current,
+      viewportEpisode,
+      viewport,
+      session,
+    );
     if (viewportSaveTimer.current) clearTimeout(viewportSaveTimer.current);
     viewportSaveTimer.current = setTimeout(() => {
       try {
-        const raw = localStorage.getItem(layoutKey);
-        const saved = raw ? JSON.parse(raw) : {};
-        const indexRaw = localStorage.getItem(viewportIndexKey);
-        const index = indexRaw ? JSON.parse(indexRaw) : [];
-        const scope = currentEp ?? '__project__';
-        const nextIndex = viewportIndexForSave(index, scope, {scope, viewport});
-        localStorage.setItem(layoutKey, JSON.stringify({
-          ...saved,
-          viewport,
-          viewportPolicyVersion: CANVAS_VIEWPORT_POLICY_VERSION,
-        }));
-        localStorage.setItem(viewportIndexKey, JSON.stringify(nextIndex));
-        const snapshotKey = `${session}:${currentEp || '__project__'}`;
+        try {
+          const raw = localStorage.getItem(layoutKey);
+          const saved = raw ? JSON.parse(raw) : {};
+          localStorage.setItem(layoutKey, JSON.stringify({
+            ...saved,
+            viewport,
+            viewportPolicyVersion: CANVAS_VIEWPORT_POLICY_VERSION,
+          }));
+        } catch {
+          // Local cache is optional; the server viewport remains the fallback.
+        }
         const lastPersisted = lastPersistedViewportRef.current;
         if (
           lastPersisted?.key === snapshotKey
@@ -8264,19 +8278,18 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         const seq = viewportSnapshotRef.current.seq + 1;
         viewportSnapshotRef.current.seq = seq;
         lastPersistedViewportRef.current = {key: snapshotKey, viewport};
-        void saveCanvasEpisodeViewport(session, viewport, currentEp)
+        void saveCanvasEpisodeViewport(session, viewport, viewportEpisode)
           .then((result) => {
             if (
               viewportSnapshotRef.current.key !== snapshotKey
               || viewportSnapshotRef.current.seq !== seq
             ) return;
-            const episodeKey = String(currentEp || '').toUpperCase();
-            if (episodeKey) {
-              serverEpisodeViewportsRef.current = {
-                ...serverEpisodeViewportsRef.current,
-                [episodeKey]: result.viewport || viewport,
-              };
-            }
+            serverEpisodeViewportsRef.current = mergeEpisodeViewport(
+              serverEpisodeViewportsRef.current,
+              viewportEpisode,
+              result.viewport || viewport,
+              session,
+            );
           })
           .catch(() => {
             // Viewport persistence is best-effort; layout edits remain saved
@@ -8290,7 +8303,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         // View persistence is best-effort and must not affect canvas interaction.
       }
     }, 220);
-  }, [currentEp, layoutKey, session, viewportIndexKey]);
+  }, [currentEp, layoutKey, session]);
 
   const flushViewportNow = useCallback(() => {
     if (viewportSaveTimer.current) {
@@ -8299,6 +8312,41 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     }
     rememberViewport(viewportRef.current);
   }, [rememberViewport]);
+
+  const switchEpisode = useCallback((episodeId: string) => {
+    if (episodeId === currentEp) return;
+    if (viewportSaveTimer.current) {
+      clearTimeout(viewportSaveTimer.current);
+      viewportSaveTimer.current = null;
+    }
+    const remembered = {...viewportRef.current};
+    const leavingEpisode = activeWorkspaceEpisodeRef.current || currentEp;
+    serverEpisodeViewportsRef.current = mergeEpisodeViewport(
+      serverEpisodeViewportsRef.current,
+      leavingEpisode,
+      remembered,
+      session,
+    );
+    lastPersistedViewportRef.current = {
+      key: `${session}:${leavingEpisode || '__project__'}`,
+      viewport: remembered,
+    };
+    void saveCanvasEpisodeViewport(
+      session,
+      remembered,
+      leavingEpisode,
+      {keepalive: true},
+    ).then((result) => {
+      serverEpisodeViewportsRef.current = mergeEpisodeViewport(
+        serverEpisodeViewportsRef.current,
+        leavingEpisode,
+        result.viewport || remembered,
+        session,
+      );
+    }).catch(() => {});
+    setCurrentEp(episodeId);
+    activeWorkspaceEpisodeRef.current = String(episodeId || '').trim().toUpperCase() || null;
+  }, [currentEp, session]);
 
   // ── 编组操作 ──────────────────────────────────────────────────────
   // 编组：把当前选中的卡片收进一个新组。已属于其它组的成员会自动离组（一个人只能在一个组里）。
@@ -8991,9 +9039,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     // The workspace read already contains the initial task snapshot. Delay the
     // first duplicate read so a project switch does not contend with itself.
     const startTimer = window.setTimeout(() => {
+      if (document.visibilityState !== 'visible') return;
       pollingStarted = true;
       refreshTasks();
-    }, 800);
+    }, 2500);
     // Only poll quickly while there is active work. Closed task center with no
     // active workments still gets a low-frequency reconciliation, not 1.2s churn.
     const interval = taskCenterOpen && activeGenerationTaskCount > 0
@@ -9001,7 +9050,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       : activeGenerationTaskCount > 0
         ? 2500
         : 6000;
-    const timer = window.setInterval(refreshTasks, interval);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') refreshTasks();
+    }, interval);
     return () => {
       alive = false;
       window.clearTimeout(startTimer);
@@ -9183,9 +9234,20 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   }, [beginSave, finishSave, session]);
 
   useEffect(() => {
+    if (!loading || canvas) {
+      setLoadingSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setLoadingSlow(true), 2500);
+    return () => window.clearTimeout(timer);
+  }, [loading, canvas]);
+  useEffect(() => {
+    setLoading(true);
+    setLoadingSlow(false);
+    setDataReady(false);
     const loadEpoch = workspaceLoadEpochRef.current + 1;
     workspaceLoadEpochRef.current = loadEpoch;
-    setLoading(true);
+    workspaceLoadStartedAtRef.current = performance.now();
     setError('');
     // A project switch is a new data epoch. Do not let the previous project's
     // cards, task badges, or layout session leak through while the new payload
@@ -9213,39 +9275,56 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     workspaceRefreshInFlightRef.current = null;
     savedLayoutScopeRef.current = '';
     didInitialLayoutRef.current = false; // 切集后允许重新恢复该集自己的布局
-    getCanvasWorkspace(session, currentEp)
+    const workspaceAbort = new AbortController();
+    const workspaceTimeout = window.setTimeout(() => {
+      workspaceAbort.abort();
+    }, 20_000);
+    getCanvasWorkspace(session, currentEp, workspaceAbort.signal)
       .then(({
         canvas: data,
         notes: noteList,
         mediaNodes: mediaList,
         episodeViewports,
+        activeEpisodeId,
         tasks: initialTasks,
         connections: projectConnections,
       }) => {
         if (loadEpoch !== workspaceLoadEpochRef.current) return;
+        const startedAt = workspaceLoadStartedAtRef.current;
+        if (startedAt > 0) {
+          const elapsed = performance.now() - startedAt;
+          performance.mark('canvas-workspace-loaded', {detail: {elapsed}});
+          if (elapsed > 1500) {
+            console.warn(`[canvas-load] workspace took ${Math.round(elapsed)}ms`);
+          }
+        }
+        const normalizedActiveEpisode = String(activeEpisodeId || '')
+          .trim()
+          .toUpperCase() || null;
+        activeWorkspaceEpisodeRef.current = normalizedActiveEpisode;
         serverEpisodeViewportsRef.current = episodeViewports || {};
         taskLoadGenerationRef.current += 1;
         projectConnectionsRef.current = projectConnections;
-        startTransition(() => {
-          if ('empty' in data) {
-            setCanvas(null);
-          } else {
-            setCanvas(data);
-            const currentExists = currentEp
-              ? data.meta.episodes.some((episode) => episode.ep_id === currentEp)
-              : false;
-            // 多集长剧：默认进入一集，避免整剧总览一次性渲染全部资产/镜头导致卡死
-            if (!autoEpAppliedRef.current) {
-              autoEpAppliedRef.current = true;
-              if (!currentExists && data.meta.episodes.length > 1) {
-                // 默认进入"最近活动且有内容"的一集（pickDefaultEpisode 纯函数，见 canvasLayout.ts）。
-                // 旧逻辑只看 updated_at：120 集剧本刚拆完时最后被触碰的一集常常只有 0 镜
-                // （实测 ep02），画布于是开在空集上——表现为"场景/镜头都不显示"。
-                const target = pickDefaultEpisode(data.meta.episodes);
-                if (target) setCurrentEp(target);
-              }
+        if ('empty' in data) {
+          setCanvas(null);
+        } else {
+          setCanvas(data);
+          const currentExists = currentEp
+            ? data.meta.episodes.some((episode) => episode.ep_id === currentEp)
+            : false;
+          // 多集长剧：默认进入一集，避免整剧总览一次性渲染全部资产/镜头导致卡死
+          if (!autoEpAppliedRef.current) {
+            autoEpAppliedRef.current = true;
+            if (!currentExists && data.meta.episodes.length > 1) {
+              // 默认进入"最近活动且有内容"的一集（pickDefaultEpisode 纯函数，见 canvasLayout.ts）。
+              // 旧逻辑只看 updated_at：120 集剧本刚拆完时最后被触碰的一集常常只有 0 镜
+              // （实测 ep02），画布于是开在空集上——表现为"场景/镜头都不显示"。
+              const target = pickDefaultEpisode(data.meta.episodes);
+              if (target) setCurrentEp(target);
             }
           }
+        }
+        startTransition(() => {
           setNotes(noteList);
           if (mediaList.length > 400 && mediaList.some((node) => node.kind !== 'text')) {
             overviewKeyRef.current = currentEp || '__project__';
@@ -9257,21 +9336,37 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           setMediaNodes(mediaList);
           setGenerationTasks(initialTasks);
         });
+        workspaceLoadStartedAtRef.current = 0;
+        setLoading(false);
+        setDataReady(true);
       })
       .catch((err: unknown) => {
         if (loadEpoch === workspaceLoadEpochRef.current) {
-          setError(err instanceof Error ? err.message : String(err));
+          const aborted = err instanceof DOMException && err.name === 'AbortError';
+          setError(
+            aborted
+              ? '画布加载超时，项目数据未丢失。请重新加载或稍后再试。'
+              : err instanceof Error ? err.message : String(err),
+          );
+          setLoading(false);
+          setDataReady(false);
         }
       })
       .finally(() => {
-        if (loadEpoch === workspaceLoadEpochRef.current) setLoading(false);
+        window.clearTimeout(workspaceTimeout);
+        if (loadEpoch === workspaceLoadEpochRef.current) {
+          setLoading(false);
+          workspaceLoadStartedAtRef.current = 0;
+        }
       });
     return () => {
+      window.clearTimeout(workspaceTimeout);
+      workspaceAbort.abort();
       if (loadEpoch === workspaceLoadEpochRef.current) {
         workspaceLoadEpochRef.current += 1;
       }
     };
-  }, [session, currentEp]);
+  }, [session, currentEp, pidRetry]);
 
   // 拉取创作质量自评报告（与画布数据并行），供镜头卡弱项色点使用。
   useEffect(() => {
@@ -14256,6 +14351,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   loadPersistedLayoutRef.current = loadPersistedLayout;
   useEffect(() => {
     if (loading || !canvas) return;
+    if (!activeWorkspaceEpisodeRef.current) {
+      activeWorkspaceEpisodeRef.current = currentEp;
+    }
     // Fit once per project/episode scope. Canvas objects are replaced after
     // generation/status refreshes too; refitting on those updates caused the
     // viewport to jump back to overview while the user was working.
@@ -14294,35 +14392,15 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         setUserEdges(uniqueUserEdges);
       }
     }
-    if (shouldFit && !savedViewport) {
-      savedViewport = validRestoredViewport(viewportFromPayload(
-        {episodeViewports: serverEpisodeViewportsRef.current},
-        session,
-        currentEp,
-      ));
-    }
-    // localStorage is device-local and can be stale or unavailable. When the
-    // project payload already owns this episode's viewport, use it as the
-    // cross-device source of truth instead of merely carrying local state.
-    if (serverEpisodeViewportsRef.current[String(currentEp || '').toUpperCase()]) {
-      savedViewport = validRestoredViewport(viewportFromPayload(
-        {episodeViewports: serverEpisodeViewportsRef.current},
-        session,
-        currentEp,
-      )) ?? savedViewport;
-    }
-    if (shouldFit && !savedViewport) {
-      try {
-        const raw = localStorage.getItem(viewportIndexKey);
-        const index = raw ? JSON.parse(raw) : [];
-        savedViewport = validRestoredViewport(initialViewportForScope(
-          Array.isArray(index) ? index : [],
-          currentEp ?? '__project__',
-        )?.viewport);
-      } catch {
-        savedViewport = null;
-      }
-    }
+    const serverViewport = selectEpisodeViewport(
+      serverEpisodeViewportsRef.current,
+      currentEp,
+      session,
+    );
+    // The in-memory map is updated immediately by onMove, so an episode that
+    // was just visited has a fresher value than the last persisted payload.
+    // It must win over the localStorage snapshot during the switch-back frame.
+    if (serverViewport) savedViewport = serverViewport;
     // 画布适配必须等节点 DOM 挂载后再执行：React Flow 对未测量节点保持
     // visibility:hidden（hasDimensions 为 false），首次 fitBounds 若在节点挂载前
     // 调用不会触发测量，节点将永久隐藏——"画布内容进入后就消失"的根因。
@@ -14331,6 +14409,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     //   媒体卡片会被挤到视口外（实测：剧集页签点「第01集」后画布只剩镜头条块）。
     if (shouldFit) {
       requestAnimationFrame(() => {
+        const freshServerViewport = selectEpisodeViewport(
+          serverEpisodeViewportsRef.current,
+          currentEp,
+          session,
+        );
+        if (freshServerViewport) {
+          savedViewport = freshServerViewport;
+        }
         if (savedViewport) {
           viewportRef.current = savedViewport;
           rf.setViewport(savedViewport, {duration: 0});
@@ -14339,7 +14425,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         }
       });
     }
-  }, [loading, canvas, session, currentEp, viewportIndexKey]);
+  }, [loading, canvas, session, currentEp]);
 
   // 通用文本下载（导出分镜 Markdown / 镜头 CSV / 布局 JSON）
   const downloadText = useCallback((filename: string, text: string, mime = 'text/plain') => {
@@ -14943,8 +15029,26 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       {saveError && <div className="inline-error canvas-error" role="alert"><span>保存失败：{saveError}</span><button onClick={() => setSaveError('')} aria-label="关闭"><X size={12} strokeWidth={2.2} aria-hidden="true" /></button></div>}
       {toast && <div className="canvas-toast" onClick={() => setToast('')}>{toast}</div>}
 
-      {loading && !canvas ? (
-        <div className="ledger-loading"><div className="app-initializing-spinner" /><span>正在整理画布素材…</span></div>
+      {!dataReady ? (
+        <div className="ledger-loading" role="status">
+          <span>
+            {loadingSlow
+              ? '正在整理画布素材，项目内容较多，请稍候…'
+              : '正在整理画布素材…'}
+          </span>
+          {error && <span className="ledger-loading-hint">{error}</span>}
+          <button
+            type="button"
+            className="ledger-loading-action"
+            onClick={() => {
+              setError('');
+              workspaceLoadEpochRef.current += 1;
+              setPidRetry((value) => value + 1);
+            }}
+          >
+            重新打开项目
+          </button>
+        </div>
       ) : !canvas ? (
         <div className="ledger-empty-state">
           <strong>还没有可展示的画布</strong>
@@ -15024,7 +15128,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               <span className="canvas-task-label">生成中 {activeGenerationNodeCount} 项…</span>
             </div>
           )}
-          {loading && (
+          {loading && dataReady && (
             <div className="canvas-reload-bar" role="status">
               <span className="canvas-reload-spin" />
               <span>正在加载{currentEp ? ` ${fmtEp(currentEp)}` : '项目画布'}…（画布内容保留）</span>
@@ -15122,6 +15226,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                     episodeDeleting={episodeDeleting}
                     fmtEp={fmtEp}
                     setCurrentEp={setCurrentEp}
+                    switchEpisode={switchEpisode}
                     onClose={() => setEpListOpen(false)}
                     setEpisodeMenu={setEpisodeMenu}
                   />
@@ -15154,7 +15259,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                         className="canvas-ep-select"
                         onClick={() => {
                           setEpListOpen(false);
-                          setCurrentEp(ep.ep_id);
+                          switchEpisode(ep.ep_id);
                         }}
                         title={`${episodeLabel} · ${badge}${partial ? '（分镜未完成，续跑后自动补齐）' : ''}${ep.partial_render ? '（成片残缺，续跑补全缺失段后再拼成片）' : ''}${ep.final_ready ? ' · 已成片' : ''}`}
                       >
@@ -15169,7 +15274,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                         className="canvas-ep-more"
                         onClick={(event) => {
                           event.stopPropagation();
-                          if (currentEp !== ep.ep_id) setCurrentEp(ep.ep_id);
+                          if (currentEp !== ep.ep_id) switchEpisode(ep.ep_id);
                           const rect = event.currentTarget.getBoundingClientRect();
                           setEpisodeMenu({
                             epId: ep.ep_id,

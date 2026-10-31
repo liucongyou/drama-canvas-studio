@@ -296,6 +296,9 @@ describe('api request recovery', () => {
                 metadata: {prompt: '第一段', status: 'idle', params: {ratio: '9:16'}},
               }],
               connections: [],
+              episodeViewports: {
+                EP001: {x: 12, y: 34, zoom: 0.66},
+              },
               episodeImports: [{
                 id: 'EP001',
                 title: '第01集',
@@ -317,7 +320,21 @@ describe('api request recovery', () => {
     expect(workspace.canvas).not.toHaveProperty('empty');
     expect(workspace.notes).toHaveLength(1);
     expect(workspace.mediaNodes).toMatchObject([{id: 'video-1', x: 10, y: 20}]);
+    expect(workspace.activeEpisodeId).toBe('EP001');
+    expect(workspace.episodeViewports).toMatchObject({
+      EP001: {zoom: 0.66},
+    });
     expect(workspace.tasks).toEqual([]);
+  });
+
+  it('rejects an aborted workspace load instead of presenting it as an empty project', async () => {
+    const abortError = new DOMException('aborted', 'AbortError');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError));
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      getCanvasWorkspace('project-1', 'EP001', controller.signal),
+    ).rejects.toMatchObject({name: 'AbortError'});
   });
 
   it('keeps the last usable video visible while the node is regenerating', async () => {
