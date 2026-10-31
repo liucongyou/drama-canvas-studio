@@ -8,10 +8,21 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.31.14';
+export const APP_VERSION = '2026.10.31.15';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.31.15',
+    date: '2026-10-31',
+    releasedAt: '2026-11-01 00:10:00 +08:00',
+    title: '自动转存状态与供应商切换分离',
+    changes: [
+      '“不转存”从供应商页签中移除，TOS、阿里云 OSS、七牛云页签同一时间只高亮当前正在编辑的一套配置。',
+      '自动转存改为独立开关，明确显示“已开启”或“已关闭”以及当前实际使用的供应商。',
+      '切换供应商只编辑配置，不会自动改变全局自动转存状态，也不再与“不转存”同时显示选中。',
+    ],
+  },
   {
     version: '2026.10.31.14',
     date: '2026-10-31',

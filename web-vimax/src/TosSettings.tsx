@@ -273,11 +273,6 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
           <div className="storage-provider-picker">
             <button
               type="button"
-              className={!storage?.enabled ? 'is-active' : ''}
-              onClick={() => void deactivate()}
-            >不转存</button>
-            <button
-              type="button"
               className={draft.provider === 'tos' ? 'is-active' : ''}
               onClick={() => {
                 selectProvider('tos');
@@ -323,6 +318,27 @@ export function TosSettingsDialog({onClose}: {onClose: () => void}) {
                     : '已保存'}
                 </small>
               )}
+            </button>
+          </div>
+          <div className={`storage-global-toggle ${storage?.enabled ? 'is-on' : ''}`}>
+            <span>
+              <strong>自动转存 · {storage?.enabled ? '已开启' : '已关闭'}</strong>
+              <small>
+                {storage?.enabled
+                  ? `生成资产会转入 ${storageLabel(storage.provider)}；切换上方供应商只编辑配置。`
+                  : '供应商配置仍会保留，需要时可单独设置为自动转存。'}
+              </small>
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={Boolean(storage?.enabled)}
+              aria-label="自动转存"
+              className={`model-settings-switch ${storage?.enabled ? 'is-on' : ''}`}
+              disabled={busy}
+              onClick={() => void (storage?.enabled ? deactivate() : activate())}
+            >
+              <i />
             </button>
           </div>
 
