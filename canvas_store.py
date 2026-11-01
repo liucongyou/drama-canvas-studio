@@ -4400,7 +4400,7 @@ def claim_generation_task(task_id, owner, lease_seconds=45, allow_recover=False)
                 return
         if allow_recover:
             status_clause = (
-                "(status IN ('queued','submitting','interrupted') "
+                "(status IN ('queued','submitting','interrupted','failed') "
                 "OR (status='running' AND "
                 "(lease_owner IS NULL OR lease_owner='' OR lease_expires_at IS NULL OR lease_expires_at<=?)))"
             )

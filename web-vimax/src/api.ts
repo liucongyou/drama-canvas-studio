@@ -1539,6 +1539,27 @@ export async function getCanvasMediaNodes(
       ))
     : null;
   const allowedIds = episodeGroup ? new Set(episodeGroup.nodeIds || []) : null;
+  if (allowedIds) {
+    const episodeVideoIds = new Set(
+      (episodeGroup?.videoNodeIds || []).map((nodeId) => String(nodeId)),
+    );
+    for (const node of allNodes) {
+      if (node.type !== 'video') continue;
+      const belongsToEpisode = episodeVideoIds.size > 0
+        ? episodeVideoIds.has(String(node.id))
+        : allowedIds.has(node.id);
+      if (!belongsToEpisode) continue;
+      const params = ((node.metadata || {}) as Record<string, unknown>).params;
+      const values = params && typeof params === 'object'
+        ? params as Record<string, unknown>
+        : {};
+      for (const key of ['refs', 'voiceRefs']) {
+        for (const ref of Array.isArray(values[key]) ? values[key] as Array<Record<string, unknown>> : []) {
+          if (ref && typeof ref.nodeId === 'string') allowedIds.add(ref.nodeId);
+        }
+      }
+    }
+  }
   const ownedIds = new Set(
     (proj.payload.episodeImports || []).flatMap((group) => group.nodeIds || []),
   );
@@ -2032,7 +2053,13 @@ async function getProjectionCanvasWorkspace(
   );
   const activeByNode = new Map(
     [...latestTaskByNode(tasks).values()]
-      .filter((task) => ['queued', 'submitting', 'running'].includes(task.status))
+      .filter((task) => (
+        ['queued', 'submitting', 'running'].includes(task.status)
+        || (
+          task.status === 'interrupted'
+          && Boolean(String(task.provider_task_id || '').trim())
+        )
+      ))
       .map((task) => [task.node_id, task]),
   );
   const latestByNode = latestTaskByNode(tasks);
@@ -2053,18 +2080,19 @@ async function getProjectionCanvasWorkspace(
       if (
         node.status === 'generating'
         && !node.finalizePending
-        && (!terminal || ['failed', 'interrupted', 'succeeded'].includes(terminal.status))
+        && terminal
+        && ['succeeded', 'failed'].includes(terminal.status)
       ) {
         return {
           ...node,
-          status: terminal?.status === 'succeeded' ? 'done' as const : 'failed' as const,
-          lastError: terminal?.status === 'succeeded'
+          status: terminal.status === 'succeeded' ? 'done' as const : 'failed' as const,
+          lastError: terminal.status === 'succeeded'
             ? undefined
-            : String(terminal?.error || node.lastError || '生成任务已结束'),
+            : String(terminal.error || node.lastError || '生成任务已结束'),
           generationFinishedAt: terminal?.finished_at || node.generationFinishedAt,
-          providerTaskStatus: terminal?.status || 'interrupted',
+          providerTaskStatus: terminal.status,
           providerTaskPhase: terminal?.phase || '任务已结束',
-          providerTaskProgress: terminal?.status === 'succeeded'
+          providerTaskProgress: terminal.status === 'succeeded'
             ? 100
             : node.providerTaskProgress,
         };
@@ -2077,8 +2105,10 @@ async function getProjectionCanvasWorkspace(
       lastError: undefined,
       generationStartedAt: task.started_at || task.created_at || node.generationStartedAt,
       generationFinishedAt: undefined,
-      providerTaskStatus: task.status,
-      providerTaskPhase: task.phase || '生成中',
+      providerTaskStatus: task.status === 'interrupted' ? 'queued' : task.status,
+      providerTaskPhase: task.status === 'interrupted'
+        ? '等待恢复'
+        : (task.phase || '生成中'),
       providerTaskProgress: Number(task.progress || node.providerTaskProgress || 0),
       providerTaskProgressChangedAt:
         task.progress_updated_at
@@ -2182,7 +2212,13 @@ export async function getCanvasWorkspace(
   ]);
   const activeByNode = new Map(
     [...latestTaskByNode(tasks).values()]
-      .filter((task) => ['queued', 'submitting', 'running'].includes(task.status))
+      .filter((task) => (
+        ['queued', 'submitting', 'running'].includes(task.status)
+        || (
+          task.status === 'interrupted'
+          && Boolean(String(task.provider_task_id || '').trim())
+        )
+      ))
       .map((task) => [task.node_id, task]),
   );
   const latestByNode = latestTaskByNode(tasks);
@@ -2203,21 +2239,19 @@ export async function getCanvasWorkspace(
       if (
         node.status === 'generating'
         && !node.finalizePending
-        && (
-          !terminal
-          || ['failed', 'interrupted', 'succeeded'].includes(terminal.status)
-        )
+        && terminal
+        && ['succeeded', 'failed'].includes(terminal.status)
       ) {
         return {
           ...node,
-          status: terminal?.status === 'succeeded' ? 'done' as const : 'failed' as const,
-          lastError: terminal?.status === 'succeeded'
+          status: terminal.status === 'succeeded' ? 'done' as const : 'failed' as const,
+          lastError: terminal.status === 'succeeded'
             ? undefined
-            : String(terminal?.error || node.lastError || '生成任务已结束'),
+            : String(terminal.error || node.lastError || '生成任务已结束'),
           generationFinishedAt: terminal?.finished_at || node.generationFinishedAt,
-          providerTaskStatus: terminal?.status || 'interrupted',
+          providerTaskStatus: terminal.status,
           providerTaskPhase: terminal?.phase || '任务已结束',
-          providerTaskProgress: terminal?.status === 'succeeded'
+          providerTaskProgress: terminal.status === 'succeeded'
             ? 100
             : node.providerTaskProgress,
         };
@@ -2230,8 +2264,10 @@ export async function getCanvasWorkspace(
       lastError: undefined,
       generationStartedAt: task.started_at || task.created_at || node.generationStartedAt,
       generationFinishedAt: undefined,
-      providerTaskStatus: task.status,
-      providerTaskPhase: task.phase || '生成中',
+      providerTaskStatus: task.status === 'interrupted' ? 'queued' : task.status,
+      providerTaskPhase: task.status === 'interrupted'
+        ? '等待恢复'
+        : (task.phase || '生成中'),
       providerTaskProgress: Number(task.progress || node.providerTaskProgress || 0),
       providerTaskProgressChangedAt:
         task.progress_updated_at

@@ -1761,10 +1761,7 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
   display: flex; flex-direction: column; align-items: center; gap: 8px;
   padding: 22px 0; color: var(--v-text-4); font-size: 24px;
   width: 100%; height: 100%;
-  /* ★ 原 #141823/#101318 是**偏蓝**深底（B 比 R 高 15），和中性灰卡面拼在一起
-     会读成"这块怎么发蓝"。改用纯中性双灰条纹，靠明度差认出斜纹。 */
-  background: repeating-linear-gradient(45deg,
-    var(--v-card-3) 0 10px, var(--v-canvas) 10px 20px);
+  background: linear-gradient(180deg, var(--v-card-2), var(--v-card-3));
 }
 .canvas-media-placeholder-tip { font-size: 11px; color: var(--v-text-5); letter-spacing: .5px; }
 
@@ -1876,7 +1873,7 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 .canvas-media-placeholder{
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
   color:#46536e;width:100%;height:100%;padding:20px 0;border-radius:10px;
-  background:repeating-linear-gradient(45deg,var(--v-card-3) 0 10px,var(--v-canvas) 10px 20px);
+  background:linear-gradient(180deg,var(--v-card-2),var(--v-card-3));
 }
 .canvas-media-placeholder-ico{font-size:26px;line-height:1;opacity:.85}
 .canvas-media-placeholder-tip{font-size:11px;color:var(--v-text-5);letter-spacing:.5px}

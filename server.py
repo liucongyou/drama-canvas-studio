@@ -82,7 +82,7 @@ TASK_LEASE_SECONDS = 45
 TASK_HEARTBEAT_SECONDS = 15
 _PROVIDER_AUTH_CACHE: dict[tuple[str, str, str], tuple[float, str]] = {}
 _PROVIDER_AUTH_CACHE_LOCK = threading.Lock()
-RESUMED_VIDEO_TASKS: set[tuple[str, str]] = set()
+RESUMED_VIDEO_TASKS: set[tuple[str, ...]] = set()
 RESUMED_VIDEO_TASKS_LOCK = threading.Lock()
 GENERATION_QUEUE_CONDITION = threading.Condition()
 GENERATION_QUEUE_ACTIVE_GLOBAL = 0
@@ -383,18 +383,45 @@ def _collect_for_active_tenants(func):
 
 
 def _resume_expired_provider_tasks(expired):
-    """Start same-task queries only for leases that expired in this pass."""
+    """Resume persisted provider tasks that are still waiting for an outcome."""
     started = 0
-    for item in expired or []:
+    # A task that has just expired was already claimed by this reconciliation
+    # pass. Only recover rows that are not the same local task twice.
+    candidates = list(expired or [])
+    if not candidates:
+        candidates.extend(
+            task
+            for task in store.list_generation_tasks(None, 300)
+            if task.get("status") in {"interrupted", "failed"}
+        )
+    seen = set()
+    for item in candidates:
+        item_id = str(item.get("id") or "")
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
         provider_task_id = str(
-            item.get("providerTaskId") or ""
+            item.get("providerTaskId")
+            or item.get("provider_task_id")
+            or ""
         ).strip()
-        project_id = str(item.get("projectId") or "").strip()
-        node_id = str(item.get("nodeId") or "").strip()
+        project_id = str(
+            item.get("projectId")
+            or item.get("project_id")
+            or ""
+        ).strip()
+        node_id = str(
+            item.get("nodeId")
+            or item.get("node_id")
+            or ""
+        ).strip()
         if not provider_task_id or not project_id or not node_id:
             continue
-        task = store.get_generation_task(item.get("id"))
-        if not task or task.get("status") not in {"running", "interrupted"}:
+        task = store.get_generation_task(item_id)
+        if (
+            not task
+            or task.get("status") not in {"running", "interrupted", "failed"}
+        ):
             continue
         if generation_outcome.is_provider_terminal_failure(task):
             continue
@@ -412,18 +439,34 @@ def _resume_expired_provider_tasks(expired):
         )
         if not node:
             continue
+        current_meta = node.get("metadata") or {}
+        if str(current_meta.get("taskId") or "") != provider_task_id:
+            commit_node_metadata(project_id, node_id, {
+                "status": "generating",
+                "taskId": provider_task_id,
+                "providerTaskStatus": "queued",
+                "providerTaskPhase": "等待恢复",
+                "lastError": "",
+                "generationFinishedAt": "",
+            })
+        task_kind = str(task.get("kind") or "").strip()
+        if task_kind not in {"image", "video"}:
+            continue
         try:
             provider, model, _ = provider_catalog.resolve_model(
                 task.get("provider"),
                 task.get("model"),
-                "video",
+                task_kind,
             )
+            if task_kind == "image" and str(model.get("adapter") or "") != "newapi_image":
+                continue
         except Exception:
             continue
         key = (
             str(item.get("tenantId") or "legacy"),
             project_id,
             node_id,
+            provider_task_id,
         )
         with RESUMED_VIDEO_TASKS_LOCK:
             if key in RESUMED_VIDEO_TASKS:
@@ -441,12 +484,13 @@ def _resume_expired_provider_tasks(expired):
             provider_task_id=provider_task_id,
             provider=provider,
             model=model,
+            task_kind=task_kind,
         ):
             try:
                 _run_in_tenant(
                     tenant_id,
                     tenant_slug,
-                    _resume_video_task,
+                    _resume_image_task if task_kind == "image" else _resume_video_task,
                     project_id,
                     node_id,
                     provider_task_id,
@@ -3298,6 +3342,55 @@ def reconcile_generation_runtime_once():
     }
 
 
+def reconcile_recoverable_provider_tasks():
+    """Attach durable provider ids to their nodes without provider I/O."""
+    tasks = store.list_generation_tasks(None, 300)
+    recovered = 0
+    for task in tasks:
+        provider_task_id = str(task.get("provider_task_id") or "").strip()
+        if (
+            not provider_task_id
+            or task.get("kind") not in {"image", "video"}
+            or task.get("status") not in {"queued", "submitting", "running", "interrupted", "failed"}
+            or generation_outcome.is_provider_terminal_failure(task)
+        ):
+            continue
+        project_id = str(task.get("project_id") or "")
+        node_id = str(task.get("node_id") or "")
+        project = store.get_project(project_id)
+        if not project:
+            continue
+        node = next(
+            (
+                item
+                for item in (project.get("payload") or {}).get("nodes", [])
+                if item.get("id") == node_id
+            ),
+            None,
+        )
+        if not node:
+            continue
+        meta = node.get("metadata") or {}
+        if (
+            str(meta.get("taskId") or "") == provider_task_id
+            and str(meta.get("status") or "") == "generating"
+            and str(meta.get("providerTaskStatus") or "").lower()
+            in {"queued", "pending", "created", "submitted", "running", "processing", "retrying", "in_progress", "uncertain"}
+        ):
+            continue
+        commit_node_metadata(project_id, node_id, {
+            "status": "generating",
+            "taskId": provider_task_id,
+            "providerTaskStatus": "queued",
+            "providerTaskPhase": "等待恢复",
+            "providerTaskProgress": 0,
+            "lastError": "",
+            "generationFinishedAt": "",
+        })
+        recovered += 1
+    return recovered
+
+
 def start_generation_task_reconciler():
     def run():
         while True:
@@ -3322,6 +3415,12 @@ def start_generation_task_reconciler():
 
 
 def start_pending_video_resumers():
+    for tenant in _active_tenants():
+        if tenant is None:
+            reconcile_recoverable_provider_tasks()
+        else:
+            with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+                reconcile_recoverable_provider_tasks()
     thread_options = {}
     try:
         thread_options = inspect.signature(threading.Thread).parameters
@@ -3360,7 +3459,12 @@ def start_pending_video_resumers():
             ):
                 tenant_id = tenant_record["id"] if tenant_record else None
                 tenant_slug = tenant_record["slug"] if tenant_record else "local"
-                key = (tenant_id or "legacy", project_id, node_id)
+                key = (
+                    tenant_id or "legacy",
+                    project_id,
+                    node_id,
+                    str(provider_task_id),
+                )
                 with RESUMED_VIDEO_TASKS_LOCK:
                     if key in RESUMED_VIDEO_TASKS:
                         return

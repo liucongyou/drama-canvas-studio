@@ -631,7 +631,7 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             patch.object(
                 server.store,
                 "get_generation_task",
-                side_effect=lambda task_id: tasks[task_id],
+                side_effect=lambda task_id: tasks.get(task_id),
             ),
             patch.object(
                 server.store,
@@ -1462,12 +1462,15 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         }
         provider = {"id": "new-apl", "name": "New APl"}
         model = {"id": "65-seedream-5-pro", "adapter": "newapi_image"}
-        started = []
-
         with (
             patch.object(server, "_active_tenants", return_value=[None]),
             patch.object(server.store, "list_projects", return_value=[{"id": "project-1"}]),
             patch.object(server.store, "get_project", return_value=project),
+            patch.object(
+                server,
+                "reconcile_recoverable_provider_tasks",
+                return_value=0,
+            ),
             patch.object(
                 server.provider_catalog,
                 "resolve_model",
@@ -1482,6 +1485,227 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
 
         self.assertEqual(len(started), 1)
         self.assertTrue(started)
+
+    def test_interrupted_image_task_without_node_id_is_resumed(self):
+        project = {
+            "id": "project-image-interrupted",
+            "payload": {
+                "nodes": [{
+                    "id": "node-image-interrupted",
+                    "type": "image",
+                    "title": "角色图",
+                    "metadata": {
+                        "status": "generating",
+                        "params": {
+                            "provider": "new-apl",
+                            "model": "65-seedream-5-pro",
+                        },
+                    },
+                }],
+            },
+        }
+        task = {
+            "id": "persisted-image-task",
+            "project_id": project["id"],
+            "node_id": "node-image-interrupted",
+            "provider_task_id": "task-image-interrupted",
+            "kind": "image",
+            "status": "interrupted",
+            "error": "执行租约已过期，但已有供应商任务号",
+        }
+        started = []
+
+        with (
+            patch.object(server, "_active_tenants", return_value=[None]),
+            patch.object(server.store, "get_generation_task", return_value=task),
+            patch.object(server.store, "list_projects", return_value=[{"id": project["id"]}]),
+            patch.object(server.store, "get_project", return_value=project),
+            patch.object(server.store, "list_generation_tasks", return_value=[task]),
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(
+                    {"id": "new-apl"},
+                    {"id": "65-seedream-5-pro", "adapter": "newapi_image"},
+                    {},
+                ),
+            ),
+            patch.object(server, "commit_node_metadata") as commit_node,
+            patch.object(server.threading, "Thread") as thread_cls,
+        ):
+            thread_cls.return_value.start.side_effect = lambda: started.append(
+                thread_cls.call_args.kwargs["target"]
+            )
+            server._resume_expired_provider_tasks([])
+
+        self.assertEqual(len(started), 1)
+        commit_node.assert_any_call(
+            project["id"],
+            "node-image-interrupted",
+            {
+                "status": "generating",
+                "taskId": "task-image-interrupted",
+                "providerTaskStatus": "queued",
+                "providerTaskPhase": "等待恢复",
+                "lastError": "",
+                "generationFinishedAt": "",
+            },
+        )
+
+    def test_interrupted_video_task_without_node_id_is_resumed(self):
+        project = {
+            "id": "project-video-interrupted",
+            "payload": {
+                "nodes": [{
+                    "id": "node-video-interrupted",
+                    "type": "video",
+                    "title": "段1",
+                    "metadata": {
+                        "status": "generating",
+                        "params": {
+                            "provider": "new-apl",
+                            "model": "50-seedance-2.0-fast",
+                        },
+                    },
+                }],
+            },
+        }
+        task = {
+            "id": "persisted-video-task",
+            "project_id": project["id"],
+            "node_id": "node-video-interrupted",
+            "provider_task_id": "task-video-interrupted",
+            "kind": "video",
+            "status": "interrupted",
+            "error": "执行租约已过期，但已有供应商任务号",
+        }
+        started = []
+
+        with (
+            patch.object(server, "_active_tenants", return_value=[None]),
+            patch.object(server.store, "get_generation_task", return_value=task),
+            patch.object(server.store, "list_projects", return_value=[{"id": project["id"]}]),
+            patch.object(server.store, "get_project", return_value=project),
+            patch.object(server.store, "list_generation_tasks", return_value=[task]),
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(
+                    {"id": "new-apl"},
+                    {"id": "50-seedance-2.0-fast", "adapter": "canvaspro_video"},
+                    {},
+                ),
+            ),
+            patch.object(server, "commit_node_metadata"),
+            patch.object(server.threading, "Thread") as thread_cls,
+        ):
+            thread_cls.return_value.start.side_effect = lambda: started.append(
+                thread_cls.call_args.kwargs["target"]
+            )
+            server._resume_expired_provider_tasks([])
+
+        self.assertEqual(len(started), 1)
+
+    def test_task_row_resume_uses_its_persisted_kind_and_id(self):
+        project = {
+            "id": "project-kind",
+            "payload": {
+                "nodes": [{
+                    "id": "node-kind",
+                    "type": "image",
+                    "metadata": {"status": "generating"},
+                }],
+            },
+        }
+        task = {
+            "id": "task-kind",
+            "project_id": project["id"],
+            "node_id": "node-kind",
+            "provider_task_id": "provider-kind",
+            "kind": "image",
+            "status": "interrupted",
+            "provider": "new-apl",
+            "model": "65-seedream-5-pro",
+        }
+        with (
+            patch.object(server.store, "get_generation_task", return_value=task),
+            patch.object(server.store, "get_project", return_value=project),
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(
+                    {"id": "new-apl"},
+                    {"id": "65-seedream-5-pro", "adapter": "newapi_image"},
+                    {},
+                ),
+            ),
+            patch.object(server, "commit_node_metadata"),
+            patch.object(server, "_resume_image_task") as resume_image,
+            patch.object(server.threading, "Thread") as thread_cls,
+        ):
+            thread_cls.return_value.start.side_effect = lambda: (
+                thread_cls.call_args.kwargs["target"]()
+            )
+            result = server._resume_expired_provider_tasks([task])
+
+        self.assertEqual(result, 1)
+        resume_image.assert_called_once()
+        args = resume_image.call_args.args
+        self.assertEqual(args[0], project["id"])
+        self.assertEqual(args[1], "node-kind")
+        self.assertEqual(args[2], "provider-kind")
+
+    def test_recoverable_task_rows_attach_provider_id_before_resume(self):
+        project = {
+            "id": "project-runtime-image",
+            "payload": {
+                "nodes": [{
+                    "id": "node-runtime-image",
+                    "type": "image",
+                    "title": "角色图",
+                    "metadata": {
+                        "status": "generating",
+                        "params": {
+                            "provider": "new-apl",
+                            "model": "65-seedream-5-pro",
+                        },
+                    },
+                }],
+            },
+        }
+        task = {
+            "id": "runtime-image-task",
+            "project_id": project["id"],
+            "node_id": "node-runtime-image",
+            "provider_task_id": "task-runtime-image",
+            "kind": "image",
+            "status": "interrupted",
+            "error": "执行租约已过期，但已有供应商任务号",
+        }
+        started = []
+
+        with (
+            patch.object(server.store, "list_projects", return_value=[{"id": project["id"]}]),
+            patch.object(server.store, "get_project", return_value=project),
+            patch.object(server.store, "list_generation_tasks", return_value=[task]),
+            patch.object(server, "commit_node_metadata") as commit_node,
+        ):
+            attached = server.reconcile_recoverable_provider_tasks()
+
+        self.assertEqual(attached, 1)
+        commit_node.assert_called_once_with(
+            project["id"],
+            "node-runtime-image",
+            {
+                "status": "generating",
+                "taskId": "task-runtime-image",
+                "providerTaskStatus": "queued",
+                "providerTaskPhase": "等待恢复",
+                "providerTaskProgress": 0,
+                "lastError": "",
+                "generationFinishedAt": "",
+            },
+        )
 
     def test_newapi_image_submit_releases_lease_for_single_resumer(self):
         with tenant_context.use_context(self.context):

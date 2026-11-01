@@ -1590,11 +1590,7 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
 .canvas-node.canvas-media-node .canvas-media-placeholder {
   background:
     radial-gradient(130% 100% at 50% 0%, var(--v-border-hair), transparent 68%),
-    repeating-linear-gradient(
-      45deg,
-      var(--v-card-3) 0 10px,
-      var(--v-surface-sunken) 10px 20px
-    ) !important;
+    linear-gradient(180deg, var(--v-card-2), var(--v-card-3)) !important;
   color: var(--v-text-4) !important;
 }
 

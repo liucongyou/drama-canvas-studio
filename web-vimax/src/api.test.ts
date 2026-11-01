@@ -628,6 +628,83 @@ describe('api request recovery', () => {
     expect(current?.params?.refs ?? []).toEqual([]);
   });
 
+  it('keeps referenced shared audio while isolating episodes', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'project-shared-audio',
+      title: '共享音频',
+      payload: {
+        nodes: [
+          {
+            id: 'video-ep001',
+            type: 'video',
+            title: '段1',
+            metadata: {
+              status: 'idle',
+              params: {
+                ratio: '9:16',
+                refs: [{nodeId: 'image-ep001', label: '角色｜甲（图1）'}],
+                voiceRefs: [{nodeId: 'audio-shared', label: '音频｜甲（图1）'}],
+              },
+            },
+          },
+          {
+            id: 'video-ep002',
+            type: 'video',
+            title: '段2',
+            metadata: {
+              status: 'idle',
+              params: {
+                ratio: '9:16',
+                refs: [],
+                voiceRefs: [{nodeId: 'audio-ep002', label: '音频｜乙（图2）'}],
+              },
+            },
+          },
+          {
+            id: 'image-ep001',
+            type: 'image',
+            title: '角色｜甲（图1）',
+            metadata: {status: 'done', content: '/uploads/a.png'},
+          },
+          {
+            id: 'image-ep002',
+            type: 'image',
+            title: '角色｜乙（图2）',
+            metadata: {status: 'done', content: '/uploads/b.png'},
+          },
+          {
+            id: 'audio-shared',
+            type: 'audio',
+            title: '音频｜甲（图1）',
+            metadata: {status: 'done', content: '/uploads/a.wav'},
+          },
+          {
+            id: 'audio-ep002',
+            type: 'audio',
+            title: '音频｜乙（图2）',
+            metadata: {status: 'done', content: '/uploads/b.wav'},
+          },
+        ],
+        connections: [],
+        episodeImports: [
+          {id: 'EP001', nodeIds: ['video-ep001'], videoNodeIds: ['video-ep001']},
+          {id: 'EP002', nodeIds: ['video-ep002'], videoNodeIds: ['video-ep002']},
+        ],
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    const nodes = await getCanvasMediaNodes('project-shared-audio', 'EP001');
+
+    expect(nodes.map((node) => node.id).sort()).toEqual([
+      'audio-shared',
+      'image-ep001',
+      'video-ep001',
+    ]);
+  });
+
   it('persists the storage receipt on local media nodes', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,
@@ -760,6 +837,54 @@ describe('api request recovery', () => {
       status: 'failed',
       lastError: '执行线程已失联且没有供应商任务号；本次可安全重新生成。',
       providerTaskStatus: 'failed',
+    });
+  });
+
+  it('keeps a persisted interrupted task visible as generating', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const body = String(url).includes('/api/generation-tasks')
+        ? {
+            tasks: [{
+              id: 'interrupted-1',
+              project_id: 'project-1',
+              node_id: 'image-1',
+              status: 'interrupted',
+              phase: '结果待确认',
+              error: '执行租约已过期，但已有供应商任务号',
+              provider_task_id: 'provider-image-1',
+              created_at: '2026-10-31T00:00:00Z',
+              updated_at: '2026-10-31T00:01:00Z',
+              finished_at: '',
+            }],
+          }
+        : {
+            id: 'project-1',
+            title: '测试项目',
+            payload: {
+              nodes: [{
+                id: 'image-1',
+                type: 'image',
+                title: '图像生成中',
+                metadata: {status: 'generating'},
+              }],
+              connections: [],
+              episodeImports: [{id: 'EP001', nodeIds: ['image-1'], videoNodeIds: []}],
+            },
+          };
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const workspace = await getCanvasWorkspace('project-1', 'EP001');
+
+    expect(workspace.mediaNodes[0]).toMatchObject({
+      status: 'generating',
+      providerTaskStatus: 'queued',
+      providerTaskPhase: '等待恢复',
+      providerTaskId: 'provider-image-1',
     });
   });
 
