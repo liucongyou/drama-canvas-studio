@@ -537,6 +537,23 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(result["resumed"], 1)
         self.assertEqual(len(started), 1)
 
+    def test_periodic_reconcile_loads_only_candidate_tasks(self):
+        with (
+            patch.object(
+                server.store,
+                "list_runtime_reconcile_tasks",
+                return_value=[],
+            ) as candidates,
+            patch.object(server.store, "list_projects") as list_projects,
+            patch.object(server.store, "list_generation_tasks") as list_tasks,
+        ):
+            reconciled = server.reconcile_generation_task_records()
+
+        self.assertEqual(reconciled, 0)
+        candidates.assert_called_once_with(200)
+        list_projects.assert_not_called()
+        list_tasks.assert_not_called()
+
     def test_expired_task_resume_uses_own_tenant_context(self):
         tenants = [
             {"id": "tenant-a", "slug": "tenant-a"},
@@ -1548,7 +1565,7 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             thread_cls.return_value.start.side_effect = lambda: started.append(
                 thread_cls.call_args.kwargs["target"]
             )
-            server._resume_expired_provider_tasks([])
+            server._resume_expired_provider_tasks([task])
 
         self.assertEqual(len(started), 1)
         commit_node.assert_any_call(
@@ -1614,7 +1631,7 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             thread_cls.return_value.start.side_effect = lambda: started.append(
                 thread_cls.call_args.kwargs["target"]
             )
-            server._resume_expired_provider_tasks([])
+            server._resume_expired_provider_tasks([task])
 
         self.assertEqual(len(started), 1)
 

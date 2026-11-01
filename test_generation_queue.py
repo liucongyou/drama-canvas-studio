@@ -954,9 +954,8 @@ class GenerationQueueTests(unittest.TestCase):
         }
         update_task = unittest.mock.Mock()
         commit = unittest.mock.Mock()
-        with patch.object(server.store, "list_projects", return_value=[{"id": project_id}]), \
-                patch.object(server.store, "get_project", return_value={"id": project_id, "payload": {"nodes": [node]}}), \
-                patch.object(server.store, "list_generation_tasks", return_value=[task]), \
+        with patch.object(server.store, "list_runtime_reconcile_tasks", return_value=[task]), \
+                patch.object(server.store, "get_projection_node", return_value=node), \
                 patch.object(server.store, "update_generation_task", update_task), \
                 patch.object(server, "commit_node_metadata", commit):
             reconciled = server.reconcile_generation_task_records()

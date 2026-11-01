@@ -3709,6 +3709,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const [atOpen, setAtOpen] = useState(false);                    // @ 资产候选
   const [atIdx, setAtIdx] = useState(0);
   const [atQuery, setAtQuery] = useState('');
+  const [durationDraft, setDurationDraft] = useState('');
   // 提示词框默认 4 行，点放大按钮才撑到 30vh；之前是无条件自适应，一打开就铺满半屏。
   const [taExpanded, setTaExpanded] = useState(false);
   // 弹窗贴卡片下方还是上方：由渲染后的实际高度决定（下方放不下就翻上去）
@@ -4157,6 +4158,25 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const clarityLabel = chooseOption(p.clarity, clarityOptions, curModelSpec?.defaultParams?.clarity || '1.5K');
   const resLabel = chooseOption(p.resolution, resolutionOptions, curModelSpec?.defaultParams?.resolution || '480P');
   const durLabel = `${p.duration ?? curModelSpec?.defaultParams?.duration ?? 5}s`;
+  const durationValue = Number(
+    p.duration ?? curModelSpec?.defaultParams?.duration ?? Math.min(5, durationMax),
+  );
+  const formatDuration = (value: number) => (
+    Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)))
+  );
+  const commitDuration = (raw: string) => {
+    const parsed = Number(String(raw).trim());
+    if (!Number.isFinite(parsed)) {
+      setDurationDraft(formatDuration(durationValue));
+      return;
+    }
+    const bounded = Math.max(durationMin, Math.min(durationMax, parsed));
+    patch('duration', bounded);
+    setDurationDraft(formatDuration(bounded));
+  };
+  useEffect(() => {
+    if (openMenu === 'dur') setDurationDraft(formatDuration(durationValue));
+  }, [openMenu, durationValue]);
   const countLabel = String(p.count ?? curModelSpec?.defaultParams?.count ?? 1);
   // 文本节点生成长度（短/中/长）：p.maxTokens 默认 1200
   const curLen = TEXT_LEN_OPTS.find((o) => o.tokens === (p.maxTokens ?? 1200)) || TEXT_LEN_OPTS[1];
@@ -5421,13 +5441,17 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                     min={0}
                     max={durationMax}
                     step={durationStep}
-                    value={p.duration ?? curModelSpec?.defaultParams?.duration ?? Math.min(5, durationMax)}
+                    value={durationValue}
                     style={{
                       '--jim-dur-progress': `${Math.max(0, Math.min(100,
-                        (Number(p.duration ?? curModelSpec?.defaultParams?.duration ?? 5)
+                        (durationValue
                           / Math.max(1, durationMax)) * 100))}%`,
                     } as CSSProperties}
-                    onChange={(e) => patch('duration', Math.max(durationMin, Number(e.target.value)))}
+                    onChange={(e) => {
+                      const next = Math.max(durationMin, Number(e.target.value));
+                      patch('duration', next);
+                      setDurationDraft(formatDuration(next));
+                    }}
                   />
                   <span className="jim-dur-track-ticks" aria-hidden="true">
                     {durationTicks.map((tick) => (
@@ -5450,10 +5474,36 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                   min={durationMin}
                   max={durationMax}
                   step={durationStep}
-                  value={p.duration ?? curModelSpec?.defaultParams?.duration ?? Math.min(5, durationMax)}
+                  value={durationDraft}
+                  inputMode="decimal"
+                  disabled={busy}
                   onChange={(event) => {
-                    const value = Number(event.target.value);
-                    if (Number.isFinite(value)) patch('duration', Math.max(durationMin, Math.min(durationMax, value)));
+                    const next = event.target.value;
+                    setDurationDraft(next);
+                    if (next === '' || next === '.' || next === '-') return;
+                    const value = Number(next);
+                    if (
+                      Number.isFinite(value)
+                      && value >= durationMin
+                      && value <= durationMax
+                    ) {
+                      patch('duration', value);
+                    }
+                  }}
+                  title={busy ? '生成中不能修改时长' : undefined}
+                  onBlur={() => {
+                    if (durationDraft.trim() === '') {
+                      setDurationDraft(formatDuration(durationValue));
+                    } else {
+                      commitDuration(durationDraft);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      commitDuration(durationDraft);
+                      event.currentTarget.blur();
+                    }
                   }}
                 />
                 <span>S</span>

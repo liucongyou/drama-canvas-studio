@@ -425,6 +425,11 @@ def _connect():
                     "ALTER TABLE generation_tasks ADD COLUMN next_poll_at TEXT DEFAULT ''"
                 )
             con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_generation_tasks_active_lease "
+                "ON generation_tasks(status, lease_expires_at) "
+                "WHERE status IN ('queued','submitting','running')"
+            )
+            con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_generation_tasks_next_poll "
                 "ON generation_tasks(next_poll_at) "
                 "WHERE provider_task_id IS NOT NULL "
@@ -4988,6 +4993,30 @@ def list_delivery_pending_tasks(limit=100):
         "AND delivery_status IN ('pending','materializing') "
         "ORDER BY updated_at DESC LIMIT ?",
         (max(1, min(int(limit or 100), 500)),),
+    ).fetchall()
+    con.close()
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def list_runtime_reconcile_tasks(limit=200):
+    """Return only task rows that a periodic reconciler may need to inspect."""
+    con = _connect()
+    columns = [
+        item[0]
+        for item in con.execute(
+            "SELECT * FROM generation_tasks LIMIT 0"
+        ).description
+    ]
+    rows = con.execute(
+        "SELECT * FROM generation_tasks "
+        "WHERE status IN ('queued','submitting','running','failed','interrupted') "
+        "AND ("
+        "status IN ('queued','submitting','running') "
+        "OR COALESCE(delivery_status,'pending') IN ('pending','materializing') "
+        "OR COALESCE(provider_task_id,'')!=''"
+        ") "
+        "ORDER BY updated_at DESC LIMIT ?",
+        (max(1, min(int(limit or 200), 500)),),
     ).fetchall()
     con.close()
     return [dict(zip(columns, row)) for row in rows]

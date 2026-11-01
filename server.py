@@ -388,12 +388,6 @@ def _resume_expired_provider_tasks(expired):
     # A task that has just expired was already claimed by this reconciliation
     # pass. Only recover rows that are not the same local task twice.
     candidates = list(expired or [])
-    if not candidates:
-        candidates.extend(
-            task
-            for task in store.list_generation_tasks(None, 300)
-            if task.get("status") in {"interrupted", "failed"}
-        )
     seen = set()
     for item in candidates:
         item_id = str(item.get("id") or "")
@@ -3300,21 +3294,19 @@ def _resume_image_task(project_id, node_id, task_id, provider, model):
 
 def reconcile_generation_task_records():
     """Align persisted task rows with the authoritative canvas node state."""
-    projects = {}
     nodes = {}
-    for row in store.list_projects():
-        project = store.get_project(row.get("id"))
-        if not project:
-            continue
-        projects[project["id"]] = project
-        for node in project["payload"].get("nodes", []):
-            nodes[(project["id"], node.get("id"))] = node
-
     reconciled = 0
-    for task in store.list_generation_tasks(None, 300):
+    for task in store.list_runtime_reconcile_tasks(200):
+        project_id = str(task.get("project_id") or "")
+        node_id = str(task.get("node_id") or "")
+        if not project_id or not node_id:
+            continue
+        node = store.get_projection_node(project_id, node_id)
+        if node:
+            nodes[(project_id, node_id)] = node
         if task.get("status") not in {"queued", "submitting", "running"}:
             if task.get("status") in {"failed", "interrupted"}:
-                node = nodes.get((task.get("project_id"), task.get("node_id")))
+                node = nodes.get((project_id, node_id))
                 meta = (node or {}).get("metadata") or {}
                 if not node or str(meta.get("status") or "") != "generating":
                     continue
@@ -3361,7 +3353,7 @@ def reconcile_generation_task_records():
                 })
                 reconciled += 1
             continue
-        node = nodes.get((task.get("project_id"), task.get("node_id")))
+        node = nodes.get((project_id, node_id))
         meta = (node or {}).get("metadata") or {}
         node_status = str(meta.get("status") or "")
         fields = None

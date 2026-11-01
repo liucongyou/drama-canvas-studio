@@ -696,8 +696,19 @@ class CanvasProjectionTests(unittest.TestCase):
                     "PRAGMA table_info(generation_tasks)"
                 )
             }
+            indexes = {
+                row[1]
+                for row in migrated.execute(
+                    "PRAGMA index_list(generation_tasks)"
+                )
+            }
             migrated.close()
         self.assertIn("episode_id", columns)
+        self.assertIn("provider_task_id", columns)
+        self.assertIn("lease_expires_at", columns)
+        self.assertIn("next_poll_at", columns)
+        self.assertIn("idx_generation_tasks_active_lease", indexes)
+        self.assertIn("idx_generation_tasks_next_poll", indexes)
 
     def test_legacy_project_notes_migrate_once_to_ep001_only(self):
         context = tenant_context.make_context("legacy-notes", "legacy-notes")
