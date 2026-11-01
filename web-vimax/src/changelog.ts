@@ -8,10 +8,23 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.31.21';
+export const APP_VERSION = '2026.11.01.1';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.11.01.1',
+    date: '2026-11-01',
+    releasedAt: '2026-11-01 10:50:00 +08:00',
+    title: '截图蓝、主题端口与画布细节收口',
+    changes: [
+      '按钮、选中态和蓝色渐变统一为截图中的 #5D62E9，悬浮态使用同色相提亮值。',
+      '画布连线常态与交互高亮保持原有颜色，不随按钮强调色变化。',
+      '除石墨蓝外，各主题的节点连接端口跟随当前主题色；石墨蓝默认中性玻璃样式保持不变。',
+      '项目切换图标改为深灰单色底与蓝色文件夹，移除原来的蓝褐双色切角背景。',
+      '更新记录弹窗底部按钮与分隔线之间增加留白，避免控件紧贴边界。',
+    ],
+  },
   {
     version: '2026.10.31.21',
     date: '2026-10-31',

@@ -57,7 +57,7 @@ html[data-theme='dark'][data-variant='tech'] {
 }
 
 .session-status.is-running {
-  color: #2f6feb;
+  color: #5d62e9;
   background: rgba(47, 111, 235, 0.1);
 }
 
@@ -1205,21 +1205,21 @@ html[data-theme='dark'][data-variant='immersive'] {
   --faint: #707782;
   --line: #24262b;
   --line-strong: #30343b;
-  --blue: #61a8ff;
+  --blue: #5d62e9;
   --blue-soft: color-mix(in srgb, var(--blue) 14%, transparent);
   --violet: var(--blue);
-  --cyan: #68c8ee;
+  --cyan: #7a7ff2;
   --magenta: #7ea7db;
-  --acc-a: #3f8cff;
-  --acc-b: #66c7ff;
-  --acc: #73b7ff;
-  --acc-soft: #dcecff;
-  --acc-t1: #91ccff;
-  --acc-t2: #70d7f2;
-  --acc-glow: 80, 160, 240;
+  --acc-a: #5d62e9;
+  --acc-b: #7a7ff2;
+  --acc: #6a6fee;
+  --acc-soft: #d9dbff;
+  --acc-t1: #9a9ef7;
+  --acc-t2: #b4b7fa;
+  --acc-glow: 93, 98, 233;
   --brand-grad: linear-gradient(135deg, var(--acc-a) 0%, var(--acc-b) 100%);
-  --logo-a: #3f8cff;
-  --logo-b: #66c7ff;
+  --logo-a: #5d62e9;
+  --logo-b: #7a7ff2;
 }
 
 html[data-theme='dark'][data-variant='immersive'] .sidebar {
@@ -1232,7 +1232,7 @@ html[data-theme='dark'][data-variant='immersive'] .empty-state-logo {
 }
 
 .theme-swatch.is-immersive {
-  background: linear-gradient(135deg, #0b0c0e 45%, #3f8cff, #66c7ff);
+  background: linear-gradient(135deg, #0b0c0e 45%, #5d62e9, #7a7ff2);
 }
 
 .theme-picker {
@@ -1241,7 +1241,7 @@ html[data-theme='dark'][data-variant='immersive'] .empty-state-logo {
 }
 
 .theme-swatch.is-tech {
-  background: linear-gradient(135deg, #17191d 45%, #45b8cd, #4f83d8);
+  background: linear-gradient(135deg, #17191d 45%, #5d62e9, #7a7ff2);
 }
 
 /* —— 80 集：按集筛选 + 集进度面板（P0-2/P0-3） —— */
@@ -1615,7 +1615,7 @@ html[data-theme='dark'][data-variant='immersive'] .empty-state-logo {
 .episode-progress-legend .is-rendered::before { background: var(--green, #27845a); }
 .episode-progress-legend .is-assets-missing::before { background: var(--amber, #a96d17); }
 .episode-progress-legend .is-partial::before { background: var(--amber, #a96d17); }
-.episode-progress-legend .is-rendering::before { background: var(--blue, #2f6feb); }
+.episode-progress-legend .is-rendering::before { background: var(--blue, #5d62e9); }
 .episode-progress-legend .is-planned::before { background: var(--cyan, #148c96); }
 .episode-progress-legend .is-pending::before { background: var(--line-strong); }
 .episode-progress-legend .is-error::before { background: var(--red, #c54444); }
@@ -1655,8 +1655,8 @@ html[data-theme='dark'][data-variant='immersive'] .empty-state-logo {
 .episode-progress-cell.is-rendered em { color: var(--green, #27845a); }
 .episode-progress-cell.is-partial { border-color: color-mix(in srgb, var(--amber, #a96d17) 45%, transparent); }
 .episode-progress-cell.is-partial em { color: var(--amber, #a96d17); }
-.episode-progress-cell.is-rendering { border-color: color-mix(in srgb, var(--blue, #2f6feb) 45%, transparent); }
-.episode-progress-cell.is-rendering em { color: var(--blue, #2f6feb); }
+.episode-progress-cell.is-rendering { border-color: color-mix(in srgb, var(--blue, #5d62e9) 45%, transparent); }
+.episode-progress-cell.is-rendering em { color: var(--blue, #5d62e9); }
 .episode-progress-cell.is-planned { border-color: color-mix(in srgb, var(--cyan, #148c96) 45%, transparent); }
 .episode-progress-cell.is-planned em { color: var(--cyan, #148c96); }
 .episode-progress-cell.is-assets-missing { border-color: color-mix(in srgb, var(--amber, #a96d17) 45%, transparent); }
@@ -1666,13 +1666,13 @@ html[data-theme='dark'][data-variant='immersive'] .empty-state-logo {
 
 /* ===== 画布媒体节点 · 详细生成参数面板（自研增强） ===== */
 .canvas-media-params-wrap summary{cursor:pointer;font-size:11px;color:#7d8ca6;padding:4px 2px;user-select:none}
-.canvas-media-params-wrap summary:hover{color:#4d9fff}
+.canvas-media-params-wrap summary:hover{color:#5d62e9}
 .canvas-media-params{display:flex;flex-direction:column;gap:6px;margin:6px 0;padding:8px;background:#10141c;border:1px solid #232c3c;border-radius:8px}
 .canvas-media-params-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .canvas-media-params label{display:flex;flex-direction:column;gap:3px;font-size:10.5px;color:#7d8ca6}
 .canvas-media-params select,.canvas-media-params input{background:#161c28;border:1px solid #2a3342;color:#d6deea;border-radius:6px;padding:3px 5px;font-size:11px;width:100%}
 .canvas-media-params button{background:#1b2a44;border:1px solid #2f4a7a;color:#a9c8f5;border-radius:6px;padding:4px 6px;font-size:11px;cursor:pointer;width:100%}
-.canvas-media-params button:hover{border-color:#4d9fff}
+.canvas-media-params button:hover{border-color:#5d62e9}
 .canvas-media-refs{display:flex;flex-wrap:wrap;gap:4px}
 .canvas-media-ref-chip{display:inline-flex;align-items:center;gap:4px;background:#1c2a3f;border:1px solid #2f4a7a;color:#8fb8f0;border-radius:10px;padding:2px 8px;font-size:10.5px}
 .canvas-media-ref-chip button{background:none;border:none;color:var(--v-danger);cursor:pointer;font-size:11px;padding:0;width:auto}
@@ -1700,7 +1700,7 @@ html[data-theme='dark'][data-variant='immersive'] .empty-state-logo {
 .canvas-media-bar-badge{font-size:11px;color:#9fb3d6;background:#1a2230;border:1px solid #2b3648;border-radius:20px;padding:2px 10px}
 .canvas-media-modal-close{margin-left:auto;background:none;border:none;color:#8a97ad;font-size:14px;cursor:pointer}
 .canvas-media-bar .canvas-media-prompt{background:#0c1016;border:1px solid #263045;border-radius:10px;color:#e8eef9;padding:10px 12px;font-size:13px;line-height:1.55;resize:vertical;min-height:64px;font-family:inherit}
-.canvas-media-bar .canvas-media-prompt:focus{outline:none;border-color:#4d9fff}
+.canvas-media-bar .canvas-media-prompt:focus{outline:none;border-color:#5d62e9}
 .canvas-media-bar-params .canvas-media-params-grid{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .canvas-media-bar-params label{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#9fb3d6;background:#161c26;border:1px solid #263045;border-radius:8px;padding:4px 8px}
 .canvas-media-bar-params select,.canvas-media-bar-params input{background:#0c1016;border:1px solid #263045;border-radius:6px;color:#e8eef9;font-size:11px;padding:3px 6px;max-width:190px}
@@ -1712,8 +1712,8 @@ html[data-theme='dark'][data-variant='immersive'] .empty-state-logo {
 .canvas-media-params-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .canvas-media-pill-wrap{position:relative}
 .canvas-media-pill{display:inline-flex;align-items:center;gap:6px;background:#161c28;border:1px solid #2a3342;border-radius:8px;color:#b9c6dc;font-size:11px;padding:5px 10px;cursor:pointer;width:auto;transition:border-color .15s,background .15s}
-.canvas-media-pill:hover{border-color:#4d9fff;background:#1a2434}
-.canvas-media-pill.is-open{border-color:#4d9fff;background:#1a2434}
+.canvas-media-pill:hover{border-color:#5d62e9;background:#1a2434}
+.canvas-media-pill.is-open{border-color:#5d62e9;background:#1a2434}
 .canvas-media-pill.is-action{border-color:#33507a;color:#7fb0ff;background:#1e2b40}
 .canvas-media-pill-label{color:#6d7c95;font-size:10px}
 .canvas-media-pill-value{color:#e6e6e8}
@@ -1728,7 +1728,7 @@ html[data-theme='dark'][data-variant='immersive'] .empty-state-logo {
 .canvas-media-bar-params .canvas-media-size-hint{font-size:10px;color:#66758f;align-self:center}
 .canvas-media-modal-footer{display:flex;align-items:center;justify-content:space-between}
 .canvas-media-del-btn{background:none;border:none;color:var(--v-danger);font-size:11px;cursor:pointer;padding:4px 6px}
-.canvas-media-gen-btn{background:linear-gradient(135deg,#2f7bff,#4d9fff);border:none;border-radius:9px;color:#fff;font-size:13px;font-weight:600;padding:8px 22px;cursor:pointer}
+.canvas-media-gen-btn{background:linear-gradient(135deg,#5d62e9,#7a7ff2);border:none;border-radius:9px;color:#fff;font-size:13px;font-weight:600;padding:8px 22px;cursor:pointer}
 .canvas-media-gen-btn:disabled{opacity:.45;cursor:not-allowed}
 
 /* ===== 画布底色统一为成熟 AI 工具深色底（#121212，参考参考图） ===== */
@@ -1893,7 +1893,7 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 .canvas-media-card-menu{position:absolute;top:9px;right:9px;display:flex;gap:4px;opacity:0;transition:opacity .15s;z-index:6}
 .canvas-media-card:hover .canvas-media-card-menu,.canvas-media-node.is-active .canvas-media-card-menu{opacity:1}
 .canvas-media-card-menu button{width:22px;height:22px;border-radius:6px;background:rgba(13,16,22,.82);border:1px solid rgba(255,255,255,.14);color:#c6d2e4;font-size:11px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:background .15s,color .15s;padding:0}
-.canvas-media-card-menu button:hover{background:rgba(77,159,255,.34);border-color:#4d9fff;color:#fff}
+.canvas-media-card-menu button:hover{background:rgba(93,98,233,.34);border-color:#5d62e9;color:#fff}
 .canvas-media-card-menu button.is-del:hover{background:color-mix(in srgb, var(--v-danger) 32%);border-color:var(--v-danger)}
 /* 卡片底部信息条 */
 .canvas-media-foot{display:flex;align-items:center;gap:7px;padding:0 4px;min-width:0}
@@ -2069,8 +2069,8 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
   color:#b9c6dc;font-size:12px;padding:6px 11px;border-radius:9px;cursor:pointer;
   transition:border-color .15s,background .15s,color .15s;white-space:nowrap;
 }
-.jim-tool:hover{border-color:#4d9fff;background:#262c3a;color:#e6e6e8}
-.jim-tool.is-open{border-color:#4d9fff;background:#262c3a;color:#e6e6e8}
+.jim-tool:hover{border-color:#5d62e9;background:#262c3a;color:#e6e6e8}
+.jim-tool.is-open{border-color:#5d62e9;background:#262c3a;color:#e6e6e8}
 .jim-tool.is-model{font-weight:500}
 .jim-tool.is-model .jim-model-dot{width:7px;height:7px;border-radius:50%;flex:none}
 .jim-tool.is-input{gap:5px;padding:5px 10px}
@@ -2082,18 +2082,18 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 .jim-tool-spacer{flex:1}
 .jim-tpl-wrap{position:relative}
 .jim-cost{font-size:11.5px;color:var(--v-warn);font-variant-numeric:tabular-nums;white-space:nowrap;padding:0 2px}
-/* 生成按钮：**统一到全站强调蓝**（#2f7bff → #4d9fff）。
+/* 生成按钮：**统一到全站强调蓝**（#5d62e9 → #5d62e9）。
    原来这里是橙黄渐变 #ffb35c → #ff8a3d，是整块弹窗里唯一一处暖色，
    与蓝色 pill / 蓝色选中态 / 中性深灰浮层放在一起像两套设计（用户截图反馈"颜色跟整体不搭"）。 */
 .jim-gen{
   width:34px;height:34px;border-radius:50%;border:none;flex:none;
-  background:linear-gradient(135deg,#2f7bff,#4d9fff);color:#fff;
+  background:linear-gradient(135deg,#5d62e9,#7a7ff2);color:#fff;
   font-size:16px;font-weight:700;cursor:pointer;line-height:1;
   display:inline-flex;align-items:center;justify-content:center;
   box-shadow:0 4px 14px rgba(47,123,255,.34);
   transition:filter .15s,transform .1s,box-shadow .15s;
 }
-.jim-gen:hover:not(:disabled){filter:brightness(1.12);box-shadow:0 6px 18px rgba(77,159,255,.46)}
+.jim-gen:hover:not(:disabled){filter:brightness(1.12);box-shadow:0 6px 18px rgba(93,98,233,.46)}
 .jim-gen:active:not(:disabled){transform:scale(.94)}
 /* 禁用态：不能只靠 opacity —— 半透明的蓝色圆钮在深底上仍显得"可点"，
    改成灰面 + 灰箭头，视觉上明确是"还点不了"（提示词为空时就是这个状态）。 */
@@ -2225,31 +2225,31 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 .jim-model-empty{padding:20px 10px;text-align:center;color:#77777d;font-size:11px}
 .jim-model-item{display:flex;flex-direction:column;gap:3px;align-items:flex-start;background:none;border:none;color:#c3cfe2;text-align:left;padding:8px 10px;border-radius:10px;cursor:pointer;width:100%;transition:background .12s}
 .jim-model-item:hover{background:#252c3a;color:#fff}
-.jim-model-item.is-active{background:rgba(77,159,255,.12);box-shadow:inset 0 0 0 1px #33507a}
+.jim-model-item.is-active{background:rgba(93,98,233,.12);box-shadow:inset 0 0 0 1px #33507a}
 .jim-model-name{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:#e8eef9}
 .jim-model-badge{font-style:normal;font-size:9.5px;font-weight:700;border-radius:5px;padding:1px 5px;letter-spacing:.3px}
 .jim-model-desc{font-size:10.5px;color:#8a8a8f}
 .jim-pop-ratio{min-width:236px}
 .jim-ratio-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
 .jim-ratio-item{display:flex;flex-direction:column;align-items:center;gap:5px;background:#20242e;border:1px solid #2b3140;color:#b9c6dc;font-size:11px;padding:9px 4px 7px;border-radius:10px;cursor:pointer;transition:border-color .15s,background .15s,color .15s}
-.jim-ratio-item:hover{border-color:#4d9fff;color:#e6e6e8}
-.jim-ratio-item.is-active{border-color:#4d9fff;background:var(--v-accent-soft);color:#8fc0ff}
+.jim-ratio-item:hover{border-color:#5d62e9;color:#e6e6e8}
+.jim-ratio-item.is-active{border-color:#5d62e9;background:var(--v-accent-soft);color:#a9adff}
 .jim-ratio-ico{color:currentColor}
 .jim-pop-clarity,.jim-pop-style{min-width:280px}
 .jim-chip-row{display:flex;flex-wrap:wrap;gap:5px;padding:0 4px 6px}
 .jim-chip{background:#20242e;border:1px solid #2b3140;color:#b9c6dc;font-size:11.5px;padding:5px 12px;border-radius:8px;cursor:pointer;transition:border-color .15s,background .15s,color .15s}
-.jim-chip:hover{border-color:#4d9fff;color:#e6e6e8}
-.jim-chip.is-active{background:rgba(77,159,255,.16);border-color:#4d9fff;color:#8fc0ff;font-weight:600}
+.jim-chip:hover{border-color:#5d62e9;color:#e6e6e8}
+.jim-chip.is-active{background:rgba(93,98,233,.16);border-color:#5d62e9;color:#a9adff;font-weight:600}
 .jim-pop-res{min-width:150px;display:flex;flex-direction:column;gap:2px}
 .jim-radio-item{display:flex;align-items:center;gap:9px;background:none;border:none;color:#c3cfe2;font-size:12.5px;text-align:left;padding:8px 10px;border-radius:9px;cursor:pointer;width:100%}
 .jim-radio-item:hover{background:#252c3a;color:#fff}
 .jim-radio-item i{width:14px;height:14px;border-radius:50%;border:1.5px solid #4a5568;flex:none;position:relative}
-.jim-radio-item.is-active{color:#8fc0ff}
-.jim-radio-item.is-active i{border-color:#4d9fff}
-.jim-radio-item.is-active i::after{content:'';position:absolute;inset:3px;border-radius:50%;background:#4d9fff}
+.jim-radio-item.is-active{color:#a9adff}
+.jim-radio-item.is-active i{border-color:#5d62e9}
+.jim-radio-item.is-active i::after{content:'';position:absolute;inset:3px;border-radius:50%;background:#5d62e9}
 .jim-pop-dur{min-width:300px}
 .jim-dur-row{display:flex;align-items:center;gap:12px;padding:6px 8px 10px}
-.jim-dur-row input[type='range']{flex:1;accent-color:#4d9fff;cursor:pointer}
+.jim-dur-row input[type='range']{flex:1;accent-color:#5d62e9;cursor:pointer}
 .jim-dur-val{font-size:13px;font-weight:600;color:#e8eef9;min-width:38px;text-align:right;font-variant-numeric:tabular-nums}
 .jim-pop-tpl{min-width:250px;display:flex;flex-direction:column;gap:2px}
 .jim-pop-tpl button{display:flex;flex-direction:column;gap:2px;align-items:flex-start;background:none;border:none;color:#c3cfe2;font-size:12px;text-align:left;padding:7px 10px;border-radius:8px;cursor:pointer;width:100%}
@@ -2432,7 +2432,7 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
      画布 #121212 · 面板 #171717 · 卡片 #222→#181818 · 卡内 #191919
      控件 #202020 · 控件悬停 #272727 · 描边 #2b2b2b / #3a3a3a
      文字 #ededed / #a8a8ab / #757578 / #5a5a5e
-     强调 #4d9fff（唯一交互色）
+     强调 #5d62e9（唯一交互色）
      语义 绿 #6fd39c · 金 #e0b46a · 红 var(--v-danger)（同饱和度，不互相打架）
    本段整体置于文件末尾，便于独立回退（删掉本段即恢复旧配色）。
    ============================================================ */
@@ -2458,16 +2458,15 @@ html[data-theme='dark'][data-variant='immersive']{
   --green:#6fd39c !important;
   --amber:#e0b46a !important;
   --red:var(--v-danger) !important;
-  /* 强调色只留一支 #4d9fff，避免 tech 块里 #73b7ff / #61a8ff 等多支蓝并存 */
-  --blue:#4d9fff !important;
-  --acc:#4d9fff !important;
-  --acc-a:#2f7bff !important;
-  --acc-b:#4d9fff !important;
-  --acc-soft:#8fc0ff !important;
+  --blue:#5d62e9 !important;
+  --acc:#5d62e9 !important;
+  --acc-a:#5d62e9 !important;
+  --acc-b:#7a7ff2 !important;
+  --acc-soft:#9a9ef7 !important;
   --acc-t1:#e6e6e6 !important;
   --acc-t2:#c9c9c9 !important;
-  --acc-glow:77,159,255 !important;
-  --brand-grad:linear-gradient(135deg,#2f7bff 0%,#4d9fff 100%) !important;
+  --acc-glow:93,98,233 !important;
+  --brand-grad:linear-gradient(135deg,#5d62e9 0%,#7a7ff2 100%) !important;
 }
 
 /* ---------- 画布外围：统一继承色（原为偏蓝的 #e6ebf2） ---------- */
@@ -2576,8 +2575,8 @@ html[data-theme='dark'][data-variant='immersive']{
   --card-c3:#1b1f25;
   border-color:transparent;
   box-shadow:
-    0 0 0 2px rgba(77,159,255,.16),
-    0 0 26px rgba(77,159,255,.26),
+    0 0 0 2px rgba(93,98,233,.16),
+    0 0 26px rgba(93,98,233,.26),
     0 14px 32px -10px rgba(0,0,0,.88),
     inset 0 1px 0 rgba(255,255,255,.07);
 }
@@ -3247,7 +3246,7 @@ html[data-theme='dark'][data-variant='immersive']{
 .jim-model-name,.jim-pop-tpl button strong{color:#e6e6e8}
 .jim-radio-item i{border-color:#4a4a4e}
 .jim-tool{background:#202020;border-color:#2e2e2e;color:#c2c2c6}
-.jim-tool:hover,.jim-tool.is-open{background:#272727;border-color:#4d9fff;color:#ececee}
+.jim-tool:hover,.jim-tool.is-open{background:#272727;border-color:#5d62e9;color:#ececee}
 .jim-tool.is-input input{color:#e8e8e8}
 .jim-tool.is-input input::placeholder{color:#63636a}
 .jim-tool.is-ghost{color:#8a8a8f}
@@ -3262,7 +3261,7 @@ html[data-theme='dark'][data-variant='immersive']{
    于是同一屏里"模型下拉是蓝调、＋菜单是黑调"，视觉上像两套设计语言。
    这里一次性收口到一套色板（与底部提示词栏 .jim-bar 的 #171717 同族）：
      浮层底 #1c1c1c / 边框 #2e2e2e / 标题字 #7e7e83 / 正文 #c9c9cc / 主字 #e6e6e8
-   交互态只留一支强调蓝 #4d9fff（active 用 12% 蓝底 + 蓝描边，与模型项一致）。
+   交互态只留一支强调蓝 #5d62e9（active 用 12% 蓝底 + 蓝描边，与模型项一致）。
    ★ 新加任何浮层都请复用这一套值，不要再引入 #1d222c / #33507a 这类旧色。 */
 .jim-pop,
 .jim-add-pop,
@@ -3302,8 +3301,8 @@ html[data-theme='dark'][data-variant='immersive']{
 /* 带「选中」语义的项统一：12% 蓝底 + 蓝色内描边（原来是 rgba 蓝底 + 旧的深蓝 #33507a 边） */
 .jim-model-item.is-active,
 .jim-pop-tpl button.is-active{
-  background:rgba(77,159,255,.12);
-  box-shadow:inset 0 0 0 1px rgba(77,159,255,.55);
+  background:rgba(93,98,233,.12);
+  box-shadow:inset 0 0 0 1px rgba(93,98,233,.55);
   color:#fff;
 }
 .jim-model-item.is-active .jim-model-name{color:#fff}
@@ -3312,9 +3311,9 @@ html[data-theme='dark'][data-variant='immersive']{
 .jim-model-badge{
   background:var(--v-accent-soft);
   color:#9cc4ff;
-  border:1px solid rgba(77,159,255,.24);
+  border:1px solid rgba(93,98,233,.24);
 }
-.jim-model-item.is-active .jim-model-badge{background:rgba(77,159,255,.22);color:#cfe2ff}
+.jim-model-item.is-active .jim-model-badge{background:rgba(93,98,233,.22);color:#cfe2ff}
 
 /* ---------- 画布外框：统计 pill / 底部 dock / 小地图 ---------- */
 .canvas-stats-inline{background:var(--v-surface);border-color:var(--v-border);color:var(--v-text-3)}
@@ -3346,7 +3345,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 /* ---------- 收尾：把散落的蓝灰/紫蓝点位压回中性或色板内 ---------- */
 /* 连接手柄：react-flow 自带 #1a192b（偏紫蓝） */
 .react-flow__handle{background:#3d3d3d;border:1px solid #121212}
-.react-flow__handle:hover{background:#4d9fff}
+.react-flow__handle:hover{background:#5d62e9}
 /* 状态点（闲置）/ 尺寸提示 / 输入占位：原来都是 #5f6c80 / #54627c 蓝灰 */
 .canvas-media-dot{background:var(--v-dot-idle)}
 .canvas-media-meta-sub.is-idle .canvas-media-dot,
@@ -3355,7 +3354,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 .jim-tool.is-input input::placeholder{color:#6a6a6e}
 /* 剧集列表里的视频缩略图底：#0f172a → 中性 */
 .canvas-ep-video-thumb{background:#0e0e0e}
-.canvas-ep-video-cell:hover{border-color:#4d9fff;box-shadow:0 2px 10px rgba(77,159,255,.22)}
+.canvas-ep-video-cell:hover{border-color:#5d62e9;box-shadow:0 2px 10px rgba(93,98,233,.22)}
 /* ---------- 侧栏选中态：2026-10-25 第二轮改成"纯明度"表达（用户截图口径） ----------
    · 背景：--v-surface-hover(#2a2a2a) → --v-selected(#373737)，比面板亮两档
    · 左侧 2px 竖条：蓝 → 中性亮灰（结构锚点保留，但不再染蓝）
@@ -3457,18 +3456,18 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 .canvas-legend{box-shadow:0 10px 30px rgba(0,0,0,.55)}
 .canvas-legend-swatch{border-color:rgba(255,255,255,.12)}
 .canvas-legend-swatch.is-char{background:#a78bfa}
-.canvas-legend-swatch.is-scene{background:#4d9fff}
+.canvas-legend-swatch.is-scene{background:#5d62e9}
 .canvas-legend-swatch.is-prop{background:#e0b46a}
 .canvas-legend-swatch.is-voice{background:#6fd39c}
-.canvas-legend-swatch.is-seg{background:#d4d4d4;border-color:#4d9fff}
+.canvas-legend-swatch.is-seg{background:#d4d4d4;border-color:#5d62e9}
 .canvas-legend-swatch.is-shot{background:#1f1f1f;border-color:#6d6d72}
-.canvas-legend-swatch.is-ep{background:#1c1c1c;border:1px dashed #4d9fff}
+.canvas-legend-swatch.is-ep{background:#1c1c1c;border:1px dashed #5d62e9}
 .canvas-legend-swatch.is-note{background:#c9b98a;border-color:#b8a878}
 /* 徽标：原来 bg #ecfdf5/#fffbeb + 深色字，是浅色主题残留，在深底上刺眼 */
 .canvas-legend-badge.is-confirmed{border-color:rgba(111,211,156,.45);color:#6fd39c;background:rgba(111,211,156,.12)}
 .canvas-legend-badge.is-pending{border-color:rgba(224,180,106,.45);color:#e0b46a;background:rgba(224,180,106,.12)}
 .canvas-legend-badge.is-clip,
-.canvas-legend-badge.is-fullref{border-color:var(--v-accent-line);color:#8fc0ff;background:rgba(77,159,255,.12)}
+.canvas-legend-badge.is-fullref{border-color:var(--v-accent-line);color:#a9adff;background:rgba(93,98,233,.12)}
 /* 图例连线色必须与画布实际连线一致：灰=段落链、金=手动、淡灰=自动引用 */
 .canvas-legend-line.is-seg{border-top-color:#5a5a60}
 .canvas-legend-line.is-user{border-top-color:#e0b46a}
@@ -3753,7 +3752,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
    ★ 这里必须显式写 border-color:transparent ——
      styles.css:11878 有一条 `.canvas-node:hover{border-color:var(--acc,#171717)}`，
      特异性 (0,2,0) 与本条相同但它写在更早加载的文件里，所以本条能赢；
-     可一旦本行漏写 border-color，var(--acc) 就是 #4d9fff，
+     可一旦本行漏写 border-color，var(--acc) 就是 #5d62e9，
      备注卡一悬停就浮出一圈蓝边框，和"无边框"的整体方案直接打架。 */
 .react-flow__node-note:hover .canvas-note{
   --note-c1:#313131;
@@ -3771,8 +3770,8 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   --note-c3:#1d2127;
   border-color:transparent;
   box-shadow:
-    0 0 0 2px rgba(77,159,255,.18),
-    0 0 28px rgba(77,159,255,.24),
+    0 0 0 2px rgba(93,98,233,.18),
+    0 0 28px rgba(93,98,233,.24),
     0 14px 34px -10px rgba(0,0,0,.86),
     inset 0 1px 0 rgba(255,255,255,.07);
 }
@@ -3818,7 +3817,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   resize:none;
   outline:none;
   overflow:auto;
-  caret-color:#4d9fff;
+  caret-color:#5d62e9;
   scrollbar-width:thin;
   scrollbar-color:rgba(255,255,255,.16) transparent;
 }
@@ -3836,11 +3835,11 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 /* 连接端口：视觉与交互**全部**由 styles.css 的 `.canvas-media-port` 负责
    （1px 极小盒 + 伪元素画圆 + 屏幕恒 42px 命中区 + 缩放补偿）。
    ★★★ 2026-10-25 第 33 轮：这里原有的一套 `width:9px / background:#3d3d3d /
-     :hover → #4d9fff` 规则**已删除**。它是与 `.canvas-media-port` 并行的第二套端口样式，
+     :hover → #5d62e9` 规则**已删除**。它是与 `.canvas-media-port` 并行的第二套端口样式，
      两套同时生效的结果就是用户截图里的两种加号：
        · 未连线 → 命中 `.canvas-media-port::before`，深玻璃底 + 淡灰蓝描边；
        · 已连线 → 同时命中旧规则，被 `background:#3d3d3d` 盖成实心灰、
-         悬停时又被 `:hover{background:#4d9fff}` 点成亮蓝并且 `scale(1.15)`。
+         悬停时又被 `:hover{background:#5d62e9}` 点成亮蓝并且 `scale(1.15)`。
      也就是说"灰"和"蓝"根本不是图片/视频的区别，而是**有没有连过线**的区别 ——
      但用户看到的是一屏两种控件，这就是"为什么有两种样式颜色"的真正原因。
      ⇒ 端口只留一套样式，颜色只有一个：中性灰。蓝色只属于"正在拖线"那一瞬。 */
@@ -4034,7 +4033,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   background:var(--v-surface-hover);
   color:var(--v-text-2);cursor:pointer;
 }
-.canvas-arrange-cols strong{min-width:18px;text-align:center;color:#4d9fff}
+.canvas-arrange-cols strong{min-width:18px;text-align:center;color:#5d62e9}
 .canvas-arrange-foot{display:flex;align-items:center;gap:8px;margin-top:16px}
 .canvas-arrange-foot button{
   height:32px;padding:0 14px;
@@ -4158,13 +4157,13 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 }
 .canvas-selbar-linkdot:hover,
 .canvas-selbar-linkwrap.is-dragging .canvas-selbar-linkdot{
-  background:#4d9fff;
-  border-color:#4d9fff;
+  background:#5d62e9;
+  border-color:#5d62e9;
   color:#fff;
-  box-shadow:0 0 0 4px rgba(77,159,255,.18),0 2px 10px rgba(0,0,0,.5);
+  box-shadow:0 0 0 4px rgba(93,98,233,.18),0 2px 10px rgba(0,0,0,.5);
 }
 .canvas-selbar-linkwrap.is-dragging .canvas-selbar-linkstem{
-  background:rgba(77,159,255,.55);
+  background:rgba(93,98,233,.55);
 }
 .canvas-selbar-linkdrag{
   position:absolute;
@@ -4183,7 +4182,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   stroke-dasharray:5 4;
 }
 .canvas-selbar-linkdrag path.is-hot{
-  stroke:#4d9fff;
+  stroke:#5d62e9;
   stroke-width:2.6;
   stroke-dasharray:none;
 }
@@ -4191,7 +4190,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   fill:#6b7684;
   transition:fill 90ms;
 }
-.canvas-selbar-linkdrag circle.is-hot{ fill:#4d9fff; }
+.canvas-selbar-linkdrag circle.is-hot{ fill:#5d62e9; }
 /* 整段可删：删掉后回退到只有「自动布局 · 适应 · +/-」的旧工具栏 */
 /* 缩放百分比：等宽数字 + 固定最小宽度，缩放变化时按钮宽度不抖动 */
 .canvas-toolbar-zoom{
@@ -4359,7 +4358,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   color: var(--v-text);
 }
 
-/* ★ 原 #2c65a8 底 + #4d9fff 描边 = 第三种蓝（既不是连线亮蓝，也不是深蓝令牌）。
+/* ★ 原 #2c65a8 底 + #5d62e9 描边 = 第三种蓝（既不是连线亮蓝，也不是深蓝令牌）。
    统一到 --v-accent-solid，与工具条激活按钮、对话框主按钮完全同一支。 */
 .model-settings-actions button.is-primary {
   color: var(--v-text-inverse);
@@ -4469,7 +4468,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   color: var(--v-text);
 }
 
-/* 选中态：用 mid 蓝（--v-accent-mid）而不是亮蓝 #4d9fff ——
+/* 选中态：用 mid 蓝（--v-accent-mid）而不是亮蓝 #5d62e9 ——
    列表项是"整块着色"，不是发光线条，亮蓝会让整栏泛荧光。
    左侧再加一道 2px 竖条，与画布侧栏的选中语言完全一致。 */
 /* ★ 2026-10-25 第二轮：列表选中态也改成"中性底"，与项目菜单同一套语言。
@@ -6939,7 +6938,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   color:#c2c2c6;font-size:12px;cursor:pointer;white-space:nowrap;
   transition:border-color .15s,background .15s,color .15s;
 }
-.jim-add:hover{border-color:#4d9fff;background:#272727;color:#ececee}
+.jim-add:hover{border-color:#5d62e9;background:#272727;color:#ececee}
 .jim-add-pop{
   position:absolute;bottom:calc(100% + 8px);left:0;
   min-width:168px;padding:5px;
@@ -6973,7 +6972,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 .jim-ref-row .jim-add-wrap{align-self:flex-start}
 .jim-ref-item.is-dragging{opacity:.45}
 .jim-ref-item.is-drop-target .jim-ref-thumb{
-  box-shadow:0 0 0 2px rgba(77,159,255,.82),0 0 14px rgba(77,159,255,.28);
+  box-shadow:0 0 0 2px rgba(93,98,233,.82),0 0 14px rgba(93,98,233,.28);
 }
 .jim-ref-drag-ghost{
   position:fixed;
@@ -6986,7 +6985,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   border:1px solid rgba(127,196,255,.48);
   border-radius:9px;
   background:rgba(24,28,35,.94);
-  box-shadow:0 12px 30px rgba(0,0,0,.48),0 0 0 2px rgba(77,159,255,.12);
+  box-shadow:0 12px 30px rgba(0,0,0,.48),0 0 0 2px rgba(93,98,233,.12);
   pointer-events:none;
   animation:jim-ref-drag-pop 120ms ease-out;
   backdrop-filter:blur(8px);
@@ -7077,7 +7076,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   color:#8a8a8f;transition:background .15s,color .15s;
 }
 .jim-head-tools>button:hover{background:#262626;color:#e6e6e8}
-.jim-head-expand.is-on{color:#8fc0ff;background:#202020}
+.jim-head-expand.is-on{color:#a9adff;background:#202020}
 /* 原 .jim-head-more 已并入 .jim-head-tools，保留类名做兼容（旧测试脚本按它定位） */
 .jim-head-more{margin-left:auto;position:relative;display:flex;align-items:center}
 .jim-head-more>button{
@@ -7423,8 +7422,8 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   --card-c3:#1c2026;
   border-color:transparent;
   box-shadow:
-    0 0 0 2px rgba(77,159,255,.18),
-    0 0 28px rgba(77,159,255,.24),
+    0 0 0 2px rgba(93,98,233,.18),
+    0 0 28px rgba(93,98,233,.24),
     0 14px 34px -10px rgba(0,0,0,.86),
     inset 0 1px 0 rgba(255,255,255,.07);
 }
@@ -9114,7 +9113,7 @@ body,
 .canvas-task-item-phase{position:relative;height:18px;margin-top:8px;border-radius:5px;overflow:hidden;background:#141416;display:flex;align-items:center}
 .canvas-task-item-phase i{position:absolute;left:0;top:0;bottom:0;background:#35353a;transition:width .3s ease}
 .canvas-task-item-phase i.is-indeterminate{
-  background:linear-gradient(90deg,transparent,var(--v-accent,#4d9fff),transparent);
+  background:linear-gradient(90deg,transparent,var(--v-accent,#5d62e9),transparent);
   animation:canvas-task-indeterminate 1.4s ease-in-out infinite;
 }
 @keyframes canvas-task-indeterminate{
@@ -9124,10 +9123,10 @@ body,
 .canvas-task-item-phase span{position:relative;z-index:1;padding:0 6px;color:#bdbdc2;font-size:9.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .canvas-task-item.is-succeeded .canvas-task-item-phase{
   height:22px;
-  background:color-mix(in srgb,var(--v-accent,#4d9fff) 12%,#141416);
+  background:color-mix(in srgb,var(--v-accent,#5d62e9) 12%,#141416);
 }
 .canvas-task-item.is-succeeded .canvas-task-item-phase i{
-  background:var(--v-accent,#4d9fff);
+  background:var(--v-accent,#5d62e9);
   opacity:.78;
 }
 .canvas-task-item.is-succeeded .canvas-task-item-phase span{

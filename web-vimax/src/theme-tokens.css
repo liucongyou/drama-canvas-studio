@@ -94,14 +94,14 @@
         1px 细线在深底上几乎看不见 —— 连线的悬停高亮、端口高亮、选中描边
         都靠亮蓝那一档成型。
      ⇒ 记住这条：**填充用 deep，线条/发光用 bright**。 */
-  --v-blue-h: 212;                       /* 全站唯一蓝色相（采样自连线光晕） */
-  --v-accent: #4d9fff;                   /* bright：线与发光 */
-  --v-accent-hover: #3d8ff0;
-  --v-accent-solid: #264263;             /* deep：实心填充，白字 8.9:1 */
-  --v-accent-solid-hover: #2f5279;       /* 悬浮提亮一档（仍远深于 #4d9fff） */
-  --v-accent-soft: rgba(38, 66, 99, 0.55);  /* 选中项的淡蓝底（取自连线光晕深部） */
-  --v-accent-line: rgba(77, 159, 255, 0.45);
-  --v-accent-glow: rgba(77, 159, 255, 0.24);
+  --v-blue-h: 238;                       /* 交互蓝取自用户截图 #5d62e9 */
+  --v-accent: #5d62e9;
+  --v-accent-hover: #7a7ff2;
+  --v-accent-solid: #5d62e9;
+  --v-accent-solid-hover: #5055d4;
+  --v-accent-soft: rgba(93, 98, 233, 0.18);
+  --v-accent-line: rgba(93, 98, 233, 0.48);
+  --v-accent-glow: rgba(93, 98, 233, 0.25);
   /* ★ mid 档（2026-10-25 补）：**用于"细线/小字"的蓝**，介于 deep 与 bright 之间。
      为什么必须有这一档 —— 用户反馈「还有没改过来的」（指出左侧"剧集"下划线、
      "整剧总览"选中竖条、底部"图例"文字仍是亮蓝）。这三处都是需要改的，
@@ -112,10 +112,12 @@
      mid 取值 #5c8fc7（H211 S0.54 V0.78）：对比度 **4.82:1** 达 WCAG AA，
      且饱和度比 bright(0.70) 低一档 —— 从"发光"降为"着色"，
      像连线那种沉稳的蓝，而不是电子屏幕的荧光蓝。 */
-  --v-accent-mid: #5c8fc7;
-  --v-accent-mid-hover: #6ea3dd;
+  --v-accent-mid: #6a6fee;
+  --v-accent-mid-hover: #7a7ff2;
   /* 中性蓝灰：连线常态基色，与本主题同色相（H≈213） */
   --v-edge-tone: #6b7684;
+  /* 连线交互高亮是画布结构色，不跟随按钮强调色调整。 */
+  --v-edge-highlight: #4d9fff;
 
   /* ── 语义色（各一支，亮度对齐；不要再用 #f87171/#3ecf8e 这类旧值） ──
      ★ 用户原话「这个删除粉色 怎么看着都不协调」——
@@ -1437,12 +1439,12 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
 }
 .react-flow__edge:hover .react-flow__edge-path,
 .react-flow__edge.selected .react-flow__edge-path {
-  stroke: var(--v-accent) !important;
+  stroke: var(--v-edge-highlight) !important;
   opacity: 1;
 }
 .react-flow__edge:hover .canvas-edge-source-dot,
 .react-flow__edge.selected .canvas-edge-source-dot {
-  fill: var(--v-accent) !important;
+  fill: var(--v-edge-highlight) !important;
 }
 .react-flow__handle {
   background: var(--v-border-strong) !important;
@@ -1672,6 +1674,25 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
   color: #a9b4c1 !important;
 }
 
+html:not([data-variant='immersive'])
+  .canvas-flow .canvas-node.canvas-media-node .canvas-media-port::before {
+  color: var(--v-accent-mid) !important;
+  background-color: color-mix(
+    in srgb,
+    var(--v-accent-mid) 16%,
+    var(--v-surface)
+  ) !important;
+  border-color: var(--v-accent-line) !important;
+  box-shadow:
+    0 2px 7px color-mix(in srgb, var(--v-shadow-panel) 72%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--v-text) 8%, transparent) !important;
+}
+
+html:not([data-variant='immersive'])
+  .canvas-flow .canvas-node.canvas-media-node .canvas-media-port .canvas-port-icon {
+  color: var(--v-accent-mid) !important;
+}
+
 .canvas-flow .canvas-node.canvas-media-node .canvas-media-port:hover::before,
 .canvas-flow .canvas-node.canvas-media-node:hover .canvas-media-port::before {
   color: var(--v-text) !important;
@@ -1682,6 +1703,26 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
 .canvas-flow .canvas-node.canvas-media-node .canvas-media-port:hover .canvas-port-icon,
 .canvas-flow .canvas-node.canvas-media-node:hover .canvas-media-port .canvas-port-icon {
   color: var(--v-text) !important;
+}
+
+html:not([data-variant='immersive'])
+  .canvas-flow .canvas-node.canvas-media-node .canvas-media-port:hover::before,
+html:not([data-variant='immersive'])
+  .canvas-flow .canvas-node.canvas-media-node:hover .canvas-media-port::before {
+  color: var(--v-accent-mid-hover) !important;
+  background-color: color-mix(
+    in srgb,
+    var(--v-accent-mid) 24%,
+    var(--v-surface)
+  ) !important;
+  border-color: var(--v-accent-mid) !important;
+}
+
+html:not([data-variant='immersive'])
+  .canvas-flow .canvas-node.canvas-media-node .canvas-media-port:hover .canvas-port-icon,
+html:not([data-variant='immersive'])
+  .canvas-flow .canvas-node.canvas-media-node:hover .canvas-media-port .canvas-port-icon {
+  color: var(--v-accent-mid-hover) !important;
 }
 
 /* The graphite theme is the original workspace appearance. Keep its card

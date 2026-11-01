@@ -1661,7 +1661,7 @@ const TEXT_TEMP_OPTS = ['0.2', '0.7', '1.2'];
 //   早期这里用了紫/绿/橙/蓝四色，模型下拉一展开就是一片彩色徽章，与其它浮层的
 //   中性深灰完全不搭（用户截图反馈"颜色搭配不统一"）。现在统一收敛到蓝色单色系，
 //   用明度区分档位：Pro/最新 = 亮蓝，标准 = 中蓝，轻量/Fast = 灰蓝。
-const TONE_STRONG = '#4d9fff';
+const TONE_STRONG = '#5d62e9';
 const TONE_MID = '#7fb0ff';
 const TONE_SOFT = '#8fa3c0';
 const MODEL_META: Record<string, {label: string; badge: string; tone: string; desc: string}> = {

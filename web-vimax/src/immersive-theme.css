@@ -28,7 +28,7 @@ html[data-theme='dark'][data-variant='immersive'] {
   --acc-glow: 255, 255, 255;
   --brand-grad: linear-gradient(135deg, #303030 0%, #242424 100%);
   --logo-a: #3fc7f0;
-  --logo-b: #4f8ef7;
+  --logo-b: #5d62e9;
 }
 
 html[data-theme='dark'][data-variant='immersive'] body {
