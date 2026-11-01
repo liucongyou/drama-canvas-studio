@@ -35,7 +35,7 @@ import threading
 import time
 import urllib.parse
 from contextlib import contextmanager, nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import formatdate
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -551,13 +551,13 @@ def _start_image_resumer(project_id, node_id, provider_task_id, provider, model)
 
     def run():
         try:
-            _resume_image_task(
-                project_id,
-                node_id,
-                provider_task_id,
-                provider,
-                model,
-            )
+            # The reservation guards only thread creation. Release it before
+            # entering the actual poller; the poller owns its own provider-task
+            # key. Keeping both made the poller see its own reservation and
+            # return immediately, so a successful provider task was never fetched.
+            with RESUMED_VIDEO_TASKS_LOCK:
+                RESUMED_VIDEO_TASKS.discard(key)
+            _resume_image_task(project_id, node_id, provider_task_id, provider, model)
         except Exception as exc:
             print(
                 f"[generation-resume] immediate image poller failed "
@@ -1983,6 +1983,16 @@ def _mark_generation_outcome_uncertain(task_id, project_id, node_id, exc, provid
         commit_node_metadata(project_id, node_id, updates)
         return True
     current = store.get_generation_task(task_id) or {}
+    effective_provider_task_id = str(
+        provider_task_id
+        or current.get("provider_task_id")
+        or ""
+    ).strip()
+    if effective_provider_task_id:
+        store.schedule_provider_task_poll(
+            task_id,
+            store._now_iso(),
+        )
     if current.get("status") == "succeeded":
         return False
     try:
@@ -1997,6 +2007,9 @@ def _mark_generation_outcome_uncertain(task_id, project_id, node_id, exc, provid
                 "error": message,
                 "provider_task_id": provider_task_id,
                 "delivery_status": "pending",
+                "next_poll_at": (
+                    datetime.now(timezone.utc) + timedelta(seconds=8)
+                ).isoformat(),
                 "finished_at": "",
                 "node_written_at": "",
             },
@@ -2561,6 +2574,7 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
                 "progress": 100,
                 "error": "",
                 "delivery_status": "ready",
+                "next_poll_at": "",
                 "result_ready_at": generated_at,
                 "finished_at": "",
                 "node_written_at": "",
@@ -2687,6 +2701,7 @@ def _recover_persisted_result_to_canvas(project_id, node_id, task):
             "progress": 100,
             "error": "",
             "delivery_status": "ready",
+            "next_poll_at": "",
             "result_ready_at": generated_at,
             "finished_at": "",
             "node_written_at": "",
@@ -2740,6 +2755,7 @@ def _recover_existing_local_task_result(project_id, node_id, task):
         "progress": 100,
         "error": "",
         "delivery_status": "ready",
+        "next_poll_at": "",
         "result_ready_at": task.get("result_ready_at") or store._now_iso(),
         "finished_at": task.get("finished_at") or store._now_iso(),
         "node_written_at": task.get("node_written_at") or store._now_iso(),
@@ -2806,6 +2822,7 @@ def _mark_resumed_task_terminal_query_failure(
             "error": detail,
             "provider_task_id": provider_task_id,
             "delivery_status": "failed",
+                "next_poll_at": "",
             "finished_at": "",
             "node_written_at": "",
         },
@@ -2869,6 +2886,11 @@ def _resume_video_task(project_id, node_id, task_id, provider, model):
             ),
             None,
         )
+    if generation_task:
+        store.schedule_provider_task_poll(
+            generation_task["id"],
+            store._now_iso(),
+        )
     if _recover_persisted_result_to_canvas(project_id, node_id, generation_task):
         return
     if generation_task and generation_task.get("local_result_url"):
@@ -2923,6 +2945,13 @@ def _resume_video_task(project_id, node_id, task_id, provider, model):
                     generation_task["id"], status="running",
                     phase=_provider_task_phase(state.get("rawStatus") or state.get("status"), progress),
                     progress=int(progress) if isinstance(progress, (int, float)) else None,
+                    next_poll_at=(
+                        store._now_iso()
+                        if state.get("status") in {"completed", "failed"}
+                        else (
+                            datetime.now(timezone.utc) + timedelta(seconds=8)
+                        ).isoformat()
+                    ),
                     _lease_owner=lease_owner,
                 )
                 if not updated or updated.get("lease_owner") != lease_owner:
@@ -3094,6 +3123,7 @@ def _finalize_resumed_image(project_id, node_id, state, provider, model):
                 "progress": 100,
                 "error": "",
                 "delivery_status": "ready",
+                "next_poll_at": "",
                 "result_ready_at": generated_at,
                 "local_result_url": generated_url,
                 "provider_result_url": str(state.get("url") or ""),
@@ -3154,6 +3184,10 @@ def _resume_image_task(project_id, node_id, task_id, provider, model):
         with RESUMED_VIDEO_TASKS_LOCK:
             RESUMED_VIDEO_TASKS.discard(key)
         return
+    store.schedule_provider_task_poll(
+        generation_task["id"],
+        store._now_iso(),
+    )
     generation_task = store.get_generation_task(generation_task["id"]) or generation_task
     generation_task["lease_owner"] = lease_owner
     heartbeat = _start_generation_task_heartbeat(generation_task["id"], lease_owner)
@@ -3188,6 +3222,13 @@ def _resume_image_task(project_id, node_id, task_id, provider, model):
                     generation_task["id"], status="running",
                     phase=_provider_task_phase(state.get("rawStatus") or state.get("status"), progress),
                     progress=int(progress) if isinstance(progress, (int, float)) else None,
+                    next_poll_at=(
+                        store._now_iso()
+                        if state.get("status") in {"completed", "failed"}
+                        else (
+                            datetime.now(timezone.utc) + timedelta(seconds=8)
+                        ).isoformat()
+                    ),
                     _lease_owner=lease_owner,
                 )
                 if not updated or updated.get("lease_owner") != lease_owner:
@@ -3409,13 +3450,99 @@ def reconcile_generation_runtime_once():
         reconcile_pending_generation_deliveries
     )
     reconciled = _run_for_active_tenants(reconcile_generation_task_records)
+    # Scan a bounded set of due tasks, never every tenant and every project.
     resumed = _resume_expired_provider_tasks(expired)
+    resumed += _dispatch_due_provider_tasks()
     return {
         "expired": expired,
         "delivered": int(delivered or 0),
         "reconciled": int(reconciled or 0),
         "resumed": int(resumed or 0),
     }
+
+
+def _dispatch_due_provider_tasks(limit=50):
+    """Claim a bounded due set and give each unique provider task one poller."""
+    started = 0
+    for tenant in _active_tenants():
+        tenant_id = tenant["id"] if tenant else None
+        tenant_slug = tenant["slug"] if tenant else "local"
+        try:
+            with (tenant_context.use_tenant(tenant_id, tenant_slug) if tenant else tenant_context.use_context(None)):
+                for task in store.list_due_provider_tasks(limit=limit):
+                    project_id = str(task.get("project_id") or "").strip()
+                    node_id = str(task.get("node_id") or "").strip()
+                    provider_task_id = str(task.get("provider_task_id") or "").strip()
+                    if not project_id or not node_id or not provider_task_id:
+                        continue
+                    if generation_outcome.is_provider_terminal_failure(task):
+                        continue
+                    try:
+                        provider, model, _ = provider_catalog.resolve_model(
+                            task.get("provider"),
+                            task.get("model"),
+                            str(task.get("kind") or ""),
+                        )
+                    except Exception:
+                        continue
+                    if task.get("kind") == "image" and str(model.get("adapter") or "") != "newapi_image":
+                        continue
+                    key = (tenant_id or "legacy", project_id, node_id, provider_task_id)
+                    with RESUMED_VIDEO_TASKS_LOCK:
+                        if key in RESUMED_VIDEO_TASKS:
+                            continue
+                        RESUMED_VIDEO_TASKS.add(key)
+
+                    def run(
+                        tenant_id=tenant_id,
+                        tenant_slug=tenant_slug,
+                        project_id=project_id,
+                        node_id=node_id,
+                        provider_task_id=provider_task_id,
+                        provider=provider,
+                        model=model,
+                        kind=str(task.get("kind") or ""),
+                        key=key,
+                    ):
+                        try:
+                            with RESUMED_VIDEO_TASKS_LOCK:
+                                RESUMED_VIDEO_TASKS.discard(key)
+                            _run_in_tenant(
+                                tenant_id,
+                                tenant_slug,
+                                _resume_image_task if kind == "image" else _resume_video_task,
+                                project_id,
+                                node_id,
+                                provider_task_id,
+                                provider,
+                                model,
+                            )
+                        except Exception as exc:
+                            print(
+                                f"[generation-resume] due task failed "
+                                f"node={node_id} task={provider_task_id} error={exc}",
+                                file=sys.stderr,
+                            )
+                        finally:
+                            with RESUMED_VIDEO_TASKS_LOCK:
+                                RESUMED_VIDEO_TASKS.discard(key)
+
+                    try:
+                        threading.Thread(
+                            target=run,
+                            name=f"generation-due-{node_id}",
+                            daemon=True,
+                        ).start()
+                        started += 1
+                    except Exception:
+                        with RESUMED_VIDEO_TASKS_LOCK:
+                            RESUMED_VIDEO_TASKS.discard(key)
+        except Exception as exc:
+            print(
+                f"[generation-resume] due scan failed tenant={tenant_slug} error={exc}",
+                file=sys.stderr,
+            )
+    return started
 
 
 def reconcile_recoverable_provider_tasks():
@@ -3748,6 +3875,10 @@ def start_pending_video_resumers():
                     )
                     if not reopened:
                         continue
+                store.schedule_provider_task_poll(
+                    task_row["id"],
+                    store._now_iso(),
+                )
                 commit_node_metadata(project["id"], node["id"], {
                     "status": "generating",
                     "taskId": provider_task_id,
@@ -3904,6 +4035,9 @@ def reconcile_interrupted_generation_nodes():
                         "error": task_error,
                         "provider_task_id": provider_task_id,
                         "delivery_status": "pending",
+                "next_poll_at": (
+                    datetime.now(timezone.utc) + timedelta(seconds=8)
+                ).isoformat(),
                         "finished_at": "",
                         "node_written_at": "",
                     },
@@ -7698,6 +7832,7 @@ class Handler(BaseHTTPRequestHandler):
                             progress=20,
                             error="",
                             finished_at="",
+                            next_poll_at=store._now_iso(),
                         )
                     commit_node_metadata(pid, node["id"], {
                         "taskId": provider_task_id,
@@ -7734,6 +7869,10 @@ class Handler(BaseHTTPRequestHandler):
                             provider_task_id=provider_task_id,
                             delivery_status="pending",
                             lease_owner=lease_owner,
+                        )
+                        store.schedule_provider_task_poll(
+                            task_id,
+                            store._now_iso(),
                         )
                     _start_image_resumer(
                         pid,
@@ -8221,6 +8360,7 @@ class Handler(BaseHTTPRequestHandler):
                     "error": "",
                     "provider_task_id": str(result.get("taskId") or ""),
                     "delivery_status": "ready",
+                    "next_poll_at": "",
                     "result_ready_at": str(meta.get("generationFinishedAt") or ""),
                     "finished_at": "",
                     "node_written_at": "",

@@ -1,5 +1,6 @@
 import unittest
 import concurrent.futures
+import threading
 import json
 import sqlite3
 import tempfile
@@ -522,6 +523,11 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
                 return_value=(provider, model, {}),
             ),
             patch.object(server.threading, "Thread") as thread_cls,
+            patch.object(
+                server,
+                "_dispatch_due_provider_tasks",
+                return_value=0,
+            ),
         ):
             thread_cls.return_value.start.side_effect = lambda: started.append(
                 thread_cls.call_args.kwargs["target"]
@@ -657,6 +663,11 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
                 server.threading,
                 "Thread",
             ) as thread_cls,
+            patch.object(
+                server,
+                "_dispatch_due_provider_tasks",
+                return_value=0,
+            ),
         ):
             thread_cls.return_value.start.side_effect = start_worker
             server.reconcile_generation_runtime_once()
@@ -1846,6 +1857,59 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(len(started), 1)
         server.RESUMED_VIDEO_TASKS.discard((project_id, node_id, task_id))
 
+    def test_immediate_image_resumer_enters_poller_instead_of_self_blocking(self):
+        project_id = "project-image-resumer-entry"
+        node_id = "node-image-resumer-entry"
+        task_id = "task-provider-resumer-entry"
+        entered = threading.Event()
+        calls = []
+
+        def poll(*args):
+            calls.append(args)
+            entered.set()
+
+        with patch.object(server, "_resume_image_task", side_effect=poll):
+            started = server._start_image_resumer(
+                project_id,
+                node_id,
+                task_id,
+                {"id": "new-apl"},
+                {"id": "65-seedream-5-pro"},
+            )
+            self.assertTrue(started)
+            self.assertTrue(entered.wait(timeout=3))
+
+        self.assertEqual(calls, [(
+            project_id,
+            node_id,
+            task_id,
+            {"id": "new-apl"},
+            {"id": "65-seedream-5-pro"},
+        )])
+        self.assertFalse(server.RESUMED_VIDEO_TASKS)
+
+    def test_runtime_reconciler_rescans_unfinished_tasks_after_prior_expiry(self):
+        with (
+            patch.object(server, "_collect_for_active_tenants", return_value=[]),
+            patch.object(server, "_run_for_active_tenants", return_value=0),
+            patch.object(
+                server,
+                "_resume_expired_provider_tasks",
+                return_value=0,
+            ),
+            patch.object(
+                server,
+                "_dispatch_due_provider_tasks",
+                return_value=0,
+            ) as dispatch,
+        ):
+            first = server.reconcile_generation_runtime_once()
+            second = server.reconcile_generation_runtime_once()
+
+        self.assertEqual(dispatch.call_count, 2)
+        self.assertEqual(first["resumed"], 0)
+        self.assertEqual(second["resumed"], 0)
+
     def test_image_completion_finds_interrupted_task_by_provider_id(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("image-interrupted-finalize")
@@ -1924,6 +1988,76 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             saved_node["metadata"]["content"],
             "/uploads/image-interrupted-finalize.jpg",
         )
+
+    def test_due_provider_task_scan_is_bounded_and_indexed_by_schedule(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("due-provider-scan")
+            due = canvas_store.create_generation_task(
+                project_id,
+                "node-due",
+                kind="image",
+            )
+            canvas_store.update_generation_task(
+                due["id"],
+                provider_task_id="provider-due",
+                status="interrupted",
+                next_poll_at="2026-11-01T00:00:00Z",
+            )
+            future = canvas_store.create_generation_task(
+                project_id,
+                "node-future",
+                kind="image",
+            )
+            canvas_store.update_generation_task(
+                future["id"],
+                provider_task_id="provider-future",
+                status="interrupted",
+                next_poll_at="2099-11-01T00:00:00Z",
+            )
+            tasks = canvas_store.list_due_provider_tasks(
+                limit=1,
+                now="2026-11-01T00:01:00Z",
+            )
+
+        self.assertEqual([task["id"] for task in tasks], [due["id"]])
+
+    def test_terminal_provider_task_clears_next_poll(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("terminal-poll-clear")
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-terminal-poll",
+                kind="image",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                provider_task_id="provider-terminal-poll",
+                status="running",
+                next_poll_at="2026-11-01T00:00:00Z",
+            )
+            project = canvas_store.get_project(project_id)
+            project["payload"].setdefault("nodes", []).append({
+                "id": "node-terminal-poll",
+                "type": "image",
+                "metadata": {"status": "generating"},
+            })
+            canvas_store.update_project(project_id, payload=project["payload"])
+            committed = canvas_store.commit_generation_terminal(
+                project_id,
+                "node-terminal-poll",
+                {"status": "done", "content": "/uploads/poll.jpg"},
+                task_id=task["id"],
+                task_updates={
+                    "status": "succeeded",
+                    "phase": "已完成",
+                    "delivery_status": "ready",
+                    "next_poll_at": "2026-11-01T00:00:08Z",
+                },
+            )
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertTrue(committed["committed"])
+        self.assertEqual(saved["next_poll_at"], "")
 
     def test_failed_node_with_persisted_provider_task_is_resumed(self):
         project = {
@@ -2173,18 +2307,31 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
                 provider_task_id="provider-video-1",
                 phase="结果待确认",
             )
+            project = canvas_store.get_project(project_id)
+            project["payload"].setdefault("nodes", []).append({
+                "id": "node-video",
+                "type": "video",
+                "metadata": {
+                    "status": "generating",
+                    "taskId": "provider-video-1",
+                },
+            })
+            canvas_store.update_project(project_id, payload=project["payload"])
 
             with patch.object(
                 server,
                 "commit_generation_terminal",
                 return_value={"committed": True},
             ) as commit_terminal:
-                server._mark_generation_outcome_uncertain(
-                    task["id"],
-                    project_id,
-                    "node-video",
-                    RuntimeError("download interrupted"),
-                )
+                # This test asserts the terminal callback payload. The schedule
+                # write is covered separately by the bounded due-task tests.
+                with patch.object(server.store, "schedule_provider_task_poll"):
+                    server._mark_generation_outcome_uncertain(
+                        task["id"],
+                        project_id,
+                        "node-video",
+                        RuntimeError("download interrupted"),
+                    )
 
             saved = canvas_store.get_generation_task(task["id"])
 

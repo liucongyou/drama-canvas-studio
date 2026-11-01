@@ -382,6 +382,111 @@ class CanvasStoreConcurrencyTests(unittest.TestCase):
             len(tasks),
         )
 
+    def test_mixed_image_video_audio_generation_keeps_each_terminal_state(self):
+        kinds = ("image", "video", "audio")
+        node_count = 36
+        nodes = [
+            {
+                "id": f"mixed-node-{index}",
+                "type": kinds[index % len(kinds)],
+                "title": f"混合任务 {index}",
+                "metadata": {
+                    "status": "generating",
+                    "providerTaskStatus": "running",
+                },
+            }
+            for index in range(node_count)
+        ]
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project(
+                "mixed-generation-stress",
+                payload={"nodes": nodes, "connections": []},
+            )
+            tasks = [
+                canvas_store.create_generation_task(
+                    project_id,
+                    node["id"],
+                    kind=str(node["type"]),
+                    provider="mock-provider",
+                    model=f"mock-{node['type']}-model",
+                )
+                for node in nodes
+            ]
+            for index, task in enumerate(tasks):
+                self.assertTrue(
+                    canvas_store.claim_generation_task(
+                        task["id"],
+                        f"mixed-owner-{index}",
+                        45,
+                    )
+                )
+
+        def finish(index):
+            task = tasks[index]
+            kind = str(nodes[index]["type"])
+            with tenant_context.use_context(self.context):
+                extension = {
+                    "image": "jpg",
+                    "video": "mp4",
+                    "audio": "mp3",
+                }[kind]
+                url = f"/uploads/mixed-{index}.{extension}"
+                result = server.commit_generation_terminal(
+                    project_id,
+                    nodes[index]["id"],
+                    {
+                        "status": "done",
+                        "content": url,
+                        "providerTaskStatus": "completed",
+                        "providerTaskPhase": "已完成",
+                        "generationFinishedAt": "2026-11-01T04:30:00Z",
+                        "_paramsPatch": {
+                            "mediaVersions": [{
+                                "url": url,
+                                "taskId": f"mixed-provider-{index}",
+                            }],
+                            "mediaVersionIndex": 0,
+                        },
+                    },
+                    task_id=task["id"],
+                    task_updates={
+                        "status": "succeeded",
+                        "phase": "已完成",
+                        "progress": 100,
+                        "delivery_status": "ready",
+                        "provider_task_id": f"mixed-provider-{index}",
+                        "local_result_url": url,
+                        "provider_result_url": f"https://provider.example/{index}",
+                        "result_ready_at": "2026-11-01T04:30:00Z",
+                        "finished_at": "",
+                        "node_written_at": "",
+                    },
+                    lease_owner=f"mixed-owner-{index}",
+                )
+                return result["committed"]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=18) as pool:
+            committed = list(pool.map(finish, range(node_count)))
+
+        with tenant_context.use_context(self.context):
+            project = canvas_store.get_project(project_id)
+            saved_tasks = canvas_store.list_generation_tasks(project_id, 100)
+            events = canvas_store.list_events(project_id, 0, 100)
+
+        self.assertTrue(all(committed))
+        self.assertEqual(len(saved_tasks), node_count)
+        self.assertTrue(all(task["status"] == "succeeded" for task in saved_tasks))
+        self.assertTrue(all(task["delivery_status"] == "ready" for task in saved_tasks))
+        self.assertTrue(all(
+            node["metadata"]["status"] == "done"
+            and node["metadata"]["content"].startswith("/uploads/mixed-")
+            for node in project["payload"]["nodes"]
+        ))
+        self.assertEqual(
+            len([event for event in events if event["kind"] == "media"]),
+            node_count,
+        )
+
     def test_reads_and_writes_under_parallel_load(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("read-write-stress")

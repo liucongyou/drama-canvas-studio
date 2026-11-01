@@ -3708,6 +3708,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const [mentionPreview, setMentionPreview] = useState<({url: string; label: string} & PreviewPlacement) | null>(null);
   const [atOpen, setAtOpen] = useState(false);                    // @ 资产候选
   const [atIdx, setAtIdx] = useState(0);
+  const [atQuery, setAtQuery] = useState('');
   // 提示词框默认 4 行，点放大按钮才撑到 30vh；之前是无条件自适应，一打开就铺满半屏。
   const [taExpanded, setTaExpanded] = useState(false);
   // 弹窗贴卡片下方还是上方：由渲染后的实际高度决定（下方放不下就翻上去）
@@ -3743,6 +3744,22 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     if (node.kind === 'audio') return ['image', 'text'].includes(a.kind);
     return a.kind === 'text';
   });
+  const filteredAtCands = useMemo(() => {
+    const query = atQuery.trim().toLocaleLowerCase('zh-CN');
+    if (!query) return atCands;
+    return atCands.filter((asset) => {
+      const haystack = [
+        asset.title,
+        asset.kind,
+        asset.kind === 'image' ? '图片' : '',
+        asset.kind === 'audio' ? '音频 音色' : '',
+        asset.kind === 'video' ? '视频 片段' : '',
+        asset.kind === 'text' ? '文本 脚本' : '',
+        asset.status === 'done' ? '已生成' : '',
+      ].join(' ').toLocaleLowerCase('zh-CN');
+      return haystack.includes(query);
+    });
+  }, [assets, atCands, atQuery]);
   const openMenuRef = useRef(openMenu); openMenuRef.current = openMenu;
   const atOpenRef = useRef(atOpen); atOpenRef.current = atOpen;
   // 展开态也要给 growTa 读最新值（它在 onChange 里被调用，闭包可能是旧的）
@@ -3878,6 +3895,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     setModelProviderId('');
     setAtOpen(false);
     setAtIdx(0);
+    setAtQuery('');
     setAddMenuOpen(false);
     setCanvasPickOpen(false);
     setUploading(false);
@@ -4639,7 +4657,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                   <button type="button" onClick={() => { setAddMenuOpen(false); videoInputRef.current?.click(); }}>
                     <Video size={13} strokeWidth={1.9} aria-hidden="true" />上传视频
                   </button>
-                  <button type="button" onClick={() => { setAddMenuOpen(false); setAtOpen(true); setAtIdx(0); }}>
+                  <button type="button" onClick={() => { setAddMenuOpen(false); setAtOpen(true); setAtIdx(0); setAtQuery(''); }}>
                     <LibraryBig size={13} strokeWidth={1.9} aria-hidden="true" />从资产库添加
                   </button>
                   <button type="button" onClick={() => { setAddMenuOpen(false); setCanvasPickOpen(true); }}>
@@ -4715,10 +4733,10 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                   setAtIdx(0);
                   return;
                 }
-                if (atOpen && atCands.length > 0) {
-                  if (event.key === 'ArrowDown') { event.preventDefault(); setAtIdx((index) => Math.min(index + 1, atCands.length - 1)); }
+                if (atOpen && filteredAtCands.length > 0) {
+                  if (event.key === 'ArrowDown') { event.preventDefault(); setAtIdx((index) => Math.min(index + 1, filteredAtCands.length - 1)); }
                   else if (event.key === 'ArrowUp') { event.preventDefault(); setAtIdx((index) => Math.max(index - 1, 0)); }
-                  else if (event.key === 'Enter') { event.preventDefault(); pickAt(atCands[atIdx]); }
+                  else if (event.key === 'Enter') { event.preventDefault(); pickAt(filteredAtCands[Math.min(atIdx, filteredAtCands.length - 1)]); }
                   return;
                 }
                 if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
@@ -4790,11 +4808,26 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 <span>@ 引用素材（点击插入）</span>
                 <span className="jim-at-kbd">↑↓ 选择 · 回车 插入 · Esc 关闭</span>
               </div>
+              <label className="jim-at-search">
+                <Search size={13} strokeWidth={1.9} aria-hidden="true" />
+                <input
+                  value={atQuery}
+                  onChange={(event) => {
+                    setAtQuery(event.target.value);
+                    setAtIdx(0);
+                  }}
+                  placeholder="搜索素材名称或类型"
+                  aria-label="搜索引用素材"
+                  autoFocus
+                />
+              </label>
               <div className="jim-at-list">
-              {atCands.length === 0 && (
-                <div className="jim-pick-empty">当前画布没有可引用的素材</div>
+              {filteredAtCands.length === 0 && (
+                <div className="jim-pick-empty">
+                  {atCands.length === 0 ? '当前画布没有可引用的素材' : '没有匹配的素材'}
+                </div>
               )}
-              {atCands.map((a, i) => (
+              {filteredAtCands.map((a, i) => (
                 <button
                   key={a.id}
                   type="button"
@@ -4973,7 +5006,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 )}
               </div>
             )}
-            <button ref={atButtonRef} type="button" className={`jim-tool is-at ${atOpen ? 'is-open' : ''}`} data-pop-owner="at" onClick={() => { setOpenMenu(null); setAtOpen((v) => !v); setAtIdx(0); }} title="@ 引用素材"><AtSign size={13} strokeWidth={2.1} aria-hidden="true" /></button>
+            <button ref={atButtonRef} type="button" className={`jim-tool is-at ${atOpen ? 'is-open' : ''}`} data-pop-owner="at" onClick={() => { setOpenMenu(null); setAtOpen((v) => !v); setAtIdx(0); setAtQuery(''); }} title="@ 引用素材"><AtSign size={13} strokeWidth={2.1} aria-hidden="true" /></button>
           </div>
           <div className="jim-toolbar-right">
           {modelOptions.length > 0 && (

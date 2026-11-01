@@ -2045,12 +2045,24 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
   position:absolute;bottom:auto;left:0;right:auto;width:min(100%, 640px);
   background:#1d222c;border:1px solid #33507a;border-radius:14px;
   box-shadow:0 18px 48px rgba(0,0,0,.6);padding:6px;z-index:1310;
-  display:flex;flex-direction:column;gap:2px;max-height:320px;overflow:hidden;
+  display:flex;flex-direction:column;gap:2px;height:min(520px,calc(100vh - 120px));overflow:hidden;
   z-index:1320;
 }
-.jim-at-title{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11px;color:#7fb0ff;padding:5px 9px 6px;border-bottom:1px solid #262c38;margin-bottom:3px;flex:none}
+.jim-at-title{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11px;color:#a8a8ac;padding:5px 9px 6px;border-bottom:1px solid #2b2b2b;margin-bottom:3px;flex:none}
 .jim-at-kbd{font-size:10px;color:#5b6a86}
-.jim-at-list{min-height:0;display:flex;flex-direction:column;gap:2px;overflow-y:auto;overscroll-behavior:contain}
+.jim-at-search{
+  display:flex;align-items:center;gap:8px;flex:none;margin:4px 2px 6px;
+  min-height:34px;padding:0 10px;color:var(--v-text-4,#8a8a8f);
+  background:var(--v-surface-sunken,#17181b);
+  border:1px solid var(--v-border,#2e2e31);border-radius:8px;
+}
+.jim-at-search:focus-within{border-color:var(--v-border-strong,#4a4a4e)}
+.jim-at-search input{
+  min-width:0;width:100%;height:32px;padding:0;border:0;outline:0;
+  color:var(--v-text,#f0f0f2);background:transparent;font:inherit;font-size:12px;
+}
+.jim-at-search input::placeholder{color:var(--v-text-4,#7e7e83)}
+.jim-at-list{min-height:0;flex:1;display:flex;flex-direction:column;gap:2px;overflow-y:auto;overscroll-behavior:contain}
 .jim-at-list::-webkit-scrollbar{width:7px}
 .jim-at-list::-webkit-scrollbar-thumb{border-radius:999px;background:color-mix(in srgb,var(--v-text-5) 45%,transparent)}
 .jim-at-list::-webkit-scrollbar-track{background:transparent}
@@ -8496,6 +8508,33 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
     min-width: 34px;
     height: 32px;
   }
+}
+
+/* Parameter controls are configuration, not primary actions. Keep their
+   selected state neutral across every popover and every theme; the blue
+   interaction colour remains reserved for actionable buttons and links. */
+.jim-pop.jim-params-panel .jim-ratio-item.is-active,
+.jim-pop.jim-params-panel .jim-chip.is-active,
+.jim-pop-clarity .jim-chip.is-active,
+.jim-pop-res .jim-radio-item.is-active {
+  background: var(--v-selected, #29292d) !important;
+  border-color: var(--v-border-strong, #4a4a4e) !important;
+  color: var(--v-text, #f0f0f2) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08) !important;
+}
+
+.jim-pop.jim-params-panel .jim-ratio-item.is-active .jim-ratio-ico,
+.jim-pop-clarity .jim-chip.is-active,
+.jim-pop-res .jim-radio-item.is-active {
+  color: var(--v-text, #f0f0f2) !important;
+}
+
+.jim-pop-res .jim-radio-item.is-active i {
+  border-color: var(--v-text-2, #c7c7ca) !important;
+}
+
+.jim-pop-res .jim-radio-item.is-active i::after {
+  background: var(--v-text, #e5e5e7) !important;
 }
 
 /* ---------- 提示词栏：单一参数入口 + 整合参数弹窗 ---------- */

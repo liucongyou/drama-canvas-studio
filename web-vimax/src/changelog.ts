@@ -8,10 +8,23 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.11.01.1';
+export const APP_VERSION = '2026.11.01.2';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.11.01.2',
+    date: '2026-11-01',
+    releasedAt: '2026-11-01 12:40:00 +08:00',
+    title: '素材搜索与参数面板收口',
+    changes: [
+      '@ 引用素材面板改为固定高度，素材较少或很多时都不再改变弹窗高度。',
+      '@ 引用素材增加到搜索框，可按素材名称、图片、视频、音频、文本和生成状态过滤，并支持键盘选择。',
+      '比例、清晰度、分辨率、水印、时长等参数弹窗的选中态统一为中性色，不再使用蓝色强调。',
+      '任务终态改为按供应商任务号跨状态回写，成功图片不会再因本地任务已中断而显示失败。',
+      '批量保存按当前集过滤节点，避免其它集节点拖垮本次保存。',
+    ],
+  },
   {
     version: '2026.11.01.1',
     date: '2026-11-01',

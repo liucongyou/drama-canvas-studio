@@ -269,7 +269,8 @@ def _connect():
                 delivery_status TEXT DEFAULT 'pending',
                 delivery_attempts INTEGER DEFAULT 0,
                 result_ready_at TEXT,
-                progress_updated_at TEXT DEFAULT ''
+                progress_updated_at TEXT DEFAULT '',
+                next_poll_at TEXT DEFAULT ''
             )"""
             )
             con.execute(
@@ -297,6 +298,11 @@ def _connect():
                     "ALTER TABLE generation_tasks ADD COLUMN episode_id TEXT DEFAULT ''"
                 )
                 task_columns.add("episode_id")
+            if "provider_task_id" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN provider_task_id TEXT"
+                )
+                task_columns.add("provider_task_id")
             con.execute(
             """CREATE TABLE IF NOT EXISTS audit_events(
                 id TEXT PRIMARY KEY,
@@ -404,6 +410,34 @@ def _connect():
                 con.execute(
                     "ALTER TABLE generation_tasks ADD COLUMN progress_updated_at TEXT DEFAULT ''"
                 )
+            if "updated_at" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN updated_at TEXT"
+                )
+                task_columns.add("updated_at")
+            if "created_at" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN created_at TEXT"
+                )
+                task_columns.add("created_at")
+            if "next_poll_at" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN next_poll_at TEXT DEFAULT ''"
+                )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_generation_tasks_next_poll "
+                "ON generation_tasks(next_poll_at) "
+                "WHERE provider_task_id IS NOT NULL "
+                "AND provider_task_id != '' "
+                "AND status IN ('queued','submitting','running','interrupted')"
+            )
+            con.execute(
+                "UPDATE generation_tasks SET next_poll_at=COALESCE("
+                "NULLIF(next_poll_at,''), updated_at, created_at, '') "
+                "WHERE COALESCE(next_poll_at,'')='' "
+                "AND provider_task_id IS NOT NULL AND provider_task_id!='' "
+                "AND status IN ('queued','submitting','running','interrupted')"
+            )
             con.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_tasks_operation "
                 "ON generation_tasks(client_operation_id) "
@@ -2966,7 +3000,7 @@ _TASK_FIELDS = {
     "local_result_url", "provider_result_url",
     "request_json", "client_operation_id", "lease_owner", "lease_expires_at",
     "heartbeat_at", "delivery_status", "delivery_attempts", "result_ready_at",
-    "progress_updated_at",
+    "progress_updated_at", "next_poll_at",
 }
 
 _ACTIVE_TASK_STATUSES = {"queued", "submitting", "running"}
@@ -3141,14 +3175,15 @@ def create_generation_task(
                 "id,project_id,node_id,episode_id,title,kind,status,phase,progress,provider,model,"
                 "provider_task_id,attempt,estimated_cost,cost_currency,error,"
                 "created_at,started_at,updated_at,finished_at,local_result_url,"
-                "provider_result_url,request_json,client_operation_id,delivery_status"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "provider_result_url,request_json,client_operation_id,delivery_status,"
+                "next_poll_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     task_id, project_id, node_id, str(episode_id or "").upper(),
                     title, kind, "queued", "等待调度", 0,
                     provider, model, "", attempt, float(estimated_cost or 0),
                     str(cost_currency or ""), "", now, "", now, "", "", "",
-                    request_json, client_operation_id, "pending",
+                    request_json, client_operation_id, "pending", now,
                 ),
             )
         except sqlite3.IntegrityError:
@@ -4112,6 +4147,10 @@ def commit_generation_terminal(
             if not task:
                 result["reason"] = "task_not_found"
                 return
+            if str(effective_task_updates.get("status") or "") in {
+                "succeeded", "failed", "interrupted", "cancelled",
+            }:
+                effective_task_updates["next_poll_at"] = ""
             if lease_owner is not None:
                 owner = str(lease_owner or "")
                 if (
@@ -4745,6 +4784,39 @@ def list_generation_tasks_for_node_ids(
         reverse=True,
     )
     return tasks[:capped_limit]
+
+
+def list_due_provider_tasks(limit=50, now=None):
+    """Return only provider tasks whose indexed next poll is due.
+
+    This is intentionally a bounded query. Recovery must never scan every
+    project or every historical task on a timer.
+    """
+    current = str(now or _now_iso())
+    capped = max(1, min(int(limit or 50), 200))
+    con = _connect()
+    columns = [
+        item[0]
+        for item in con.execute(
+            "SELECT * FROM generation_tasks LIMIT 0"
+        ).description
+    ]
+    rows = con.execute(
+        "SELECT * FROM generation_tasks "
+        "WHERE provider_task_id IS NOT NULL AND provider_task_id != '' "
+        "AND status IN ('queued','submitting','running','interrupted') "
+        "AND COALESCE(next_poll_at, '') <= ? "
+        "ORDER BY next_poll_at ASC, created_at ASC LIMIT ?",
+        (current, capped),
+    ).fetchall()
+    con.close()
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def schedule_provider_task_poll(task_id, next_poll_at):
+    if not task_id:
+        return None
+    return update_generation_task(task_id, next_poll_at=str(next_poll_at or ""))
 
 
 def get_latest_succeeded_generation_task_for_node(
