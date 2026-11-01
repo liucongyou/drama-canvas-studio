@@ -140,6 +140,30 @@ describe('generation presentation', () => {
     expect(liveGenerationCount([recovering])).toBe(1);
   });
 
+  it('keeps an accepted interrupted task active while its result is fetched', () => {
+    const fetching: GenerationTask = {
+      id: 'fetching',
+      project_id: 'project',
+      node_id: 'node-fetching',
+      title: '场景｜2K',
+      status: 'interrupted',
+      phase: '供应商任务已提交',
+      provider_task_id: 'provider-2k-1',
+      delivery_status: 'pending',
+      outcome: {
+        phase: 'fetching',
+        regenerate: 'blocked',
+        reason: 'result_fetching',
+        providerAccepted: true,
+      },
+      created_at: '2026-11-01T03:40:20.000Z',
+      updated_at: '2026-11-01T03:40:23.000Z',
+    };
+
+    expect(isGenerationTaskActive(fetching)).toBe(true);
+    expect([...activeGenerationNodeIds([fetching])]).toEqual(['node-fetching']);
+  });
+
   it('keeps a submitted node active until its persisted task appears', () => {
     const startedAt = '2026-10-31T00:00:00.000Z';
     const retained = retainOptimisticGenerationIds(

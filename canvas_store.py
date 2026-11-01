@@ -4154,7 +4154,14 @@ def commit_generation_terminal(
                     **merged,
                 }
 
-        payload = json.loads(row[1])
+        # Projection rows are the source of truth after the write-layer
+        # migration. The legacy payload_json column may be empty or stale for
+        # newly inserted nodes, so reading it here makes every terminal write
+        # fail with `node_not_found` even though the node is visible on canvas.
+        payload = get_projection_payload(con, project_id)
+        if not isinstance(payload, dict):
+            result["reason"] = "project_not_found"
+            return
         nodes = payload.get("nodes") or []
         node = next(
             (item for item in nodes if item.get("id") == node_id),

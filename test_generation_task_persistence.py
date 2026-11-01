@@ -1441,6 +1441,7 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         )
 
     def test_pending_image_tasks_are_resumed_for_newapi(self):
+        started = []
         project = {
             "id": "project-1",
             "payload": {
@@ -1844,6 +1845,85 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertFalse(second)
         self.assertEqual(len(started), 1)
         server.RESUMED_VIDEO_TASKS.discard((project_id, node_id, task_id))
+
+    def test_image_completion_finds_interrupted_task_by_provider_id(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("image-interrupted-finalize")
+            node_id = "node-image-interrupted-finalize"
+            provider_task_id = "provider-image-interrupted-finalize"
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": node_id,
+                    "type": "image",
+                    "title": "场景｜2K",
+                    "metadata": {
+                        "status": "generating",
+                        "taskId": provider_task_id,
+                        "params": {
+                            "provider": "new-apl",
+                            "model": "65-seedream-5-pro",
+                            "clarity": "2K",
+                        },
+                    },
+                }],
+                episode_id="EP002",
+            )
+            task = canvas_store.create_generation_task(
+                project_id,
+                node_id,
+                title="场景｜2K",
+                kind="image",
+                episode_id="EP002",
+                provider="new-apl",
+                model="65-seedream-5-pro",
+            )
+            canvas_store.finish_generation_task(
+                task["id"],
+                status="interrupted",
+                phase="供应商任务已提交",
+                error="",
+                provider_task_id=provider_task_id,
+                delivery_status="pending",
+            )
+
+            with patch.object(
+                server,
+                "persist_generated_media",
+                return_value="/uploads/image-interrupted-finalize.jpg",
+            ):
+                finalized = server._finalize_resumed_image(
+                    project_id,
+                    node_id,
+                    {
+                        "taskId": provider_task_id,
+                        "status": "completed",
+                        "url": "https://provider.example/result.jpg",
+                    },
+                    {"id": "new-apl", "name": "New APl"},
+                    {
+                        "id": "65-seedream-5-pro",
+                        "remoteModel": "65-seedream-5-pro",
+                        "adapter": "newapi_image",
+                    },
+                )
+
+            saved_task = canvas_store.get_generation_task(task["id"])
+            saved_node = canvas_store.get_projection_node(project_id, node_id)
+
+        self.assertTrue(finalized)
+        self.assertEqual(saved_task["status"], "succeeded")
+        self.assertEqual(saved_task["phase"], "已完成")
+        self.assertEqual(saved_task["delivery_status"], "ready")
+        self.assertEqual(
+            saved_task["local_result_url"],
+            "/uploads/image-interrupted-finalize.jpg",
+        )
+        self.assertEqual(saved_node["metadata"]["status"], "done")
+        self.assertEqual(
+            saved_node["metadata"]["content"],
+            "/uploads/image-interrupted-finalize.jpg",
+        )
 
     def test_failed_node_with_persisted_provider_task_is_resumed(self):
         project = {

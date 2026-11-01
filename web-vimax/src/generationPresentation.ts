@@ -122,7 +122,7 @@ export function isGenerationTaskActive(task: GenerationTask): boolean {
   return (
     task.status === 'interrupted'
     && Boolean(String(task.provider_task_id || '').trim())
-    && task.outcome?.phase === 'running'
+    && (task.outcome?.phase === 'running' || task.outcome?.phase === 'fetching')
     && task.outcome?.regenerate === 'blocked'
   );
 }

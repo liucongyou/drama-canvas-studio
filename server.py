@@ -2847,7 +2847,17 @@ def _mark_resumed_query_retry(project_id, node_id, generation_task, exc):
 
 def _resume_video_task(project_id, node_id, task_id, provider, model):
     key = (project_id, node_id)
-    generation_task = _find_generation_task(project_id, node_id, task_id)
+    # The provider accepted this paid task before the local worker released the
+    # row, so the row is normally `interrupted`, not `running`/`queued`. Looking
+    # it up with the active-only helper caused the downloaded image to be
+    # written to the node while the task row stayed pending forever. Resolve by
+    # the durable provider task id across all local states so the node, task
+    # receipt, delivery status, and event can commit atomically.
+    generation_task = _generation_task_for_provider(
+        project_id,
+        node_id,
+        task_id,
+    )
     if not generation_task:
         generation_task = next(
             (
@@ -3017,14 +3027,11 @@ def _finalize_resumed_image(project_id, node_id, state, provider, model):
             "供应商图片已完成，但没有拿到本地新文件"
         )
     generated_at = store._now_iso()
-    generation_task = _find_generation_task(project_id, node_id, task_id)
-    if generation_task:
-        store.update_generation_task(
-            generation_task["id"],
-            provider_result_url=str(state.get("url") or ""),
-            local_result_url=generated_url,
-            provider_finished_at=generated_at,
-        )
+    generation_task = _generation_task_for_provider(
+        project_id,
+        node_id,
+        task_id,
+    )
     _record_media_version(
         meta,
         "image",
@@ -3088,6 +3095,9 @@ def _finalize_resumed_image(project_id, node_id, state, provider, model):
                 "error": "",
                 "delivery_status": "ready",
                 "result_ready_at": generated_at,
+                "local_result_url": generated_url,
+                "provider_result_url": str(state.get("url") or ""),
+                "provider_finished_at": generated_at,
                 "finished_at": "",
                 "node_written_at": "",
                 "lease_owner": "",

@@ -8736,7 +8736,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     optimisticGenerationStartsRef.current = retainedOptimisticStarts;
     const activeByNode = new Map(
       [...latestByNode.values()]
-        .filter((task) => ['queued', 'submitting', 'running'].includes(task.status))
+        .filter((task) => isGenerationTaskActive(task))
         .map((task) => [task.node_id, task]),
     );
     setGenerationBusyIds((prev) => {
@@ -8802,7 +8802,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           node.status !== 'generating'
           || projectedBusyIds.has(node.id)
           || !terminal
-          || !['failed', 'interrupted', 'succeeded'].includes(terminal.status)
+          || !['failed', 'succeeded'].includes(terminal.status)
         ) {
           return node;
         }

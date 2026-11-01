@@ -205,6 +205,23 @@ def task_outcome(task: dict[str, Any] | None) -> dict[str, Any]:
             "providerAccepted": accepted,
             "retentionExpiresAt": retention_expires_at,
         }
+    if (
+        status == "interrupted"
+        and accepted
+        and delivery_status in {"pending", "materializing"}
+    ):
+        # A provider task may already be complete while its image is being
+        # downloaded or atomically written back to the canvas. `interrupted`
+        # describes the previous local worker, not the paid provider task.
+        return {
+            "phase": "fetching",
+            "regenerate": "blocked",
+            "reason": "result_fetching",
+            "requiresConfirmation": False,
+            "providerTaskId": provider_task_id,
+            "providerAccepted": True,
+            "retentionExpiresAt": retention_expires_at,
+        }
     if _provider_reported_live(task):
         return {
             "phase": "running",

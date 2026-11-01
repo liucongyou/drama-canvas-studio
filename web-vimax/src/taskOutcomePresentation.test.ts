@@ -128,6 +128,23 @@ describe('task outcome presentation', () => {
     expect(result.canRegenerate).toBe(false);
   });
 
+  it('shows an interrupted accepted task as fetching instead of failed', () => {
+    const result = taskOutcomePresentation({
+      status: 'interrupted',
+      phase: '供应商任务已提交',
+      delivery_status: 'pending',
+      outcome: {
+        phase: 'fetching',
+        regenerate: 'blocked',
+        reason: 'result_fetching',
+        providerAccepted: true,
+      },
+    });
+    expect(result.statusLabel).toBe('正在取回结果');
+    expect(result.outcomePending).toBe(true);
+    expect(result.canRegenerate).toBe(false);
+  });
+
   it('does not hide a failed result delivery', () => {
     const result = taskOutcomePresentation({
       status: 'succeeded',

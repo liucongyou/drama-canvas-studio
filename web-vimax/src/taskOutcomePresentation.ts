@@ -57,6 +57,11 @@ export function taskOutcomePresentation(
     && backendPhase === 'running'
     && backendRegenerate === 'blocked'
     && !localBlocked;
+  const fetchingProviderResult =
+    task.status === 'interrupted'
+    && backendPhase === 'fetching'
+    && backendRegenerate === 'blocked'
+    && !localBlocked;
   const outcomeUncertain = !liveProviderTask && (
     backendPhase === 'unknown'
     || interruptedUncertain
@@ -64,6 +69,7 @@ export function taskOutcomePresentation(
   );
   const outcomePending =
     liveProviderTask
+    || fetchingProviderResult
     || interruptedUncertain
     || deliveryStatus === 'pending'
     || deliveryStatus === 'materializing'
@@ -87,6 +93,8 @@ export function taskOutcomePresentation(
           ? '提交中'
         : liveProviderTask
           ? '生成中'
+          : fetchingProviderResult
+            ? '正在取回结果'
           : localBlocked
             ? '待补素材'
             : backendPhase === 'unknown' || outcomeUncertain
