@@ -490,6 +490,89 @@ class TenantHttpTests(unittest.TestCase):
             {item["id"] for item in workspace["nodes"]},
         )
 
+    def test_bulk_node_save_ignores_nodes_owned_by_another_episode(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        _, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "批量保存集隔离测试"},
+        )
+        pid = json.loads(body)["id"]
+        ep1_node = {
+            "id": "bulk-episode-one",
+            "type": "image",
+            "title": "第一集图片",
+            "metadata": {"prompt": "EP001 原始"},
+        }
+        ep2_node = {
+            "id": "bulk-episode-two",
+            "type": "image",
+            "title": "第二集图片",
+            "metadata": {"prompt": "EP002 原始"},
+        }
+        for episode_id, node in (
+            ("EP001", ep1_node),
+            ("EP002", ep2_node),
+        ):
+            status, _, _ = self.request(
+                "PUT",
+                f"/api/projects/{pid}/nodes",
+                "alpha.example.com",
+                cookie,
+                {"nodes": [node], "episodeId": episode_id},
+            )
+            self.assertEqual(status, 200)
+
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes",
+            "alpha.example.com",
+            cookie,
+            {
+                "episodeId": "EP002",
+                "nodes": [
+                    {
+                        **ep1_node,
+                        "metadata": {"prompt": "不应写入 EP001"},
+                    },
+                    {
+                        **ep2_node,
+                        "metadata": {"prompt": "EP002 已更新"},
+                    },
+                ],
+            },
+        )
+        self.assertEqual(status, 200)
+
+        with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+            ep1_workspace = server.store.get_project_workspace_nodes(
+                pid,
+                "EP001",
+            )
+            ep2_workspace = server.store.get_project_workspace_nodes(
+                pid,
+                "EP002",
+            )
+        ep1_saved = next(
+            item for item in ep1_workspace["nodes"]
+            if item["id"] == ep1_node["id"]
+        )
+        ep2_saved = next(
+            item for item in ep2_workspace["nodes"]
+            if item["id"] == ep2_node["id"]
+        )
+        self.assertEqual(ep1_saved["metadata"]["prompt"], "EP001 原始")
+        self.assertEqual(ep2_saved["metadata"]["prompt"], "EP002 已更新")
+
     def test_manual_connections_persist_without_overwriting_automatic_edges(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)

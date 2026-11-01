@@ -6695,11 +6695,20 @@ class Handler(BaseHTTPRequestHandler):
                     for node in nodes_list
                     if isinstance(node, dict) and node.get("id")
                 }
+                episode_node_ids = set(
+                    store.get_episode_node_ids(pid, episode_id) or []
+                )
                 conflicts = []
                 for item in incoming:
                     if not isinstance(item, dict) or not item.get("id"):
                         continue
                     current = by_id.get(item["id"])
+                    # Shared references may be visible on the canvas, but a
+                    # save request is scoped to one episode. Never let a
+                    # cross-episode node hitchhike in the bulk payload and
+                    # either fail the whole save or change another episode.
+                    if current and item["id"] not in episode_node_ids:
+                        continue
                     if current and _node_save_conflict(
                         item,
                         current,
@@ -6727,6 +6736,8 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         nid = item.get("id")
                         node = by_id.get(nid)
+                        if node is not None and nid not in episode_node_ids:
+                            continue
                         if node is None:
                             created_at = store._now_iso()
                             node = {
