@@ -888,6 +888,54 @@ describe('api request recovery', () => {
     });
   });
 
+  it('shows a downloaded image even when task reconciliation is still pending', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+      const body = String(url).includes('/api/generation-tasks')
+        ? {
+            tasks: [{
+              id: 'interrupted-media',
+              project_id: 'project-1',
+              node_id: 'image-1',
+              status: 'interrupted',
+              phase: '结果待确认',
+              provider_task_id: 'provider-image-done',
+              created_at: '2026-10-31T00:00:00Z',
+              updated_at: '2026-10-31T00:01:00Z',
+              finished_at: '',
+            }],
+          }
+        : {
+            id: 'project-1',
+            title: '测试项目',
+            payload: {
+              nodes: [{
+                id: 'image-1',
+                type: 'image',
+                title: '已落盘图片',
+                metadata: {
+                  status: 'generating',
+                  content: '/uploads/done.jpg',
+                },
+              }],
+              connections: [],
+              episodeImports: [{id: 'EP001', nodeIds: ['image-1'], videoNodeIds: []}],
+            },
+          };
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    }));
+
+    const workspace = await getCanvasWorkspace('project-1', 'EP001');
+
+    expect(workspace.mediaNodes[0]).toMatchObject({
+      status: 'done',
+      mediaUrl: '/uploads/done.jpg',
+      lastError: undefined,
+    });
+  });
+
   it('projects a persisted uncertain node as a visible terminal result', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
       const body = String(url).includes('/api/generation-tasks')

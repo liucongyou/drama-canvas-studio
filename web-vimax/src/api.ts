@@ -2065,7 +2065,15 @@ async function getProjectionCanvasWorkspace(
   const latestByNode = latestTaskByNode(tasks);
   const currentNodes = mediaNodes.map((node) => {
     const task = activeByNode.get(node.id);
-    if (node.status === 'done' && node.mediaUrl) return node;
+    if (node.mediaUrl) return {
+      ...node,
+      status: 'done' as const,
+      lastError: undefined,
+      providerTaskStatus: task?.status || node.providerTaskStatus,
+      providerTaskPhase: task?.status === 'interrupted'
+        ? '等待恢复'
+        : (task?.phase || node.providerTaskPhase),
+    };
     if ((node.status as string) === 'error' && !activeByNode.has(node.id)) {
       return {
         ...node,
@@ -2224,7 +2232,15 @@ export async function getCanvasWorkspace(
   const latestByNode = latestTaskByNode(tasks);
   const currentNodes = mediaNodes.map((node) => {
     const task = activeByNode.get(node.id);
-    if (node.status === 'done' && node.mediaUrl) return node;
+    if (node.mediaUrl) return {
+      ...node,
+      status: 'done' as const,
+      lastError: undefined,
+      providerTaskStatus: task?.status || node.providerTaskStatus,
+      providerTaskPhase: task?.status === 'interrupted'
+        ? '等待恢复'
+        : (task?.phase || node.providerTaskPhase),
+    };
     if ((node.status as string) === 'error' && !activeByNode.has(node.id)) {
       return {
         ...node,

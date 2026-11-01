@@ -423,6 +423,15 @@ def _resume_expired_provider_tasks(expired):
             or task.get("status") not in {"running", "interrupted", "failed"}
         ):
             continue
+        if (
+            str(task.get("local_result_url") or "").startswith("/uploads/")
+        ):
+            if _recover_persisted_result_to_canvas(
+                project_id,
+                node_id,
+                task,
+            ):
+                continue
         if generation_outcome.is_provider_terminal_failure(task):
             continue
         project = store.get_project(project_id)
@@ -440,6 +449,11 @@ def _resume_expired_provider_tasks(expired):
         if not node:
             continue
         current_meta = node.get("metadata") or {}
+        if (
+            str(current_meta.get("status") or "") == "done"
+            and str(current_meta.get("content") or "").startswith("/uploads/")
+        ):
+            continue
         if str(current_meta.get("taskId") or "") != provider_task_id:
             commit_node_metadata(project_id, node_id, {
                 "status": "generating",
@@ -3371,6 +3385,50 @@ def reconcile_recoverable_provider_tasks():
         if not node:
             continue
         meta = node.get("metadata") or {}
+        if (
+            str(meta.get("status") or "") == "done"
+            and str(meta.get("content") or "").startswith("/uploads/")
+        ):
+            try:
+                local_path = provider_client.local_upload_path(
+                    str(meta.get("content") or "")
+                )
+            except RuntimeError:
+                local_path = None
+            if local_path:
+                task_updates = {}
+                if task.get("status") != "succeeded":
+                    task_updates.update({
+                        "status": "succeeded",
+                        "phase": "已完成",
+                        "progress": 100,
+                        "error": "",
+                        "delivery_status": "ready",
+                        "result_ready_at": (
+                            task.get("result_ready_at")
+                            or store._now_iso()
+                        ),
+                        "finished_at": (
+                            task.get("finished_at")
+                            or store._now_iso()
+                        ),
+                        "node_written_at": (
+                            task.get("node_written_at")
+                            or store._now_iso()
+                        ),
+                        "lease_owner": "",
+                        "lease_expires_at": None,
+                    })
+                if not str(task.get("local_result_url") or "").strip():
+                    task_updates["local_result_url"] = str(
+                        meta.get("content") or ""
+                    )
+                if task_updates:
+                    store.update_generation_task(
+                        task["id"],
+                        **task_updates,
+                    )
+                continue
         if (
             str(meta.get("taskId") or "") == provider_task_id
             and str(meta.get("status") or "") == "generating"

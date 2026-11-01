@@ -1707,6 +1707,48 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             },
         )
 
+    def test_recoverable_task_does_not_regress_done_local_media(self):
+        project = {
+            "id": "project-done-media",
+            "payload": {
+                "nodes": [{
+                    "id": "node-done-media",
+                    "type": "image",
+                    "title": "已完成图片",
+                    "metadata": {
+                        "status": "done",
+                        "content": "/uploads/done.jpg",
+                    },
+                }],
+            },
+        }
+        task = {
+            "id": "done-media-task",
+            "project_id": project["id"],
+            "node_id": "node-done-media",
+            "provider_task_id": "provider-done-media",
+            "kind": "image",
+            "status": "interrupted",
+        }
+        with (
+            patch.object(server.store, "list_projects", return_value=[{"id": project["id"]}]),
+            patch.object(server.store, "get_project", return_value=project),
+            patch.object(server.store, "list_generation_tasks", return_value=[task]),
+            patch.object(
+                server.provider_client,
+                "local_upload_path",
+                return_value="done.jpg",
+            ),
+            patch.object(server.store, "update_generation_task") as update_task,
+            patch.object(server, "commit_node_metadata") as commit_node,
+        ):
+            attached = server.reconcile_recoverable_provider_tasks()
+
+        self.assertEqual(attached, 0)
+        commit_node.assert_not_called()
+        update_task.assert_called_once()
+        self.assertEqual(update_task.call_args.kwargs["status"], "succeeded")
+
     def test_newapi_image_submit_releases_lease_for_single_resumer(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("newapi-image-single-owner")
