@@ -4174,9 +4174,6 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     patch('duration', bounded);
     setDurationDraft(formatDuration(bounded));
   };
-  useEffect(() => {
-    if (openMenu === 'dur') setDurationDraft(formatDuration(durationValue));
-  }, [openMenu, durationValue]);
   const countLabel = String(p.count ?? curModelSpec?.defaultParams?.count ?? 1);
   // 文本节点生成长度（短/中/长）：p.maxTokens 默认 1200
   const curLen = TEXT_LEN_OPTS.find((o) => o.tokens === (p.maxTokens ?? 1200)) || TEXT_LEN_OPTS[1];
@@ -5070,7 +5067,10 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 <span>{paramSummary}</span>
                 <ChevronDown size={11} strokeWidth={2.4} className="jim-caret" aria-hidden="true" />
               </button>
-              <button type="button" className={`jim-tool is-duration ${openMenu === 'dur' ? 'is-open' : ''}`} data-pop-owner="dur" onClick={() => toggle('dur')} title="时长">{durLabel}<ChevronDown size={11} strokeWidth={2.4} className="jim-caret" aria-hidden="true" /></button>
+              <button type="button" className={`jim-tool is-duration ${openMenu === 'dur' ? 'is-open' : ''}`} data-pop-owner="dur" onClick={() => {
+                if (openMenu !== 'dur') setDurationDraft(formatDuration(durationValue));
+                toggle('dur');
+              }} title="时长">{durLabel}<ChevronDown size={11} strokeWidth={2.4} className="jim-caret" aria-hidden="true" /></button>
             </>
           ) : (
             <>

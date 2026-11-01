@@ -8,10 +8,20 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.11.01.2';
+export const APP_VERSION = '2026.11.01.3';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.11.01.3',
+    date: '2026-11-01',
+    releasedAt: '2026-11-01 13:40:00 +08:00',
+    title: '修复媒体卡片点击渲染异常',
+    changes: [
+      '修复点击媒体节点卡片打开参数弹窗时的 React Hook 顺序异常，避免画布直接进入错误面板。',
+      '时长输入继续保留草稿编辑、失焦校验和生成中禁用逻辑。',
+    ],
+  },
   {
     version: '2026.11.01.2',
     date: '2026-11-01',
