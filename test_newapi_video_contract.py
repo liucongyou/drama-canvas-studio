@@ -72,6 +72,118 @@ class NewApiVideoContractTests(unittest.TestCase):
         self.assertEqual(templates["hc-video"]["durationField"], "duration")
         self.assertEqual(templates["hc-video"]["promptField"], "content")
 
+    def test_route_compilers_keep_independent_request_shapes(self):
+        templates = provider_catalog._documented_video_profile_templates()
+        base_contract = {
+            "durations": [5],
+            "resolutions": ["720P"],
+            "aspectRatios": ["16:9"],
+            "maxReferences": {"images": 9, "videos": 3, "audios": 3},
+            "referenceTotalMax": 15,
+        }
+        cases = {
+            "suanli-video": {"modes": []},
+            "aistars-video": {"modes": ["text2video", "image2video"]},
+            "hc-video": {"modes": []},
+            "openai-video": {"modes": []},
+        }
+        compiled = {}
+        for profile, extra in cases.items():
+            contract = {
+                **base_contract,
+                **extra,
+                "profile": profile,
+            }
+            compiled[profile] = newapi_video_contract.compile_video_request(
+                model={"remoteModel": "route-model", "profile": profile},
+                contract=contract,
+                template=templates[profile],
+                prompt="route compiler isolation",
+                params={
+                    "duration": 5,
+                    "resolution": "720P",
+                    "ratio": "16:9",
+                    "mode": "auto",
+                },
+                image_urls=["https://example.com/image.jpg"],
+                video_urls=["https://example.com/video.mp4"],
+                audio_urls=["https://example.com/audio.mp3"],
+            )["body"]
+
+        suanli = compiled["suanli-video"]
+        self.assertEqual(suanli["video_refs"], ["https://example.com/video.mp4"])
+        self.assertEqual(suanli["audio_refs"], ["https://example.com/audio.mp3"])
+        self.assertNotIn("mode", suanli)
+
+        aistars = compiled["aistars-video"]
+        self.assertEqual(aistars["mode"], "image2video")
+        self.assertEqual(aistars["videos"], ["https://example.com/video.mp4"])
+        self.assertEqual(aistars["audios"], ["https://example.com/audio.mp3"])
+        self.assertNotIn("video_refs", aistars)
+
+        hc = compiled["hc-video"]
+        self.assertEqual(hc["duration"], 5)
+        self.assertEqual(hc["ratio"], "16:9")
+        self.assertNotIn("prompt", hc)
+        self.assertEqual(
+            [item["type"] for item in hc["content"]],
+            ["text", "image_url", "video_url", "audio_url"],
+        )
+
+        openai = compiled["openai-video"]
+        self.assertEqual(openai["seconds"], 5)
+        self.assertEqual(openai["size"], "16:9")
+        self.assertEqual(openai["resolution"], "720P")
+        self.assertNotIn("aspect_ratio", openai)
+
+    def test_aistars_video_promotes_stale_text_mode_when_references_exist(self):
+        name = "即梦-50-seedance-2.0-fast"
+        contract = provider_catalog.documented_video_contract(name)
+        compiled = newapi_video_contract.compile_video_request(
+            model={"remoteModel": name, "profile": contract["profile"]},
+            contract=contract,
+            template=provider_catalog._documented_video_profile_templates()[
+                "aistars-video"
+            ],
+            prompt="带参考素材的视频",
+            params={
+                "duration": 15,
+                "resolution": "720P",
+                "ratio": "9:16",
+                "mode": "text2video",
+            },
+            image_urls=["https://example.com/reference.png"],
+            video_urls=[],
+            audio_urls=["https://example.com/voice.mp3"],
+        )
+
+        self.assertEqual(compiled["mode"], "image2video")
+        self.assertEqual(compiled["body"]["mode"], "image2video")
+        self.assertEqual(
+            compiled["body"]["images"],
+            ["https://example.com/reference.png"],
+        )
+        self.assertEqual(
+            compiled["body"]["audios"],
+            ["https://example.com/voice.mp3"],
+        )
+
+    def test_aistars_video_default_mode_auto_resolves_by_references(self):
+        model = {
+            "id": "seedance-fast",
+            "remoteModel": "即梦-50-seedance-2.0-fast",
+            "profile": "aistars-video",
+            "defaultParams": {"mode": "text2video"},
+            "params": {},
+        }
+        contract = provider_catalog.documented_video_contract(
+            model["remoteModel"]
+        )
+        provider_catalog._apply_documented_video_contract(model, contract)
+
+        self.assertEqual(model["defaultParams"]["mode"], "auto")
+        self.assertEqual(model["params"]["mode"]["options"][0], "auto")
+
     def test_all_routes_reject_a_duration_outside_the_model_contract(self):
         templates = provider_catalog._documented_video_profile_templates()
         checked = 0

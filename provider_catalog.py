@@ -848,11 +848,22 @@ def _apply_documented_video_contract(
         if str(value).strip()
     ]
     if modes:
-        defaults["mode"] = (
-            str(defaults.get("mode") or "") if str(defaults.get("mode") or "") in modes
-            else modes[0]
-        )
-        schema["mode"] = _select(modes)
+        # A static text2video default is wrong as soon as a node has image,
+        # video or audio references. Keep the documented concrete modes in
+        # the schema, but use auto as the default and let the request compiler
+        # resolve it from the actual reference payload.
+        if "text2video" in modes and "image2video" in modes:
+            current_mode = str(defaults.get("mode") or "").strip()
+            defaults["mode"] = "auto" if current_mode == "text2video" else (
+                current_mode if current_mode in modes else "auto"
+            )
+            schema["mode"] = _select(["auto", *modes])
+        else:
+            defaults["mode"] = (
+                str(defaults.get("mode") or "") if str(defaults.get("mode") or "") in modes
+                else modes[0]
+            )
+            schema["mode"] = _select(modes)
     else:
         defaults.pop("mode", None)
         schema.pop("mode", None)
