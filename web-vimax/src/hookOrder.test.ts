@@ -24,4 +24,16 @@ describe('CanvasView hook order', () => {
       /\buse(?:State|Ref|Effect|Memo|Callback|LayoutEffect)\s*\(/,
     );
   });
+
+  it('clamps the duration control from its live input value on blur', () => {
+    expect(source).toMatch(
+      /onBlur=\{\(event\) => \{\s*const current = event\.currentTarget\.value;/,
+    );
+    expect(source).toMatch(
+      /commitDuration\(current\);/,
+    );
+    expect(source).toMatch(
+      /const bounded = Math\.max\(durationMin, Math\.min\(durationMax, parsed\)\);/,
+    );
+  });
 });

@@ -4167,7 +4167,12 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const commitDuration = (raw: string) => {
     const parsed = Number(String(raw).trim());
     if (!Number.isFinite(parsed)) {
-      setDurationDraft(formatDuration(durationValue));
+      const fallback = Math.max(
+        durationMin,
+        Math.min(durationMax, durationValue),
+      );
+      patch('duration', fallback);
+      setDurationDraft(formatDuration(fallback));
       return;
     }
     const bounded = Math.max(durationMin, Math.min(durationMax, parsed));
@@ -5491,11 +5496,17 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                     }
                   }}
                   title={busy ? '生成中不能修改时长' : undefined}
-                  onBlur={() => {
-                    if (durationDraft.trim() === '') {
-                      setDurationDraft(formatDuration(durationValue));
+                  onBlur={(event) => {
+                    const current = event.currentTarget.value;
+                    if (current.trim() === '') {
+                      const fallback = Math.max(
+                        durationMin,
+                        Math.min(durationMax, durationValue),
+                      );
+                      patch('duration', fallback);
+                      setDurationDraft(formatDuration(fallback));
                     } else {
-                      commitDuration(durationDraft);
+                      commitDuration(current);
                     }
                   }}
                   onKeyDown={(event) => {
