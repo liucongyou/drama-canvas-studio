@@ -3092,7 +3092,7 @@ html[data-theme='dark'][data-variant='immersive']{
 .canvas-node.canvas-media-node .canvas-media-placeholder{
   background:
     radial-gradient(130% 100% at 50% 0%,rgba(255,255,255,.055) 0%,rgba(255,255,255,0) 64%),
-    #171717;
+    linear-gradient(180deg,var(--v-card-2),var(--v-card-3)) !important;
   border-radius:11px;
   box-shadow:none;
   color:#5f5f63;
@@ -5282,12 +5282,13 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 }
 .model-settings-body .model-settings-list-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   align-items: center;
 }
 .model-settings-body .model-settings-list-item > i {
-  align-self: start;
-  margin-top: 2px;
+  align-self: center;
+  margin-top: 0;
+  justify-self: end;
 }
 .model-settings-detail-head {
   flex: none;

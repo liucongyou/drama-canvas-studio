@@ -315,10 +315,56 @@ class CanvasFeedRoundTripTests(unittest.TestCase):
                     )
                     ep1_ids = {node["id"] for node in ep1["nodes"]}
                     ep2_ids = {node["id"] for node in ep2["nodes"]}
+                    ep1_by_id = {node["id"]: node for node in ep1["nodes"]}
+                    ep2_by_id = {node["id"]: node for node in ep2["nodes"]}
+                    ep1_video_refs = {
+                        str(ref.get("nodeId") or "")
+                        for node in ep1["nodes"]
+                        if node.get("type") == "video"
+                        for key in ("refs", "voiceRefs")
+                        for ref in (
+                            ((node.get("metadata") or {}).get("params") or {})
+                            .get(key, [])
+                        )
+                        if isinstance(ref, dict)
+                    }
+                    ep2_video_refs = {
+                        str(ref.get("nodeId") or "")
+                        for node in ep2["nodes"]
+                        if node.get("type") == "video"
+                        for key in ("refs", "voiceRefs")
+                        for ref in (
+                            ((node.get("metadata") or {}).get("params") or {})
+                            .get(key, [])
+                        )
+                        if isinstance(ref, dict)
+                    }
 
         self.assertTrue(ep1_ids)
         self.assertTrue(ep2_ids)
-        self.assertFalse(ep1_ids & ep2_ids)
+        shared_ids = ep1_ids & ep2_ids
+        self.assertTrue(shared_ids)
+        self.assertTrue(
+            all(
+                ep1_by_id[node_id].get("type") in {"image", "audio"}
+                and ep2_by_id[node_id].get("type") in {"image", "audio"}
+                for node_id in shared_ids
+            )
+        )
+        self.assertTrue(shared_ids <= ep1_video_refs)
+        self.assertTrue(shared_ids <= ep2_video_refs)
+        self.assertFalse(
+            {
+                node_id
+                for node_id in ep1_ids
+                if ep1_by_id[node_id].get("type") == "video"
+            }
+            & {
+                node_id
+                for node_id in ep2_ids
+                if ep2_by_id[node_id].get("type") == "video"
+            }
+        )
         self.assertNotIn("stale-ghost", ep1_ids)
 
 

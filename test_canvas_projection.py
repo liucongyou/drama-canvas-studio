@@ -129,6 +129,42 @@ class CanvasProjectionTests(unittest.TestCase):
             ["edge-1"],
         )
 
+    def test_episode_read_includes_shared_assets_from_video_contract(self):
+        payload = self._payload()
+        payload["nodes"][1]["metadata"]["params"] = {
+            "refs": [{"nodeId": "image-2", "label": "角色｜乙"}],
+            "voiceRefs": [],
+        }
+        project_id = canvas_store.create_project(
+            "projection-shared-assets",
+            payload,
+        )
+
+        workspace = canvas_store.get_project_workspace_nodes(
+            project_id,
+            "EP001",
+        )
+        nodes = {node["id"]: node for node in workspace["nodes"]}
+
+        self.assertEqual(set(nodes), {"image-1", "video-1", "image-2"})
+        self.assertTrue(nodes["image-2"]["metadata"]["sharedAcrossEpisodes"])
+        self.assertEqual(nodes["image-2"]["metadata"]["episodeId"], "EP002")
+        ep001 = canvas_store.get_project_workspace_nodes(project_id, "EP001")
+        row = canvas_store._connect()
+        try:
+            owner = row.execute(
+                "SELECT episode_id FROM canvas_projection_nodes "
+                "WHERE project_id=? AND node_id='image-2'",
+                (project_id,),
+            ).fetchone()[0]
+        finally:
+            row.close()
+        self.assertEqual(owner, "EP002")
+        self.assertEqual(
+            {node["id"] for node in ep001["nodes"]},
+            {"image-1", "video-1", "image-2"},
+        )
+
     def test_notes_are_isolated_by_project_and_episode(self):
         first = canvas_store.create_project("notes-a", self._payload())
         second = canvas_store.create_project("notes-b", self._payload())

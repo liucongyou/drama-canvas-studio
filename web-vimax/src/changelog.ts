@@ -8,10 +8,21 @@ export type ChangelogEntry = {
 
 // 每次发布前端改动时：先升级 APP_VERSION，再把同版本记录放到数组第一项。
 // changelog.test.ts 会阻止版本升级但漏写更新记录。
-export const APP_VERSION = '2026.10.31.20';
+export const APP_VERSION = '2026.10.31.21';
 export const RELEASE_SEEN_KEY = 'yingjie-release-seen';
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '2026.10.31.21',
+    date: '2026-10-31',
+    releasedAt: '2026-11-01 09:20:00 +08:00',
+    title: '共享素材读取与画布视觉收口',
+    changes: [
+      '视频实际引用的跨集图片与音频会随当前集返回，素材仍保持唯一归属，不会把视频、文本或未引用素材串到其它集。',
+      '修复供应商配置列表图标、名称、地址和密钥状态错位；改为固定三列行结构。',
+      '空媒体卡占位统一使用主题色阶，移除残留的 45 度斜纹。',
+    ],
+  },
   {
     version: '2026.10.31.20',
     date: '2026-10-31',
