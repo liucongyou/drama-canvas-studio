@@ -133,7 +133,9 @@ import {
   hasTrustedProviderProgress,
   isGenerationTaskActive,
   liveGenerationCount,
+  mediaGenerationVisualState,
   projectGenerationState,
+  type OptimisticGenerationSubmission,
 } from './generationPresentation';
 import {
   inheritedGenerationParams,
@@ -147,6 +149,16 @@ import {
   pickerProviderGroups,
 } from './modelPickerGroups';
 import {validateModelParams} from './modelParamContract';
+import {clampDurationInput} from './durationInput';
+import {
+  isCanvasBackgroundMode,
+  type CanvasBackgroundMode,
+} from './canvasBackground';
+import {
+  readNodeClipboard,
+  saveNodeClipboard,
+  type NodeClipboardSnapshot,
+} from './nodeClipboard';
 import {VideoParamsPanel} from './VideoParamsPanel';
 import {
   evaluateBatchGeneration,
@@ -181,6 +193,8 @@ type Props = {
   session: string;
   actions?: ReactNode;
   onCreate?: () => void;
+  initialBackgroundMode?: CanvasBackgroundMode;
+  onBackgroundModeChange?: (mode: CanvasBackgroundMode) => Promise<void> | void;
 };
 
 const COL_X = 330;
@@ -1750,8 +1764,11 @@ function friendlyTaskError(raw?: string): string {
     const detail = providerHttp[2].replace(/\s+/g, ' ').trim();
     return `供应商返回 HTTP ${status}：${detail.slice(0, 500)}`;
   }
+  if (text.includes('提交结果未确认，可能已被供应商受理')) {
+    return `供应商提交结果未确认，可能已经受理。系统不会自动重提；请先核对供应商账单或任务记录，确认前不要重复提交。${text ? `详情：${text.slice(0, 220)}` : ''}`;
+  }
   if (lower.includes('没有返回任务号') && lower.includes('server_error')) {
-    return `New API 中转未返回任务号，提交结果未知。请先核对供应商账单/任务记录，确认前不要重复提交。${text ? `详情：${text.slice(0, 220)}` : ''}`;
+    return `供应商提交结果未确认，可能已经受理。系统不会自动重提；请先核对供应商账单或任务记录，确认前不要重复提交。${text ? `详情：${text.slice(0, 220)}` : ''}`;
   }
   if (lower.includes('http 429') || lower.includes('rate limit') || lower.includes('too many') || text.includes('过于频繁')) {
     return '供应商限流。请等待 30–60 秒，系统会优先复用已有任务，不要连续重复提交。';
@@ -2009,6 +2026,7 @@ function promptSetCaret(editor: HTMLElement, offset: number): void {
   selection.addRange(range);
 }
 
+
 function buildPromptEditorContent(editor: HTMLElement, value: string, mentions: PromptMentionToken[]): void {
   const matches = promptMentionMatches(value, mentions);
   const root = document.createDocumentFragment();
@@ -2084,7 +2102,9 @@ function RichPromptEditor({
     if (!active && current === value && !mentionsChanged) return;
     buildPromptEditorContent(editor, value, mentions);
     lastEditorValueRef.current = value;
-    if (active && offset !== null) promptSetCaret(editor, Math.min(offset, value.length));
+    if (active) {
+      promptSetCaret(editor, Math.min(offset ?? value.length, value.length));
+    }
     onRendered?.();
   }, [editorRef, mentionSignature, value, mentions]);
 
@@ -2668,17 +2688,24 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
     providerTaskId?: string;
   };
   const liveProviderGeneration = isLiveProviderGeneration(node);
-  const busy = (node.status === 'generating' || liveProviderGeneration || !!generationBusy)
-    && !(node.finalizePending && !!node.mediaUrl);
-  const resumableInBackground = !!node.mediaUrl
-    && node.status === 'done'
-    && !!generationBusy
-    && !node.finalizePending;
+  // Regeneration must feel exactly like the first generation: the full busy
+  // mask is the submit feedback, not a small chip over the previous version.
+  const generationVisualState = mediaGenerationVisualState({
+    status: node.status,
+    mediaUrl: node.mediaUrl,
+    finalizePending: node.finalizePending,
+    providerLive: liveProviderGeneration,
+    generationBusy,
+  });
+  const hasRenderableMedia = generationVisualState.hasRenderableMedia;
+  const busy = generationVisualState.busy;
+  const resumableInBackground = generationVisualState.resumableInBackground;
+  const generationFailed = generationVisualState.failed;
   const mediaMissing = !isText && !!node.mediaUrl && mediaLoadFailed;
-  const done = node.status === 'done' && !liveProviderGeneration && !mediaMissing;
-  const failed = node.status === 'failed'
-    && !liveProviderGeneration
-    && !node.mediaUrl;
+  const done = node.status === 'done' && !liveProviderGeneration && !mediaMissing && !generationFailed;
+  // A failed regeneration on a card that already has an older video must still
+  // report failure; the previous video stays playable.
+  const failed = generationFailed;
   const taskOutcome = taskOutcomePresentation({
     status: node.status === 'generating'
       ? 'running'
@@ -2850,7 +2877,15 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
         : `${(node.prompt || '').trim().length} / ${cardPromptLimit} 字`;
   const footSubText = mediaMissing
     ? '原文件已不存在，请重新生成或导入本地文件'
-    : failed && node.lastError ? friendlyTaskError(node.lastError) : footMeta;
+    : failed && node.lastError
+      ? friendlyTaskError(node.lastError)
+      : failed
+        ? '生成失败，请查看原因后重试'
+        : footMeta;
+  const outcomePending = failed && (
+    String(node.providerTaskStatus || '').toLowerCase() === 'uncertain'
+    || String(node.providerTaskPhase || '').includes('结果待确认')
+  );
   // 文本节点现在也支持 AI 生成（用户要求），所以状态条同样要有「生成中/失败」语义；
   // 只有 idle 时显示「文本」而不是「待生成」—— 手写的文本本来就算完成。
   const statusText = mediaMissing
@@ -2860,11 +2895,11 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
     : busy && node.providerTaskStatus === 'retrying'
       ? '查询重试中'
     : isText
-    ? (busy ? '生成中' : failed ? '生成失败' : done ? '已生成' : '文本')
-    : busy ? '生成中' : done ? '已生成' : failed ? '生成失败' : '待生成';
+    ? (busy ? '生成中' : outcomePending ? '结果待确认' : failed ? '生成失败' : done ? '已生成' : '文本')
+    : busy ? '生成中' : outcomePending ? '结果待确认' : failed ? '生成失败' : done ? '已生成' : '待生成';
   const statusCls = mediaMissing
     ? 'is-failed'
-    : localUploading || busy ? 'is-busy' : done ? 'is-done' : failed ? 'is-failed' : 'is-idle';
+    : localUploading || busy ? 'is-busy' : failed ? 'is-failed' : done ? 'is-done' : 'is-idle';
   if (renderMode === 'overview' && !active) {
     return (
       <div
@@ -3200,6 +3235,13 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
                     onClick={(event) => {
                       event.stopPropagation();
                       toggleVideoPlayback();
+                      // Do not leave keyboard focus on the button: the
+                      // `:focus-within` rule would otherwise keep the play
+                      // button and the progress bar visible for the whole
+                      // playback, covering the picture.
+                      if (!videoRef.current?.paused) {
+                        event.currentTarget.blur();
+                      }
                     }}
                     onPointerDown={(event) => event.stopPropagation()}
                   >
@@ -3230,7 +3272,12 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
                         className="canvas-video-toggle"
                         title={videoPlaying ? '暂停' : '播放'}
                         aria-label={videoPlaying ? '暂停' : '播放'}
-                        onClick={toggleVideoPlayback}
+                        onClick={(event) => {
+                          toggleVideoPlayback();
+                          if (!videoRef.current?.paused) {
+                            event.currentTarget.blur();
+                          }
+                        }}
                       >
                         {videoPlaying
                           ? <Pause size={11} fill="currentColor" strokeWidth={1.8} aria-hidden="true" />
@@ -3469,7 +3516,19 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
           )}
           {/* 文本节点也能 AI 生成（用户要求）—— 以前这条被 !isText 挡掉，
               卡片上没有任何生成入口，只能进弹窗。 */}
-          <button type="button" className="nodrag" title={isText ? '按当前内容 AI 生成/改写' : '重新生成'} onClick={(e) => { e.stopPropagation(); onGenerate(node); }}>
+          <button
+            type="button"
+            className="nodrag"
+            title={
+              generationVisualState.submitLocked
+                ? '生成中，不能重复提交'
+                : isText
+                  ? '按当前内容 AI 生成/改写'
+                  : '重新生成'
+            }
+            disabled={generationVisualState.submitLocked}
+            onClick={(e) => { e.stopPropagation(); onGenerate(node); }}
+          >
             <RotateCw size={13} strokeWidth={1.9} aria-hidden="true" />
           </button>
           <button type="button" className="nodrag is-del" title="删除节点" onClick={(e) => { e.stopPropagation(); onDelete(node.id); }}>
@@ -3709,7 +3768,14 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const [atOpen, setAtOpen] = useState(false);                    // @ 资产候选
   const [atIdx, setAtIdx] = useState(0);
   const [atQuery, setAtQuery] = useState('');
+  const atInsertOffsetRef = useRef<number | null>(null);
+  // After a mention is committed on pointer-down, the picker unmounts and the
+  // trailing click lands on the backdrop. Suppress that one click so the whole
+  // editor does not close right after a successful insertion.
+  const suppressBackdropClickRef = useRef(false);
+  const suppressBackdropClickUntilRef = useRef(0);
   const [durationDraft, setDurationDraft] = useState('');
+  const commitDurationRef = useRef<(raw: string) => void>(() => {});
   // 提示词框默认 4 行，点放大按钮才撑到 30vh；之前是无条件自适应，一打开就铺满半屏。
   const [taExpanded, setTaExpanded] = useState(false);
   // 弹窗贴卡片下方还是上方：由渲染后的实际高度决定（下方放不下就翻上去）
@@ -3878,6 +3944,15 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
       if (openMenu && t.closest(`[data-pop-owner="${openMenu}"]`)) return;
       if (atOpen && t.closest('[data-pop-owner="at"]')) return;
       if (addMenuOpen && t.closest('[data-pop-owner="add"]')) return;
+      // The duration popover is unmounted by this handler before the input can
+      // dispatch blur. Commit its draft here so clicking anywhere outside
+      // still clamps 20 -> 15 instead of leaving an invalid value visible.
+      if (openMenu === 'dur') {
+        const durationInput = document.querySelector<HTMLInputElement>(
+          '.jim-dur-number-box input',
+        );
+        if (durationInput) commitDurationRef.current(durationInput.value);
+      }
       // 其余一律关闭：弹窗内部其它区域、画布、工具栏都算"点外面"
       setOpenMenu(null);
       setAtOpen(false);
@@ -4165,20 +4240,16 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)))
   );
   const commitDuration = (raw: string) => {
-    const parsed = Number(String(raw).trim());
-    if (!Number.isFinite(parsed)) {
-      const fallback = Math.max(
-        durationMin,
-        Math.min(durationMax, durationValue),
-      );
-      patch('duration', fallback);
-      setDurationDraft(formatDuration(fallback));
-      return;
-    }
-    const bounded = Math.max(durationMin, Math.min(durationMax, parsed));
+    const bounded = clampDurationInput(
+      raw,
+      durationMin,
+      durationMax,
+      durationValue,
+    );
     patch('duration', bounded);
     setDurationDraft(formatDuration(bounded));
   };
+  commitDurationRef.current = commitDuration;
   const countLabel = String(p.count ?? curModelSpec?.defaultParams?.count ?? 1);
   // 文本节点生成长度（短/中/长）：p.maxTokens 默认 1200
   const curLen = TEXT_LEN_OPTS.find((o) => o.tokens === (p.maxTokens ?? 1200)) || TEXT_LEN_OPTS[1];
@@ -4398,9 +4469,12 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
       ? withVoiceRefs(params, [...voiceRefList(params), {nodeId: a.id, label: a.title || a.kind, url: a.mediaUrl}])
       : params;
     const mention = `@${a.title || a.kind}`;
-    const hasText = node.prompt.includes(mention);
     const input = taRef.current;
-    const start = input ? promptCaretOffset(input) : node.prompt.length;
+    // A clicked candidate steals focus from the contenteditable, so the live
+    // selection is no longer trustworthy here. Use the offset captured when
+    // the @ menu opened instead of falling back to the end of the prompt.
+    const start = atInsertOffsetRef.current
+      ?? (input ? promptCaretOffset(input) : node.prompt.length);
     const end = start;
     let before = node.prompt.slice(0, start);
     const after = node.prompt.slice(end);
@@ -4410,7 +4484,15 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     if (before.endsWith('@')) before = before.slice(0, -1);
     const needsSpaceBefore = before && !/\s$/.test(before);
     const insertion = `${needsSpaceBefore ? ' ' : ''}${mention} `;
-    const prompt = hasText ? `${before}${after}` : `${before}${insertion}${after}`;
+    // Always insert at the caret when the user explicitly picks from the @
+    // menu. The old `prompt.includes(mention)` dedupe treated any earlier
+    // occurrence (very common in storyboard prompts that reference the same
+    // character several times) as "already added", so it deleted the typed
+    // "@" and inserted nothing. That is why picking an asset appeared to do
+    // nothing at all.
+    const prompt = `${before}${insertion}${after}`;
+    suppressBackdropClickRef.current = true;
+    suppressBackdropClickUntilRef.current = Date.now() + 600;
     if (onPickRef) {
       onPickRef(node, a.id);
       onChange(node.id, {prompt});
@@ -4423,6 +4505,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
       if (input) promptSetCaret(input, cursor);
       growTa();
     };
+    atInsertOffsetRef.current = null;
     // Rebuild happens on the next React render. Restoring focus twice keeps
     // rapid "select asset then type again" input from landing on stale DOM.
     window.requestAnimationFrame(() => {
@@ -4435,6 +4518,25 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
 
   return ReactDOM.createPortal(
     <div className={`jim-backdrop ${closing ? 'is-closing' : ''}`} onClick={(e) => {
+      if (
+        suppressBackdropClickRef.current
+        || Date.now() < suppressBackdropClickUntilRef.current
+      ) {
+        suppressBackdropClickRef.current = false;
+        return;
+      }
+      // The @ picker renders through a portal onto document.body, so its
+      // clicks bubble here even though they visually belong to the editor.
+      // Without this guard, picking an asset inserted the mention and then
+      // immediately closed the whole prompt panel, which looked like nothing
+      // had been inserted.
+      const source = e.target as Element | null;
+      if (
+        source?.closest('.jim-pop-anchored')
+        || document.querySelector('.jim-at-pop:hover')
+      ) {
+        return;
+      }
       // ★ 点击落在「另一张卡片」上 → 切换过去，不要关掉再点一次。
       //   根因：backdrop 是 inset:0 的全屏层，把画布整个盖住了，所以点卡片时
       //   命中的永远是这个 backdrop，卡片自己的 onClick 根本收不到；
@@ -4744,7 +4846,13 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 const limited = next.slice(0, promptLimit);
                 onChange(node.id, {prompt: limited});
                 const editor = taRef.current;
-                setAtOpen(Boolean(editor && promptCaretFollowsAt(editor, limited)));
+                const followsAt = Boolean(editor && promptCaretFollowsAt(editor, limited));
+                if (followsAt && editor) {
+                  atInsertOffsetRef.current = promptCaretOffset(editor);
+                } else if (!followsAt) {
+                  atInsertOffsetRef.current = null;
+                }
+                setAtOpen(followsAt);
                 setAtIdx(0);
                 growTa();
               }}
@@ -4840,7 +4948,6 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                   }}
                   placeholder="搜索素材名称或类型"
                   aria-label="搜索引用素材"
-                  autoFocus
                 />
               </label>
               <div className="jim-at-list">
@@ -4855,12 +4962,29 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                   type="button"
                   className={`jim-at-item ${i === atIdx ? 'is-active' : ''}`}
                   onMouseEnter={() => setAtIdx(i)}
+                  onMouseDown={(event) => {
+                    // Commit on pointer-down: preventing the default without
+                    // handling the click let the backdrop see the press as an
+                    // "empty area" tap and close the whole editor right after
+                    // the mention was inserted. Handle it here, once, and stop
+                    // the event so the backdrop never treats it as outside.
+                    event.preventDefault();
+                    event.stopPropagation();
+                    pickAt(a);
+                  }}
+                  onPointerDown={(event) => event.stopPropagation()}
                   onPointerEnter={(event) => {
                     const url = a.kind === 'audio' ? portraitForAudioNode(a) : a.kind === 'image' ? (a.mediaUrl || '') : '';
                     showAssetPreview(url, a.title || a.kind, event.currentTarget);
                   }}
                   onPointerLeave={() => setMentionPreview(null)}
-                  onClick={() => pickAt(a)}
+                  onClick={(event) => {
+                    // Keyboard activation (Enter/Space) still lands here; a
+                    // real mouse press was already handled in onMouseDown.
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (!event.detail) pickAt(a);
+                  }}
                 >
                   {(a.kind === 'image' && a.mediaUrl) || (a.kind === 'audio' && portraitForAudioNode(a))
                     ? <img src={a.kind === 'audio' ? portraitForAudioNode(a) : a.mediaUrl} alt="" loading="lazy" />
@@ -5497,17 +5621,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                   }}
                   title={busy ? '生成中不能修改时长' : undefined}
                   onBlur={(event) => {
-                    const current = event.currentTarget.value;
-                    if (current.trim() === '') {
-                      const fallback = Math.max(
-                        durationMin,
-                        Math.min(durationMax, durationValue),
-                      );
-                      patch('duration', fallback);
-                      setDurationDraft(formatDuration(fallback));
-                    } else {
-                      commitDuration(current);
-                    }
+                    commitDuration(event.currentTarget.value);
                   }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') {
@@ -5620,7 +5734,7 @@ type ContextMenuState = {
   nodeId: string | null;
   nodeType: string | null;
   // 多选批量菜单：右键命中「当前已选中的节点」且画布上有多选时打开，
-  // 菜单内提供 整理…（弹窗）/ 删除…（弹窗）/ 复制 / 适应所选 / 取消选择。
+  // 菜单内提供 批量生成 / 整理…（弹窗）/ 删除…（弹窗）/ 复制 / 聚焦所选。
   multi?: boolean;
   // 参与批量操作的可批处理节点 id（媒体卡 media-* + 备注 note-*）
   selIds?: string[];
@@ -7810,7 +7924,19 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
   );
 }
 
-function CanvasViewInner({session, actions, onCreate}: Props) {
+function CanvasViewInner({
+  session,
+  actions,
+  onCreate,
+  initialBackgroundMode,
+  onBackgroundModeChange,
+}: Props) {
+  const [committedBackgroundMode, setCommittedBackgroundMode] =
+    useState<CanvasBackgroundMode>(
+      isCanvasBackgroundMode(initialBackgroundMode)
+        ? initialBackgroundMode
+        : 'blank',
+    );
   const [canvas, setCanvas] = useState<Canvas | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -7983,7 +8109,37 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     return () => document.removeEventListener('pointerdown', close, true);
   }, [episodeMenu]);
   // 画布底纹（复刻 BeefTV appearance）：dots 点阵 / lines 细线网格 / blank 空白
-  const [bgMode, setBgMode] = useState<'dots' | 'lines' | 'blank'>('blank');
+  const bgMode = committedBackgroundMode;
+  const setBgMode = setCommittedBackgroundMode;
+  const bgModeRef = useRef(bgMode);
+  bgModeRef.current = bgMode;
+  const bgSaveSequenceRef = useRef(0);
+  const [bgSaveError, setBgSaveError] = useState('');
+  useEffect(() => {
+    if (!isCanvasBackgroundMode(initialBackgroundMode)) return;
+    bgModeRef.current = initialBackgroundMode;
+    setCommittedBackgroundMode(initialBackgroundMode);
+  }, [initialBackgroundMode]);
+  const applyBgMode = async (mode: CanvasBackgroundMode) => {
+    if (mode === bgModeRef.current) return;
+    const previous = bgModeRef.current;
+    const sequence = bgSaveSequenceRef.current + 1;
+    bgSaveSequenceRef.current = sequence;
+    setBgSaveError('');
+    try {
+      await onBackgroundModeChange?.(mode);
+    } catch (error) {
+      if (bgSaveSequenceRef.current !== sequence) return;
+      setBgMode(previous);
+      setBgSaveError(
+        error instanceof Error ? error.message : '画布底纹保存失败',
+      );
+      return;
+    }
+    if (bgSaveSequenceRef.current !== sequence) return;
+    bgModeRef.current = mode;
+    setBgMode(mode);
+  };
   // ＋添加节点菜单开关
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   // 画布舞台容器 ref：右键菜单视口坐标 → 舞台相对坐标换算
@@ -8237,11 +8393,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   // 节点剪贴板：帮助面板一直写着"复制节点 Ctrl C 粘贴"，但旧实现只把备注**文本**塞进 clipboard，
   // 媒体卡片无法被复制/粘贴。这里单独存节点快照（媒体 + 备注），Ctrl+V 优先粘贴节点。
   // edges：被复制节点**之间**的连线（源与目标都在复制集合内），粘贴时一并重建到新节点上。
-  const [nodeClipboard, setNodeClipboard] = useState<{
-    media: CanvasMediaNode[];
-    notes: CanvasNote[];
-    edges: {source: string; target: string}[];
-  } | null>(null);
+  const [nodeClipboard, setNodeClipboard] = useState<NodeClipboardSnapshot | null>(
+    readNodeClipboard,
+  );
   // 多选数量：用于工具栏按需显示「对齐/分布」浮动组（选中 ≥2 才出现，避免常态占地方）
   const [selectedCount, setSelectedCount] = useState(0);
   // 节点层级（置顶/置底）：nodeId → zIndex。
@@ -8683,7 +8837,7 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
   const workspaceScopeRef = useRef({session, episode: currentEp});
   workspaceScopeRef.current = {session, episode: currentEp};
   const workspaceLoadEpochRef = useRef(0);
-  const optimisticGenerationStartsRef = useRef<Map<string, string>>(new Map());
+  const optimisticGenerationStartsRef = useRef<Map<string, OptimisticGenerationSubmission>>(new Map());
   useEffect(() => { mediaNodesRef.current = mediaNodes; }, [mediaNodes]);
   const refreshWorkspaceFacts = useCallback(() => {
     if (workspaceRefreshInFlightRef.current) {
@@ -8725,6 +8879,26 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         const availability = remote.mediaUrl === local.mediaUrl
           ? local.mediaAvailability
           : 'unknown';
+        // While a local submission is still in flight, a workspace snapshot
+        // may predate the new task row and still describe the old result.
+        // Keep the card in its submitting state unless the snapshot shows a
+        // genuinely newer outcome.
+        // Only the *old success* snapshot may be ignored while a submission is
+        // in flight. A terminal failure (or a new version) is authoritative and
+        // must reach the card immediately, otherwise the failure stays hidden
+        // behind a stale "生成中".
+        const localSubmitting = local.status === 'generating';
+        const staleSuccessSnapshot = (
+          localSubmitting
+          && remote.status === 'done'
+          && mediaVersionList(remote).length <= mediaVersionList(local).length
+        );
+        if (staleSuccessSnapshot) {
+          return {
+            ...local,
+            mediaAvailability: availability,
+          };
+        }
         return {
           ...local,
           ...remote,
@@ -8822,98 +8996,22 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       generationTasks,
       optimisticGenerationStartsRef.current,
     );
-    const {
-      activeNodeIds: projectedBusyIds,
-      latestByNode,
-      retainedOptimistic: retainedOptimisticStarts,
-    } = projection;
+    const {retainedOptimistic: retainedOptimisticStarts} = projection;
     optimisticGenerationStartsRef.current = retainedOptimisticStarts;
-    const activeByNode = new Map(
-      [...latestByNode.values()]
-        .filter((task) => isGenerationTaskActive(task))
-        .map((task) => [task.node_id, task]),
-    );
+    // Only the submission initiated by this tab can temporarily lock a card.
+    // The task ledger is display history for the task center; it must never
+    // make a card look busy when the backend node row already has a terminal
+    // state. A genuinely active task is projected into node.status by the
+    // backend workspace endpoint.
+    const optimisticBusyIds = new Set(retainedOptimisticStarts.keys());
     setGenerationBusyIds((prev) => {
       // This set must be projected from the current task snapshot. Mutating a
       // previous set by only adding active tasks leaves stale node ids forever
       // after a task dies without a completion event.
-      return projectedBusyIds.size === prev.size
-        && [...projectedBusyIds].every((id) => prev.has(id))
+      return optimisticBusyIds.size === prev.size
+        && [...optimisticBusyIds].every((id) => prev.has(id))
         ? prev
-        : projectedBusyIds;
-    });
-    setMediaNodes((prev) => {
-      let changed = false;
-      const next = prev.map((node) => {
-        // A local rendered result is stronger evidence than a stale task
-        // snapshot. Never paint a media card as "generating" when the file is
-        // already on this canvas.
-        if (node.status === 'done' && node.mediaUrl) return node;
-        // A missing task is terminal evidence for a stale "generating" node.
-        // The task row is authoritative; a node flag with no queued/running
-        // task is left over from a dead worker or interrupted browser request.
-        if (
-          node.status === 'generating'
-          && !latestByNode.has(node.id)
-          && !node.finalizePending
-          && !projectedBusyIds.has(node.id)
-        ) {
-          changed = true;
-          return {
-            ...node,
-            status: 'failed' as const,
-            lastError: node.lastError || '生成任务已失去执行记录，请重新生成',
-            providerTaskStatus: 'interrupted',
-            providerTaskPhase: '任务已结束',
-            generationFinishedAt: node.generationFinishedAt || new Date().toISOString(),
-          };
-        }
-        const task = activeByNode.get(node.id);
-        if (task) {
-          // A completion event is authoritative. An older task-list snapshot
-          // may arrive after it and still say running; never demote a finished
-          // node back to generating.
-          // finalizePending：供应商已出结果、后端还在落盘归档。此时卡片已经能看，
-          // 不能再退回「生成中」，否则用户会看到画面闪一下又变回转圈。
-          if (node.status === 'generating' || node.finalizePending) return node;
-          changed = true;
-          return {
-            ...node,
-            status: 'generating' as const,
-            lastError: undefined,
-            generationStartedAt: task.started_at || task.created_at || node.generationStartedAt || new Date().toISOString(),
-            generationFinishedAt: undefined,
-            providerTaskStatus: task.status,
-            providerTaskPhase: task.phase || '生成中',
-            providerTaskProgress: Number(task.progress || node.providerTaskProgress || 0),
-          };
-        }
-        // A terminal task is authoritative. This clears a stale local
-        // "generating" state left by a backend restart or an old tab, which
-        // otherwise blocks the generate button without issuing a new request.
-        const terminal = latestByNode.get(node.id);
-        if (
-          node.status !== 'generating'
-          || projectedBusyIds.has(node.id)
-          || !terminal
-          || !['failed', 'succeeded'].includes(terminal.status)
-        ) {
-          return node;
-        }
-        changed = true;
-        return {
-          ...node,
-          status: (terminal.status === 'succeeded' ? 'done' : 'failed') as 'done' | 'failed',
-          lastError: terminal.status === 'succeeded'
-            ? undefined
-            : (terminal.error || node.lastError || '生成任务已结束'),
-          generationFinishedAt: terminal.finished_at || node.generationFinishedAt,
-          providerTaskStatus: terminal.status,
-          providerTaskPhase: terminal.phase || (terminal.status === 'succeeded' ? '已完成' : '生成失败'),
-          providerTaskProgress: terminal.status === 'succeeded' ? 100 : node.providerTaskProgress,
-        };
-      });
-      return changed ? next : prev;
+        : optimisticBusyIds;
     });
   }, [generationTasks]);
 
@@ -10603,17 +10701,20 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                 providerTaskProgress: remote.providerTaskProgress,
               };
             }
-            // A newly submitted attempt owns the status until its task reaches a
-            // terminal state. The first remote read can still contain the previous
-            // completed attempt, and applying that `done` here makes the task chip
-            // and edge animation alternate between running and idle.
-            // 用「上一次的完成时间是否早于本次开始时间」判断新旧，而不是一味跳过：
-            // 后端现在拿到供应商结果就写 done，任务行还停在 running，条件太粗会
-            // 把这次真正的完成挡在门外。
+            // A newly submitted attempt owns the status until its result is
+            // distinguishable from the previous version. A remote node with
+            // the same URL/version count is the old result, not this attempt.
+            // Do not compare browser and server clocks here: they can differ
+            // enough to hide a real regeneration or accept the old result.
             if (generationBusyIds.has(node.id)) {
-              const remoteFinished = remote.generationFinishedAt || '';
-              const localStarted = node.generationStartedAt || '';
-              if (!remoteFinished || (localStarted && remoteFinished < localStarted)) return node;
+              const remoteVersionCount = mediaVersionList(remote).length;
+              const localVersionCount = mediaVersionList(node).length;
+              if (
+                remote.status !== 'failed'
+                && remoteVersionCount <= localVersionCount
+              ) {
+                return node;
+              }
             }
             if (remote.status !== 'done' && remote.status !== 'failed') return node;
             changed = true;
@@ -11696,10 +11797,27 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         source: e.source.startsWith('note-') ? `note:${e.source.slice(5)}` : `media:${e.source.slice(6)}`,
         target: e.target.startsWith('note-') ? `note:${e.target.slice(5)}` : `media:${e.target.slice(6)}`,
       }));
-    setNodeClipboard({media: media.map((m) => ({...m})), notes: noteList.map((n) => ({...n})), edges});
+    const snapshot: NodeClipboardSnapshot = {
+      media: media.map((m) => ({...m})),
+      notes: noteList.map((n) => ({...n})),
+      edges,
+    };
+    setNodeClipboard(snapshot);
+    saveNodeClipboard(snapshot);
     pasteStepRef.current = 0;
     return {media: media.length, notes: noteList.length};
   }, [selectedMediaList, selectedNoteList]);
+  const copySelectionFromMenu = useCallback(() => {
+    const copied = copySelectedNodes();
+    if (copied.media === 0 && copied.notes === 0) {
+      setToast('没有可复制的节点');
+      return;
+    }
+    const parts: string[] = [];
+    if (copied.media > 0) parts.push(`${copied.media} 个媒体卡`);
+    if (copied.notes > 0) parts.push(`${copied.notes} 条备注`);
+    setToast(`已复制 ${parts.join(' · ')}，可在当前或其它画布按 Ctrl+V 粘贴`);
+  }, [copySelectedNodes, setToast]);
   // Ctrl+V：粘贴节点
   const pasteNodeClipboard = useCallback(() => {
     const clip = nodeClipboard;
@@ -11708,6 +11826,10 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
     const step = COPY_STEP * pasteStepRef.current;
     return appendNodeCopies(clip.media, clip.notes, step, step, clip.edges);
   }, [nodeClipboard, appendNodeCopies]);
+  const pasteNodesFromMenu = useCallback(() => {
+    const pasted = pasteNodeClipboard();
+    setToast(pasted > 0 ? `已粘贴 ${pasted} 个节点` : '剪贴板里没有可粘贴的节点');
+  }, [pasteNodeClipboard, setToast]);
 
   // 统一写回位置：位置真源是 mediaNodes.x/y 与 notes.x/y（flowNodes 只是派生），
   // 直接改 RF 的 nodes 会被派生重算覆盖回去。
@@ -13391,11 +13513,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       const mod = event.ctrlKey || event.metaKey;
       // Ctrl+D（复制选中节点）在文本编辑态也保留：点中备注往往会自动聚焦其 textarea，
       // 若一律让位给输入控件，用户会以为"复制节点没反应"。Ctrl+D 在文本框里没有原生语义，不冲突。
-      if (mod && key === 'd') {
-        const n = duplicateSelectedNodes();
-        if (n > 0) { setToast(`已复制 ${n} 个节点`); event.preventDefault(); }
-        return;
-      }
       const target = event.target as HTMLElement | null;
       // 其余快捷键在输入态让位给浏览器（Ctrl+A 选中文本、Ctrl+C/V 复制粘贴文本等）
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
@@ -13438,6 +13555,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             if (texts.length > 0) setClipboard(texts);
           }
           event.preventDefault();
+          return;
+        }
+        if (key === 'd') {
+          const n = duplicateSelectedNodes();
+          if (n > 0) {
+            setToast(`已就地复制 ${n} 个节点`);
+            event.preventDefault();
+          }
           return;
         }
         if (key === 'v') {
@@ -13979,11 +14104,14 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       return false;
     }
     const generationStartedAt = new Date().toISOString();
-    optimisticGenerationStartsRef.current.set(node.id, generationStartedAt);
     const clientOperationId = (
       globalThis.crypto?.randomUUID?.()
       || `canvas-operation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     );
+    optimisticGenerationStartsRef.current.set(node.id, {
+      startedAt: generationStartedAt,
+      operationId: clientOperationId,
+    });
     // This action sends the latest prompt/params atomically with /generate.
     // Drop any older debounced patch for the same node so it cannot race that
     // request with a stale baseUpdatedAt.
@@ -14028,7 +14156,19 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
         void getCanvasMediaNodes(session, currentEp)
           .then((remoteNodes) => {
             const remote = remoteNodes.find((item) => item.id === node.id);
-            if (remote) updateMediaNode(node.id, remote, {persist: false});
+            if (!remote) return;
+            // Reading the canvas immediately after submission can still return
+            // the pre-submit row (status "done" with the previous video). That
+            // snapshot is older than the local optimistic submission, so it
+            // must not repaint the card as "已完成" for a few hundred ms. Once
+            // the backend row shows generating/failed, or a new version has
+            // actually landed, the snapshot wins again.
+            const backendOwnsState = (
+              remote.status !== 'done'
+              || mediaVersionList(remote).length > mediaVersionList(node).length
+            );
+            if (!backendOwnsState) return;
+            updateMediaNode(node.id, remote, {persist: false});
           })
           .catch(() => {});
         if (result.deferred) {
@@ -14685,7 +14825,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
       window.clearTimeout(visibleBoundsTimerRef.current);
     }
   }, []);
-
   // LibTV 式自动布局：资产生成组在前（角色/场景/道具/音色），段卡列在最右（备注/列头保持原位）
   const autoLayout = useCallback(() => {
     setNodes((nds) => {
@@ -15504,6 +15643,11 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
           onDragLeave={(e) => { if (e.currentTarget === e.target) setDropArmed(false); }}
           onDrop={handleCanvasDrop}
         >
+          <div
+            className="canvas-background-pattern"
+            data-bg={bgMode}
+            aria-hidden="true"
+          />
           {dropArmed && <div className="canvas-drop-overlay">松开鼠标，素材将变成节点</div>}
           {canvasIdlePresentation({
             dataReady,
@@ -15562,10 +15706,15 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                 key={k}
                 type="button"
                 className={bgMode === k ? 'is-active' : ''}
-                onClick={() => setBgMode(k)}
+                onClick={() => void applyBgMode(k)}
               >{label}</button>
             ))}
           </div>
+          {bgSaveError && (
+            <div className="canvas-bg-save-error" role="alert">
+              {bgSaveError}
+            </div>
+          )}
           {activeGenerationNodeCount > 0 && (
             <div className="canvas-task-chip" title="Agent 正在生成，完成后自动刷新画布">
               <span className="canvas-task-spin" aria-hidden="true" />
@@ -15961,7 +16110,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
             elementsSelectable={mouseMode !== 'hand'}
             proOptions={{hideAttribution: true}}
           >
-            <Background gap={24} size={1} />
             <MiniMap
               pannable
               zoomable
@@ -16561,21 +16709,36 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               {contextMenu.multi && contextMenu.selIds && contextMenu.selIds.length > 0 && (
                 <>
                   <div className="canvas-context-title">已选 {contextMenu.selIds.length} 个节点</div>
-                  <button type="button" onClick={() => { groupSelected(contextMenu.selIds!); setContextMenu(null); }}><Group size={13} strokeWidth={1.9} aria-hidden="true" />编组（{contextMenu.selIds.length} 项）</button>
                   {(() => {
-                    const inGroup = contextMenu.selIds!.some((id) => groupMap.has(id));
-                    return inGroup ? (
-                      <button type="button" onClick={() => { ungroupSelected(contextMenu.selIds!); setContextMenu(null); }}><Ungroup size={13} strokeWidth={1.9} aria-hidden="true" />解除编组</button>
-                    ) : null;
+                    const allGrouped = contextMenu.selIds!.every((id) => groupMap.has(id));
+                    return allGrouped ? (
+                      <button type="button" onClick={() => { ungroupSelected(contextMenu.selIds!); setContextMenu(null); }}><Ungroup size={13} strokeWidth={1.9} aria-hidden="true" />解除编组（{contextMenu.selIds!.length} 项）</button>
+                    ) : (
+                      <button type="button" onClick={() => { groupSelected(contextMenu.selIds!); setContextMenu(null); }}><Group size={13} strokeWidth={1.9} aria-hidden="true" />编组（{contextMenu.selIds!.length} 项）</button>
+                    );
                   })()}
                   <span className="canvas-context-sep" />
                   <button type="button" onClick={() => { setContextMenu(null); setArrangeOpen(true); }}><LayoutGrid size={13} strokeWidth={1.9} aria-hidden="true" />整理…（对齐 / 分布 / 排序）</button>
                   {(() => {
                     const picked = mediaNodesRef.current.filter((mn) => contextMenu.selIds!.some((id) => id === `${MEDIA_PREFIX}${mn.id}`));
                     const adjustable = picked.filter((mn) => mn.kind === 'image' || mn.kind === 'video' || mn.kind === 'audio' || mn.kind === 'text');
+                    const generatable = picked.filter((mn) => mn.kind === 'image' || mn.kind === 'video' || mn.kind === 'audio');
                     const ready = picked.filter((mn) => mn.kind !== 'text' && !!mn.mediaUrl);
                     return (
                       <>
+                        <button
+                          type="button"
+                          disabled={generatable.length === 0}
+                          title={generatable.length === 0 ? '选中里没有图片、音频或视频节点' : `检查并批量生成 ${generatable.length} 个媒体节点`}
+                          onClick={() => {
+                            if (generatable.length === 0) {
+                              setToast('选中里没有可批量生成的媒体节点');
+                              return;
+                            }
+                            setContextMenu(null);
+                            setBatchGenerateTargets(generatable);
+                          }}
+                        ><Wand2 size={13} strokeWidth={1.9} aria-hidden="true" />批量生成…（{generatable.length} 个）</button>
                         <button
                           type="button"
                           disabled={adjustable.length === 0}
@@ -16593,7 +16756,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                   })()}
                   <button type="button" onClick={() => { setDeleteTargets(contextMenu.selIds!.map((id) => ({id, type: id.startsWith(NOTE_PREFIX) ? 'note' : 'media'}))); setContextMenu(null); }}><Trash2 size={13} strokeWidth={1.9} aria-hidden="true" />删除…（{contextMenu.selIds.length} 项）</button>
                   <button type="button" onClick={() => { const n = cutSelectedNodes(); if (n > 0) setToast(`已剪切 ${n} 个节点，Ctrl+V 粘贴`); setContextMenu(null); }}><Scissors size={13} strokeWidth={1.9} aria-hidden="true" />剪切（Ctrl+X）</button>
-                  <button type="button" onClick={() => { const n = duplicateSelectedNodes(); if (n > 0) setToast(`已复制 ${n} 个节点`); setContextMenu(null); }}><Copy size={13} strokeWidth={1.9} aria-hidden="true" />复制（Ctrl+D）</button>
+                  <button type="button" onClick={() => { copySelectionFromMenu(); setContextMenu(null); }}><Copy size={13} strokeWidth={1.9} aria-hidden="true" />复制（Ctrl+C）</button>
+                  <button type="button" onClick={() => { pasteNodesFromMenu(); setContextMenu(null); }}><ClipboardList size={13} strokeWidth={1.9} aria-hidden="true" />粘贴（Ctrl+V）</button>
                   <button type="button" onClick={() => { focusSelection(true); setContextMenu(null); }}><ScanSearch size={13} strokeWidth={1.9} aria-hidden="true" />聚焦所选（Shift+F）</button>
                   <button type="button" onClick={() => { setNodeZOrder(contextMenu.selIds!, 'front'); setContextMenu(null); }}><ArrowUpToLine size={13} strokeWidth={1.9} aria-hidden="true" />置于顶层（{contextMenu.selIds!.length} 项）</button>
                   <button type="button" onClick={() => { setNodeZOrder(contextMenu.selIds!, 'back'); setContextMenu(null); }}><ArrowDownToLine size={13} strokeWidth={1.9} aria-hidden="true" />置于底层（{contextMenu.selIds!.length} 项）</button>
@@ -16633,7 +16797,8 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               )}
               {!contextMenu.multi && contextMenu.nodeId && contextNode?.type === 'note' && (
                 <>
-                  {contextMenuNote && <button type="button" onClick={() => { duplicateNote(contextMenuNote); setContextMenu(null); }}><Copy size={13} strokeWidth={1.9} aria-hidden="true" />复制</button>}
+                  <button type="button" onClick={() => { copySelectionFromMenu(); setContextMenu(null); }}><Copy size={13} strokeWidth={1.9} aria-hidden="true" />复制（Ctrl+C）</button>
+                  <button type="button" onClick={() => { pasteNodesFromMenu(); setContextMenu(null); }}><ClipboardList size={13} strokeWidth={1.9} aria-hidden="true" />粘贴（Ctrl+V）</button>
                   <button type="button" onClick={() => { setNodeZOrder([contextMenu!.nodeId!], 'front'); setContextMenu(null); }}><ArrowUpToLine size={13} strokeWidth={1.9} aria-hidden="true" />置于顶层</button>
                   <button type="button" onClick={() => { setNodeZOrder([contextMenu!.nodeId!], 'back'); setContextMenu(null); }}><ArrowDownToLine size={13} strokeWidth={1.9} aria-hidden="true" />置于底层</button>
                   <button type="button" onClick={() => { const nodeId = contextMenu!.nodeId!; setDeleteTargets([{id: nodeId, type: 'note'}]); setContextMenu(null); }}><Trash2 size={13} strokeWidth={1.9} aria-hidden="true" />删除…</button>
@@ -16646,7 +16811,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                 return (
                   <>
                     {mn && <button type="button" onClick={() => { openMediaModal(mn); setContextMenu(null); }}><Pencil size={13} strokeWidth={1.9} aria-hidden="true" />编辑文本</button>}
-                    <button type="button" onClick={() => { const n = duplicateSelectedNodes(); if (n > 0) setToast(`已复制 ${n} 个节点`); setContextMenu(null); }}><Copy size={13} strokeWidth={1.9} aria-hidden="true" />复制（Ctrl+D）</button>
+                    <button type="button" onClick={() => { const n = cutSelectedNodes(); if (n > 0) setToast(`已剪切 ${n} 个节点，Ctrl+V 粘贴`); setContextMenu(null); }}><Scissors size={13} strokeWidth={1.9} aria-hidden="true" />剪切（Ctrl+X）</button>
+                    <button type="button" onClick={() => { copySelectionFromMenu(); setContextMenu(null); }}><Copy size={13} strokeWidth={1.9} aria-hidden="true" />复制（Ctrl+C）</button>
+                    <button type="button" onClick={() => { pasteNodesFromMenu(); setContextMenu(null); }}><ClipboardList size={13} strokeWidth={1.9} aria-hidden="true" />粘贴（Ctrl+V）</button>
                     <button type="button" onClick={() => { setNodeZOrder([contextMenu!.nodeId!], 'front'); setContextMenu(null); }}><ArrowUpToLine size={13} strokeWidth={1.9} aria-hidden="true" />置于顶层</button>
                     <button type="button" onClick={() => { setNodeZOrder([contextMenu!.nodeId!], 'back'); setContextMenu(null); }}><ArrowDownToLine size={13} strokeWidth={1.9} aria-hidden="true" />置于底层</button>
                     <button type="button" onClick={() => { setDeleteTargets([{id: contextMenu!.nodeId!, type: 'media'}]); setContextMenu(null); }}><Trash2 size={13} strokeWidth={1.9} aria-hidden="true" />删除…</button>
@@ -16699,7 +16866,9 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
                         <Download size={13} strokeWidth={1.9} aria-hidden="true" />下载全部版本（{versions.length}）
                       </button>
                     )}
-                    <button type="button" onClick={() => { const n = duplicateSelectedNodes(); if (n > 0) setToast(`已复制 ${n} 个节点`); setContextMenu(null); }}><Copy size={13} strokeWidth={1.9} aria-hidden="true" />复制（Ctrl+D）</button>
+                    <button type="button" onClick={() => { const n = cutSelectedNodes(); if (n > 0) setToast(`已剪切 ${n} 个节点，Ctrl+V 粘贴`); setContextMenu(null); }}><Scissors size={13} strokeWidth={1.9} aria-hidden="true" />剪切（Ctrl+X）</button>
+                    <button type="button" onClick={() => { copySelectionFromMenu(); setContextMenu(null); }}><Copy size={13} strokeWidth={1.9} aria-hidden="true" />复制（Ctrl+C）</button>
+                    <button type="button" onClick={() => { pasteNodesFromMenu(); setContextMenu(null); }}><ClipboardList size={13} strokeWidth={1.9} aria-hidden="true" />粘贴（Ctrl+V）</button>
                     <button type="button" onClick={() => { setNodeZOrder([contextMenu!.nodeId!], 'front'); setContextMenu(null); }}><ArrowUpToLine size={13} strokeWidth={1.9} aria-hidden="true" />置于顶层</button>
                     <button type="button" onClick={() => { setNodeZOrder([contextMenu!.nodeId!], 'back'); setContextMenu(null); }}><ArrowDownToLine size={13} strokeWidth={1.9} aria-hidden="true" />置于底层</button>
                     <button type="button" onClick={() => { requestDeleteMediaNode(mid); setContextMenu(null); }}><Trash2 size={13} strokeWidth={1.9} aria-hidden="true" />删除…</button>
@@ -16709,7 +16878,6 @@ function CanvasViewInner({session, actions, onCreate}: Props) {
               {contextMenu.nodeId && (contextNode?.type === 'char' || contextNode?.type === 'scene' || contextNode?.type === 'prop' || contextNode?.type === 'voice') && (
                 <button type="button" onClick={() => { setSelectedId(contextMenu.nodeId); setContextMenu(null); }}><Pencil size={13} strokeWidth={1.9} aria-hidden="true" />检查</button>
               )}
-              <button type="button" className="is-cancel" onClick={() => setContextMenu(null)}><X size={13} strokeWidth={2} aria-hidden="true" />取消</button>
             </div>
             );
           })()}

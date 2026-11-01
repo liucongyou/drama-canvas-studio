@@ -92,6 +92,16 @@ a:focus-visible,
   outline-offset: 2px;
 }
 
+/* Search owns its focus treatment. The global focus-visible ring combined
+   with the component border produced the double blue outline on the canvas
+   topbar. */
+.canvas-asset-search:focus,
+.canvas-asset-search:focus-visible {
+  outline: none;
+  border-color: var(--line-strong);
+  box-shadow: none;
+}
+
 .app-shell {
   display: flex;
   width: 100%;
@@ -11770,8 +11780,10 @@ svg.is-collapsed { transform: none; }
   transition: border-color 120ms, box-shadow 120ms;
 }
 .canvas-asset-search:focus {
-  border-color: var(--acc);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--acc) 25%, transparent);
+  /* The topbar container already establishes focus. A second blue ring here
+     produced the double border shown on the live canvas. */
+  border-color: var(--v-border-strong, var(--line));
+  box-shadow: none;
 }
 .canvas-asset-search::placeholder { color: var(--faint); }
 
@@ -12729,18 +12741,44 @@ svg.is-collapsed { transform: none; }
 
 /* ===== 工作台视觉层（BeefTV 工作台布局移植，颜色全部走主题变量，不写死） ===== */
 /* 1. 中央画布：底纹三档（data-bg 切换），底色沿用 --canvas */
-.canvas-stage[data-bg='dots'] {
-  background-image: radial-gradient(circle, var(--dot, rgba(15,23,42,.18)) 1px, transparent 1px);
-  background-size: 20px 20px;
+.canvas-background-pattern {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: var(--v-canvas);
 }
-.canvas-stage[data-bg='lines'] {
+.canvas-background-pattern[data-bg='dots'] {
+  /* Reference A: 24px pitch, 2x2px dot, roughly rgb(46,46,46)
+     over the graphite canvas. Keep this the single canvas-dot contract. */
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    var(--v-dot) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+}
+.canvas-background-pattern[data-bg='lines'] {
   background-image:
-    linear-gradient(var(--line, #e2e4e8) 1px, transparent 1px),
-    linear-gradient(90deg, var(--line, #e2e4e8) 1px, transparent 1px);
-  background-size: 20px 20px;
+    linear-gradient(var(--v-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--v-grid-line) 1px, transparent 1px);
+  background-size: 22px 22px;
 }
-.canvas-stage[data-bg='blank'] { background-image: none; }
-.canvas-stage .react-flow__background { background: transparent; }
+.canvas-background-pattern[data-bg='blank'] {
+  background-image: none;
+}
+/* React Flow paints an opaque surface by default. Keep it as the interaction
+   layer and let the fixed pattern above own the canvas background. */
+.canvas-stage .canvas-flow,
+.canvas-stage .react-flow {
+  position: relative;
+  z-index: 1;
+  background-color: transparent !important;
+  background-image: none;
+}
+.canvas-stage .react-flow__background {
+  background: transparent;
+}
 /* 底纹切换控件：左下角悬浮胶囊（沿用 surface/line） */
 .canvas-bg-switch {
   position: absolute;
@@ -12764,6 +12802,20 @@ svg.is-collapsed { transform: none; }
   cursor: pointer;
 }
 .canvas-bg-switch button.is-active { background: var(--v-selected); color: var(--v-text); }
+.canvas-bg-save-error {
+  position: absolute;
+  left: 10px;
+  bottom: 44px;
+  z-index: 16;
+  max-width: min(420px, calc(100% - 20px));
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--v-danger) 45%, var(--v-border));
+  border-radius: 8px;
+  background: var(--v-surface);
+  color: var(--v-danger);
+  box-shadow: var(--v-shadow-overlay);
+  font-size: 12px;
+}
 
 /* 2. 左侧栏：悬浮面板（脱离贴边边框）；收起时完全缩回画布外不露边 */
 .canvas-ep-list {
