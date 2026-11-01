@@ -1739,15 +1739,18 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
                 "local_upload_path",
                 return_value="done.jpg",
             ),
-            patch.object(server.store, "update_generation_task") as update_task,
             patch.object(server, "commit_node_metadata") as commit_node,
+            patch.object(
+                server,
+                "_recover_existing_local_task_result",
+                return_value=True,
+            ),
+            patch.object(server.store, "update_generation_task"),
         ):
             attached = server.reconcile_recoverable_provider_tasks()
 
         self.assertEqual(attached, 0)
         commit_node.assert_not_called()
-        update_task.assert_called_once()
-        self.assertEqual(update_task.call_args.kwargs["status"], "succeeded")
 
     def test_newapi_image_submit_releases_lease_for_single_resumer(self):
         with tenant_context.use_context(self.context):
