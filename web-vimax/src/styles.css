@@ -9291,6 +9291,29 @@ body[data-canvas-interacting='1'] .canvas-edge-spark {
   transition: opacity 200ms ease-out;
 }
 
+/* 三层流光统一由 CanvasEdgeFlowOverlay 绘制。
+   原 SVG 路径继续保留 d / 相位 / 尺寸来源，但不再各自启动一条动画。 */
+.canvas-flow .canvas-edge-flow,
+.canvas-flow .canvas-edge-flow-tail,
+.canvas-flow .canvas-edge-flow-head,
+.canvas-flow .canvas-edge-spark {
+  visibility: hidden !important;
+  animation: none !important;
+}
+.canvas-edge-flow-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.canvas-flow.is-edges-hidden .canvas-edge-flow-canvas {
+  display: none;
+}
+.canvas-flow .react-flow__nodes {
+  z-index: 2;
+}
+
 /* 默认静态：没有生成任务时，只保留灰蓝基线，不跑流星。
    生成中的连线由 .is-busy 激活；卡片单选/多选对应的 .is-linked、连线自身
    hover/selected 仍沿用下面的原动画规则，不改现有交互反馈。 */

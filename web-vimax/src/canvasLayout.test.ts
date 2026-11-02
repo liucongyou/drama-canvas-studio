@@ -784,6 +784,16 @@ describe('连线流光（屏幕像素恒定：长度 + 宽度同口径）', () =
     expect(linked && linked[0]).not.toMatch(/stroke:/);
   });
 
+  it('★ 三层流光由单个 Canvas 图层绘制，原 SVG 只保留几何来源', () => {
+    const viewSource = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    expect(viewSource).toContain('function CanvasEdgeFlowOverlay()');
+    expect(viewSource).toContain('<CanvasEdgeFlowOverlay />');
+    expect(stylesSource).toMatch(/\.canvas-edge-flow-canvas \{[^}]*position:\s*absolute;[^}]*pointer-events:\s*none;/);
+    expect(stylesSource).toMatch(
+      /\.canvas-flow \.canvas-edge-flow,[\s\S]*?\.canvas-flow \.canvas-edge-spark \{\s*visibility:\s*hidden !important;\s*animation:\s*none !important;/,
+    );
+  });
+
   it('★ 连线层禁止 paint containment：该 SVG 实测为 0×0，会被整体裁掉', () => {
     const edgeLayer = stylesSource.match(
       /\.canvas-flow \.react-flow__edges \{[^}]*\}/,
