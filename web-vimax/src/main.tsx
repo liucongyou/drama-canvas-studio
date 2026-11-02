@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent} from 'react';
+import {lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent} from 'react';
 import {createRoot} from 'react-dom/client';
 import {createPortal} from 'react-dom';
 import {Check, ChevronDown, CloudUpload, Copy, Download, ExternalLink, FolderOpen, FolderPlus, History, KeyRound, LogOut, MoreHorizontal, Palette, Pencil, Plus, Settings, ShieldCheck, Trash2, Upload, X} from 'lucide-react';
@@ -6,13 +6,16 @@ import {CanvasView} from './CanvasView';
 import {ModelSettingsDialog} from './ModelSettings';
 import {TosSettingsDialog} from './TosSettings';
 import {ErrorBoundary, ToastHost, installGlobalErrorHandlers} from './ErrorBoundary';
+import {installNetworkStatusToasts} from './networkStatus';
 import {applyTheme, readStoredTheme, resolveTheme, storeTheme, THEMES, type Theme} from './theme';
 import {reconcileSelectedProjectId} from './projectSelection';
 // ★ 全局对话框：替换原生 prompt/confirm/alert（2026-10-25）
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
 import {DialogHost, dialog} from './GDialog';
-import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, getAuthSession, getManagedAccounts, getModelCatalog, getStorageConfig, loginAccount, logoutAccount, resetManagedAccountPassword, setManagedAccountStatus, type ManagedAccount, type ManagedAccountsSnapshot, type ModelCatalog, type StorageSpec} from './api';
-import {APP_VERSION, CHANGELOG, RELEASE_SEEN_KEY, type ChangelogEntry} from './changelog';
+import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, getAuthSession, getManagedAccounts, getModelCatalog, getStorageConfig, loginAccount, logoutAccount, resetManagedAccountPassword, saveTenantPreferences, setManagedAccountStatus, type ManagedAccount, type ManagedAccountsSnapshot, type ModelCatalog, type StorageSpec} from './api';
+import {APP_VERSION, RELEASE_SEEN_KEY} from './changelog';
+// 更新记录弹窗连带 55KB 发布文本一起异步加载，首屏不再背这个包袱。
+const ChangelogDialog = lazy(() => import('./ChangelogDialog'));
 import './styles.css';
 import './ui-refinements.css';
 import './immersive-theme.css';
@@ -95,7 +98,18 @@ function importPreviewMessage(preview: Record<string, unknown>) {
 }
 
 // 自研画布工作流入口：项目选择 + 导入载荷 + CanvasView（ViMax 画布内核，对接本地后端）
-function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) {
+function Shell({
+  onLogout,
+  isAdmin,
+  preferences,
+}: {
+  onLogout?: () => void;
+  isAdmin?: boolean;
+  preferences?: {
+    canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
+    [key: string]: unknown;
+  };
+}) {
   const shellStartedAtRef = useRef<number>(
     typeof performance !== 'undefined' ? performance.now() : Date.now(),
   );
@@ -143,8 +157,18 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
     }
   });
   const [theme, setTheme] = useState<Theme>(bootTheme);
+  const [canvasBackgroundMode, setCanvasBackgroundMode] = useState<
+    'dots' | 'lines' | 'blank'
+  >(preferences?.canvasBackgroundMode || 'blank');
   const settingsWrapRef = useRef<HTMLDivElement | null>(null);
   const settingsRequestsRef = useRef<Record<string, Promise<unknown> | undefined>>({});
+
+  useEffect(() => {
+    const next = preferences?.canvasBackgroundMode;
+    if (next === 'dots' || next === 'lines' || next === 'blank') {
+      setCanvasBackgroundMode(next);
+    }
+  }, [preferences?.canvasBackgroundMode]);
 
   useEffect(() => {
     applyTheme(theme);
@@ -924,7 +948,24 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
         ) : pid ? (
           // 画布单独一层边界：画布崩了顶栏还在，能直接切项目自救，不用整页重开
           <ErrorBoundary scope="canvas" label="画布" key={pid}>
-            <CanvasView key={`${pid}:${canvasEpoch}`} session={pid} />
+            <CanvasView
+              key={`${pid}:${canvasEpoch}`}
+              session={pid}
+              initialBackgroundMode={canvasBackgroundMode}
+              onBackgroundModeChange={async (mode) => {
+                const saved = await saveTenantPreferences({
+                  canvasBackgroundMode: mode,
+                });
+                const committed = saved.preferences?.canvasBackgroundMode;
+                setCanvasBackgroundMode(
+                  committed === 'dots'
+                    || committed === 'lines'
+                    || committed === 'blank'
+                    ? committed
+                    : mode,
+                );
+              }}
+            />
           </ErrorBoundary>
         ) : (
           <div className="canvas-empty-state">
@@ -938,24 +979,59 @@ function Shell({onLogout, isAdmin}: {onLogout?: () => void; isAdmin?: boolean}) 
           </div>
         )}
       </div>
-      {modelSettingsOpen && modelCatalogSnapshot && <ModelSettingsDialog initialCatalog={modelCatalogSnapshot} onClose={() => setModelSettingsOpen(false)} />}
-      {tosSettingsOpen && storageSnapshot && <TosSettingsDialog initialStorage={storageSnapshot} onClose={() => setTosSettingsOpen(false)} />}
-      {passwordOpen && <ChangePasswordDialog onClose={() => setPasswordOpen(false)} />}
-      {isAdmin && adminAccountsOpen && <AdminAccountsDialog onClose={() => setAdminAccountsOpen(false)} />}
-      {changelogOpen && <ChangelogDialog entries={CHANGELOG} onClose={() => setChangelogOpen(false)} />}
+      {modelSettingsOpen && modelCatalogSnapshot && (
+        <ErrorBoundary scope="dialog" label="模型接口设置" onDismiss={() => setModelSettingsOpen(false)}>
+          <ModelSettingsDialog initialCatalog={modelCatalogSnapshot} onClose={() => setModelSettingsOpen(false)} />
+        </ErrorBoundary>
+      )}
+      {tosSettingsOpen && storageSnapshot && (
+        <ErrorBoundary scope="dialog" label="对象存储设置" onDismiss={() => setTosSettingsOpen(false)}>
+          <TosSettingsDialog initialStorage={storageSnapshot} onClose={() => setTosSettingsOpen(false)} />
+        </ErrorBoundary>
+      )}
+      {passwordOpen && (
+        <ErrorBoundary scope="dialog" label="修改密码" onDismiss={() => setPasswordOpen(false)}>
+          <ChangePasswordDialog onClose={() => setPasswordOpen(false)} />
+        </ErrorBoundary>
+      )}
+      {isAdmin && adminAccountsOpen && (
+        <ErrorBoundary scope="dialog" label="账号管理" onDismiss={() => setAdminAccountsOpen(false)}>
+          <AdminAccountsDialog onClose={() => setAdminAccountsOpen(false)} />
+        </ErrorBoundary>
+      )}
+      {changelogOpen && (
+        // 异步 chunk 在发版后可能 404（用户没刷新页面），这里一并兜住，
+        // 否则点击「更新记录」会让整棵树抛错。
+        <ErrorBoundary scope="dialog" label="更新记录" onDismiss={() => setChangelogOpen(false)}>
+          <Suspense fallback={null}>
+            <ChangelogDialog onClose={() => setChangelogOpen(false)} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
     </div>
   );
 }
+
+const EMPTY_ACCOUNTS_SNAPSHOT: ManagedAccountsSnapshot = {
+  accounts: [],
+  onlineCount: 0,
+  onlineUsers: [],
+  generatedAt: '',
+};
 
 function AdminAccountsDialog({
   onClose,
   initialSnapshot,
 }: {
   onClose: () => void;
-  initialSnapshot: ManagedAccountsSnapshot;
+  initialSnapshot?: ManagedAccountsSnapshot;
 }) {
-  const [accounts, setAccounts] = useState<ManagedAccount[]>(initialSnapshot.accounts);
-  const [onlineCount, setOnlineCount] = useState(initialSnapshot.onlineCount);
+  // 打开入口没有预取快照，这里必须容忍 undefined：直接读 initialSnapshot.accounts
+  // 会让管理员点「账号管理」瞬间 TypeError 白屏。首屏用空快照，挂载后立即拉真实数据。
+  const [accounts, setAccounts] = useState<ManagedAccount[]>(
+    () => initialSnapshot?.accounts ?? EMPTY_ACCOUNTS_SNAPSHOT.accounts,
+  );
+  const [onlineCount, setOnlineCount] = useState(initialSnapshot?.onlineCount ?? 0);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [resetTarget, setResetTarget] = useState<ManagedAccount | null>(null);
@@ -993,6 +1069,8 @@ function AdminAccountsDialog({
   };
 
   useEffect(() => {
+    // 首次挂载立刻拉一次，不能只靠 30 秒轮询——否则打开弹窗后要空等半分钟才有内容。
+    void load();
     const timer = window.setInterval(() => { void load(); }, 30_000);
     return () => window.clearInterval(timer);
   }, []);
@@ -1162,61 +1240,6 @@ function AdminAccountsDialog({
   );
 }
 
-function ChangelogDialog({entries, onClose}: {entries: ChangelogEntry[]; onClose: () => void}) {
-  const formatReleaseTime = (value: string) => {
-    const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)(?:\s*([+-]\d{2}:?\d{2}))?/.exec(value || '');
-    if (match) {
-      return `${match[1]} ${match[2]}`;
-    }
-    const date = new Date(value);
-    return Number.isNaN(date.getTime())
-      ? value || '-'
-      : date.toLocaleString('zh-CN', {hour12: false, timeZone: 'Asia/Shanghai'});
-  };
-  return (
-    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="canvas-changelog-dialog" role="dialog" aria-modal="true" aria-labelledby="changelog-title">
-        <header>
-          <div className="canvas-changelog-heading">
-            <span><History size={17} strokeWidth={1.9} aria-hidden="true" /></span>
-            <div>
-              <h2 id="changelog-title">更新记录</h2>
-              <p>当前版本 v{APP_VERSION} · 最近更新 {entries[0]?.releasedAt ? formatReleaseTime(entries[0].releasedAt) : (entries[0]?.date || '-')}</p>
-            </div>
-          </div>
-          <button type="button" onClick={onClose} aria-label="关闭更新记录"><X size={16} strokeWidth={2} /></button>
-        </header>
-        <div className="canvas-changelog-list">
-          {entries.map((entry, index) => (
-            <article key={entry.version} className={index === 0 ? 'is-current' : ''}>
-              <div className="canvas-changelog-version">
-                <strong>v{entry.version}</strong>
-                <time dateTime={entry.releasedAt || entry.date}>{formatReleaseTime(entry.releasedAt || entry.date)}</time>
-                {index === 0 && <em>当前版本</em>}
-              </div>
-              <h3>{entry.title}</h3>
-              <ul>
-                {entry.changes.map((change) => <li key={change}>{change}</li>)}
-              </ul>
-            </article>
-          ))}
-        </div>
-        <footer>
-          <span>当前页面 v{APP_VERSION} · 记录与前端代码同仓维护</span>
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            title="重新加载最新前端资源"
-          >
-            重新加载
-          </button>
-          <button type="button" onClick={onClose}>知道了</button>
-        </footer>
-      </section>
-    </div>
-  );
-}
-
 function ChangePasswordDialog({onClose}: {onClose: () => void}) {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -1285,6 +1308,10 @@ function ChangePasswordDialog({onClose}: {onClose: () => void}) {
 function AuthGate() {
   const [state, setState] = useState<'checking' | 'anonymous' | 'authenticated'>('checking');
   const [isAdmin, setIsAdmin] = useState(false);
+  const [preferences, setPreferences] = useState<{
+    canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
+    [key: string]: unknown;
+  }>({});
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -1296,6 +1323,7 @@ function AuthGate() {
       .then((session) => {
         if (!cancelled) {
           setIsAdmin(Boolean(session.isAdmin || session.role === 'admin'));
+          setPreferences(session.preferences || {});
           setState(session.authenticated ? 'authenticated' : 'anonymous');
         }
       })
@@ -1325,6 +1353,7 @@ function AuthGate() {
     try {
       const session = await loginAccount(username.trim(), password);
       setIsAdmin(Boolean(session.isAdmin || session.role === 'admin'));
+      setPreferences(session.preferences || {});
       setPassword('');
       setState('authenticated');
     } catch (loginError) {
@@ -1388,11 +1417,20 @@ function AuthGate() {
     );
   }
 
-  return <Shell onLogout={() => void logout()} isAdmin={isAdmin} />;
+  return (
+    <Shell
+      onLogout={() => void logout()}
+      isAdmin={isAdmin}
+      preferences={preferences}
+    />
+  );
 }
 
 // 全局异常兜底必须在首次 render 之前装好（否则挂载期抛的错接不到）
 installGlobalErrorHandlers();
+// 断网时给出明确原因，避免用户把「请求失败」误判成服务坏了。
+// 此刻 ToastHost 还没挂载，但 toast 层会把提示排队，挂载后自动回放。
+installNetworkStatusToasts();
 
 createRoot(document.getElementById('root')!).render(
   <>

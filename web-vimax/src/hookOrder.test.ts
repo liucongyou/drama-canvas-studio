@@ -27,13 +27,16 @@ describe('CanvasView hook order', () => {
 
   it('clamps the duration control from its live input value on blur', () => {
     expect(source).toMatch(
-      /onBlur=\{\(event\) => \{\s*const current = event\.currentTarget\.value;/,
+      /onBlur=\{\(event\) => \{\s*commitDuration\(event\.currentTarget\.value\);/,
     );
     expect(source).toMatch(
-      /commitDuration\(current\);/,
+      /clampDurationInput\(/,
     );
+  });
+
+  it('commits a pending duration before closing the popover from outside', () => {
     expect(source).toMatch(
-      /const bounded = Math\.max\(durationMin, Math\.min\(durationMax, parsed\)\);/,
+      /commitDurationRef\.current\(durationInput\.value\)/,
     );
   });
 });

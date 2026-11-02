@@ -1,5 +1,6 @@
 import {describe, expect, it} from 'vitest';
-import {APP_VERSION, CHANGELOG} from './changelog';
+import {APP_VERSION} from './changelog';
+import {CHANGELOG} from './changelogEntries';
 
 describe('frontend changelog', () => {
   it('keeps the current version as the first release note', () => {

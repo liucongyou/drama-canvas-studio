@@ -55,6 +55,52 @@ class CanvasRepositoryTests(unittest.TestCase):
         self.assertEqual(created["payload"]["connections"][0]["id"], "edge-1")
         self.assertEqual(created["payload"]["revision"], 1)
 
+    def test_project_layout_update_serializes_filtered_positions(self):
+        project_id, _created = self._create(payload={
+            "nodes": [
+                {
+                    "id": "node-a",
+                    "type": "image",
+                    "title": "A",
+                    "position": {"x": 0, "y": 0},
+                    "metadata": {"episodeId": "EP001"},
+                },
+                {
+                    "id": "node-b",
+                    "type": "video",
+                    "title": "B",
+                    "position": {"x": 300, "y": 0},
+                    "metadata": {"episodeId": "EP002"},
+                },
+            ],
+            "connections": [],
+            "episodeImports": [
+                {"id": "EP001", "nodeIds": ["node-a"]},
+                {"id": "EP002", "nodeIds": ["node-b"]},
+            ],
+        })
+
+        saved = canvas_store.update_project_layout(
+            project_id,
+            "EP001",
+            {
+                "node-a": {"x": 44, "y": 55},
+                "node-b": {"x": 999, "y": 999},
+            },
+        )
+        current = self.repo.get_project(project_id)
+        episode = next(
+            item
+            for item in current["payload"]["episodeLayouts"]["EP001"].items()
+        )
+
+        self.assertIsNotNone(saved)
+        self.assertEqual(episode, ("node-a", {"x": 44, "y": 55}))
+        self.assertNotEqual(
+            current["payload"]["episodeLayouts"]["EP001"],
+            {"node-b": {"x": 999, "y": 999}},
+        )
+
     def test_node_patch_does_not_restore_stale_sibling_nodes(self):
         project_id, created = self._create(payload={
             "nodes": [

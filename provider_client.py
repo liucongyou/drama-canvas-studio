@@ -442,6 +442,8 @@ def _is_balance_error_detail(detail: Any) -> bool:
 
 def _provider_submit_error(exc: Exception) -> Exception:
     """Return a precise error for the single submission attempt."""
+    if isinstance(exc, ProviderOutcomeUncertain):
+        return exc
     if isinstance(exc, ProviderHTTPError):
         detail = str(exc.detail or "").strip()
         if _is_balance_error_detail(detail):
@@ -484,6 +486,19 @@ def _provider_submit_error(exc: Exception) -> Exception:
     return exc
 
 
+def _uncertain_submit_error(exc: ProviderHTTPError, submitted_at: str) -> ProviderOutcomeUncertain:
+    detail = str(exc.detail or "").strip()
+    return ProviderOutcomeUncertain(
+        f"供应商请求返回 HTTP {exc.status_code}，但没有返回任务号；"
+        f"提交结果未确认，可能已被供应商受理。详情：{detail[:500]}。"
+        f"提交时间 {submitted_at}。"
+        "系统不会自动重提；请先到供应商账单/任务记录核对，"
+        "确认前不要重复提交。",
+        submitted_at=submitted_at,
+        response={"body": detail},
+    )
+
+
 def _submit_json(
     method: str,
     url: str,
@@ -494,12 +509,43 @@ def _submit_json(
     on_task_update: TaskEventCallback | None = None,
     retry_window: int = SUBMIT_RETRY_WINDOW_SECONDS,
 ) -> dict[str, Any]:
+    submitted_at = datetime.now(timezone.utc).isoformat()
     try:
         return _submit_with_retry(
             lambda: _request_json(method, url, key, body, timeout=timeout),
             retry_window=retry_window,
         )
     except Exception as exc:
+        if isinstance(exc, ProviderOutcomeUncertain):
+            raise
+        if isinstance(exc, ProviderHTTPError) and exc.status_code in {429, 500, 502, 503, 504}:
+            detail = str(exc.detail or "").strip()
+            lower_detail = detail.lower()
+            if (
+                "video_queue_full" in lower_detail
+                or "视频队列已满" in detail
+            ):
+                raise _provider_submit_error(exc) from exc
+            recovered: dict[str, Any] = {}
+            try:
+                parsed = json.loads(detail)
+                if isinstance(parsed, dict):
+                    recovered = parsed
+            except json.JSONDecodeError:
+                recovered = {}
+            recovered_task_id = str(
+                recovered.get("id")
+                or recovered.get("task_id")
+                or (
+                    recovered.get("data", {}).get("id")
+                    if isinstance(recovered.get("data"), dict)
+                    else ""
+                )
+                or ""
+            ).strip()
+            if recovered_task_id:
+                return recovered
+            raise _uncertain_submit_error(exc, submitted_at) from exc
         raise _provider_submit_error(exc) from exc
 
 
@@ -1544,14 +1590,7 @@ def _submit_newapi_image_request(
                 ).strip()
                 if recovered_task_id:
                     return recovered
-                raise ProviderOutcomeUncertain(
-                    f"供应商请求返回 HTTP {exc.status_code}，但没有返回任务号；"
-                    f"详情：{detail[:500]}。"
-                    f"提交时间 {submitted_at}。"
-                    "系统不会自动重提；请先到供应商账单/任务记录核对，"
-                    "确认前不要重复提交。",
-                    submitted_at=submitted_at,
-                ) from exc
+                raise _uncertain_submit_error(exc, submitted_at) from exc
             raise _provider_submit_error(exc) from exc
     raise RuntimeError(f"New API 图片线路未实现：{route}")
 
@@ -1773,14 +1812,7 @@ def _newapi_image(
                 if recovered_task_id:
                     response = recovered
                 else:
-                    raise ProviderOutcomeUncertain(
-                        f"供应商请求返回 HTTP {exc.status_code}，但没有返回任务号；"
-                        f"详情：{detail[:500]}。"
-                        f"提交时间 {submitted_at}。"
-                        "系统不会自动重提；请先到供应商账单/任务记录核对，"
-                        "确认前不要重复提交。",
-                        submitted_at=submitted_at,
-                    ) from exc
+                    raise _uncertain_submit_error(exc, submitted_at) from exc
             else:
                 raise _provider_submit_error(exc) from exc
     else:
@@ -2613,14 +2645,85 @@ def _newapi_video(
         if profile in {"suanli-video", "aistars-video", "hc-video"}
         else _asset_url_for_provider
     )
+    ordered_media_refs = [
+        *[
+            ref
+            for ref in refs
+            if ref.get("kind") == "image" and ref.get("url")
+        ],
+        *[
+            ref
+            for ref in refs
+            if ref.get("kind") == "video" and ref.get("url")
+        ],
+    ]
+    text = str(prompt or "")
+    if ordered_media_refs:
+        label_order: dict[str, int] = {}
+        for index, ref in enumerate(ordered_media_refs, start=1):
+            label = str(ref.get("label") or "").strip()
+            if not label:
+                continue
+            # Register both the full label and the base name without the
+            # trailing "（图N）". The inline prompt regex captures only the
+            # base name, so the full-label-only map silently skipped every
+            # rewrite and left the supplier to guess identity from order.
+            label_order[label] = index
+            base = re.sub(
+                r"\s*[（(]\s*(?:参考)?图\s*\d+\s*[）)]\s*$",
+                "",
+                label,
+            ).strip()
+            if base:
+                label_order[base] = index
+
+        def normalize_reference_label(match: re.Match[str]) -> str:
+            name = match.group(1).strip()
+            actual = label_order.get(name)
+            # Keep the "@" so the supplier still sees an explicit reference
+            # token; use the real 1-based slot next to it.
+            return f"@{name}（第{actual}张参考图）" if actual else match.group(0)
+
+        text = re.sub(
+            r"@([^@\n（）()]+?)（图\d+）",
+            normalize_reference_label,
+            text,
+        )
+        # Any remaining "（图N）" is the canvas asset number, not the submit
+        # slot. Leaving both makes the supplier resolve e.g. "赵铁柱（图1）"
+        # against reference slot 1 (the scene) or "陈大强（图4）" against
+        # slot 4 (the other character). Strip them so exactly one numbering
+        # system remains: the real submit order.
+        text = re.sub(
+            r"\s*[（(]\s*(?:参考)?图\s*\d+\s*[）)]",
+            "",
+            text,
+        )
+        order_lines = []
+        for index, ref in enumerate(ordered_media_refs, start=1):
+            label = str(ref.get("label") or "").strip()
+            if not label:
+                continue
+            # Strip the canvas asset number so the prompt carries exactly one
+            # numbering system (the actual submit order). Leaving "（图4）" in
+            # the line made the supplier resolve the character to slot 4, which
+            # is a different person, and produced swapped roles.
+            clean = re.sub(
+                r"\s*[（(]\s*(?:参考)?图\s*\d+\s*[）)]",
+                "",
+                label,
+            ).strip()
+            order_lines.append(f"第{index}张参考图：{clean or label}")
+        if order_lines:
+            text += "\n\n【参考图顺序】\n" + "\n".join(order_lines)
     image_urls = [
         asset_resolver(str(ref["url"]))
-        for ref in refs
+        for ref in ordered_media_refs
         if ref.get("kind") == "image" and ref.get("url")
     ]
     video_urls = [
         asset_resolver(str(ref["url"]))
-        for ref in refs
+        for ref in ordered_media_refs
         if ref.get("kind") == "video" and ref.get("url")
     ]
     audio_urls = [
@@ -2629,7 +2732,6 @@ def _newapi_video(
         if ref.get("url")
     ]
     text_refs = _text_refs([ref for ref in refs if ref.get("kind") == "text"])
-    text = str(prompt or "")
     if text_refs:
         text += "\n\n" + text_refs
     try:
@@ -3491,6 +3593,12 @@ def check_video_task(
         )
         if not url:
             raise RuntimeError(f"视频任务完成但没有视频地址：{json.dumps(task, ensure_ascii=False)[:500]}")
+        if (
+            adapter in {"canvaspro_video", "openai_video"}
+            and not str(url).startswith(("http://", "https://"))
+        ):
+            origin = _newapi_api_origin(provider["base_url"])
+            url = origin + str(url)
         state = "completed"
     elif raw_status in failure_statuses:
         state = "failed"

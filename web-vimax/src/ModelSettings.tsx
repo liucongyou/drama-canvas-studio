@@ -309,7 +309,15 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function parseJsonObjectOrEmpty(text: string): Record<string, unknown> {
+/**
+ * 容错取对象。必须同时接受对象与 JSON 字符串：
+ * 模型目录里的 `defaultParams` / `params` / `pricing` 本来就是对象，
+ * 编辑框里手填的才是字符串。只按 string 处理会把对象 String 化成
+ * "[object Object]" 后抛错并被 catch 吞成 {}，导致参数与计费面板全空。
+ */
+function parseJsonObjectOrEmpty(text: unknown): Record<string, unknown> {
+  if (isPlainRecord(text)) return text;
+  if (typeof text !== 'string') return {};
   try {
     const value = JSON.parse(text || '{}');
     return isPlainRecord(value) ? value : {};
@@ -400,7 +408,16 @@ export function rowsToParamsJson(rows: ParameterDraftRow[]): {defaultParams: str
 
 type PricingTierRow = {id: string; label: string; rate: string; rateWithVideo: string};
 
-function pricingRowsFromJson(text: string): {
+/**
+ * 计费规则归一化入口。
+ *
+ * 这里必须接受「对象或字符串」两种输入：模型目录返回的 `pricing` 是对象，
+ * 而编辑框里手工输入的是 JSON 字符串。此前签名只写了 `string`，于是
+ * `pricingRowsFromJson(model.pricing)` 把对象喂给 `JSON.parse`，String 化后变成
+ * "[object Object]" 抛错，又被 catch 吞成 {}——结果是「计费规则」面板打开永远空白，
+ * 已保存的单价看不到，随手保存一次就把别人的定价清空。
+ */
+function pricingRowsFromJson(input: unknown): {
   currency: string;
   unit: string;
   fixed: string;
@@ -408,7 +425,7 @@ function pricingRowsFromJson(text: string): {
   note: string;
   noteWithVideo: string;
 } {
-  const root = parseJsonObjectOrEmpty(text);
+  const root = isPlainRecord(input) ? input : parseJsonObjectOrEmpty(input);
   const capability = root.image || root.video || root.audio || root.text;
   const rule = isPlainRecord(capability) ? capability : {};
   const rates = isPlainRecord(rule.rates) ? rule.rates : {};

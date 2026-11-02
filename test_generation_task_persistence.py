@@ -781,6 +781,91 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(saved_task["status"], "succeeded")
         self.assertEqual(saved_task["local_result_url"], "/uploads/existing.mp4")
 
+    def test_resumed_newapi_video_downloads_protected_artifact_with_key(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("resumed-newapi-auth")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "node-video",
+                    "type": "video",
+                    "title": "段1",
+                    "metadata": {
+                        "status": "generating",
+                        "taskId": "provider-newapi-auth",
+                        "params": {
+                            "provider": "new-apl",
+                            "model": "50-seedance-2.0-fast",
+                        },
+                    },
+                }],
+                episode_id="EP001",
+            )
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+                provider="new-apl",
+                model="50-seedance-2.0-fast",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="running",
+                phase="正在落盘并回写画布",
+                provider_task_id="provider-newapi-auth",
+            )
+
+            with (
+                patch.object(
+                    server,
+                    "persist_generated_media",
+                    side_effect=server.persist_generated_media,
+                ) as persist,
+                patch.object(
+                    server.provider_client,
+                    "save_generated_url",
+                    return_value="/uploads/generated-auth.mp4",
+                ) as download,
+                patch.object(
+                    server,
+                    "validate_generated_video",
+                    return_value={"status": "valid", "duration": 15},
+                ),
+                patch.object(server, "ensure_video_thumbnail", return_value=""),
+            ):
+                finalized = server._finalize_resumed_video(
+                    project_id,
+                    "node-video",
+                    {
+                        "taskId": "provider-newapi-auth",
+                        "status": "completed",
+                        "url": (
+                            "https://api.canvasproai.com/v1/tasks/"
+                            "provider-newapi-auth/artifacts/video-0/content"
+                        ),
+                    },
+                    {
+                        "id": "new-apl",
+                        "name": "New APl",
+                        "api_key": "test-newapi-key",
+                    },
+                    {
+                        "id": "50-seedance-2.0-fast",
+                        "remoteModel": "即梦-50-seedance-2.0-fast",
+                        "adapter": "canvaspro_video",
+                    },
+                )
+            refreshed = canvas_store.get_project(project_id)
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertTrue(finalized)
+        self.assertEqual(download.call_args.kwargs["key"], "test-newapi-key")
+        self.assertEqual(
+            refreshed["payload"]["nodes"][0]["metadata"]["content"],
+            "/uploads/generated-auth.mp4",
+        )
+        self.assertEqual(saved["status"], "succeeded")
+
     def test_resumer_setup_failure_releases_key_for_next_reconcile(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("runtime-resume-retry")
@@ -1128,6 +1213,248 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertTrue(heartbeat_task_ids[0][1])
         self.assertEqual(saved["lease_owner"], "")
         self.assertEqual(saved["provider_task_id"], "provider-resume-1")
+
+    def test_recovery_can_take_over_running_task_with_expired_lease(self):
+        """A supplier-completed task must not be stranded by a lost local lease.
+
+        Regression: the first worker set status=running with a lease, then the
+        process stopped heart-beating. The recovery poller refused to claim the
+        still-'running' row, so the paid provider result was never downloaded or
+        written back to the canvas.
+        """
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-takeover",
+                "node-takeover",
+                kind="video",
+                provider="new-apl",
+                model="50-seedance-2.0-fast",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                provider_task_id="provider-takeover-1",
+                status="running",
+                phase="结果待确认",
+                lease_owner="resume:stale",
+                lease_expires_at="2000-01-01T00:00:00.000Z",
+            )
+            self.assertTrue(
+                canvas_store.claim_generation_task_for_recovery(
+                    task["id"],
+                    "provider-takeover-1",
+                    "resume:fresh",
+                    45,
+                )
+            )
+            claimed = canvas_store.get_generation_task(task["id"])
+
+        self.assertEqual(claimed["status"], "running")
+        self.assertEqual(claimed["lease_owner"], "resume:fresh")
+        self.assertEqual(claimed["provider_task_id"], "provider-takeover-1")
+
+    def test_recovery_cannot_steal_a_live_lease(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-live-lease",
+                "node-live-lease",
+                kind="video",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                provider_task_id="provider-live-1",
+                status="running",
+                phase="生成中",
+                lease_owner="worker:live",
+                lease_expires_at="2999-01-01T00:00:00.000Z",
+            )
+            claimed = canvas_store.claim_generation_task_for_recovery(
+                task["id"],
+                "provider-live-1",
+                "resume:other",
+                45,
+            )
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertFalse(claimed)
+        self.assertEqual(saved["lease_owner"], "worker:live")
+
+    def test_heartbeat_can_restore_a_just_expired_owned_lease(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-heartbeat-recovery",
+                "node-heartbeat-recovery",
+                kind="video",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="running",
+                phase="提交供应商",
+                lease_owner="generation:heartbeat-owner",
+                lease_expires_at="2000-01-01T00:00:00.000Z",
+            )
+            renewed = canvas_store.renew_generation_task_lease(
+                task["id"],
+                "generation:heartbeat-owner",
+                45,
+            )
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertTrue(renewed)
+        self.assertGreater(saved["lease_expires_at"], "2026-01-01T00:00:00")
+        self.assertEqual(saved["lease_owner"], "generation:heartbeat-owner")
+
+    def test_worker_can_claim_ownerless_premarked_running_task(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-preclaimed",
+                "node-preclaimed",
+                kind="video",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="running",
+                phase="提交供应商",
+                lease_owner="",
+                lease_expires_at=None,
+            )
+            claimed = canvas_store.claim_generation_task(
+                task["id"],
+                "generation:submitter",
+                45,
+            )
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertTrue(claimed)
+        self.assertEqual(saved["status"], "running")
+        self.assertEqual(saved["lease_owner"], "generation:submitter")
+        self.assertGreater(saved["lease_expires_at"], "")
+
+    def test_expiry_reads_journal_before_declaring_missing_provider_task(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("journal-before-expiry")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "node-video",
+                    "type": "video",
+                    "title": "段6",
+                    "metadata": {"status": "generating"},
+                }],
+                episode_id="EP001",
+            )
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="running",
+                phase="提交供应商",
+                lease_owner="generation:delayed-callback",
+                lease_expires_at="2000-01-01T00:00:00.000Z",
+            )
+            canvas_store.remember_provider_task(
+                task["id"],
+                "provider-delayed-callback",
+                project_id=project_id,
+                node_id="node-video",
+                provider="agnes-ai",
+                model="agnes-video-2.5-flash",
+            )
+            expired = canvas_store.expire_stale_generation_tasks(
+                datetime(2026, 11, 1, 11, 12, 16, tzinfo=timezone.utc)
+            )
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertEqual(len(expired), 1)
+        self.assertEqual(saved["status"], "interrupted")
+        self.assertEqual(saved["phase"], "结果待确认")
+        self.assertEqual(
+            saved["provider_task_id"],
+            "provider-delayed-callback",
+        )
+        self.assertIn("已有供应商任务号", saved["error"])
+
+    def test_fresh_queued_worker_gets_launch_grace(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-active-submit",
+                "node-active-submit",
+                kind="video",
+            )
+            expired = canvas_store.expire_stale_generation_tasks(
+                datetime.now(timezone.utc),
+            )
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertEqual(expired, [])
+        self.assertEqual(saved["status"], "queued")
+
+    def test_rejected_duplicate_does_not_override_completed_node(self):
+        node = {
+            "id": "node-done",
+            "type": "video",
+            "title": "段4",
+            "metadata": {
+                "status": "done",
+                "content": "/uploads/done.mp4",
+                "lastError": "",
+                "taskId": "provider-done",
+                "providerTaskStatus": "completed",
+                "providerTaskPhase": "已完成",
+            },
+        }
+        rejected_duplicate = {
+            "id": "local-rejected",
+            "status": "interrupted",
+            "phase": "重复提交已忽略",
+            "provider_task_id": "",
+            "error": "该节点已有任务正在生成，本次重复提交已忽略",
+            "created_at": "2026-11-01T11:03:05.676Z",
+        }
+        projection = server.project_generation_node_state(
+            node,
+            rejected_duplicate,
+        )
+
+        self.assertEqual(projection["metadata"]["status"], "done")
+        self.assertEqual(projection["metadata"]["content"], "/uploads/done.mp4")
+        self.assertEqual(projection["metadata"]["lastError"], "")
+
+    def test_successful_task_can_resolve_a_previous_missing_provider_failure(self):
+        node = {
+            "id": "node-seg6",
+            "type": "video",
+            "title": "段6",
+            "metadata": {
+                "status": "failed",
+                "content": "/uploads/seg6.mp4",
+                "lastError": "执行线程已失联且没有供应商任务号",
+                "taskId": "provider-seg6-ok",
+                "providerTaskStatus": "failed",
+                "providerTaskPhase": "执行失联",
+            },
+        }
+        newest_success = {
+            "id": "local-seg6-ok",
+            "status": "succeeded",
+            "phase": "已完成",
+            "provider_task_id": "provider-seg6-ok",
+            "local_result_url": "/uploads/seg6.mp4",
+            "finished_at": "2026-11-01T11:12:30.000Z",
+        }
+        projection = server.project_generation_node_state(
+            node,
+            newest_success,
+        )
+
+        self.assertEqual(projection["metadata"]["status"], "done")
+        self.assertEqual(projection["metadata"]["lastError"], "")
+        self.assertEqual(
+            projection["metadata"]["providerTaskStatus"],
+            "completed",
+        )
 
     def test_stale_worker_cannot_write_progress_after_lease_loss(self):
         with tenant_context.use_context(self.context):
@@ -2273,6 +2600,120 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(failed["error"], "")
         self.assertEqual(failed["provider_task_id"], "provider-video-1")
 
+    def test_terminal_task_selector_returns_newest_success_not_old_failure(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("terminal-outcome-order")
+            node_id = "node-video"
+            failed = canvas_store.create_generation_task(
+                project_id,
+                node_id,
+                kind="video",
+                provider="agnes-ai",
+                model="agnes-video",
+            )
+            canvas_store.finish_generation_task(
+                failed["id"],
+                status="failed",
+                phase="生成失败",
+                error="queue full",
+            )
+            succeeded = canvas_store.create_generation_task(
+                project_id,
+                node_id,
+                kind="video",
+                provider="agnes-ai",
+                model="agnes-video",
+            )
+            canvas_store.finish_generation_task(
+                succeeded["id"],
+                status="succeeded",
+                phase="已完成",
+                provider_task_id="provider-video-ok",
+                local_result_url="/uploads/result.mp4",
+                provider_result_url="https://example.com/result.mp4",
+            )
+            selected = server._latest_terminal_generation_task(
+                project_id,
+                node_id,
+            )
+
+        self.assertEqual(selected["id"], succeeded["id"])
+        self.assertEqual(selected["status"], "succeeded")
+
+    def test_failed_reconcile_does_not_overwrite_newer_success(self):
+        project_id = "project-outcome"
+        node_id = "node-video"
+        project = {
+            "id": project_id,
+            "payload": {
+                "nodes": [{
+                    "id": node_id,
+                    "type": "video",
+                    "title": "段3",
+                    "metadata": {
+                        "status": "failed",
+                        "content": "/uploads/result.mp4",
+                        "lastError": "old queue full",
+                        "providerTaskStatus": "failed",
+                        "params": {
+                            "mediaVersions": [{
+                                "url": "/uploads/result.mp4",
+                                "taskId": "provider-video-ok",
+                            }],
+                            "mediaVersionIndex": 0,
+                        },
+                    },
+                }],
+            },
+        }
+        ordered_tasks = [
+            {
+                "id": "local-ok",
+                "node_id": node_id,
+                "provider_task_id": "provider-video-ok",
+                "status": "succeeded",
+                "phase": "已完成",
+                "local_result_url": "/uploads/result.mp4",
+                "provider_finished_at": "2026-11-01T10:18:33Z",
+                "finished_at": "2026-11-01T10:18:34Z",
+            },
+            {
+                "id": "local-old-failure",
+                "node_id": node_id,
+                "provider_task_id": "",
+                "status": "failed",
+                "phase": "生成失败",
+                "error": "old queue full",
+                "finished_at": "2026-11-01T10:06:43Z",
+            },
+        ]
+        with (
+            patch.object(
+                server.store,
+                "list_projects",
+                return_value=[{"id": project_id}],
+            ),
+            patch.object(
+                server.store,
+                "get_project",
+                return_value=project,
+            ),
+            patch.object(
+                server.store,
+                "list_generation_tasks",
+                return_value=ordered_tasks,
+            ),
+            patch.object(server, "commit_node_metadata") as commit_meta,
+        ):
+            repaired = server.reconcile_failed_generation_task_nodes()
+
+        self.assertEqual(repaired, 1)
+        updates = commit_meta.call_args.args[2]
+        self.assertEqual(updates["status"], "done")
+        self.assertEqual(updates["lastError"], "")
+        self.assertEqual(updates["taskId"], "provider-video-ok")
+        self.assertNotIn("content", updates)
+
     def test_failed_generation_task_accepts_success_but_not_running_regression(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("failed-task")
@@ -2362,6 +2803,42 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(
             commit_terminal.call_args.args[2]["providerTaskPhase"],
             "结果待确认",
+        )
+
+    def test_unresolved_no_task_id_is_projected_uncertain(self):
+        node = {
+            "id": "node-no-provider-task",
+            "type": "video",
+            "metadata": {
+                "status": "generating",
+                "providerTaskStatus": "queued",
+                "providerTaskPhase": "正在连接供应商",
+            },
+        }
+        task = {
+            "id": "local-uncertain",
+            "status": "interrupted",
+            "phase": "结果待确认",
+            "provider_task_id": "",
+            "error": "供应商请求可能已经发出，但没有任务号",
+            "finished_at": "",
+            "updated_at": "2026-11-01T13:01:39.332Z",
+        }
+
+        projection = server.project_generation_node_state(node, task)
+
+        self.assertEqual(projection["metadata"]["status"], "error")
+        self.assertEqual(
+            projection["metadata"]["providerTaskStatus"],
+            "uncertain",
+        )
+        self.assertEqual(
+            projection["metadata"]["providerTaskPhase"],
+            "结果待确认",
+        )
+        self.assertEqual(
+            projection["metadata"]["generationFinishedAt"],
+            "",
         )
 
     def test_reused_active_task_refreshes_after_status_changed(self):

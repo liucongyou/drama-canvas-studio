@@ -76,8 +76,6 @@ PROJECT_WRITE_LOCK = threading.RLock()
 PROJECT_LOCKS = canvas_repository.PROJECT_LOCKS
 PROJECT_LOCKS_GUARD = canvas_repository.PROJECT_LOCKS_GUARD
 GENERATION_BUDGET_LOCK = threading.RLock()
-GENERATION_INFLIGHT: set[tuple[str, str]] = set()
-GENERATION_INFLIGHT_LOCK = threading.Lock()
 TASK_LEASE_SECONDS = 45
 TASK_HEARTBEAT_SECONDS = 15
 _PROVIDER_AUTH_CACHE: dict[tuple[str, str, str], tuple[float, str]] = {}
@@ -772,12 +770,22 @@ def release_generation_slot(slot):
         GENERATION_QUEUE_CONDITION.notify_all()
 
 
-def persist_generated_media(url, fallback_ext):
+def persist_generated_media(url, fallback_ext, *, provider=None, model=None):
     """Keep generated media usable after a provider's temporary URL expires."""
     raw = str(url or "").strip()
     if not raw or raw.startswith(("/uploads/", "data:")):
         return raw
-    return provider_client.save_generated_url(raw, fallback_ext)
+    key = ""
+    if (
+        provider
+        and str((model or {}).get("adapter") or "") in {
+            "canvaspro_video",
+            "openai_video",
+            "newapi_image",
+        }
+    ):
+        key = provider_catalog.provider_key(provider)
+    return provider_client.save_generated_url(raw, fallback_ext, key=key)
 
 
 _EVENT_SUBSCRIBERS: dict[str, list[queue.Queue]] = {}
@@ -1648,6 +1656,10 @@ GENERATION_OWNED_METADATA_FIELDS = {
     "storage",
     "storageError",
     "source",
+    "finalizePending",
+    "provider",
+    "model",
+    "remoteModel",
 }
 
 GENERATION_OWNED_PARAM_FIELDS = {
@@ -2387,11 +2399,6 @@ def reconcile_active_generation_task_for_node(project_id, node_id, node):
         )
     if provider_task_id and not task.get("provider_task_id"):
         return store.update_generation_task(task["id"], provider_task_id=provider_task_id)
-    key = (str(project_id), str(node_id))
-    with GENERATION_INFLIGHT_LOCK:
-        in_flight = key in GENERATION_INFLIGHT
-    if in_flight:
-        return task
     updated_raw = str(task.get("updated_at") or task.get("created_at") or "")
     try:
         updated_at = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
@@ -2439,16 +2446,255 @@ def _latest_generation_task(project_id, node_id):
 
 
 def _latest_terminal_generation_task(project_id, node_id):
-    interrupted = None
+    """Return the newest task outcome, never an older failure over a success."""
     for item in store.list_generation_tasks(project_id, 120):
         if item.get("node_id") != node_id:
             continue
         status = item.get("status")
-        if status == "failed":
+        if status in {"succeeded", "failed", "interrupted"}:
             return item
-        if status == "interrupted" and interrupted is None:
-            interrupted = item
-    return interrupted
+    return None
+
+
+def _generation_task_order_key(task):
+    """Order tasks by creation, with row id as the tie-breaker."""
+    return (
+        str((task or {}).get("created_at") or ""),
+        str((task or {}).get("updated_at") or ""),
+        str((task or {}).get("id") or ""),
+    )
+
+
+def _latest_generation_task_by_node(project_id, node_ids):
+    """Return the newest task row per node in one bounded query."""
+    wanted = {
+        str(node_id)
+        for node_id in (node_ids or [])
+        if str(node_id or "").strip()
+    }
+    if not project_id or not wanted:
+        return {}
+    latest = {}
+    for task in store.list_generation_tasks_for_node_ids(
+        project_id,
+        sorted(wanted),
+        limit=1000,
+    ):
+        node_id = str(task.get("node_id") or "")
+        if not node_id:
+            continue
+        current = latest.get(node_id)
+        if current is None or _generation_task_order_key(task) > _generation_task_order_key(current):
+            latest[node_id] = task
+    return latest
+
+
+def project_workspace_nodes(project_id, workspace):
+    """Project backend generation truth onto compact workspace nodes."""
+    if not isinstance(workspace, dict) or not isinstance(workspace.get("nodes"), list):
+        return workspace
+    node_ids = [
+        str(node.get("id") or "")
+        for node in workspace["nodes"]
+        if isinstance(node, dict) and node.get("id")
+    ]
+    latest_by_node = _latest_generation_task_by_node(project_id, node_ids)
+    workspace["nodes"] = [
+        project_generation_node_state(
+            node,
+            latest_by_node.get(str(node.get("id") or "")),
+        )
+        for node in workspace["nodes"]
+    ]
+    return workspace
+
+
+def project_generation_node_state(node, latest_task):
+    """Return the one card state consumed by every client.
+
+    Node metadata is the durable projection. The task ledger resolves the
+    narrow crash window where the provider/task terminal state was committed
+    but the node row still carries an older state. This function is pure so
+    HTTP reads, recovery and tests all use exactly the same rules.
+    """
+    if not isinstance(node, dict):
+        return node
+
+    projected = json.loads(json.dumps(node, ensure_ascii=False))
+    meta = projected.setdefault("metadata", {})
+    task = latest_task if isinstance(latest_task, dict) else None
+    now = store._now_iso()
+
+    has_task = isinstance(task, dict)
+    task = task if has_task else None
+    task_status = str(task.get("status") or "").strip().lower() if task else ""
+
+    if task:
+        provider_task_id = str(task.get("provider_task_id") or "").strip()
+        if task_status in {"queued", "submitting", "running"}:
+            meta.update({
+                "status": "generating",
+                "lastError": "",
+                "taskId": provider_task_id or meta.get("taskId") or "",
+                "generationStartedAt": (
+                    task.get("started_at")
+                    or task.get("created_at")
+                    or meta.get("generationStartedAt")
+                    or now
+                ),
+                "generationFinishedAt": "",
+                "providerTaskStatus": task_status,
+                "providerTaskPhase": task.get("phase") or "生成中",
+                "providerTaskProgress": int(task.get("progress") or 0),
+                "providerTaskProgressChangedAt": (
+                    task.get("progress_updated_at")
+                    or task.get("updated_at")
+                    or meta.get("providerTaskProgressChangedAt")
+                ),
+            })
+            return projected
+
+        if task_status == "succeeded":
+            local_result_url = str(task.get("local_result_url") or "").strip()
+            if local_result_url:
+                meta.update({
+                    "status": "done",
+                    "content": local_result_url,
+                    "lastError": "",
+                    "taskId": provider_task_id or meta.get("taskId") or "",
+                    "generatedAt": (
+                        task.get("provider_finished_at")
+                        or task.get("finished_at")
+                        or meta.get("generatedAt")
+                        or now
+                    ),
+                    "generationFinishedAt": (
+                        task.get("finished_at")
+                        or task.get("provider_finished_at")
+                        or meta.get("generationFinishedAt")
+                        or now
+                    ),
+                    "providerTaskStatus": "completed",
+                    "providerTaskPhase": "已完成",
+                    "providerTaskProgress": 100,
+                })
+                return projected
+
+        if task_status == "failed":
+            current_provider_status = str(
+                meta.get("providerTaskStatus") or ""
+            ).strip().lower()
+            if current_provider_status in {
+                "queued", "pending", "created", "submitted",
+                "running", "processing", "retrying",
+                "in_progress", "uncertain",
+            } and provider_task_id:
+                # A failed local worker row with a provider task id is a
+                # recoverable query lease, not a supplier-declared failure.
+                meta["status"] = "generating"
+                return projected
+            meta.update({
+                "status": "failed",
+                "lastError": str(task.get("error") or meta.get("lastError") or "生成失败"),
+                "generationFinishedAt": (
+                    task.get("finished_at")
+                    or task.get("updated_at")
+                    or meta.get("generationFinishedAt")
+                    or now
+                ),
+                "providerTaskStatus": "failed",
+                "providerTaskPhase": str(task.get("phase") or "生成失败"),
+            })
+            return projected
+
+        if task_status == "interrupted":
+            task_phase = str(task.get("phase") or "").strip()
+            if (
+                not provider_task_id
+                and task_phase == "重复提交已忽略"
+                and str(meta.get("status") or "").strip().lower() == "done"
+                and str(meta.get("content") or "").strip()
+            ):
+                # This is a rejected extra click, not a new generation outcome.
+                # It belongs in task history and must not turn a completed card
+                # into a failure.
+                return projected
+            if provider_task_id:
+                current_status = str(meta.get("status") or "").strip().lower()
+                current_provider_status = str(
+                    meta.get("providerTaskStatus") or ""
+                ).strip().lower()
+                if (
+                    current_status in {"failed", "generating"}
+                    and current_provider_status in {
+                        "queued", "pending", "created", "submitted",
+                        "running", "processing", "retrying",
+                        "in_progress", "uncertain",
+                    }
+                ):
+                    # Keep the last durable progress receipt. An expired worker
+                    # lease does not erase what the supplier already reported.
+                    if current_status == "failed":
+                        meta["status"] = "generating"
+                    return projected
+                meta.update({
+                    "status": "generating",
+                    "lastError": "",
+                    "taskId": provider_task_id,
+                    "generationFinishedAt": "",
+                    "providerTaskStatus": "queued",
+                    "providerTaskPhase": "等待恢复",
+                })
+            else:
+                meta.update({
+                    "status": "error",
+                    "lastError": str(task.get("error") or "生成任务已中断"),
+                    "generationFinishedAt": "",
+                    "providerTaskStatus": "uncertain",
+                    "providerTaskPhase": str(task.get("phase") or "任务已中断"),
+                })
+            return projected
+
+    # No task is authoritative only when the node itself claims an active
+    # operation. A media URL means the durable generation did finish and must
+    # remain playable; idle local imports are left untouched.
+    current_status = str(meta.get("status") or "").strip().lower()
+    if current_status == "error":
+        meta["status"] = "failed"
+    elif (
+        current_status == "generating"
+        and not has_task
+        and str(meta.get("content") or "").strip()
+    ):
+        meta.update({
+            "status": "done",
+            "lastError": "",
+            "generationFinishedAt": (
+                meta.get("generationFinishedAt")
+                or meta.get("generatedAt")
+                or now
+            ),
+            "providerTaskStatus": (
+                meta.get("providerTaskStatus")
+                or "completed"
+            ),
+            "providerTaskPhase": (
+                meta.get("providerTaskPhase")
+                or "已完成"
+            ),
+        })
+    elif current_status == "generating" and not has_task and not str(meta.get("content") or "").strip():
+        meta.update({
+            "status": "failed",
+            "lastError": (
+                str(meta.get("lastError") or "").strip()
+                or "生成任务记录已丢失，请重新生成"
+            ),
+            "generationFinishedAt": meta.get("generationFinishedAt") or now,
+            "providerTaskStatus": "interrupted",
+            "providerTaskPhase": "任务已结束",
+        })
+    return projected
 
 
 def _finalize_resumed_video(project_id, node_id, result, provider, model):
@@ -2482,7 +2728,12 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
     generated_at = store._now_iso()
     generated_url = str((existing_result or {}).get("url") or "")
     if not generated_url:
-        generated_url = persist_generated_media(result["url"], ".mp4")
+        generated_url = persist_generated_media(
+            result["url"],
+            ".mp4",
+            provider=provider,
+            model=model,
+        )
     if generation_task:
         store.update_generation_task(
             generation_task["id"],
@@ -2492,7 +2743,8 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
         )
     if not generated_url.startswith("/uploads/"):
         raise provider_client.ProviderOutcomeUncertain(
-            "供应商视频已完成，但没有拿到本地新文件"
+            "供应商视频已完成，但本地文件尚未落盘；"
+            "系统会保留原任务并在后续同步中重试，不会重新提交。"
         )
     _record_video_version(meta, generated_url, task_id, generated_at)
     validation = validate_generated_video(generated_url, (meta.get("params") or {}).get("duration"))
@@ -2580,8 +2832,10 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
         ),
     )
     if not committed.get("committed"):
-        raise RuntimeError(
-            f"恢复视频终态写入失败：{committed.get('reason') or 'unknown'}"
+        raise provider_client.ProviderOutcomeUncertain(
+            "供应商视频已完成，但画布终态写入暂未成功；"
+            f"系统会保留同一任务并重试，不会重新提交。"
+            f"原因：{committed.get('reason') or 'unknown'}"
         )
     return True
 
@@ -2763,16 +3017,48 @@ def _recover_existing_local_task_result(project_id, node_id, task):
 
 
 def reconcile_pending_generation_deliveries():
-    """Finish results already downloaded but not yet projected onto their nodes."""
+    """Finish provider-successful results not yet projected onto their nodes.
+
+    This path may either reuse a durable local file or redownload the exact
+    same provider result. It never submits a new provider task.
+    """
     recovered = 0
     for task in store.list_delivery_pending_tasks(200):
         local_url = str(task.get("local_result_url") or "").strip()
-        if not local_url.startswith("/uploads/"):
-            continue
         project_id = str(task.get("project_id") or "")
         node_id = str(task.get("node_id") or "")
         if not project_id or not node_id:
             continue
+        if not local_url.startswith("/uploads/"):
+            provider_url = str(task.get("provider_result_url") or "").strip()
+            if not provider_url:
+                continue
+            try:
+                provider, model, _ = provider_catalog.resolve_model(
+                    task.get("provider"),
+                    task.get("model"),
+                    str(task.get("kind") or ""),
+                )
+                local_url = persist_generated_media(
+                    provider_url,
+                    ".mp4" if task.get("kind") == "video" else ".png",
+                    provider=provider,
+                    model=model,
+                )
+            except Exception as exc:
+                print(
+                    f"[generation-delivery] redownload deferred: "
+                    f"task={task.get('id')} error={exc}",
+                    file=sys.stderr,
+                )
+                continue
+            if not local_url.startswith("/uploads/"):
+                continue
+            task = {
+                **task,
+                "local_result_url": local_url,
+                "delivery_status": "pending",
+            }
         try:
             if _recover_persisted_result_to_canvas(project_id, node_id, task):
                 recovered += 1
@@ -3403,32 +3689,42 @@ def reconcile_generation_task_records():
 
 
 def reconcile_failed_generation_task_nodes():
-    """Restore provider failure text after a restart produced a stale node state."""
+    """Project the newest task outcome without reviving historical failures."""
     repaired = 0
     for project_row in store.list_projects():
         project = store.get_project(project_row.get("id"))
         if not project:
             continue
+        tasks_by_node = {}
+        for task in store.list_generation_tasks(
+            project["id"],
+            1000,
+        ):
+            node_id = str(task.get("node_id") or "")
+            if node_id and node_id not in tasks_by_node:
+                tasks_by_node[node_id] = task
         for node in project["payload"].get("nodes", []):
             if node.get("type") not in {"image", "audio", "video"}:
                 continue
             meta = node.get("metadata") or {}
-            if meta.get("status") not in {"failed", "generating"}:
+            task = tasks_by_node.get(str(node.get("id") or ""))
+            if not task:
                 continue
-            task = _latest_terminal_generation_task(project["id"], node["id"])
-            if not task or task.get("status") != "failed":
+            projection = project_generation_node_state(node, task)
+            projected_meta = projection.get("metadata") or {}
+            updates = {
+                key: projected_meta.get(key)
+                for key in (
+                    "status", "lastError", "taskId", "generatedAt",
+                    "generationStartedAt", "generationFinishedAt",
+                    "providerTaskStatus", "providerTaskPhase",
+                    "providerTaskProgress", "providerTaskProgressChangedAt",
+                )
+                if projected_meta.get(key) != meta.get(key)
+            }
+            if not updates:
                 continue
-            error = str(task.get("error") or "生成失败")
-            phase = str(task.get("phase") or "生成失败")
-            if meta.get("status") == "failed" and meta.get("lastError") == error:
-                continue
-            commit_node_metadata(project["id"], node["id"], {
-                "status": "failed",
-                "lastError": error,
-                "providerTaskStatus": "failed",
-                "providerTaskPhase": phase,
-                "generationFinishedAt": task.get("finished_at") or store._now_iso(),
-            })
+            commit_node_metadata(project["id"], node["id"], updates)
             repaired += 1
     return repaired
 
@@ -3590,6 +3886,29 @@ def reconcile_recoverable_provider_tasks():
         })
         recovered += 1
     return recovered
+
+
+def start_storage_maintenance():
+    """空闲页回收：项目按整包 payload 覆盖写，SQLite 只涨不缩。
+
+    启动后先等 90 秒（避开启动期导入/对账的写高峰），之后每 6 小时检查一次，
+    只在空闲页占比 >35% 且空闲 >32MB 时才 VACUUM，避免为几 MB 碎片锁库。
+    """
+    def run():
+        time.sleep(90)
+        while True:
+            try:
+                freed = _run_for_active_tenants(canvas_store.maintain_storage)
+                if freed:
+                    print(
+                        f"[storage] 回收数据库空闲页 {freed / (1024 * 1024):.1f}MB",
+                        file=sys.stderr,
+                    )
+            except Exception as exc:
+                print(f"[storage] 数据库整理失败：{exc}", file=sys.stderr)
+            time.sleep(6 * 60 * 60)
+
+    threading.Thread(target=run, name="storage-maintenance", daemon=True).start()
 
 
 def start_generation_task_reconciler():
@@ -4993,6 +5312,10 @@ class Handler(BaseHTTPRequestHandler):
                 "slug": tenant_registry.get_tenant_by_id(account["tenant_id"])["slug"],
                 "role": account.get("role") or "member",
                 "isAdmin": account.get("role") == "admin",
+                # 与 /api/auth/session 保持对称：登录响应也必须带偏好，否则前端
+                # setPreferences(session.preferences || {}) 永远拿到空对象，
+                # 画布底纹等偏好在登录后不会立即生效，要等下一次会话刷新。
+                "preferences": tenant_registry.get_tenant_preferences(account["tenant_id"]),
             },
             headers={"Set-Cookie": self._session_cookie(session["token"])},
         )
@@ -5068,6 +5391,9 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_auth_session(self):
         if _auth_mode() != "accounts":
             context = tenant_context.current()
+            preferences = tenant_registry.get_tenant_preferences(
+                context.tenant_id if context else "legacy",
+            )
             return self._send(200, {
                 "authenticated": True,
                 "username": "local",
@@ -5076,6 +5402,7 @@ class Handler(BaseHTTPRequestHandler):
                 "role": "admin",
                 "isAdmin": True,
                 "local": True,
+                "preferences": preferences,
             })
         cookie = SimpleCookie()
         try:
@@ -5093,7 +5420,61 @@ class Handler(BaseHTTPRequestHandler):
             "slug": session["tenant_slug"],
             "role": session.get("account_role") or "member",
             "isAdmin": session.get("account_role") == "admin",
+            "preferences": tenant_registry.get_tenant_preferences(
+                session["tenant_id"],
+            ),
         })
+
+    def _handle_tenant_preferences_update(self, body):
+        context = tenant_context.current()
+        if not context:
+            return self._send(401, {
+                "error": "请先登录。",
+                "code": "ACCOUNT_AUTH_REQUIRED",
+            })
+        background_mode = body.get("canvasBackgroundMode")
+        if background_mode is not None and not isinstance(background_mode, str):
+            return self._send(400, {
+                "error": "画布底纹参数格式错误",
+                "code": "CANVAS_BACKGROUND_INVALID",
+            })
+        updates = {}
+        if isinstance(background_mode, str):
+            if background_mode not in {"dots", "lines", "blank"}:
+                return self._send(400, {
+                    "error": "画布底纹只能是 dots、lines 或 blank",
+                    "code": "CANVAS_BACKGROUND_INVALID",
+                })
+            updates["canvasBackgroundMode"] = background_mode
+        if not updates:
+            return self._send(400, {
+                "error": "没有可保存的偏好设置",
+                "code": "PREFERENCES_EMPTY",
+            })
+        try:
+            preferences = tenant_registry.update_tenant_preferences(
+                context.tenant_id,
+                updates,
+            )
+        except ValueError as exc:
+            return self._send(404, {"error": str(exc)})
+        try:
+            store.record_audit_event(
+                "preferences.update",
+                actor=(self._current_session() or {}).get("account_username", ""),
+                details={
+                    "keys": sorted(updates),
+                    "canvasBackgroundMode": updates.get("canvasBackgroundMode"),
+                },
+            )
+        except Exception as exc:
+            # The preference is already committed to control.db. A tenant
+            # audit-row failure must not turn a successful save into an error.
+            print(
+                f"[preferences] audit write failed: {exc}",
+                file=sys.stderr,
+            )
+        return self._send(200, {"ok": True, "preferences": preferences})
 
     def _current_session(self):
         cookie = SimpleCookie()
@@ -5382,6 +5763,10 @@ class Handler(BaseHTTPRequestHandler):
             workspace = store.get_project_workspace_nodes(
                 project_id,
                 episode_id,
+            )
+            workspace = project_workspace_nodes(
+                project_id,
+                workspace,
             )
             return self._send(200, workspace)
         m = re.match(r"^/api/projects/([^/]+)/notes$", path)
@@ -6495,6 +6880,8 @@ class Handler(BaseHTTPRequestHandler):
     def _do_put_locked(self):
         path = urlparse(self.path).path
         body = self._read_json()
+        if path == "/api/preferences":
+            return self._handle_tenant_preferences_update(body)
         # 项目根：重命名标题（PUT /api/projects/{id}，body.title）
         m = re.match(r"^/api/projects/([^/]+)$", path)
         if m:
@@ -7394,7 +7781,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 if task_id:
                     store.update_generation_task(
-                        task_id, status="failed", phase="不支持的类型",
+                        task_id, phase="不支持的类型",
                         error=f"不支持生成类型 {ntype}", finished_at=store._now_iso(),
                     )
                 return self._send(400, {"error": f"不支持生成类型 {ntype}"})
@@ -7419,24 +7806,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _generate(self, pid, proj, node, task_id=None, lease_owner=""):
         key = (str(pid), str(node.get("id") or ""))
-        with GENERATION_INFLIGHT_LOCK:
-            if key in GENERATION_INFLIGHT:
-                if task_id:
-                    store.update_generation_task(
-                        task_id, status="interrupted", phase="重复提交已忽略",
-                        error="该节点已有任务正在生成，本次重复提交已忽略",
-                        finished_at=store._now_iso(),
-                    )
-                return self._send(409, {
-                    "error": "该节点正在生成，请勿重复提交（GENERATION_IN_PROGRESS）",
-                    "code": "GENERATION_IN_PROGRESS",
-                    "status": "generating",
-                    "taskId": task_id or "",
-                })
-            GENERATION_INFLIGHT.add(key)
+        # The SQLite partial unique index already guarantees one active task
+        # per node. Do not layer a process-local boolean lock on top: a worker
+        # can otherwise reject its own freshly persisted task as a duplicate.
         if task_id:
             current_task = store.get_generation_task(task_id) or {}
             current_owner = str(current_task.get("lease_owner") or "").strip()
+            current_status = str(current_task.get("status") or "").strip()
             if not current_task:
                 current_task = {
                     "id": task_id,
@@ -7445,7 +7821,7 @@ class Handler(BaseHTTPRequestHandler):
                 }
             if not lease_owner and not current_owner:
                 lease_owner = f"generation:{secrets.token_hex(12)}"
-                if current_task.get("id") == task_id and current_task.get("status") != "queued":
+                if current_task.get("id") == task_id and current_status not in {"queued", "submitting"}:
                     lease_owner = ""
                 elif not store.claim_generation_task(
                     task_id,
@@ -7487,8 +7863,6 @@ class Handler(BaseHTTPRequestHandler):
                         "error": str(latest_task.get("error") or "原任务已结束"),
                         "replayed": True,
                     })
-                with GENERATION_INFLIGHT_LOCK:
-                    GENERATION_INFLIGHT.discard(key)
                 return self._send(409, {
                     "error": "生成任务执行租约已失效，本次未提交供应商",
                     "code": "GENERATION_LEASE_LOST",
@@ -7571,16 +7945,28 @@ class Handler(BaseHTTPRequestHandler):
             if task_id:
                 store.finish_generation_task(
                     task_id,
-                    status="failed",
-                    phase="任务异常",
-                    error=str(exc),
-                    delivery_status="failed",
+                    status="interrupted",
+                    phase="结果待确认",
+                    error=(
+                        "供应商请求可能已经发出，但本地未取得确认回执；"
+                        "系统不会自动重提，请先查询原任务或由用户确认后重新生成。"
+                    ),
+                    delivery_status="pending",
                     lease_owner=lease_owner,
                 )
+                commit_node_metadata(pid, node["id"], {
+                    "status": "error",
+                    "lastError": (
+                        "供应商请求可能已经发出，但本地未取得确认回执；"
+                        "系统不会自动重提。"
+                    ),
+                    "providerTaskStatus": "uncertain",
+                    "providerTaskPhase": "结果待确认",
+                    "generationFinishedAt": "",
+                })
             raise
         finally:
-            with GENERATION_INFLIGHT_LOCK:
-                GENERATION_INFLIGHT.discard(key)
+            pass
 
     def _generate_once(self, pid, proj, node, task_id=None, lease_owner=""):
         ntype = str(node.get("type") or "")
@@ -7770,8 +8156,11 @@ class Handler(BaseHTTPRequestHandler):
             )
             if task_id:
                 store.update_generation_task(
-                    task_id, provider=provider.get("id", ""), model=model.get("id", ""),
-                    status="running", phase="提交供应商", progress=15,
+                    task_id,
+                    provider=provider.get("id", ""),
+                    model=model.get("id", ""),
+                    phase="提交供应商",
+                    progress=15,
                     error="", finished_at="",
                 )
             ensure_provider_auth(provider)
@@ -7799,6 +8188,21 @@ class Handler(BaseHTTPRequestHandler):
 
                 def on_image_task_created(task):
                     provider_task_id = str(task.get("taskId") or "")
+                    if generation_task_id:
+                        # The supplier has accepted a paid task. Persist that
+                        # receipt before the independent journal so the lease
+                        # scanner cannot classify it as "no provider task".
+                        store.update_generation_task(
+                            generation_task_id,
+                            _lease_owner=lease_owner,
+                            provider_task_id=provider_task_id,
+                            status="running",
+                            phase="排队中",
+                            progress=20,
+                            error="",
+                            finished_at="",
+                            next_poll_at=store._now_iso(),
+                        )
                     store.remember_provider_task(
                         generation_task_id,
                         provider_task_id,
@@ -8006,6 +8410,17 @@ class Handler(BaseHTTPRequestHandler):
 
                 def on_task_created(task):
                     provider_task_id = str(task.get("taskId") or "")
+                    if generation_task_id:
+                        store.update_generation_task(
+                            generation_task_id,
+                            provider_task_id=provider_task_id,
+                            status="running",
+                            phase="排队中",
+                            progress=20,
+                            error="",
+                            finished_at="",
+                            _lease_owner=lease_owner,
+                        )
                     store.remember_provider_task(
                         generation_task_id,
                         provider_task_id,
@@ -8492,6 +8907,14 @@ def _run_generation_task_worker(task_id, tenant_id, tenant_slug):
                     task_id,
                     lease_owner,
                 )
+                # The worker thread already owns this row. Refresh the lease
+                # explicitly at the submit boundary; a queued row may have
+                # been pre-marked running before claim_generation_task.
+                store.renew_generation_task_lease(
+                    task_id,
+                    lease_owner,
+                    TASK_LEASE_SECONDS,
+                )
                 meta = node.setdefault("metadata", {})
                 params = meta.get("params") or {}
                 generation_started_at = store._now_iso()
@@ -8749,7 +9172,7 @@ def main():
     try:
         repaired_failures = _run_for_active_tenants(reconcile_failed_generation_task_nodes)
         if repaired_failures:
-            print(f"已恢复 {repaired_failures} 个供应商失败节点状态")
+            print(f"已对齐 {repaired_failures} 个生成任务的节点终态")
     except Exception as exc:
         print(f"[generation-tasks] 恢复失败节点状态失败：{exc}", file=sys.stderr)
     try:
@@ -8759,6 +9182,7 @@ def main():
     except Exception as exc:
         print(f"[generation-tasks] 对账任务记录失败：{exc}", file=sys.stderr)
     start_generation_task_reconciler()
+    start_storage_maintenance()
     try:
         start_pending_video_resumers()
     except Exception as exc:

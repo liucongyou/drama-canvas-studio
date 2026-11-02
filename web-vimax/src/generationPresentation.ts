@@ -1,5 +1,10 @@
 import type {GenerationTask} from './api';
 
+export type OptimisticGenerationSubmission = {
+  startedAt: string;
+  operationId: string;
+};
+
 const STATUS_WITHOUT_TRUSTED_PROGRESS = new Set([
   'queued',
   'submitting',
@@ -127,24 +132,30 @@ export function isGenerationTaskActive(task: GenerationTask): boolean {
   );
 }
 
-export function retainOptimisticGenerationIds(
+export function retainOptimisticGenerationSubmissions(
   tasks: GenerationTask[],
-  optimistic: ReadonlyMap<string, string>,
+  optimistic: ReadonlyMap<string, OptimisticGenerationSubmission>,
   now = Date.now(),
   ttlMs = 5 * 60 * 1000,
-): Map<string, string> {
+): Map<string, OptimisticGenerationSubmission> {
   const retained = new Map(optimistic);
   const latestByNode = latestTaskByNode(tasks);
-  for (const [nodeId, startedAt] of optimistic) {
-    const startedMs = Date.parse(startedAt);
+  for (const [nodeId, submission] of optimistic) {
+    const startedMs = Date.parse(submission.startedAt);
     if (!Number.isFinite(startedMs) || now - startedMs > ttlMs) {
       retained.delete(nodeId);
       continue;
     }
-    const latestTask = latestByNode.get(nodeId);
-    if (latestTask && taskTimestamp(latestTask) >= startedMs) {
-      // A persisted task now owns this node. Terminal failure must win over a
-      // local optimistic lock; an active task is projected separately.
+    const persistedOperation = tasks.some(
+      (task) => (
+        String(task.node_id || '').trim() === nodeId
+        && String(task.client_operation_id || '').trim() === submission.operationId
+      ),
+    );
+    if (persistedOperation) {
+      // Only the exact operation may release the local submission lock.
+      // Comparing browser time with a server timestamp lets an older terminal
+      // task hide a new regeneration before the new task row is visible.
       retained.delete(nodeId);
     }
   }
@@ -153,15 +164,15 @@ export function retainOptimisticGenerationIds(
 
 export function projectGenerationState(
   tasks: GenerationTask[],
-  optimistic: ReadonlyMap<string, string>,
+  optimistic: ReadonlyMap<string, OptimisticGenerationSubmission>,
   now = Date.now(),
   ttlMs = 5 * 60 * 1000,
 ): {
   activeNodeIds: Set<string>;
   latestByNode: Map<string, GenerationTask>;
-  retainedOptimistic: Map<string, string>;
+  retainedOptimistic: Map<string, OptimisticGenerationSubmission>;
 } {
-  const retainedOptimistic = retainOptimisticGenerationIds(
+  const retainedOptimistic = retainOptimisticGenerationSubmissions(
     tasks,
     optimistic,
     now,
@@ -183,4 +194,36 @@ export function liveGenerationCount(
 ): number {
   return [...latestTaskByNode(tasks).values()]
     .filter(isGenerationTaskActive).length;
+}
+
+export function mediaGenerationVisualState(input: {
+  status?: string;
+  mediaUrl?: string;
+  finalizePending?: boolean;
+  providerLive?: boolean;
+  generationBusy?: boolean;
+}): {
+  hasRenderableMedia: boolean;
+  busy: boolean;
+  resumableInBackground: boolean;
+  submitLocked: boolean;
+  failed: boolean;
+} {
+  const hasRenderableMedia = Boolean(input.mediaUrl);
+  // The backend node row is the only card outcome authority. generationBusy
+  // is a short local submission lock; providerLive may only extend an already
+  // generating row, never override a persisted terminal state.
+  const generating = input.status === 'generating';
+  const failed = input.status === 'failed';
+  return {
+    hasRenderableMedia,
+    busy: (
+      generating
+      && !failed
+      && input.finalizePending !== true
+    ),
+    resumableInBackground: false,
+    submitLocked: (generating && !failed) || input.generationBusy === true,
+    failed,
+  };
 }

@@ -431,6 +431,7 @@ export type GenerationTask = {
   id: string;
   project_id: string;
   node_id: string;
+  client_operation_id?: string;
   title: string;
   kind: CanvasMediaNodeKind;
   status: 'queued' | 'submitting' | 'running' | 'succeeded' | 'failed' | 'interrupted';
@@ -549,8 +550,11 @@ export function friendlyMediaError(raw?: string): string {
   const text = String(raw || '').trim();
   const lower = text.toLowerCase();
   if (!text) return '';
+  if (text.includes('提交结果未确认，可能已被供应商受理')) {
+    return `供应商提交结果未确认，可能已经受理。系统不会自动重提；请先核对供应商账单或任务记录，确认前不要重复提交。${text ? `详情：${text.slice(0, 260)}` : ''}`;
+  }
   if (lower.includes('没有返回任务号') && lower.includes('server_error')) {
-    return 'New API 中转未返回任务号，提交结果未知。请先核对供应商账单/任务记录，确认前不要重复提交。';
+    return '供应商提交结果未确认，可能已经受理。系统不会自动重提；请先核对供应商账单或任务记录，确认前不要重复提交。';
   }
   if (lower.includes('read operation timed out') || lower.includes('write operation timed out') || lower.includes('timed out')) {
     return '供应商响应较慢，后台仍在继续处理。请到任务中心查看最终结果；不要连续重复提交，以免重复付费。';
@@ -688,9 +692,17 @@ export type QualityReport = {
 };
 
 // ---------- 基础 ----------
-function friendlyRequestError(status: number, raw: string): string {
+function friendlyRequestError(status: number, raw: string, url = ''): string {
   const text = String(raw || '').trim();
   const lower = text.toLowerCase();
+  const providerRequest = (
+    url.includes('/generate')
+    || url.includes('/model-catalog')
+    || url.includes('/storage')
+    || lower.includes('provider')
+    || lower.includes('supplier')
+    || lower.includes('供应商')
+  );
   if (lower.includes('tos_account_overdue') || (text.includes('TOS') && text.includes('欠费'))) {
     return text;
   }
@@ -731,18 +743,92 @@ function friendlyRequestError(status: number, raw: string): string {
     return '供应商响应超时。任务可能仍在处理中，请先到任务中心查看，确认失败后再重新提交。';
   }
   if (status >= 500) {
-    return `供应商服务暂时异常（HTTP ${status}）。请稍后重试；已有任务 ID 时优先在任务中心继续等待。`;
+    if (providerRequest) {
+      return `供应商服务暂时异常（HTTP ${status}）。请稍后重试；已有任务 ID 时优先在任务中心继续等待。`;
+    }
+    return `服务端暂时无法完成请求（HTTP ${status}）。画布内容仍保留在当前页面，请稍后重试保存。`;
   }
   return text || `请求失败（HTTP ${status}）`;
 }
 
-async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(apiUrl(url), {
-    ...init,
-    credentials: 'include',
-    headers: {'Content-Type': 'application/json', ...(init.headers || {})},
-  });
-  const payload = await response.json().catch(() => ({}));
+/**
+ * 默认请求超时。
+ *
+ * 没有超时的 `fetch` 在网络半开、代理缓冲响应、后端线程卡在供应商调用时会**永久挂起**：
+ * Promise 既不 resolve 也不 reject，调用方的 `finally` 永远不执行。生成链路踩到这条时
+ * 后果最重——卡片永久停在「生成中」，模块级 `inflight` 锁不清空，该节点在本次页面
+ * 会话内再也提交不上去，用户只能刷新。60 秒对绝大多数接口都足够宽松，个别长任务
+ * 用 `timeoutMs` 显式放宽，传 0 表示不限。
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+
+async function request<T>(
+  url: string,
+  init: RequestInit & {timeoutMs?: number} = {},
+): Promise<T> {
+  const {timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, ...rest} = init;
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const external = rest.signal;
+  const onExternalAbort = () => controller?.abort();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let rejectTimeout: ((error: unknown) => void) | undefined;
+  const timeoutGuard = (
+    timeoutMs > 0 && controller
+      ? new Promise<never>((_resolve, reject) => {
+          rejectTimeout = reject;
+        })
+      : null
+  );
+  if (controller && external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', onExternalAbort, {once: true});
+  }
+  if (controller && timeoutMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      rejectTimeout?.(withRequestStatus(
+        new Error(`请求超过 ${Math.round(timeoutMs / 1000)} 秒没有响应，请检查网络后重试`),
+        408,
+      ));
+    }, timeoutMs);
+  }
+  let response: Response;
+  let payload: unknown;
+  try {
+    const operation = (async () => {
+      const fetched = await fetch(apiUrl(url), {
+        ...rest,
+        ...(controller ? {signal: controller.signal} : {}),
+        credentials: 'include',
+        headers: {'Content-Type': 'application/json', ...(rest.headers || {})},
+      });
+      // Keep the same timeout budget through body consumption. Some runtimes
+      // do not reject a response stream when its fetch signal aborts, so the
+      // outer timeoutGuard below also guarantees the whole operation settles.
+      const body = await fetched.json().catch(() => ({}));
+      return {fetched, body};
+    })();
+    const completed = (
+      timeoutGuard
+        ? await Promise.race([operation, timeoutGuard])
+        : await operation
+    );
+    response = completed.fetched;
+    payload = completed.body;
+  } catch (error) {
+    if (timedOut) {
+      throw withRequestStatus(
+        new Error(`请求超过 ${Math.round(timeoutMs / 1000)} 秒没有响应，请检查网络后重试`),
+        408,
+      );
+    }
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+    external?.removeEventListener('abort', onExternalAbort);
+  }
   if (!response.ok) {
     const code = String((payload as {code?: string}).code || '');
     // Provider auth failures are also HTTP 401, but they do not mean the
@@ -766,7 +852,11 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
       || code === 'CSRF_REJECTED'
     );
     throw withRequestStatus(
-      new Error(preserveServerMessage ? raw : friendlyRequestError(response.status, raw)),
+      new Error(
+        preserveServerMessage
+          ? raw
+          : friendlyRequestError(response.status, raw, url),
+      ),
       response.status,
     );
   }
@@ -780,8 +870,27 @@ export async function getAuthSession(): Promise<{
   slug?: string;
   role?: 'admin' | 'member' | string;
   isAdmin?: boolean;
+  preferences?: {
+    canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
+    [key: string]: unknown;
+  };
 }> {
   return request('/api/auth/session');
+}
+
+export async function saveTenantPreferences(updates: {
+  canvasBackgroundMode: 'dots' | 'lines' | 'blank';
+}): Promise<{
+  ok: boolean;
+  preferences: {
+    canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
+    [key: string]: unknown;
+  };
+}> {
+  return request('/api/preferences', {
+    method: 'PUT',
+    body: JSON.stringify(updates),
+  });
 }
 
 export async function loginAccount(username: string, password: string): Promise<{
@@ -791,6 +900,12 @@ export async function loginAccount(username: string, password: string): Promise<
   slug?: string;
   role?: 'admin' | 'member' | string;
   isAdmin?: boolean;
+  // 后端登录响应与 /api/auth/session 对称返回偏好；缺这个字段会让
+  // setPreferences(session.preferences || {}) 永远落空。
+  preferences?: {
+    canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
+    [key: string]: unknown;
+  };
 }> {
   return request('/api/auth/login', {
     method: 'POST',
@@ -1441,7 +1556,13 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
     prompt: m.prompt || '',
     mediaUrl: normalizedMediaUrl || undefined,
     thumbUrl: kind === 'video' && normalizedMediaUrl ? videoThumbUrl : undefined,
-    status: ((m.status as string) || 'idle') as CanvasMediaNode['status'],
+    // Legacy persisted rows may still say "error"; normalize that at the raw
+    // boundary before the client-facing union narrows it to terminal states.
+    status: (
+      m.status === 'error'
+        ? 'failed'
+        : ((m.status as string) || 'idle')
+    ) as CanvasMediaNode['status'],
     lastError: typeof m.lastError === 'string' ? (friendlyMediaError(m.lastError) || undefined) : undefined,
     generationStartedAt: typeof m.generationStartedAt === 'string' ? m.generationStartedAt : undefined,
     generationFinishedAt: typeof m.generationFinishedAt === 'string' ? m.generationFinishedAt : undefined,
@@ -1483,6 +1604,33 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
     ])],
     params: {...(m.params || {}), refs: m.refs || []},
   };
+}
+
+/**
+ * Normalize legacy persisted states at the read boundary. This function does
+ * not derive generation outcomes from the task ledger; the backend already
+ * performed that projection in workspace-nodes.
+ */
+function projectBackendMediaState(
+  nodes: CanvasMediaNode[],
+): CanvasMediaNode[] {
+  return nodes.map((node) => {
+    if (
+      node.status === 'generating'
+      && node.mediaUrl
+      && !node.providerTaskStatus
+    ) {
+      return {...node, status: 'done'};
+    }
+    if (node.status === 'failed' && node.providerTaskStatus === 'uncertain') {
+      return {
+        ...node,
+        providerTaskPhase: node.providerTaskPhase || '结果待确认',
+        lastError: node.lastError || '供应商结果待确认，请重新生成或联系供应商核对',
+      };
+    }
+    return node;
+  });
 }
 
 // 用户显式移除过的引用（targetId::refNodeId）持久化黑名单。
@@ -1594,7 +1742,7 @@ export async function getCanvasMediaNodes(
   const episodePositions = normalizedEpisode
     ? proj.payload.episodeLayouts?.[normalizedEpisode]
     : undefined;
-  return nodes.map((node) => ({
+  const converted = nodes.map((node) => ({
     ...toMediaNode(node),
     sharedEpisodeCount: episodeUsageCount.get(node.id) || 1,
   })).map(mn => {
@@ -1663,6 +1811,7 @@ export async function getCanvasMediaNodes(
     ])];
     return {...mn, refIds, params};
   });
+  return projectBackendMediaState(converted);
 }
 
 export async function saveCanvasMediaNodes(
@@ -2051,86 +2200,10 @@ async function getProjectionCanvasWorkspace(
     currentEpisode,
     pseudoProject,
   );
-  const activeByNode = new Map(
-    [...latestTaskByNode(tasks).values()]
-      .filter((task) => (
-        ['queued', 'submitting', 'running'].includes(task.status)
-        || (
-          task.status === 'interrupted'
-          && Boolean(String(task.provider_task_id || '').trim())
-        )
-      ))
-      .map((task) => [task.node_id, task]),
-  );
-  const latestByNode = latestTaskByNode(tasks);
-  const currentNodes = mediaNodes.map((node) => {
-    const task = activeByNode.get(node.id);
-    if (node.mediaUrl) return {
-      ...node,
-      status: 'done' as const,
-      lastError: undefined,
-      providerTaskStatus: task?.status || node.providerTaskStatus,
-      providerTaskPhase: task?.status === 'interrupted'
-        ? '等待恢复'
-        : (task?.phase || node.providerTaskPhase),
-    };
-    if ((node.status as string) === 'error' && !activeByNode.has(node.id)) {
-      return {
-        ...node,
-        status: 'failed' as const,
-        providerTaskStatus: node.providerTaskStatus || 'failed',
-        providerTaskPhase: node.providerTaskPhase || '结果待确认',
-        lastError: node.lastError || '供应商结果待确认，请重新生成或联系供应商核对',
-      };
-    }
-    if (!task) {
-      const terminal = latestByNode.get(node.id);
-      if (
-        node.status === 'generating'
-        && !node.finalizePending
-        && terminal
-        && ['succeeded', 'failed'].includes(terminal.status)
-      ) {
-        return {
-          ...node,
-          status: terminal.status === 'succeeded' ? 'done' as const : 'failed' as const,
-          lastError: terminal.status === 'succeeded'
-            ? undefined
-            : String(terminal.error || node.lastError || '生成任务已结束'),
-          generationFinishedAt: terminal?.finished_at || node.generationFinishedAt,
-          providerTaskStatus: terminal.status,
-          providerTaskPhase: terminal?.phase || '任务已结束',
-          providerTaskProgress: terminal.status === 'succeeded'
-            ? 100
-            : node.providerTaskProgress,
-        };
-      }
-      return node;
-    }
-    return {
-      ...node,
-      status: 'generating' as const,
-      lastError: undefined,
-      generationStartedAt: task.started_at || task.created_at || node.generationStartedAt,
-      generationFinishedAt: undefined,
-      providerTaskStatus: task.status === 'interrupted' ? 'queued' : task.status,
-      providerTaskPhase: task.status === 'interrupted'
-        ? '等待恢复'
-        : (task.phase || '生成中'),
-      providerTaskProgress: Number(task.progress || node.providerTaskProgress || 0),
-      providerTaskProgressChangedAt:
-        task.progress_updated_at
-        || task.started_at
-        || task.created_at
-        || node.providerTaskProgressChangedAt,
-      providerTaskId: String(task.provider_task_id || node.providerTaskId || ''),
-      providerTaskStatusRaw: task.status,
-    };
-  });
   return {
     canvas,
     notes,
-    mediaNodes: currentNodes,
+    mediaNodes,
     episodeViewports: index.episodeViewports || {},
     activeEpisodeId: currentEpisode,
     tasks,
@@ -2218,86 +2291,10 @@ export async function getCanvasWorkspace(
     getCanvasMediaNodes(sessionId, mediaEpisode, project),
     getGenerationTasks(sessionId, 80, mediaEpisode),
   ]);
-  const activeByNode = new Map(
-    [...latestTaskByNode(tasks).values()]
-      .filter((task) => (
-        ['queued', 'submitting', 'running'].includes(task.status)
-        || (
-          task.status === 'interrupted'
-          && Boolean(String(task.provider_task_id || '').trim())
-        )
-      ))
-      .map((task) => [task.node_id, task]),
-  );
-  const latestByNode = latestTaskByNode(tasks);
-  const currentNodes = mediaNodes.map((node) => {
-    const task = activeByNode.get(node.id);
-    if (node.mediaUrl) return {
-      ...node,
-      status: 'done' as const,
-      lastError: undefined,
-      providerTaskStatus: task?.status || node.providerTaskStatus,
-      providerTaskPhase: task?.status === 'interrupted'
-        ? '等待恢复'
-        : (task?.phase || node.providerTaskPhase),
-    };
-    if ((node.status as string) === 'error' && !activeByNode.has(node.id)) {
-      return {
-        ...node,
-        status: 'failed' as const,
-        providerTaskStatus: node.providerTaskStatus || 'failed',
-        providerTaskPhase: node.providerTaskPhase || '结果待确认',
-        lastError: node.lastError || '供应商结果待确认，请重新生成或联系供应商核对',
-      };
-    }
-    if (!task) {
-      const terminal = latestByNode.get(node.id);
-      if (
-        node.status === 'generating'
-        && !node.finalizePending
-        && terminal
-        && ['succeeded', 'failed'].includes(terminal.status)
-      ) {
-        return {
-          ...node,
-          status: terminal.status === 'succeeded' ? 'done' as const : 'failed' as const,
-          lastError: terminal.status === 'succeeded'
-            ? undefined
-            : String(terminal.error || node.lastError || '生成任务已结束'),
-          generationFinishedAt: terminal?.finished_at || node.generationFinishedAt,
-          providerTaskStatus: terminal.status,
-          providerTaskPhase: terminal?.phase || '任务已结束',
-          providerTaskProgress: terminal.status === 'succeeded'
-            ? 100
-            : node.providerTaskProgress,
-        };
-      }
-      return node;
-    }
-    return {
-      ...node,
-      status: 'generating' as const,
-      lastError: undefined,
-      generationStartedAt: task.started_at || task.created_at || node.generationStartedAt,
-      generationFinishedAt: undefined,
-      providerTaskStatus: task.status === 'interrupted' ? 'queued' : task.status,
-      providerTaskPhase: task.status === 'interrupted'
-        ? '等待恢复'
-        : (task.phase || '生成中'),
-      providerTaskProgress: Number(task.progress || node.providerTaskProgress || 0),
-      providerTaskProgressChangedAt:
-        task.progress_updated_at
-        || task.started_at
-        || task.created_at
-        || node.providerTaskProgressChangedAt,
-      providerTaskId: String(task.provider_task_id || node.providerTaskId || ''),
-      providerTaskStatusRaw: task.status,
-    };
-  });
   return {
     canvas,
     notes,
-    mediaNodes: currentNodes,
+    mediaNodes,
     episodeViewports: project?.payload?.episodeViewports || {},
     activeEpisodeId: currentEpisode,
     tasks,
@@ -2429,6 +2426,9 @@ export async function generateCanvasNodeNow(
     const result = await request(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/generate`, {
       method: 'POST',
       body: JSON.stringify({...payload, episodeId: normalizedEpisode}),
+      // 提交接口正常情况下几百毫秒就返回任务号；同步模式下服务端要等供应商首响。
+      // 放宽到 5 分钟，既有兜底又不会把慢响应误判成挂死。
+      timeoutMs: 300_000,
     }) as {
       accepted?: boolean;
       taskId?: string;

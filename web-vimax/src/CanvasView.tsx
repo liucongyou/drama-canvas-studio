@@ -1,4 +1,6 @@
-import {startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode, type RefObject, type SyntheticEvent} from 'react';
+import {mediaNodeDataEqual} from './canvasNodeMemo';
+import {claimGenerationOperationId, generationIntentSignature, releaseGenerationOperationId, shouldReleaseOperationIdAfterError, type OperationIdRecord} from './generationOperationId';
+import {memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode, type RefObject, type SyntheticEvent} from 'react';
 import * as ReactDOM from 'react-dom';
 import {createPortal} from 'react-dom';
 import {toPng} from 'html-to-image';
@@ -1587,6 +1589,16 @@ type MediaNodeData = {
   onEdit: (node: CanvasMediaNode) => void;
   /** 可引用资产候选（image/audio 节点），@资产 选择器用 */
   assets?: CanvasMediaNode[];
+  /**
+   * 全量媒体节点的 id → 节点索引，供依赖徽章 O(1) 查询。
+   *
+   * 卡片节点只需要「我引用的那几个节点」，此前却为**每个节点**过滤一遍全量
+   * `mediaNodes` 生成 `assets`（`mediaNodes.filter(a => a.id !== mn.id)`），
+   * 400 节点时每轮重算要造 400×399 ≈ 16 万个数组元素，且每个节点的 data
+   * 引用都不同 → memo 永远失效、整树重渲染。改用一次构建的 Map 后，
+   * 单节点查询是 O(refs)，构建是 O(n)。
+   */
+  assetsById?: Map<string, CanvasMediaNode>;
   contentVisible?: boolean;
   catalog?: ModelCatalog | null;
   /** 提示词栏打开时高亮本卡片（即梦风：底部居中编辑栏 + 选中节点高亮） */
@@ -2287,8 +2299,18 @@ async function inspectLocalMedia(file: File): Promise<{
   return {};
 }
 
-function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
-  const {node, renderMode = 'full', contentVisible = true, onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed, onMediaAvailability} = data;
+
+// 判等逻辑抽到 canvasNodeMemo.ts（纯函数 + 单测覆盖），这里只做 NodeProps 适配。
+function mediaNodePropsEqual(
+  prev: NodeProps<FlowNode<MediaNodeData>>,
+  next: NodeProps<FlowNode<MediaNodeData>>,
+): boolean {
+  if (prev.selected !== next.selected) return false;
+  return mediaNodeDataEqual(prev.data, next.data);
+}
+
+const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
+  const {node, renderMode = 'full', contentVisible = true, onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, assetsById, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed, onMediaAvailability} = data;
   const [menu, setMenu] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoShellRef = useRef<HTMLDivElement>(null);
@@ -2372,15 +2394,18 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
     void uploadLocalFile(file);
   };
   const dependencyLocateCursorRef = useRef(0);
-  const dependencyPool = [node, ...(assets || [])];
-  const dependencyBlockers = mediaDependencyBlockers(node, dependencyPool);
   const dependencyIds = [...new Set([
     ...(node.params?.refs || []).map((item) => item.nodeId),
     ...voiceRefList(node.params).map((item) => item.nodeId),
   ])].filter(Boolean);
+  // 只解析本卡真正引用的那几个节点，不再对全量池做线性查找。
+  // assetsById 是外层一次构建的稳定 Map；没有时退回 assets 数组（兼容旧调用方/测试）。
   const dependencySources = dependencyIds
-    .map((id) => dependencyPool.find((item) => item.id === id))
+    .map((id) => assetsById?.get(id) ?? assets?.find((item) => item.id === id))
     .filter((item): item is CanvasMediaNode => !!item);
+  // 池子只放「自己 + 已解析到的引用」：mediaDependencyBlockers 只会查 refs 里的 id
+  // 和本节点，因此与传全量池语义完全一致，但不再为每张卡建 O(n) 的 Map。
+  const dependencyBlockers = mediaDependencyBlockers(node, [node, ...dependencySources]);
   const dependencyImageCount = dependencySources.filter((item) => item.kind === 'image').length;
   const dependencyAudioCount = dependencySources.filter((item) => item.kind === 'audio').length;
   const dependencyTextCount = dependencySources.filter((item) => item.kind === 'text').length;
@@ -3017,7 +3042,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
               event.preventDefault();
               event.stopPropagation();
               const targets = dependencyBlockers
-                .map((item) => dependencyPool.find((source) => source.id === item.nodeId))
+                .map((item) => assetsById?.get(item.nodeId) ?? assets?.find((source) => source.id === item.nodeId))
                 .filter((item): item is CanvasMediaNode => !!item);
               if (!targets.length) return;
               const index = dependencyLocateCursorRef.current % targets.length;
@@ -3635,7 +3660,7 @@ function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
       </Handle>
     </div>
   );
-}
+}, mediaNodePropsEqual);
 
 /**
  * 提示词工具栏浮层统一锚定到触发按钮。
@@ -8027,6 +8052,18 @@ function CanvasViewInner({
   const syncChannelRef = useRef<BroadcastChannel | null>(null);
   const modelFallbackNoticeRef = useRef('');
   const syncInstanceIdRef = useRef(`canvas-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  /**
+   * 清空保存错误。
+   *
+   * 必须和 saveState 一起复位：saveState 只在 saveError 变成非空时被置为 'error'
+   * （见下面那个 useEffect），而此前所有清理点只调 setSaveError('')，
+   * 于是「一次失败 → 后来成功了」之后，错误横幅消失了、顶栏却永久显示
+   * 「保存失败」，用户看不到原因也点不掉。这是实测能在页面上稳定复现的状态机缺陷。
+   */
+  const clearSaveError = useCallback(() => {
+    setSaveError('');
+    setSaveState((prev) => (prev === 'error' ? 'saved' : prev));
+  }, []);
   const beginSave = useCallback(() => {
     pendingSavesRef.current += 1;
     setSaveState('saving');
@@ -8824,6 +8861,12 @@ function CanvasViewInner({
   // 媒体节点落库（提前到这里：deleteEdgeById / removeRefAndEdge 都要用它清 refs，
   // 放到后面会形成 TDZ —— 曾因此整页白屏 "Cannot access 'persistMediaNodes' before initialization"）
   const [mediaNodes, setMediaNodes] = useState<CanvasMediaNode[]>([]);
+  // 媒体节点 id 索引：一次构建 O(n)，供每张卡片的依赖徽章 O(1) 查询。
+  // 替代原先「每个节点 filter 一遍全量数组」的 O(n²) 构造。
+  const mediaById = useMemo(
+    () => new Map(mediaNodes.map((item) => [item.id, item])),
+    [mediaNodes],
+  );
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
   const [generationBusyIds, setGenerationBusyIds] = useState<Set<string>>(() => new Set());
   // 事件流是否在线：在线时轮询降级成兜底对账，离线时恢复 1.5s 的密集轮询。
@@ -8838,6 +8881,32 @@ function CanvasViewInner({
   workspaceScopeRef.current = {session, episode: currentEp};
   const workspaceLoadEpochRef = useRef(0);
   const optimisticGenerationStartsRef = useRef<Map<string, OptimisticGenerationSubmission>>(new Map());
+  /**
+   * 提交中的节点（同步锁）。
+   *
+   * `node.status === 'generating'` 是状态判断，而 setState 要等下一次渲染才生效：
+   * 双击 / 连点「生成」时两次调用可能落在同一帧，都还看到旧的 `status`，
+   * 于是同一节点被提交两次——虽然后端有 clientOperationId 幂等兜底，但多一次
+   * 付费请求往返仍是风险。这里用 ref 做同步互斥，请求返回即释放，
+   * 之后由节点自身的 generating 状态接管。
+   */
+  const generationSubmittingRef = useRef<Set<string>>(new Set());
+  /**
+   * 提交幂等键：同一次「生成意图」必须复用同一个 operationId。
+   *
+   * 后端按 `client_operation_id` 回查已建任务，命中就返回 202 并把原任务交接回来，
+   * 这是防重复扣费的唯一保障。前端若在重试时换一个新 UUID，后端就当成另一笔新任务：
+   * 第一次其实已经提交成功、只是响应在网络上丢了的场景下，用户点一次「重试」
+   * 就会被扣两次钱。所以键只能跟着「节点 + 当前提示词与参数」走，请求成功返回后才丢弃。
+   */
+  const pendingOperationIdRef = useRef<Map<string, OperationIdRecord>>(new Map());
+  const claimOperationId = useCallback((node: CanvasMediaNode, params: CanvasMediaParams) => (
+    claimGenerationOperationId(
+      pendingOperationIdRef.current,
+      node.id,
+      generationIntentSignature({kind: node.kind, prompt: node.prompt, params}),
+    )
+  ), []);
   useEffect(() => { mediaNodesRef.current = mediaNodes; }, [mediaNodes]);
   const refreshWorkspaceFacts = useCallback(() => {
     if (workspaceRefreshInFlightRef.current) {
@@ -9234,7 +9303,7 @@ function CanvasViewInner({
           if (pendingPositionSavesRef.current.size === 0) {
             // Only clear an older save failure after a later mutation has
             // actually been accepted. Merely starting a retry is not enough.
-            setSaveError('');
+            clearSaveError();
           }
           const missingIds = new Set(result.missing || []);
           const missingNodes = mediaNodesRef.current.filter((node) => missingIds.has(node.id));
@@ -9598,7 +9667,7 @@ function CanvasViewInner({
     setDirtyShots(new Set());
     setSavedFlash({});
     setSelectedId(null);
-    setSaveError('');
+    clearSaveError();
     workspaceRetryAttemptRef.current = 0;
     if (workspaceRetryTimerRef.current !== null) {
       window.clearTimeout(workspaceRetryTimerRef.current);
@@ -9803,7 +9872,7 @@ function CanvasViewInner({
       return;
     }
     setSavingShot(shotIdx);
-    setSaveError('');
+    clearSaveError();
     const patch: Record<string, unknown> = {
       visual_desc: draft.visual_desc,
       motion_desc: draft.motion_desc,
@@ -9986,7 +10055,7 @@ function CanvasViewInner({
             pendingMediaPatchesRef.current.clear();
             if (snapshots.length === 0) return;
             beginSave();
-            setSaveError('');
+            clearSaveError();
             if (!currentEp) {
               finishSave(false);
               setSaveError('画布尚未绑定集数，暂不能保存节点');
@@ -10642,8 +10711,14 @@ function CanvasViewInner({
   // open while buffering events. While a paid task is in flight, always poll
   // terminal state quickly so a lost `done` event cannot leave a completed
   // image/video invisible for 12 seconds.
+  //
+  // 但「快速兜底」不必等于「每 1.5 秒拉一次全量项目 JSON」：每次轮询走的是
+  // getCanvasMediaNodes → getProject，400 节点项目单次约几百 KB，生成期间每秒
+  // 一次全量解析是画布卡顿的主要来源之一。SSE 在线时事件已经能在毫秒级把节点
+  // 推过来，轮询退到 4s 只作为「事件丢了」的兜底，结果最多晚 4 秒可见（仍远低于
+  // 原先担心的 12 秒）；SSE 断开时维持 1.5s 的密集对账。
   const generationSyncMs = hasGeneratingMedia || activeGenerationTaskCount > 0
-    ? 1_500
+    ? (eventsConnected ? 4_000 : 1_500)
     : eventsConnected ? 7_000 : 15_000;
   useEffect(() => {
     let alive = true;
@@ -14048,6 +14123,11 @@ function CanvasViewInner({
       setToast('该节点正在生成，请到任务中心查看进度');
       return false;
     }
+    // 同步互斥：同一帧内的连点/双击不会被上面的状态判断拦住（setState 尚未生效）。
+    if (generationSubmittingRef.current.has(node.id)) {
+      setToast('该节点正在提交生成，请稍候');
+      return false;
+    }
     if (!node.prompt.trim()) {
       setToast('请先填写提示词');
       return false;
@@ -14103,11 +14183,11 @@ function CanvasViewInner({
       setToast(`还有 ${dependencyBlockers.length} 项引用未就绪：${names}${dependencyBlockers.length > 4 ? '…' : ''}`);
       return false;
     }
+    // 从这里开始是「已确认要提交」，占住同步锁直到请求返回。
+    generationSubmittingRef.current.add(node.id);
     const generationStartedAt = new Date().toISOString();
-    const clientOperationId = (
-      globalThis.crypto?.randomUUID?.()
-      || `canvas-operation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    );
+    // 复用上一次未成功的幂等键：重试不能变成「再扣一次费」。
+    const clientOperationId = claimOperationId(node, params);
     optimisticGenerationStartsRef.current.set(node.id, {
       startedAt: generationStartedAt,
       operationId: clientOperationId,
@@ -14185,8 +14265,19 @@ function CanvasViewInner({
           }
           setToast(`${kindLabel[node.kind]}生成完成，版本已更新`);
         }
+        // 请求确实落地了才归还幂等键；下面的失败分支故意保留，
+        // 让用户重试时仍复用同一个 operationId，由后端判重。
+        releaseGenerationOperationId(pendingOperationIdRef.current, node.id);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const definitiveFailure = shouldReleaseOperationIdAfterError(error);
+        // A definitive provider/task failure is a completed idempotency
+        // attempt: the next user-initiated retry must create a fresh task.
+        // Only uncertain/transport failures keep the key, so a response lost
+        // after server-side acceptance can still be replayed safely.
+        if (definitiveFailure) {
+          releaseGenerationOperationId(pendingOperationIdRef.current, node.id);
+        }
         setGenerationBusyIds((prev) => {
           if (!prev.has(node.id)) return prev;
           const next = new Set(prev);
@@ -14196,16 +14287,23 @@ function CanvasViewInner({
         optimisticGenerationStartsRef.current.delete(node.id);
         updateMediaNode(node.id, {
           status: 'failed',
-          lastError: message,
-          generationFinishedAt: new Date().toISOString(),
-          providerTaskStatus: 'failed',
-          providerTaskPhase: '生成失败',
+          lastError: definitiveFailure
+            ? message
+            : `${message}；提交结果未确认，可能已被供应商受理。系统不会自动重提，请先核对任务或账单。`,
+          generationFinishedAt: definitiveFailure
+            ? new Date().toISOString()
+            : undefined,
+          providerTaskStatus: definitiveFailure ? 'failed' : 'uncertain',
+          providerTaskPhase: definitiveFailure ? '生成失败' : '结果待确认',
         }, {persist: false});
         setToast(`生成请求发送失败：${message}`);
+      } finally {
+        // 请求返回即释放：后续重复点击由节点自身的 generating 状态拦截。
+        generationSubmittingRef.current.delete(node.id);
       }
     })();
     return true;
-  }, [session, currentEp, updateMediaNode, allEdges, mediaNodes, modelCatalog, setToast]);
+  }, [session, currentEp, updateMediaNode, allEdges, mediaNodes, modelCatalog, setToast, claimOperationId]);
 
   // 段级绑定资产（段内镜头绑定的并集）——直接由 shots 索引构建，供段卡 chips
   const segBoundAssets = useMemo(() => {
@@ -14532,7 +14630,7 @@ function CanvasViewInner({
               .then(() => setToast('已复制全文'))
               .catch(() => setToast('复制失败，请展开后手动复制'));
           },
-          assets: mediaNodes.filter((a: CanvasMediaNode) => a.id !== mn.id),
+          assetsById: mediaById,
           active: editNode?.id === mn.id,
           generationBusy: generationBusyIds.has(mn.id),
           groupMembers: groupMap.get(`media-${mn.id}`) ?? null,
@@ -14558,7 +14656,7 @@ function CanvasViewInner({
       return saved ? {...node, position: saved} : node;
     });
     return placed;
-  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasVisibleBounds, largeCanvasOverview, editNode?.id]);
+  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, mediaById, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasVisibleBounds, largeCanvasOverview, editNode?.id]);
   const renderedEdges = useMemo(() => {
     if (largeCanvasOverview) return [];
     const ids = new Set(flowNodes.map((node) => node.id));
@@ -15603,7 +15701,7 @@ function CanvasViewInner({
         : <header className="workspace-header">{canvasHeaderBody}</header>}
 
       {error && <div className="inline-error canvas-error" role="alert"><span>{error}</span></div>}
-      {saveError && <div className="inline-error canvas-error" role="alert"><span>保存失败：{saveError}</span><button onClick={() => setSaveError('')} aria-label="关闭"><X size={12} strokeWidth={2.2} aria-hidden="true" /></button></div>}
+      {saveError && <div className="inline-error canvas-error" role="alert"><span>保存失败：{saveError}</span><button onClick={() => clearSaveError()} aria-label="关闭"><X size={12} strokeWidth={2.2} aria-hidden="true" /></button></div>}
       {toast && <div className="canvas-toast" onClick={() => setToast('')}>{toast}</div>}
 
       {!dataReady ? (

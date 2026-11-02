@@ -472,6 +472,45 @@ class ProviderCatalogTests(unittest.TestCase):
             provider_client._submit_with_retry(fail)
         self.assertEqual(calls, ["POST"])
 
+    def test_canvaspro_video_503_without_task_id_is_uncertain_not_failed(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "002-sd2.0-9-3-12-720p",
+            "remoteModel": "002系列/sd2.0(9图3音频12秒不卡脸720P)",
+            "adapter": "canvaspro_video",
+            "profile": "suanli-video",
+            "params": {},
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            raise provider_client.ProviderHTTPError(
+                503,
+                '{"error":{"code":"server_error","message":"Task request failed"}}',
+            )
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request):
+            with self.assertRaisesRegex(
+                provider_client.ProviderOutcomeUncertain,
+                "没有返回任务号",
+            ):
+                provider_client.generate_video(
+                    provider,
+                    model,
+                    "test",
+                    {"ratio": "9:16", "duration": 12},
+                    [],
+                    [],
+                )
+
+        self.assertEqual(len(calls), 1)
+
     def test_aistars_image_503_with_task_id_recovers_by_polling_same_task(self):
         provider = {
             "id": "new-apl",
@@ -613,6 +652,217 @@ class ProviderCatalogTests(unittest.TestCase):
                 "test-key",
             )],
         )
+
+    def test_aistars_video_renumbers_canvas_image_labels_in_prompt(self):
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "50-seedance-2.0-fast",
+            "remoteModel": "即梦-50-seedance-2.0-fast",
+            "adapter": "canvaspro_video",
+            "profile": "aistars-video",
+            "params": {},
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            if method == "POST":
+                return {"id": "video-task-2", "status": "queued"}
+            return {
+                "id": "video-task-2",
+                "status": "completed",
+                "artifacts": [{"content_url": "/result.mp4"}],
+            }
+
+        refs = [
+            {
+                "kind": "image",
+                "url": "https://example.com/scene.png",
+                "label": "场景｜铁西厂大门口·母版（图6）",
+            },
+            {
+                "kind": "image",
+                "url": "https://example.com/prop.png",
+                "label": "道具｜买断协议（图7）",
+            },
+            {
+                "kind": "image",
+                "url": "https://example.com/chen.png",
+                "label": "角色｜陈大强（图4）",
+            },
+            {
+                "kind": "image",
+                "url": "https://example.com/zhao.png",
+                "label": "角色｜赵铁柱（图1）",
+            },
+        ]
+        prompt = (
+            "@角色｜陈大强（图4）盯着@角色｜赵铁柱（图1），"
+            "手里攥着@道具｜买断协议（图7）。"
+        )
+        with patch.object(
+            provider_client,
+            "_request_json",
+            side_effect=fake_request,
+        ), patch.object(
+            provider_client,
+            "save_generated_url",
+            return_value="/uploads/result.mp4",
+        ), patch.object(
+            provider_client.time,
+            "sleep",
+        ):
+            provider_client.generate_video(
+                provider,
+                model,
+                prompt,
+                {
+                    "ratio": "9:16",
+                    "resolution": "720P",
+                    "duration": 15,
+                    "mode": "auto",
+                },
+                refs,
+                [],
+            )
+
+        body = calls[0][2]
+        sent_prompt = body["prompt"]
+        self.assertEqual(
+            prompt,
+            "@角色｜陈大强（图4）盯着@角色｜赵铁柱（图1），"
+            "手里攥着@道具｜买断协议（图7）。",
+        )
+        self.assertEqual(
+            body["images"],
+            [
+                "https://example.com/scene.png",
+                "https://example.com/prop.png",
+                "https://example.com/chen.png",
+                "https://example.com/zhao.png",
+            ],
+        )
+        self.assertIn("第3张参考图", sent_prompt)
+        self.assertIn("陈大强", sent_prompt)
+        self.assertIn("第4张参考图", sent_prompt)
+        self.assertIn("赵铁柱", sent_prompt)
+        self.assertIn("第2张参考图", sent_prompt)
+        self.assertIn("买断协议", sent_prompt)
+        self.assertIn("第3张参考图：角色｜陈大强", sent_prompt)
+        self.assertIn("第4张参考图：角色｜赵铁柱", sent_prompt)
+        self.assertNotIn("（图4）", sent_prompt)
+        self.assertNotIn("（图1）", sent_prompt)
+
+    def test_aistars_video_numbers_and_images_share_one_order(self):
+        """Prompt numbering and the `images` array must never diverge.
+
+        Regression: prompt labels were renumbered from images+video refs while
+        the images array kept the original interleaved order. The supplier then
+        bound the wrong person to "第N张参考图", producing swapped roles.
+        """
+        provider = {
+            "id": "new-apl",
+            "name": "New APl",
+            "base_url": "https://api.canvasproai.com/v1",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "50-seedance-2.0-fast",
+            "remoteModel": "即梦-50-seedance-2.0-fast",
+            "adapter": "canvaspro_video",
+            "profile": "aistars-video",
+            "params": {},
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            if method == "POST":
+                return {"id": "video-task-order", "status": "queued"}
+            return {
+                "id": "video-task-order",
+                "status": "completed",
+                "artifacts": [{"content_url": "/result.mp4"}],
+            }
+
+        # Deliberately interleave a video ref ahead of the character images.
+        refs = [
+            {
+                "kind": "video",
+                "url": "https://example.com/ref.mp4",
+                "label": "参考视频｜上一段",
+            },
+            {
+                "kind": "image",
+                "url": "https://example.com/open.png",
+                "label": "场景｜开场（图5）",
+            },
+            {
+                "kind": "image",
+                "url": "https://example.com/chen.png",
+                "label": "角色｜陈大强（图4）",
+            },
+            {
+                "kind": "image",
+                "url": "https://example.com/zhao.png",
+                "label": "角色｜赵铁柱（图1）",
+            },
+        ]
+        prompt = "@角色｜陈大强（图4）盯着@角色｜赵铁柱（图1）"
+        with patch.object(
+            provider_client,
+            "_request_json",
+            side_effect=fake_request,
+        ), patch.object(
+            provider_client,
+            "save_generated_url",
+            return_value="/uploads/result.mp4",
+        ), patch.object(
+            provider_client.time,
+            "sleep",
+        ):
+            provider_client.generate_video(
+                provider,
+                model,
+                prompt,
+                {
+                    "ratio": "9:16",
+                    "resolution": "720P",
+                    "duration": 5,
+                    "mode": "auto",
+                },
+                refs,
+                [],
+            )
+
+        body = calls[0][2]
+        sent_prompt = body["prompt"]
+        # Images array must follow the same images-first grouping used by the
+        # numbering: scene=1, chen=2, zhao=3.
+        self.assertEqual(
+            body["images"],
+            [
+                "https://example.com/open.png",
+                "https://example.com/chen.png",
+                "https://example.com/zhao.png",
+            ],
+        )
+        self.assertIn("陈大强（第2张参考图）", sent_prompt)
+        self.assertIn("赵铁柱（第3张参考图）", sent_prompt)
+        self.assertIn("第1张参考图：场景｜开场", sent_prompt)
+        self.assertIn("第2张参考图：角色｜陈大强", sent_prompt)
+        self.assertIn("第3张参考图：角色｜赵铁柱", sent_prompt)
+        # The canvas asset number must not survive into the supplier prompt:
+        # leaving "（图4）" next to "第3张参考图" lets the model bind the
+        # character to slot 4 (the other person) and swap roles.
+        self.assertNotIn("（图5）", sent_prompt)
+        self.assertNotIn("（图4）", sent_prompt)
+        self.assertNotIn("（图1）", sent_prompt)
 
     def test_check_image_task_recovers_completed_newapi_image(self):
         provider = {

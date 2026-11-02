@@ -3143,13 +3143,33 @@ def create_generation_task(
             }
     active = con.execute(
         "SELECT * FROM generation_tasks WHERE project_id=? AND node_id=? "
-        "AND status IN ('queued','submitting','running') ORDER BY created_at DESC LIMIT 1",
+        "AND status IN ('queued','submitting','running') "
+        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
         (project_id, node_id),
     ).fetchone()
     if active:
         columns = [item[0] for item in con.execute("SELECT * FROM generation_tasks LIMIT 0").description]
         active_task = dict(zip(columns, active))
         con.close()
+        if not str(active_task.get("provider_task_id") or "").strip():
+            journal_task_id = ""
+            try:
+                for entry in list_provider_task_journal():
+                    if str(entry.get("taskId") or "") != str(active_task["id"]):
+                        continue
+                    journal_task_id = str(entry.get("providerTaskId") or "").strip()
+                    if journal_task_id:
+                        break
+            except Exception:
+                journal_task_id = ""
+            if journal_task_id:
+                active_task = update_generation_task(
+                    active_task["id"],
+                    provider_task_id=journal_task_id,
+                ) or {
+                    **active_task,
+                    "provider_task_id": journal_task_id,
+                }
         latest = get_generation_task(active_task["id"]) or active_task
         return {**latest, "created_new": False}
     owner = con.execute(
@@ -3356,7 +3376,6 @@ def update_project_layout(
                 f"项目已更新：期望 revision={if_revision}，实际 revision={current}"
             )
         stamp = _now_iso()
-        encoded_layout = json.dumps(layout, ensure_ascii=False)
         episode_members = {
             str(row[0])
             for row in con.execute(
@@ -3365,13 +3384,13 @@ def update_project_layout(
                 (project_id, normalized),
             )
         }
-        layout = {
+        filtered_layout = {
             str(node_id): position
             for node_id, position in layout.items()
             if str(node_id) in episode_members
         }
-        encoded_layout = json.dumps(layout, ensure_ascii=False)
-        for node_id, position in layout.items():
+        encoded_layout = json.dumps(filtered_layout, ensure_ascii=False)
+        for node_id, position in filtered_layout.items():
             if not isinstance(position, dict):
                 continue
             if str(node_id) not in episode_members:
@@ -3442,7 +3461,7 @@ def update_project_layout(
                 {
                     "id": normalized,
                     "title": normalized,
-                    "nodeIds": sorted(layout),
+                    "nodeIds": sorted(filtered_layout),
                     "videoNodeIds": [],
                     "connectionIds": [],
                 },
@@ -4424,12 +4443,18 @@ def claim_generation_task(task_id, owner, lease_seconds=45, allow_recover=False)
 
     def write(con):
         row = con.execute(
-            "SELECT status,lease_owner FROM generation_tasks WHERE id=?",
+            "SELECT status,lease_owner,lease_expires_at,provider_task_id "
+            "FROM generation_tasks WHERE id=?",
             (task_id,),
         ).fetchone()
         if not row:
             return
-        current_status, current_owner = row
+        (
+            current_status,
+            current_owner,
+            current_lease_expires_at,
+            current_provider_task_id,
+        ) = row
         if current_status == "running" and current_owner == owner:
             con.execute(
                 "UPDATE generation_tasks SET lease_expires_at=?,heartbeat_at=?,updated_at=? "
@@ -4439,16 +4464,41 @@ def claim_generation_task(task_id, owner, lease_seconds=45, allow_recover=False)
             claimed["value"] = True
             return
         if current_status == "running" and current_owner and current_owner != owner:
-            lease_row = con.execute(
-                "SELECT lease_expires_at FROM generation_tasks WHERE id=?",
-                (task_id,),
-            ).fetchone()
-            existing_lease_expires_at = str((lease_row or [""])[0] or "")
+            existing_lease_expires_at = str(current_lease_expires_at or "")
             if (
                 existing_lease_expires_at
                 and existing_lease_expires_at > now.isoformat()
             ):
                 return
+        if (
+            not allow_recover
+            and current_status == "running"
+            and not current_owner
+            and not str(current_provider_task_id or "").strip()
+        ):
+            # A queued task can be pre-marked running before the worker claims
+            # its lease. Reclaim that ownerless local row; otherwise the stale
+            # scanner can close it a few seconds before the provider callback
+            # persists the real provider task id.
+            result = con.execute(
+                "UPDATE generation_tasks SET status='running', phase='提交供应商',"
+                "lease_owner=?,lease_expires_at=?,heartbeat_at=?,updated_at=?,"
+                "started_at=CASE WHEN started_at IS NULL OR started_at='' "
+                "THEN ? ELSE started_at END,error='',finished_at='' "
+                "WHERE id=? AND status='running' "
+                "AND (lease_owner IS NULL OR lease_owner='') "
+                "AND COALESCE(provider_task_id,'')=''",
+                (
+                    owner,
+                    lease_expires_at,
+                    now.isoformat(),
+                    now.isoformat(),
+                    now.isoformat(),
+                    task_id,
+                ),
+            )
+            claimed["value"] = result.rowcount == 1
+            return
         if allow_recover:
             status_clause = (
                 "(status IN ('queued','submitting','interrupted','failed') "
@@ -4505,7 +4555,11 @@ def claim_generation_task_for_recovery(task_id, provider_task_id, owner, lease_s
             "UPDATE generation_tasks SET status='running',phase='已领取查询租约',"
             "lease_owner=?,lease_expires_at=?,heartbeat_at=?,updated_at=?,"
             "error='',finished_at='' "
-            "WHERE id=? AND provider_task_id=? AND status IN ('queued','submitting','interrupted')",
+            "WHERE id=? AND provider_task_id=? "
+            "AND (status IN ('queued','submitting','interrupted') "
+            "OR status='running' AND ("
+            "lease_owner IS NULL OR lease_owner='' "
+            "OR lease_expires_at IS NULL OR lease_expires_at<=?))",
             (
                 owner,
                 lease_expires_at,
@@ -4513,6 +4567,7 @@ def claim_generation_task_for_recovery(task_id, provider_task_id, owner, lease_s
                 now_text,
                 task_id,
                 provider_task_id,
+                now_text,
             ),
         )
         if result.rowcount == 1:
@@ -4551,15 +4606,13 @@ def renew_generation_task_lease(task_id, owner, lease_seconds=45):
     def write(con):
         result = con.execute(
             "UPDATE generation_tasks SET lease_expires_at=?,heartbeat_at=?,updated_at=? "
-            "WHERE id=? AND status='running' AND lease_owner=? "
-            "AND lease_expires_at IS NOT NULL AND lease_expires_at>?",
+            "WHERE id=? AND status='running' AND lease_owner=?",
             (
                 lease_expires_at,
                 now.isoformat(),
                 now.isoformat(),
                 task_id,
                 owner,
-                now.isoformat(),
             ),
         )
         renewed["value"] = result.rowcount == 1
@@ -4587,18 +4640,54 @@ def release_generation_task_lease(task_id, owner):
 def expire_stale_generation_tasks(now=None):
     current = now or datetime.now(timezone.utc)
     now_iso = current.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    launch_grace_since = (
+        current - timedelta(seconds=120)
+    ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     expired = []
-
+    journal_by_task = {}
+    try:
+        for entry in list_provider_task_journal():
+            task_id = str(entry.get("taskId") or "").strip()
+            provider_task_id = str(entry.get("providerTaskId") or "").strip()
+            if task_id and provider_task_id:
+                journal_by_task[task_id] = provider_task_id
+    except Exception:
+        journal_by_task = {}
     def write(con):
         rows = con.execute(
-            "SELECT id,status,phase,provider_task_id,lease_owner FROM generation_tasks "
+            "SELECT id,node_id,status,phase,provider_task_id,lease_owner,created_at "
+            "FROM generation_tasks "
             "WHERE status IN ('queued','submitting','running') "
             "AND (lease_expires_at IS NULL OR lease_expires_at='' OR lease_expires_at<=?) "
             "ORDER BY created_at ASC",
             (now_iso,),
         ).fetchall()
         for row in rows:
-            task_id, status, phase, provider_task_id, lease_owner = row
+            (
+                task_id,
+                node_id,
+                status,
+                phase,
+                provider_task_id,
+                lease_owner,
+                created_at,
+            ) = row
+            if status in {"queued", "submitting"} and str(created_at or "") > launch_grace_since:
+                # Worker thread startup is asynchronous. A fresh queued row is
+                # not stale merely because no lease exists yet.
+                continue
+            if not str(provider_task_id or "").strip():
+                provider_task_id = journal_by_task.get(task_id, "")
+                if provider_task_id:
+                    # The callback/journal can land after a blocked supplier
+                    # request but before SQLite receives the provider id. Never
+                    # classify that task as "no provider task" while the
+                    # durable journal already proves otherwise.
+                    con.execute(
+                        "UPDATE generation_tasks SET provider_task_id=?,"
+                        "updated_at=? WHERE id=? AND COALESCE(provider_task_id,'')=''",
+                        (provider_task_id, now_iso, task_id),
+                    )
             has_provider_task = bool(str(provider_task_id or "").strip())
             next_status = "interrupted" if has_provider_task else "failed"
             next_phase = "结果待确认" if has_provider_task else "执行失联"
@@ -4920,6 +5009,28 @@ def list_queued_generation_tasks(limit=100):
     return [dict(zip(columns, row)) for row in rows]
 
 
+def get_active_generation_task_for_node(project_id, node_id):
+    """Return a truly active task for one node, never a terminal duplicate."""
+    if not project_id or not node_id:
+        return None
+    con = _connect()
+    columns = [
+        item[0]
+        for item in con.execute(
+            "SELECT * FROM generation_tasks LIMIT 0"
+        ).description
+    ]
+    row = con.execute(
+        "SELECT * FROM generation_tasks "
+        "WHERE project_id=? AND node_id=? "
+        "AND status IN ('queued','submitting','running') "
+        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (project_id, node_id),
+    ).fetchone()
+    con.close()
+    return dict(zip(columns, row)) if row else None
+
+
 def list_resumable_video_tasks(limit=300):
     """Return unresolved video tasks that need a same-task provider query."""
     con = _connect()
@@ -4989,7 +5100,7 @@ def list_delivery_pending_tasks(limit=100):
     columns = [item[0] for item in con.execute("SELECT * FROM generation_tasks LIMIT 0").description]
     rows = con.execute(
         "SELECT * FROM generation_tasks "
-        "WHERE status IN ('running','interrupted') "
+        "WHERE status IN ('running','interrupted','succeeded') "
         "AND delivery_status IN ('pending','materializing') "
         "ORDER BY updated_at DESC LIMIT ?",
         (max(1, min(int(limit or 100), 500)),),
@@ -5501,3 +5612,66 @@ def _maybe_snapshot(con, pid, title, payload, revision, mode="auto", now=None):
         age = AUTO_SNAPSHOT_MIN_INTERVAL_SECONDS
     if age >= AUTO_SNAPSHOT_MIN_INTERVAL_SECONDS:
         _snapshot(con, pid, title, payload, revision, kind="auto")
+
+
+def storage_stats() -> dict:
+    """当前库的页占用情况（只读，用于判断是否需要回收）。"""
+    path = _db_path()
+    if not os.path.exists(path):
+        return {"path": path, "page_count": 0, "free_pages": 0, "file_bytes": 0,
+                "free_bytes": 0, "free_ratio": 0.0}
+    con = None
+    try:
+        con = sqlite3.connect(path, timeout=5)
+        page_size = int(con.execute("PRAGMA page_size").fetchone()[0] or 0)
+        page_count = int(con.execute("PRAGMA page_count").fetchone()[0] or 0)
+        free_pages = int(con.execute("PRAGMA freelist_count").fetchone()[0] or 0)
+    except sqlite3.Error:
+        # 库被独占（VACUUM / 长事务）时不能把异常抛给后台线程或接口，
+        # 统计不到就当"无需回收"，下一轮再看。
+        return {"path": path, "page_count": 0, "free_pages": 0, "file_bytes": 0,
+                "free_bytes": 0, "free_ratio": 0.0}
+    finally:
+        if con is not None:
+            con.close()
+    free_bytes = free_pages * page_size
+    return {
+        "path": path,
+        "page_count": page_count,
+        "free_pages": free_pages,
+        "page_size": page_size,
+        "file_bytes": page_count * page_size,
+        "free_bytes": free_bytes,
+        "free_ratio": (free_pages / page_count) if page_count else 0.0,
+    }
+
+
+def maintain_storage(min_free_ratio: float = 0.35, min_free_bytes: int = 32 * 1024 * 1024) -> int:
+    """空闲页过多时 VACUUM 回收磁盘，返回释放的字节数。
+
+    为什么需要它：项目仍按整包 `payload_json` 覆盖写（每次节点编辑重写整份 JSON），
+    SQLite 会把旧页放进 freelist 并且**永不归还操作系统**。实测 175MB 的库里
+    有 145MB 是空闲页（83%），文件只涨不缩。VACUUM 会重建库文件把空洞还回去。
+
+    触发条件保守：只有「空闲占比 > min_free_ratio 且空闲 > min_free_bytes」才执行，
+    避免为几 MB 碎片去锁库。VACUUM 需要短暂独占写锁，调用方应放在低峰或启动后台线程里。
+    """
+    path = _db_path()
+    if not os.path.exists(path):
+        return 0
+    stats = storage_stats()
+    if stats["free_ratio"] < min_free_ratio or stats["free_bytes"] < min_free_bytes:
+        return 0
+    before = stats["file_bytes"]
+    with _SCHEMA_LOCK:
+        con = sqlite3.connect(path, timeout=60, isolation_level=None)
+        try:
+            con.execute("PRAGMA busy_timeout=60000")
+            con.execute("VACUUM")
+        except sqlite3.OperationalError:
+            # 有长事务在跑（大导入 / 生成落盘），下一轮再收。
+            return 0
+        finally:
+            con.close()
+    after = storage_stats()["file_bytes"]
+    return max(0, before - after)

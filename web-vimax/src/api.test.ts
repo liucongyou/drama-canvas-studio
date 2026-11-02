@@ -10,6 +10,18 @@ describe('project event cursor', () => {
 });
 
 describe('friendlyMediaError', () => {
+  it('describes a 5xx submission without a task id as unconfirmed, not definitely rejected', () => {
+    const message = friendlyMediaError(
+      '供应商请求返回 HTTP 503，但没有返回任务号；'
+      + '提交结果未确认，可能已被供应商受理。'
+      + '详情：{"error":{"code":"server_error","message":"Task request failed"}}',
+    );
+    expect(message).toContain('未确认');
+    expect(message).toContain('可能已经受理');
+    expect(message).toContain('不会自动重提');
+    expect(message).not.toContain('供应商提交失败');
+  });
+
   it('translates persisted write/read timeout errors before rendering', () => {
     const write = friendlyMediaError('供应商接口连接失败：The write operation timed out');
     expect(write).toContain('后台仍在继续处理');
@@ -48,6 +60,25 @@ describe('friendlyMediaError', () => {
       providerTaskStatus: 'completed',
       lastError: '',
     })).toBe(false);
+  });
+});
+
+describe('friendlyRequestError', () => {
+  it('does not label a canvas save 502 as a provider failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: 'internal server error',
+    }), {
+      status: 502,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    await expect(
+      saveCanvasMediaNodePositions(
+        'project-1',
+        [{id: 'node-1', position: {x: 20, y: 30}}],
+        'EP001',
+      ),
+    ).rejects.toThrow(/服务端暂时无法完成请求/);
   });
 });
 
@@ -206,6 +237,58 @@ describe('api request recovery', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('signal is aborted without reason', 'AbortError')));
 
     await expect(getSessions()).rejects.toThrow('本地服务响应超时，正在自动重连，请稍后重试。');
+  });
+
+  it('gives up on a request that never answers instead of hanging forever', async () => {
+    // 没有超时的 fetch 在网络半开时会永久挂起：Promise 既不 resolve 也不 reject，
+    // 调用方 finally 不执行。生成链路一旦踩到，卡片永久停在「生成中」且该节点
+    // 在本次会话内再也提交不上去。这里用假计时器把 60 秒推过去，锁住兜底行为。
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('signal is aborted without reason', 'AbortError'));
+        });
+      }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = getModelCatalog().catch((error) => String(error));
+      await vi.advanceTimersByTimeAsync(60_000);
+      const message = await pending;
+
+      expect(message).toContain('60 秒没有响应');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][1]?.signal).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the timeout active while a stalled response body is read', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+        const body = new ReadableStream({
+          start(controller) {
+            init?.signal?.addEventListener('abort', () => {
+              controller.error(new DOMException('body aborted', 'AbortError'));
+            });
+          },
+        });
+        return Promise.resolve(new Response(body, {
+          status: 200,
+          headers: {'Content-Type': 'application/json'},
+        }));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = getModelCatalog().catch((error) => String(error));
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await expect(pending).resolves.toContain('60 秒没有响应');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('maps a reference-count validation error before the generic HTTP 500 message', async () => {
@@ -475,6 +558,88 @@ describe('api request recovery', () => {
       status: 'failed',
       mediaUrl: '/uploads/previous-video.mp4',
     });
+  });
+
+  it('keeps a failed result after refresh instead of flipping it to done', async () => {
+    // Regression: the workspace projection used to return `status: 'done'`
+    // for any node that had a mediaUrl, wiping the persisted failure and its
+    // reason. After a page refresh the card looked successful again even
+    // though the supplier had rejected the new run (e.g. HTTP 503 queue full).
+    const failedNode = {
+      id: 'video-failed',
+      type: 'video',
+      title: '段3 · 念一遍',
+      position: {x: 0, y: 0},
+      metadata: {
+        prompt: '重新生成',
+        status: 'failed',
+        content: '/uploads/previous-video.mp4',
+        lastError: '供应商接口 HTTP 503：供应商视频队列已满，本次未创建任务',
+        providerTaskStatus: 'failed',
+        providerTaskPhase: '生成失败',
+        params: {ratio: '9:16', model: 'agnes-video-2.5-flash'},
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+      const target = String(url);
+      const body = target.includes('/api/generation-tasks')
+        ? {tasks: []}
+        : target.includes('/workspace-index')
+          ? {
+              id: 'project-failed-refresh',
+              title: '失败刷新',
+              revision: 1,
+              updatedAt: '2026-11-01T00:00:00Z',
+              projectMeta: {},
+              episodes: [{
+                id: 'EP001',
+                title: '第01集',
+                nodeIds: [failedNode.id],
+              }],
+              episodeViewports: {},
+            }
+          : target.includes('/workspace-nodes')
+            ? {
+                episodeId: 'EP001',
+                episode: {
+                  id: 'EP001',
+                  title: '第01集',
+                  nodeIds: [failedNode.id],
+                },
+                nodes: [failedNode],
+                connections: [],
+                layouts: {},
+                notes: [],
+              }
+            : {
+                id: 'project-failed-refresh',
+                title: '失败刷新',
+                payload: {
+                  nodes: [failedNode],
+                  connections: [],
+                  episodeImports: [{
+                    id: 'EP001',
+                    title: '第01集',
+                    nodeIds: [failedNode.id],
+                    videoNodeIds: [failedNode.id],
+                  }],
+                },
+              };
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    }));
+
+    const workspace = await getCanvasWorkspace(
+      'project-failed-refresh',
+      'EP001',
+    );
+    expect(workspace.mediaNodes[0]).toMatchObject({
+      status: 'failed',
+      mediaUrl: '/uploads/previous-video.mp4',
+    });
+    expect(workspace.mediaNodes[0].lastError).toContain('队列已满');
   });
 
   it('treats a newly created empty project as an editable canvas', async () => {
@@ -794,7 +959,7 @@ describe('api request recovery', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it('turns a stale generating node into a terminal card in the initial read', async () => {
+  it('renders the backend node row without deriving card state from tasks', async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
       const body = String(url).includes('/api/generation-tasks')
         ? {
@@ -834,13 +999,13 @@ describe('api request recovery', () => {
     const workspace = await getCanvasWorkspace('project-1', 'EP001');
 
     expect(workspace.mediaNodes[0]).toMatchObject({
-      status: 'failed',
-      lastError: '执行线程已失联且没有供应商任务号；本次可安全重新生成。',
-      providerTaskStatus: 'failed',
+      status: 'generating',
     });
+    expect(workspace.tasks).toHaveLength(1);
+    expect(workspace.tasks[0].status).toBe('failed');
   });
 
-  it('keeps a persisted interrupted task visible as generating', async () => {
+  it('returns task progress without changing the backend node row', async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
       const body = String(url).includes('/api/generation-tasks')
         ? {
@@ -882,10 +1047,9 @@ describe('api request recovery', () => {
 
     expect(workspace.mediaNodes[0]).toMatchObject({
       status: 'generating',
-      providerTaskStatus: 'queued',
-      providerTaskPhase: '等待恢复',
-      providerTaskId: 'provider-image-1',
     });
+    expect(workspace.tasks[0].provider_task_id).toBe('provider-image-1');
+    expect(workspace.tasks[0].status).toBe('interrupted');
   });
 
   it('shows a downloaded image even when task reconciliation is still pending', async () => {

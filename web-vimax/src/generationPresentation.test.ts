@@ -8,8 +8,9 @@ import {
   isGenerationTaskActive,
   latestTaskByNode,
   liveGenerationCount,
+  mediaGenerationVisualState,
   projectGenerationState,
-  retainOptimisticGenerationIds,
+  retainOptimisticGenerationSubmissions,
 } from './generationPresentation';
 import type {GenerationTask} from './api';
 
@@ -164,49 +165,71 @@ describe('generation presentation', () => {
     expect([...activeGenerationNodeIds([fetching])]).toEqual(['node-fetching']);
   });
 
-  it('keeps a submitted node active until its persisted task appears', () => {
+  it('keeps a submitted node active until its exact persisted task appears', () => {
     const startedAt = '2026-10-31T00:00:00.000Z';
-    const retained = retainOptimisticGenerationIds(
+    const retained = retainOptimisticGenerationSubmissions(
       [],
-      new Map([['node-a', startedAt]]),
+      new Map([['node-a', {startedAt, operationId: 'operation-new'}]]),
       Date.parse('2026-10-31T00:00:05.000Z'),
     );
     expect([...retained.keys()]).toEqual(['node-a']);
   });
 
-  it('releases the optimistic lock once the persisted task owns the node', () => {
+  it('does not let an older terminal task hide a new submission', () => {
+    const startedAt = '2026-10-31T00:00:00.000Z';
+    const oldSucceeded: GenerationTask = {
+      id: 'old-succeeded',
+      project_id: 'project',
+      node_id: 'node-a',
+      client_operation_id: 'operation-old',
+      title: '段A',
+      status: 'succeeded',
+      created_at: '2026-10-31T00:00:01.000Z',
+      updated_at: '2026-10-31T00:00:04.000Z',
+    };
+    const retained = retainOptimisticGenerationSubmissions(
+      [oldSucceeded],
+      new Map([['node-a', {startedAt, operationId: 'operation-new'}]]),
+      Date.parse('2026-10-31T00:00:05.000Z'),
+    );
+    expect(retained.get('node-a')?.operationId).toBe('operation-new');
+  });
+
+  it('releases the optimistic lock once the exact persisted task appears', () => {
     const startedAt = '2026-10-31T00:00:00.000Z';
     const task: GenerationTask = {
       id: 'task-a',
       project_id: 'project',
       node_id: 'node-a',
+      client_operation_id: 'operation-new',
       title: '段A',
       status: 'running',
       created_at: '2026-10-31T00:00:01.000Z',
       updated_at: '2026-10-31T00:00:02.000Z',
     };
-    const retained = retainOptimisticGenerationIds(
+    const retained = retainOptimisticGenerationSubmissions(
       [task],
-      new Map([['node-a', startedAt]]),
+      new Map([['node-a', {startedAt, operationId: 'operation-new'}]]),
       Date.parse('2026-10-31T00:00:05.000Z'),
     );
     expect(retained.size).toBe(0);
   });
 
-  it('lets an explicitly failed persisted task end a stale local submission', () => {
+  it('lets the exact failed persisted task end the local submission', () => {
     const startedAt = '2026-10-31T00:00:00.000Z';
     const failed: GenerationTask = {
       id: 'failed-a',
       project_id: 'project',
       node_id: 'node-a',
+      client_operation_id: 'operation-new',
       title: '段A',
       status: 'failed',
       created_at: '2026-10-31T00:00:01.000Z',
       updated_at: '2026-10-31T00:00:02.000Z',
     };
-    const retained = retainOptimisticGenerationIds(
+    const retained = retainOptimisticGenerationSubmissions(
       [failed],
-      new Map([['node-a', startedAt]]),
+      new Map([['node-a', {startedAt, operationId: 'operation-new'}]]),
       Date.parse('2026-10-31T00:00:05.000Z'),
     );
     expect(retained.size).toBe(0);
@@ -216,9 +239,82 @@ describe('generation presentation', () => {
     const startedAt = '2026-10-31T00:00:00.000Z';
     const projection = projectGenerationState(
       [],
-      new Map([['node-a', startedAt]]),
+      new Map([['node-a', {startedAt, operationId: 'operation-new'}]]),
       Date.parse('2026-10-31T00:00:05.000Z'),
     );
     expect([...projection.activeNodeIds]).toEqual(['node-a']);
+  });
+
+  it.each(['image', 'audio', 'video'])(
+    'shows the same full busy mask for %s regeneration',
+    () => {
+      const state = mediaGenerationVisualState({
+        status: 'generating',
+        mediaUrl: '/uploads/previous-result',
+        generationBusy: true,
+      });
+      expect(state.hasRenderableMedia).toBe(true);
+      expect(state.busy).toBe(true);
+      expect(state.resumableInBackground).toBe(false);
+      expect(state.submitLocked).toBe(true);
+    },
+  );
+
+  it('shows the full mask for a first generation without previous media', () => {
+    const state = mediaGenerationVisualState({
+      status: 'generating',
+      generationBusy: true,
+    });
+    expect(state.busy).toBe(true);
+    expect(state.resumableInBackground).toBe(false);
+    expect(state.submitLocked).toBe(true);
+  });
+
+  it('unlocks the card after a terminal task clears the busy state', () => {
+    const state = mediaGenerationVisualState({
+      status: 'failed',
+      mediaUrl: '/uploads/previous-result',
+      generationBusy: false,
+    });
+    expect(state.busy).toBe(false);
+    expect(state.resumableInBackground).toBe(false);
+    expect(state.submitLocked).toBe(false);
+  });
+
+  it('does not turn a backend failure into generating from a provider string', () => {
+    const state = mediaGenerationVisualState({
+      status: 'failed',
+      mediaUrl: '/uploads/previous-result',
+      providerLive: true,
+    });
+    expect(state.busy).toBe(false);
+    expect(state.failed).toBe(true);
+    expect(state.submitLocked).toBe(false);
+  });
+
+  it('does not turn a backend success into generating from a stale task', () => {
+    const state = mediaGenerationVisualState({
+      status: 'done',
+      mediaUrl: '/uploads/result',
+      providerLive: true,
+    });
+    expect(state.busy).toBe(false);
+    expect(state.failed).toBe(false);
+    expect(state.submitLocked).toBe(false);
+  });
+
+  it('keeps the card submit button locked while a background version is running', () => {
+    const button = {
+      disabled: mediaGenerationVisualState({
+        status: 'generating',
+        mediaUrl: '/uploads/previous-result',
+        generationBusy: true,
+      }).submitLocked,
+      title: '生成中，不能重复提交',
+    };
+    expect(button).toEqual({
+      disabled: true,
+      title: '生成中，不能重复提交',
+    });
   });
 });

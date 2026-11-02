@@ -2,6 +2,7 @@
 """Control-plane registry for tenants, one-time invites and sessions."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -134,6 +135,13 @@ def _create_schema(con: sqlite3.Connection) -> None:
             ON tenant_storage_bindings(bucket, region);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_storage_access_key
             ON tenant_storage_bindings(access_key_fingerprint);
+
+        CREATE TABLE IF NOT EXISTS tenant_preferences(
+            tenant_id TEXT PRIMARY KEY,
+            preferences_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        );
         """
     )
     session_columns = {
@@ -472,6 +480,48 @@ def touch_tenant(tenant_id: str) -> None:
     )
     con.commit()
     con.close()
+
+
+def get_tenant_preferences(tenant_id: str) -> dict[str, Any]:
+    con = _connect()
+    row = con.execute(
+        "SELECT preferences_json FROM tenant_preferences WHERE tenant_id=?",
+        (str(tenant_id),),
+    ).fetchone()
+    con.close()
+    if not row:
+        return {}
+    try:
+        value = json.loads(row["preferences_json"] or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def update_tenant_preferences(
+    tenant_id: str,
+    updates: dict[str, Any],
+) -> dict[str, Any]:
+    tenant = get_tenant_by_id(tenant_id)
+    if not tenant:
+        raise ValueError("租户不存在")
+    current = get_tenant_preferences(tenant_id)
+    current.update(updates)
+    con = _connect()
+    con.execute(
+        "INSERT INTO tenant_preferences(tenant_id,preferences_json,updated_at)"
+        " VALUES(?,?,?) ON CONFLICT(tenant_id) DO UPDATE SET"
+        " preferences_json=excluded.preferences_json,"
+        " updated_at=excluded.updated_at",
+        (
+            str(tenant_id),
+            json.dumps(current, ensure_ascii=False, separators=(",", ":")),
+            _iso(),
+        ),
+    )
+    con.commit()
+    con.close()
+    return current
 
 
 def create_invite(

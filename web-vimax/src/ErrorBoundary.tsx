@@ -19,12 +19,14 @@ import {notify, subscribeToToasts, type ToastMessage} from './toast';
 /** 各作用域最近一次错误，供"复制错误详情"使用（刷新后仍在 sessionStorage 里） */
 const LAST_ERROR_KEY = 'vimax.lastError';
 
-type Scope = 'root' | 'canvas';
+type Scope = 'root' | 'canvas' | 'dialog';
 
 type BoundaryProps = {
   scope?: Scope;
   /** 面板标题里的对象名，如"画布" */
   label?: string;
+  /** 弹窗作用域专用：崩溃后让用户直接关掉它，回到主界面继续工作 */
+  onDismiss?: () => void;
   children: ReactNode;
 };
 
@@ -132,7 +134,9 @@ export class ErrorBoundary extends Component<BoundaryProps, BoundaryState> {
     const exhausted = this.state.retries >= 2;
     const title = scope === 'canvas'
       ? `${this.props.label || '画布'}渲染失败`
-      : '界面出了点问题';
+      : scope === 'dialog'
+        ? `${this.props.label || '这个弹窗'}打不开`
+        : '界面出了点问题';
 
     return (
       <div className={scope === 'canvas' ? 'eb-inline' : 'eb-backdrop'}>
@@ -141,14 +145,23 @@ export class ErrorBoundary extends Component<BoundaryProps, BoundaryState> {
             <span className="eb-ico" aria-hidden="true"><AlertTriangle size={17} strokeWidth={2} /></span>
             <div className="eb-head-text">
               <strong>{title}</strong>
-              <span>已经拦下来了，没有白屏。数据都在服务端，刷新不会丢。</span>
+              <span>
+                {scope === 'dialog'
+                  ? '已经拦下来了，主界面还能正常用。关掉它就能继续，数据都在服务端。'
+                  : '已经拦下来了，没有白屏。数据都在服务端，刷新不会丢。'}
+              </span>
             </div>
           </div>
 
           <p className="eb-msg" title={message}>{message}</p>
 
           <div className="eb-actions">
-            <button type="button" className="eb-btn is-primary" onClick={this.reload}>
+            {scope === 'dialog' && this.props.onDismiss && (
+              <button type="button" className="eb-btn is-primary" onClick={this.props.onDismiss}>
+                <X size={13} strokeWidth={2.2} aria-hidden="true" /> 关掉弹窗继续
+              </button>
+            )}
+            <button type="button" className={`eb-btn${scope === 'dialog' ? '' : ' is-primary'}`} onClick={this.reload}>
               <RefreshCw size={13} strokeWidth={2.2} aria-hidden="true" /> 重新加载
             </button>
             <button

@@ -14,16 +14,49 @@ export default defineConfig({
       '/uploads': {target: 'http://127.0.0.1:8890', changeOrigin: true},
     },
   },
+  preview: {
+    port: 4174,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8890',
+        changeOrigin: true,
+        configure(proxy) {
+          proxy.on('proxyReq', (proxyRequest) => {
+            // Keep the browser's Origin. Rewriting Host without the actual
+            // public origin makes the accounts backend correctly reject
+            // non-GET requests as cross-site.
+            proxyRequest.removeHeader('origin');
+          });
+        },
+      },
+      '/uploads': {target: 'http://127.0.0.1:8890', changeOrigin: true},
+    },
+  },
   build: {
     target: 'es2022',
     rollupOptions: {
       output: {
-        manualChunks: {
-          'react-vendor': ['react', 'react-dom', 'react-dom/client'],
-          'flow-vendor': ['@xyflow/react'],
-          'icon-vendor': ['lucide-react'],
-          // P2-4：文档渲染与配置解析大库独立缓存；若后续视图懒加载还会自动从主包分离
-          'markdown-vendor': ['react-markdown', 'remark-gfm', 'yaml'],
+        // 用函数而不是「包名数组」：数组形式下 react 会被 @xyflow/react 的依赖
+        // 一起并进 flow-vendor，react-vendor 只剩一个 177 字节的 re-export 空壳
+        // （实测产物 react-vendor = 177B），等于没拆。按真实模块路径归类才能把
+        // react/react-dom/scheduler 稳定切出来，让它们单独长期缓存。
+        manualChunks(id: string) {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('@xyflow') || id.includes('d3-')) return 'flow-vendor';
+          if (id.includes('lucide-react')) return 'icon-vendor';
+          if (
+            id.includes('react-markdown')
+            || id.includes('remark-')
+            || id.includes('micromark')
+            || id.includes('/yaml/')
+          ) return 'markdown-vendor';
+          if (
+            id.includes('/react/')
+            || id.includes('react-dom')
+            || id.includes('/scheduler/')
+            || id.includes('use-sync-external-store')
+          ) return 'react-vendor';
+          return undefined;
         },
       },
     },
