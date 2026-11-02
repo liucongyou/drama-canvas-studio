@@ -784,14 +784,12 @@ describe('连线流光（屏幕像素恒定：长度 + 宽度同口径）', () =
     expect(linked && linked[0]).not.toMatch(/stroke:/);
   });
 
-  it('★ 连线层有独立绘制边界并提升为合成层，动画不会重绘整张画布', () => {
+  it('★ 连线层禁止 paint containment：该 SVG 实测为 0×0，会被整体裁掉', () => {
     const edgeLayer = stylesSource.match(
       /\.canvas-flow \.react-flow__edges \{[^}]*\}/,
     );
     expect(edgeLayer).toBeTruthy();
-    expect(edgeLayer![0]).toMatch(/contain:\s*paint;/);
-    expect(edgeLayer![0]).toMatch(/transform:\s*translateZ\(0\);/);
-    expect(edgeLayer![0]).toMatch(/will-change:\s*transform;/);
+    expect(edgeLayer![0]).not.toMatch(/contain:\s*paint;/);
   });
 
   // ★ 连线状态色：常态灰；悬停、选中、执行中必须是三支不同令牌。

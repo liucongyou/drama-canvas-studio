@@ -3,6 +3,17 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.02.19',
+    date: '2026-11-02',
+    releasedAt: '2026-11-02 22:34:00 +08:00',
+    title: '紧急修复：恢复画布连线显示',
+    changes: [
+      '撤销会让连线整体消失的 SVG paint containment。React Flow 的连线 SVG 实际尺寸为 0×0，paint containment 会按零尺寸裁剪全部路径。',
+      '连线、流光三层的视觉效果和交互全部恢复。',
+      '增加回归断言，禁止再次在这个零尺寸连线层上启用 paint containment。',
+    ],
+  },
+  {
     version: '2026.11.02.18',
     date: '2026-11-02',
     releasedAt: '2026-11-02 22:25:00 +08:00',
