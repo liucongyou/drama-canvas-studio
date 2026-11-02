@@ -116,9 +116,13 @@
   --v-accent-mid-hover: #7a7ff2;
   /* 中性蓝灰：连线常态基色，与本主题同色相（H≈213） */
   --v-edge-tone: #6b7684;
-  /* 连线交互高亮是画布结构色，不跟随按钮强调色调整。
-     ★ 悬停和选中**共用这一支**（用户要求两者同色）。 */
-  --v-edge-highlight: #4d9fff;
+  /* 连线交互状态色：悬停、选中、执行中各自可辨，但仍属于同一冷蓝体系。
+     只改基线/端口/外发光；彗星的近白头部与浅青尾焰保持独立层次。 */
+  --v-edge-hover: #38bdf8;
+  --v-edge-selected: #56ccf2;
+  --v-edge-running: #22d3ee;
+  /* 旧组件/旧主题的兼容别名，新逻辑不再直接依赖。 */
+  --v-edge-highlight: var(--v-edge-selected);
 
   /* ── 语义色（各一支，亮度对齐；不要再用 #f87171/#3ecf8e 这类旧值） ──
      ★ 用户原话「这个删除粉色 怎么看着都不协调」——
@@ -204,6 +208,10 @@ html[data-theme='dark'][data-variant='forest'] {
   --v-accent-mid: #72a78f;
   --v-accent-mid-hover: #86bca3;
   --v-edge-tone: #73897e;
+  --v-edge-hover: #43c7d4;
+  --v-edge-selected: #5fd8df;
+  --v-edge-running: #2fc4cf;
+  --v-edge-highlight: var(--v-edge-selected);
   --v-success: #7bc49d;
   --v-success-soft: rgba(123, 196, 157, 0.12);
   --v-warn: #d4b676;
@@ -258,6 +266,10 @@ html[data-theme='dark'][data-variant='copper'] {
   --v-accent-mid: #b38262;
   --v-accent-mid-hover: #c59674;
   --v-edge-tone: #8a7a6f;
+  --v-edge-hover: #55c5db;
+  --v-edge-selected: #74d6e5;
+  --v-edge-running: #38bbd3;
+  --v-edge-highlight: var(--v-edge-selected);
   --v-success: #8bb18f;
   --v-success-soft: rgba(139, 177, 143, 0.12);
   --v-warn: #d2aa68;
@@ -312,6 +324,10 @@ html[data-theme='dark'][data-variant='aigc'] {
   --v-accent-mid: #6d9bd1;
   --v-accent-mid-hover: #84afe2;
   --v-edge-tone: #6f8299;
+  --v-edge-hover: #38bdf8;
+  --v-edge-selected: #56ccf2;
+  --v-edge-running: #22d3ee;
+  --v-edge-highlight: var(--v-edge-selected);
   --v-success: #6fd0b0;
   --v-success-soft: rgba(111, 208, 176, 0.12);
   --v-warn: #dfb777;
@@ -366,6 +382,10 @@ html[data-theme='light'][data-variant='light'] {
   --v-accent-mid: #4a74b6;
   --v-accent-mid-hover: #6289c6;
   --v-edge-tone: #7f8ea2;
+  --v-edge-hover: #0ea5e9;
+  --v-edge-selected: #0284c7;
+  --v-edge-running: #0891b2;
+  --v-edge-highlight: var(--v-edge-selected);
   --v-success: #2f8a5c;
   --v-success-soft: rgba(47, 138, 92, 0.1);
   --v-warn: #b5781f;
@@ -1448,16 +1468,24 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
   opacity: .42;
   transition: opacity 140ms ease, stroke 140ms ease;
 }
-/* 悬停 = 选中 = 同一个蓝（用户原话「把悬停连线颜色改成选中连线颜色那么难吗？」）。
-   一个值，不另造"更亮一档"的第三色（上一版加的专用 hover 令牌已删除）。 */
-.react-flow__edge:hover .react-flow__edge-path,
-.react-flow__edge.selected .react-flow__edge-path {
-  stroke: var(--v-edge-highlight) !important;
+/* 三个交互状态各走独立令牌；执行中优先级最高，悬停/选中不掩盖运行态。 */
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--v-edge-hover) !important;
   opacity: 1;
 }
-.react-flow__edge:hover .canvas-edge-source-dot,
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--v-edge-selected) !important;
+  opacity: 1;
+}
+.canvas-flow .react-flow__edge:has(.canvas-edge-flow.is-busy:not(.is-linked)) .react-flow__edge-path {
+  stroke: var(--v-edge-running) !important;
+  opacity: 1;
+}
+.react-flow__edge:hover .canvas-edge-source-dot {
+  fill: var(--v-edge-hover) !important;
+}
 .react-flow__edge.selected .canvas-edge-source-dot {
-  fill: var(--v-edge-highlight) !important;
+  fill: var(--v-edge-selected) !important;
 }
 .react-flow__handle {
   background: var(--v-border-strong) !important;

@@ -9119,15 +9119,12 @@ body[data-canvas-interacting='1'] .canvas-edge-spark {
   display: none !important;
 }
 
-/* ===== 连线配色（第 31 轮定稿）=====
-   **两档，就两档**：
-     常态      —— 灰底稿（--v-edge-tone #6b7684，opacity .42），退到背景里
-     悬停/选中 —— 同一个蓝（--v-edge-highlight #4d9fff，opacity 1）
-   用户原话：「把悬停连线颜色改成选中连线颜色那么难吗？」——
-   悬停和选中就是一个值，不搞"更亮一档"的第三色。
-   ★ 常态化必须明显不同，否则悬停就看不出变化（这就是上一版"颜色没变"的原因：
-     我把常态化也做成了同一个蓝，只剩透明度在动，肉眼读不出来）。
-   ★ 历史沿革：三种色相（冷灰绿/中性灰/琥珀金）→ 灰蓝 + 交互变蓝 → 全蓝（失败）→ 现在这套。 */
+/* ===== 连线配色 =====
+     常态   —— 灰底稿（--v-edge-tone，opacity .42），退到背景里
+     悬停   —— 天蓝（--v-edge-hover）
+     选中   —— 冰蓝（--v-edge-selected）
+     执行中 —— 青蓝（--v-edge-running）
+   三个状态只在冷蓝体系内区分，外圈流光仍保留近白彗头与浅青焰尾。 */
 .canvas-edge-auto,
 .canvas-edge-user,
 .canvas-edge-chain {
@@ -9135,17 +9132,12 @@ body[data-canvas-interacting='1'] .canvas-edge-spark {
   --edge-tone: var(--v-edge-tone, #6b7684);
   --edge-flow: 0.26;             /* 流光也一起压淡，避免"暗线 + 亮流光"的割裂感 */
 }
-/* 悬停 / 选中：**同一个颜色**（用户原话「把悬停连线颜色改成选中连线颜色那么难吗？」）。
-   两者都吃 --v-edge-highlight，一个值、不另造第二档。
-   代价是常态化必须明显不同 —— 所以常态是灰底稿（--v-edge-tone），
-   鼠标划过去从灰变蓝，这才是"看起来变了"的那一下。 */
 .react-flow__edge:hover {
-  --edge-tone: var(--v-edge-highlight, #4d9fff);
+  --edge-tone: var(--v-edge-hover, #38bdf8);
   --edge-flow: 0.9;
 }
-/* 选中：和悬停完全同色，只更亮更粗 + 外发光（这是"当前操作对象"） */
 .react-flow__edge.selected {
-  --edge-tone: var(--v-edge-highlight, #4d9fff);
+  --edge-tone: var(--v-edge-selected, #56ccf2);
   --edge-flow: 1;
 }
 /* xyflow 自带的 `.react-flow__edge.selected .react-flow__edge-path { stroke: #555 }`
@@ -9157,13 +9149,13 @@ body[data-canvas-interacting='1'] .canvas-edge-spark {
   transition: stroke 140ms ease-out;
 }
 .canvas-flow .react-flow__edge:hover .react-flow__edge-path {
-  stroke: var(--edge-tone, #4d9fff);
+  stroke: var(--edge-tone, #38bdf8);
 }
 .canvas-flow .react-flow__edge.selected .react-flow__edge-path {
-  stroke: var(--edge-tone, #4d9fff);
+  stroke: var(--edge-tone, #56ccf2);
 }
-.canvas-flow .react-flow__edge.selected .canvas-edge-source-dot { fill: var(--edge-tone, #4d9fff); }
-.canvas-flow .react-flow__edge:hover .canvas-edge-source-dot { fill: var(--edge-tone, #4d9fff); }
+.canvas-flow .react-flow__edge.selected .canvas-edge-source-dot { fill: var(--edge-tone, #56ccf2); }
+.canvas-flow .react-flow__edge:hover .canvas-edge-source-dot { fill: var(--edge-tone, #38bdf8); }
 
 /* 彗身（中段）：三层里的"可见主体"。
    ★★★ 这里修的是本轮最后一个、也是最隐蔽的 bug：
@@ -9388,10 +9380,9 @@ body[data-canvas-interacting='1'] .canvas-edge-spark {
   animation: canvas-edge-spark-pulse 0.85s ease-in-out infinite;
 }
 
-/* 生成中的连线：基线本来就是统一那个蓝，这里的 :has 规则可以整块省掉。
-   ★ 第 31 轮：只保留"生成中把基线提到不透明"这一件事 ——
-     没有这行的话，常态 .42 的透明度会让生成中的线看起来"暗着在跑光"。 */
+/* 生成中：使用独立的青蓝基线并提到不透明。悬停/选中仍由各自规则覆盖。 */
 .canvas-flow .react-flow__edge:has(.canvas-edge-flow.is-busy:not(.is-linked)) .react-flow__edge-path {
+  stroke: var(--v-edge-running, #22d3ee) !important;
   opacity: 1;
 }
 .canvas-flow .react-flow__edge .canvas-edge-flow.is-busy:not(.is-linked) {
@@ -10235,17 +10226,22 @@ body[data-canvas-interacting='1'] .canvas-edge-spark {
   padding: 0;
 }
 .canvas-edge-delete:hover { background: #c03035; }
-/* 兜底的老琥珀色规则：实际已经不生效（下面 .canvas-flow 版本特异性更高、
-   theme-tokens 还有 !important），但留在会让后人以为存在"第三种状态色"。
-   直接指向 highlight 令牌，万一命中也是选中那个蓝。 */
-.react-flow__edge.selected .react-flow__edge-path,
-.react-flow__edge:hover .react-flow__edge-path {
-  stroke: var(--v-edge-highlight, #4d9fff);
+/* 兜底状态规则：theme-tokens 中还有最终提权版本。 */
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--v-edge-selected, #56ccf2);
   stroke-width: calc(var(--edge-line-w, 1.7) * 1.4);
 }
-.react-flow__edge.selected .canvas-edge-source-dot,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--v-edge-hover, #38bdf8);
+  stroke-width: calc(var(--edge-line-w, 1.7) * 1.4);
+}
+.react-flow__edge.selected .canvas-edge-source-dot {
+  fill: var(--v-edge-selected, #56ccf2);
+  stroke: var(--surface);
+  stroke-width: 1.2;
+}
 .react-flow__edge:hover .canvas-edge-source-dot {
-  fill: var(--v-edge-highlight, #4d9fff);
+  fill: var(--v-edge-hover, #38bdf8);
   stroke: var(--surface);
   stroke-width: 1.2;
 }

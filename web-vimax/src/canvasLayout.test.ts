@@ -784,28 +784,31 @@ describe('连线流光（屏幕像素恒定：长度 + 宽度同口径）', () =
     expect(linked && linked[0]).not.toMatch(/stroke:/);
   });
 
-  // ★ 连线的两档颜色：常态灰 / 悬停与选中同一个蓝。
-  //   实测（把三份样式按真实顺序加载后读 computed）：
-  //     常态     rgb(107,118,132)  op .42
-  //     悬停     rgb(77,159,255)   op 1
-  //     选中     rgb(77,159,255)   op 1
-  it('★ 悬停与选中必须是同一个颜色，且与常态不同', () => {
-    // theme-tokens 那条带 !important 的归一是最高优先级，两档都在这里
+  // ★ 连线状态色：常态灰；悬停、选中、执行中必须是三支不同令牌。
+  it('★ 悬停、选中、执行中使用独立状态色，常态仍为灰色', () => {
     const hoverBlock = themeSource.match(
-      /\.react-flow__edge:hover \.react-flow__edge-path,\s*\.react-flow__edge\.selected \.react-flow__edge-path \{\s*stroke: ([^;]+);/,
+      /\.react-flow__edge:hover \.react-flow__edge-path \{\s*stroke: ([^;]+);/,
     );
-    expect(hoverBlock, '悬停与选中应共用一条规则').toBeTruthy();
-    expect(hoverBlock![1].trim()).toBe('var(--v-edge-highlight) !important');
+    const selectedBlock = themeSource.match(
+      /\.react-flow__edge\.selected \.react-flow__edge-path \{\s*stroke: ([^;]+);/,
+    );
+    expect(hoverBlock, '悬停状态规则缺失').toBeTruthy();
+    expect(selectedBlock, '选中状态规则缺失').toBeTruthy();
+    expect(hoverBlock![1].trim()).toBe('var(--v-edge-hover) !important');
+    expect(selectedBlock![1].trim()).toBe('var(--v-edge-selected) !important');
 
-    // 常态必须是另一档（灰），否则悬停就等于"颜色没变"——这就是用户报的那个 bug
     const baseBlock = themeSource.match(
       /\.canvas-edge-auto \.react-flow__edge-path,[\s\S]*?\{\s*stroke: ([^;]+);/,
     );
     expect(baseBlock![1].trim()).toBe('var(--v-edge-tone) !important');
     expect(stylesSource).toMatch(/--edge-tone: var\(--v-edge-tone, #6b7684\);/);
-    // 不许再出现我上一版造的"更亮一档"第三色
-    expect(themeSource).not.toMatch(/--v-edge-hover/);
-    expect(stylesSource).not.toMatch(/--v-edge-hover/);
+
+    for (const token of ['--v-edge-hover', '--v-edge-selected', '--v-edge-running']) {
+      expect(themeSource).toMatch(new RegExp(`${token}: #[0-9a-f]{6};`, 'i'));
+    }
+    expect(themeSource).toMatch(
+      /\.canvas-flow \.react-flow__edge:has\(\.canvas-edge-flow\.is-busy:not\(\.is-linked\)\) \.react-flow__edge-path \{\s*stroke: var\(--v-edge-running\) !important;/,
+    );
     expect(refineSource).not.toMatch(/#7fc4ff/);
   });
 

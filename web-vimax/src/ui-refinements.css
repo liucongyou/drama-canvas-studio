@@ -3336,21 +3336,18 @@ html[data-theme='dark'][data-variant='immersive']{
    以前按类型分三种色相（冷灰绿 / 中性灰 / 琥珀金），手动线是金橙色，在深色画布上
    比卡片还抢眼，同一屏里像两套体系。现在只保留「基色 + 悬停/选中变蓝」两档状态。
    状态色由 --edge-tone 驱动（styles.css 里统一开关）。 ---------- */
-/* 常态灰底稿，悬停 = 选中 = 同一个蓝（用户要求两者同色）。
-   这条排在本文件里、晚于 styles.css，所以兜底值必须跟着分成两档。 */
+/* 常态灰底稿；悬停、选中、执行中使用独立的冷蓝状态令牌。 */
 .canvas-edge-auto .react-flow__edge-path,
 .canvas-edge-chain .react-flow__edge-path,
 .canvas-edge-user .react-flow__edge-path{stroke:var(--edge-tone,#6b7684);stroke-width:var(--edge-line-w,1.7)}
 .react-flow__edge.canvas-edge-auto .canvas-edge-source-dot,
 .react-flow__edge.canvas-edge-chain .canvas-edge-source-dot,
 .react-flow__edge.canvas-edge-user .canvas-edge-source-dot{fill:var(--edge-tone,#6b7684)}
-/* 悬停与选中**完全同色**（用户原话「把悬停连线颜色改成选中连线颜色那么难吗？」），
-   都吃 --v-edge-highlight；常态化是灰底稿，所以鼠标划过时"从灰变蓝"非常明确。
-   这里连兜底值也一起写成蓝，避免某个作用域没继承到变量时又冒出一条灰线。 */
-.react-flow__edge:hover .react-flow__edge-path{stroke:var(--v-edge-highlight,#4d9fff);stroke-width:calc(var(--edge-line-w,1.7) * 1.18)}
-.react-flow__edge:hover .canvas-edge-source-dot{fill:var(--v-edge-highlight,#4d9fff)}
-.react-flow__edge.selected .react-flow__edge-path{stroke:var(--v-edge-highlight,#4d9fff);stroke-width:calc(var(--edge-line-w,1.7) * 1.4)}
-.react-flow__edge.selected .canvas-edge-source-dot{fill:var(--v-edge-highlight,#4d9fff)}
+.react-flow__edge:hover .react-flow__edge-path{stroke:var(--v-edge-hover,#38bdf8);stroke-width:calc(var(--edge-line-w,1.7) * 1.18)}
+.react-flow__edge:hover .canvas-edge-source-dot{fill:var(--v-edge-hover,#38bdf8)}
+.react-flow__edge.selected .react-flow__edge-path{stroke:var(--v-edge-selected,#56ccf2);stroke-width:calc(var(--edge-line-w,1.7) * 1.4)}
+.react-flow__edge.selected .canvas-edge-source-dot{fill:var(--v-edge-selected,#56ccf2)}
+.react-flow__edge:has(.canvas-edge-flow.is-busy:not(.is-linked)) .react-flow__edge-path{stroke:var(--v-edge-running,#22d3ee)}
 /* html 自身底色原本是 #090a0c（窗口边缘/滚动回弹处会露出来），一并压平到 #121212 */
 html[data-theme='dark'][data-variant='immersive']{background:#121212}
 
