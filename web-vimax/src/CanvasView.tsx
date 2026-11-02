@@ -108,7 +108,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getWorkspaceIndex, getWorkspaceShell, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceShell, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -1799,7 +1799,7 @@ function EpisodeRows({
                   ? `${planned}镜`
                   : '待处理';
           return (
-            <div key={ep.ep_id} className={`canvas-ep-row ${currentEp === ep.ep_id ? 'is-active' : ''}`} role="listitem">
+            <div key={ep.ep_id} className={`canvas-ep-row ${currentEp === ep.ep_id ? 'is-active' : ''}`} role="listitem" data-episode-id={ep.ep_id}>
               <button
                 type="button"
                 className="canvas-ep-select"
@@ -8762,7 +8762,7 @@ function CanvasViewInner({
           });
         })
         .catch(() => undefined);
-    }, 1200);
+    }, 2600);
     return () => window.clearTimeout(timer);
   }, [session]);
   const toolsTriggerRef = useRef<HTMLButtonElement>(null);
@@ -8815,6 +8815,7 @@ function CanvasViewInner({
   const editNodeRef = useRef<string | null>(null);
   // 实时缩放百分比（onMove 回写），工具栏显示 + 点击重置 100%
   const [zoomPct, setZoomPct] = useState(100);
+  const zoomPctLabelRef = useRef<HTMLSpanElement | null>(null);
   // 底纹（第 29 轮）：**屏幕坐标**的贴图 —— 随缩放变密度、但不随平移移动。
   // 即梦的行为就是这样（用户原话「即梦拖动背景点阵是不动的」）：拖画布时点阵钉在原地，
   // 只有缩放时点和间距才跟着变大变小。所以这里只按 zoomPct 算出两个 CSS 变量，
@@ -9011,74 +9012,80 @@ function CanvasViewInner({
       viewport,
       session,
     );
-    if (viewportSaveTimer.current) clearTimeout(viewportSaveTimer.current);
-    viewportSaveTimer.current = setTimeout(() => {
-      try {
-        try {
-          const raw = localStorage.getItem(layoutKey);
-          const saved = raw ? JSON.parse(raw) : {};
-          localStorage.setItem(layoutKey, JSON.stringify({
-            ...saved,
-            viewport,
-            viewportPolicyVersion: CANVAS_VIEWPORT_POLICY_VERSION,
-          }));
-        } catch {
-          // Local cache is optional; the server viewport remains the fallback.
-        }
-        const lastPersisted = lastPersistedViewportRef.current;
-        if (
-          lastPersisted?.key === snapshotKey
-          && !shouldPersistViewport(viewport, lastPersisted.viewport)
-        ) return;
-        if (viewportSnapshotRef.current.key !== snapshotKey) {
-          viewportSnapshotRef.current = {key: snapshotKey, seq: 0};
-        }
-        const seq = viewportSnapshotRef.current.seq + 1;
-        viewportSnapshotRef.current.seq = seq;
-        lastPersistedViewportRef.current = {key: snapshotKey, viewport};
-        void saveCanvasEpisodeViewport(session, viewport, viewportEpisode)
-          .then((result) => {
-            if (
-              viewportSnapshotRef.current.key !== snapshotKey
-              || viewportSnapshotRef.current.seq !== seq
-            ) return;
-            serverEpisodeViewportsRef.current = mergeEpisodeViewport(
-              serverEpisodeViewportsRef.current,
-              viewportEpisode,
-              result.viewport || viewport,
-              session,
-            );
-          })
-          .catch(() => {
-            // Viewport persistence is best-effort; layout edits remain saved
-            // independently and a transient viewport failure must not surface
-            // as a project save error.
-            if (lastPersistedViewportRef.current?.key === snapshotKey) {
-              lastPersistedViewportRef.current = null;
-            }
-          });
-      } catch {
-        // View persistence is best-effort and must not affect canvas interaction.
-      }
-    }, 220);
+    // Keep the in-memory and local cache updated on every frame, but do not
+    // enqueue a database write while the gesture is still running. The final
+    // write is coalesced by flushViewportNow on move end / episode switch /
+    // page hide. This avoids saturating SQLite with dozens of intermediate
+    // points that users can never observe after the gesture.
+    try {
+      const raw = localStorage.getItem(layoutKey);
+      const saved = raw ? JSON.parse(raw) : {};
+      localStorage.setItem(layoutKey, JSON.stringify({
+        ...saved,
+        viewport,
+        viewportPolicyVersion: CANVAS_VIEWPORT_POLICY_VERSION,
+      }));
+    } catch {
+      // Local cache is optional; the server viewport remains the fallback.
+    }
   }, [currentEp, layoutKey, session]);
 
   const flushViewportNow = useCallback(() => {
-    if (!viewportUserInteractingRef.current) return;
     if (viewportSaveTimer.current) {
       clearTimeout(viewportSaveTimer.current);
       viewportSaveTimer.current = null;
     }
-    rememberViewport(viewportRef.current);
-  }, [rememberViewport]);
+    const viewport = viewportRef.current;
+    const viewportEpisode = activeWorkspaceEpisodeRef.current || currentEp;
+    if (!viewportEpisode) return;
+    const snapshotKey = `${session}:${viewportEpisode}`;
+    const lastPersisted = lastPersistedViewportRef.current;
+    if (
+      lastPersisted?.key === snapshotKey
+      && !shouldPersistViewport(viewport, lastPersisted.viewport)
+    ) return;
+    if (viewportSnapshotRef.current.key !== snapshotKey) {
+      viewportSnapshotRef.current = {key: snapshotKey, seq: 0};
+    }
+    const seq = viewportSnapshotRef.current.seq + 1;
+    viewportSnapshotRef.current.seq = seq;
+    lastPersistedViewportRef.current = {key: snapshotKey, viewport};
+    void saveCanvasEpisodeViewport(session, viewport, viewportEpisode)
+      .then((result) => {
+        if (
+          viewportSnapshotRef.current.key !== snapshotKey
+          || viewportSnapshotRef.current.seq !== seq
+        ) return;
+        serverEpisodeViewportsRef.current = mergeEpisodeViewport(
+          serverEpisodeViewportsRef.current,
+          viewportEpisode,
+          result.viewport || viewport,
+          session,
+        );
+      })
+      .catch(() => {
+        if (lastPersistedViewportRef.current?.key === snapshotKey) {
+          lastPersistedViewportRef.current = null;
+        }
+      });
+  }, [currentEp, session]);
+
+  useEffect(() => {
+    const flushOnHide = () => {
+      if (document.visibilityState === 'hidden') flushViewportNow();
+    };
+    document.addEventListener('visibilitychange', flushOnHide);
+    window.addEventListener('pagehide', flushViewportNow);
+    return () => {
+      document.removeEventListener('visibilitychange', flushOnHide);
+      window.removeEventListener('pagehide', flushViewportNow);
+    };
+  }, [flushViewportNow]);
 
   const switchEpisode = useCallback((episodeId: string) => {
     if (episodeId === currentEp) return;
+    const wasInteracting = viewportUserInteractingRef.current;
     viewportUserInteractingRef.current = false;
-    if (viewportSaveTimer.current) {
-      clearTimeout(viewportSaveTimer.current);
-      viewportSaveTimer.current = null;
-    }
     const remembered = {...viewportRef.current};
     const leavingEpisode = activeWorkspaceEpisodeRef.current || currentEp;
     if (!leavingEpisode) {
@@ -9091,29 +9098,16 @@ function CanvasViewInner({
       remembered,
       session,
     );
-    lastPersistedViewportRef.current = {
-      key: `${session}:${leavingEpisode || '__project__'}`,
-      viewport: remembered,
-    };
-    void saveCanvasEpisodeViewport(
-      session,
-      remembered,
-      leavingEpisode,
-      {keepalive: true},
-    ).then((result) => {
-      serverEpisodeViewportsRef.current = mergeEpisodeViewport(
-        serverEpisodeViewportsRef.current,
-        leavingEpisode,
-        result.viewport || remembered,
-        session,
-      );
-    }).catch(() => {});
+    // Save the leaving episode while the old workspace scope is still active.
+    // flushViewportNow reads activeWorkspaceEpisodeRef; deferring this until
+    // after setCurrentEp can attach the old coordinates to the new episode.
+    flushViewportNow();
     setCurrentEp(episodeId);
     // Keep the old scope until the target episode shell is loaded. Setting it
     // here causes onMove/fitView from the leaving canvas to be saved as the
     // newly selected episode's viewport.
     activeWorkspaceEpisodeRef.current = String(leavingEpisode || '').trim().toUpperCase() || null;
-  }, [currentEp, session, setToast]);
+  }, [currentEp, flushViewportNow, session, setToast]);
 
   // ── 编组操作 ──────────────────────────────────────────────────────
   // 编组：把当前选中的卡片收进一个新组。已属于其它组的成员会自动离组（一个人只能在一个组里）。
@@ -9853,10 +9847,11 @@ function CanvasViewInner({
         .then((catalog) => { if (alive) setModelCatalog(catalog); })
         .catch(() => { if (alive) setModelCatalog(null); });
     };
-    loadCatalog();
+    const timer = window.setTimeout(loadCatalog, 1_200);
     window.addEventListener('canvas-model-catalog-changed', loadCatalog);
     return () => {
       alive = false;
+      window.clearTimeout(timer);
       window.removeEventListener('canvas-model-catalog-changed', loadCatalog);
     };
   }, []);
@@ -10080,10 +10075,23 @@ function CanvasViewInner({
     const workspaceTimeout = window.setTimeout(() => {
       workspaceAbort.abort();
     }, 20_000);
+    const episodeKnownFromUrl = Boolean(
+      new URLSearchParams(window.location.search).get('ep'),
+    );
     const workspaceIndexPromise = getWorkspaceIndex(
       session,
       workspaceAbort.signal,
     );
+    const requestedEpisodeForNodes = String(currentEp || '')
+      .trim()
+      .toUpperCase();
+    const indexedNodesPromise = requestedEpisodeForNodes
+      ? getWorkspaceNodes(
+          session,
+          requestedEpisodeForNodes,
+          workspaceAbort.signal,
+        ).catch(() => null)
+      : null;
     workspaceIndexPromise
       .then((index) => {
         if (loadEpoch !== workspaceLoadEpochRef.current) return;
@@ -10122,6 +10130,8 @@ function CanvasViewInner({
       currentEp,
       workspaceAbort.signal,
       workspaceIndexPromise,
+      episodeKnownFromUrl,
+      indexedNodesPromise,
     )
       .then(({
         canvas: data,
@@ -10211,14 +10221,16 @@ function CanvasViewInner({
     };
   }, [session, currentEp, pidRetry]);
 
-  // 拉取创作质量自评报告（与画布数据并行），供镜头卡弱项色点使用。
+  // 拉取创作质量自评报告：这是非首屏辅助数据，延后到画布可交互后再取，
+  // 避免与 workspace-nodes / 任务列表争抢首屏带宽和主线程。
   useEffect(() => {
     let alive = true;
-    const timer = window.setTimeout(() => {
+    const load = () => {
       getQualityReport(session, currentEp)
         .then((rep) => { if (alive) setQualityReport(rep); })
         .catch(() => { if (alive) setQualityReport(null); });
-    }, 180);
+    };
+    const timer = window.setTimeout(load, 1_800);
     return () => {
       alive = false;
       window.clearTimeout(timer);
@@ -10249,7 +10261,7 @@ function CanvasViewInner({
     } finally {
       setQualityRecomputing(false);
     }
-  }, [session, currentEp, setToast]);
+  }, [canvas, session, currentEp, setToast]);
 
   const onDraftChange = useCallback((shotIdx: number, field: keyof ShotDraft, value: string) => {
     setDrafts((prev) => {
@@ -10338,7 +10350,7 @@ function CanvasViewInner({
     setToast(`已发起段 ${segmentId} 渲染，完成后视频自动挂回本段卡片`);
     void sendMessage(session, instruction)
       .catch((err) => setToast(`发起渲染失败：${err instanceof Error ? err.message : String(err)}`));
-  }, [session, currentEp, setToast]);
+  }, [canvas, session, currentEp, setToast]);
 
 
   const notesRef = useRef<CanvasNote[]>([]);
@@ -11127,9 +11139,14 @@ function CanvasViewInner({
         setToast(`生成失败：${event.message || '未知错误'}`);
       }
       // 刷新画布：agent 新生成的资产/片段自动出现在托盘与画布上
-      void getCanvas(session, currentEp)
-        .then((d) => { if (!('empty' in d)) setCanvas(d); })
-        .catch(() => {});
+      // Canvas graph refresh is optional here: the projection workspace read
+      // already loads the current episode. Avoid a duplicate full-project
+      // request on initial entry; only refresh if the canvas is still missing.
+      if (!canvas) {
+        void getCanvas(session, currentEp)
+          .then((d) => { if (!('empty' in d)) setCanvas(d); })
+          .catch(() => {});
+      }
     }, () => {});
     return unsub;
   }, [session, currentEp, setToast]);
@@ -15719,6 +15736,10 @@ function CanvasViewInner({
       viewportRef.current = nextViewport;
       setCanvasViewport(nextViewport);
       setZoomPct(Math.round(nextViewport.zoom * 100));
+      lastPersistedViewportRef.current = {
+        key: `${session}:${currentEp || '__project__'}`,
+        viewport: nextViewport,
+      };
     }
     // 画布适配必须等节点 DOM 挂载后再执行：React Flow 对未测量节点保持
     // visibility:hidden（hasDimensions 为 false），首次 fitBounds 若在节点挂载前
@@ -16057,8 +16078,9 @@ function CanvasViewInner({
     };
     void rf.setViewport(next, {duration: 180});
     // 程序化缩放到不了 onMoveEnd（那是手势才有的），得自己记一次，否则刷新后回到旧缩放
-    rememberViewport(next);
-  }, [rememberViewport, rf]);
+    viewportRef.current = next;
+    flushViewportNow();
+  }, [flushViewportNow, rf]);
   zoomToLevelRef.current = zoomToLevel;
   const zoomStep = useCallback((factor: number) => {
     zoomToLevel((viewportRef.current.zoom || 1) * factor);
@@ -16640,7 +16662,7 @@ function CanvasViewInner({
                           ? `${planned}镜`
                           : '待处理';
                   return (
-                    <div key={ep.ep_id} className={`canvas-ep-row ${currentEp === ep.ep_id ? 'is-active' : ''}`}>
+                    <div key={ep.ep_id} className={`canvas-ep-row ${currentEp === ep.ep_id ? 'is-active' : ''}`} data-episode-id={ep.ep_id}>
                       <button
                         type="button"
                         className="canvas-ep-select"
@@ -16799,10 +16821,8 @@ function CanvasViewInner({
             onViewportChange={(next) => {
               viewportRef.current = next;
               setCanvasViewport(next);
-              setZoomPct(Math.round(next.zoom * 100));
-              if (viewportUserInteractingRef.current) {
-                rememberViewport(next);
-              }
+              // React Flow updates the local viewport every frame; persistence
+              // is coalesced on gesture end instead of hitting the database.
             }}
             onConnectStart={() => setConnecting(true)}
             onConnectEnd={() => setConnecting(false)}
@@ -16841,7 +16861,12 @@ function CanvasViewInner({
             snapToGrid={snapGrid}
             snapGrid={CANVAS_SNAP_GRID}
             onMove={(_evt, viewport) => {
-              setZoomPct(Math.round(viewport.zoom * 100));
+              if (zoomPctLabelRef.current) {
+                const label = `${Math.round(viewport.zoom * 100)}%`;
+                if (zoomPctLabelRef.current.textContent !== label) {
+                  zoomPctLabelRef.current.textContent = label;
+                }
+              }
               updateLargeCanvasViewport(viewport);
               syncSelBar();
               syncGroupFrames();
@@ -16851,9 +16876,6 @@ function CanvasViewInner({
               beginCanvasInteraction();
             }}
             onMoveEnd={(_event, viewport) => {
-              if (viewportUserInteractingRef.current) {
-                rememberViewport(viewport);
-              }
               viewportUserInteractingRef.current = false;
               endCanvasInteraction();
               flushViewportNow();
@@ -17186,7 +17208,7 @@ function CanvasViewInner({
                 <button type="button" onClick={zoomOut} title="缩小" aria-label="缩小"><Minus size={14} strokeWidth={2.2} aria-hidden="true" /></button>
                 {/* 「重置 100%」同样要以视口中心为锚：直接写 zoom=1 会绕左上角缩放，
                     点一下卡片全跑到右下角外面去。 */}
-                <button type="button" className="canvas-toolbar-zoom" onClick={() => zoomToLevel(1)} title="重置为 100%（Ctrl+0）">{zoomPct}%</button>
+                <button type="button" className="canvas-toolbar-zoom" onClick={() => zoomToLevel(1)} title="重置为 100%（Ctrl+0）"><span ref={zoomPctLabelRef}>{zoomPct}%</span></button>
                 <button type="button" onClick={zoomIn} title="放大" aria-label="放大"><Plus size={14} strokeWidth={2.2} aria-hidden="true" /></button>
                 <span className="canvas-toolbar-sep" />
                 <button type="button" className={snapGrid ? 'is-active' : ''} onClick={() => setSnapGrid((v) => !v)} title="网格吸附：拖动时按 12px 栅格对齐" aria-label="网格吸附">

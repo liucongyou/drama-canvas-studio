@@ -533,6 +533,48 @@ class CanvasProjectionTests(unittest.TestCase):
         self.assertEqual(video["metadata"]["status"], "done")
         self.assertEqual(video["metadata"]["content"], "/uploads/final.mp4")
 
+    def test_viewport_write_does_not_rewrite_legacy_payload_or_other_episodes(self):
+        project_id = canvas_store.create_project("projection", self._payload())
+        before = canvas_store.get_project(project_id)
+        connection = canvas_store._connect()
+        try:
+            payload_before = connection.execute(
+                "SELECT payload_json FROM canvas_projects WHERE id=?",
+                (project_id,),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        saved = canvas_store.update_project_viewport(
+            project_id,
+            {"x": 77, "y": 88, "zoom": 0.42},
+            episode_id="EP002",
+            if_revision=before["revision"],
+        )
+        self.assertIsNotNone(saved)
+        connection = canvas_store._connect()
+        try:
+            payload_after = connection.execute(
+                "SELECT payload_json FROM canvas_projects WHERE id=?",
+                (project_id,),
+            ).fetchone()[0]
+            ep1 = connection.execute(
+                "SELECT viewport_json FROM canvas_projection_episodes "
+                "WHERE project_id=? AND episode_id='EP001'",
+                (project_id,),
+            ).fetchone()[0]
+            ep2 = connection.execute(
+                "SELECT viewport_json FROM canvas_projection_episodes "
+                "WHERE project_id=? AND episode_id='EP002'",
+                (project_id,),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(payload_after, payload_before)
+        self.assertEqual(json.loads(ep1)["zoom"], 0.7)
+        self.assertEqual(json.loads(ep2), {"x": 77, "y": 88, "zoom": 0.42})
+        workspace = canvas_store.get_project_workspace_index(project_id)
+        self.assertEqual(workspace["episodeViewports"]["EP002"]["zoom"], 0.42)
+
     def test_legacy_project_stats_are_backfilled_on_real_upgrade(self):
         context = tenant_context.make_context("legacy-stats", "legacy-stats")
         tenant_context.ensure_context_dirs(context)

@@ -17,6 +17,9 @@ import {
   visibleBoundsForViewport,
 } from './canvasViewport';
 
+import {readFileSync} from 'node:fs';
+import {resolve} from 'node:path';
+
 describe('restored canvas viewport validation', () => {
   it('accepts a finite workspace viewport inside the interactive zoom range', () => {
     expect(validRestoredViewport({x: -120, y: 48, zoom: 0.72}))
@@ -63,6 +66,37 @@ describe('canvas viewport persistence threshold', () => {
       zoom: 0.38,
     });
     expect(selectEpisodeViewport(merged, 'EP004')).toBeNull();
+  });
+
+  it('coalesces viewport persistence to gesture end instead of every move frame', () => {
+    const source = readFileSync(
+      resolve(__dirname, 'CanvasView.tsx'),
+      'utf8',
+    );
+    const moveBlock = source.slice(
+      source.indexOf('onViewportChange={(next) => {'),
+      source.indexOf('onConnectStart=', source.indexOf('onViewportChange={(next) => {')),
+    );
+    expect(moveBlock).not.toContain('rememberViewport(next)');
+    const moveEndBlock = source.slice(
+      source.indexOf('onMoveEnd={(_event, viewport) => {'),
+      source.indexOf('// 连线中点的剪断按钮', source.indexOf('onMoveEnd={(_event, viewport) => {')),
+    );
+    expect(moveEndBlock).toContain('flushViewportNow()');
+  });
+
+  it('keeps the interactive graph read ahead of auxiliary task polling', () => {
+    const source = readFileSync(resolve(__dirname, 'api.ts'), 'utf8');
+    const start = source.indexOf(
+      'async function getProjectionCanvasWorkspace(',
+    );
+    const end = source.indexOf(
+      'export async function getCanvasWorkspace(',
+      start,
+    );
+    const block = source.slice(start, end);
+    expect(block.indexOf('await getWorkspaceNodes('))
+      .toBeLessThan(block.indexOf('await getGenerationTasks('));
   });
 });
 

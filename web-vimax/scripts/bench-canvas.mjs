@@ -29,6 +29,8 @@ const browser = await puppeteer.launch({
 });
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const requestTiming = [];
+const requestStartedAt = new Map();
 
 /** 在页面里采样若干帧的间隔。 */
 async function sampleFrames(page, ms) {
@@ -58,6 +60,22 @@ async function sampleFrames(page, ms) {
 
 try {
   const page = await browser.newPage();
+  page.on('request', (request) => {
+    requestStartedAt.set(request, Date.now());
+  });
+  page.on('requestfinished', (request) => {
+    const response = request.response();
+    const startedAt = requestStartedAt.get(request);
+    requestTiming.push({
+      url: request.url(),
+      status: response?.status() || 0,
+      responseMs: startedAt ? Date.now() - startedAt : null,
+      resource: request.resourceType(),
+      encodedBytes: Number(
+        response?.headers?.()['content-length'] || 0,
+      ),
+    });
+  });
   await page.setViewport({width: 1680, height: 1050, deviceScaleFactor: 1});
   if (token) {
     await page.setCookie({
@@ -103,6 +121,15 @@ try {
     await sleep(40);
   }
   const zoom = await zoomSampling;
+  const expectedZoomLabel = await page.evaluate(() => {
+    const value = document.querySelector('.react-flow__viewport')?.style.transform || '';
+    const match = /scale\(([^)]+)\)/.exec(value);
+    const zoomValue = Number(match?.[1] || 1);
+    return zoomValue > 0 ? `${Math.round(zoomValue * 100)}%` : '';
+  });
+  const zoomLabel = await page.evaluate(
+    () => document.querySelector('.canvas-toolbar-zoom span')?.textContent || '',
+  );
   const metricsAfter = await page.metrics();
 
   const result = {
@@ -112,11 +139,21 @@ try {
     scale,
     idle,
     zoom,
+    zoomLabel,
+    expectedZoomLabel: expectedZoomLabel || zoomLabel,
     heapMB: Number((metricsAfter.JSHeapUsedSize / 1048576).toFixed(1)),
     heapDeltaMB: Number(
       ((metricsAfter.JSHeapUsedSize - metricsBefore.JSHeapUsedSize) / 1048576).toFixed(1),
     ),
     layoutCountDelta: metricsAfter.LayoutCount - metricsBefore.LayoutCount,
+    slowRequests: requestTiming
+      .filter((item) => (item.responseMs || 0) > 300 || item.status >= 400)
+      .sort((left, right) => (right.responseMs || 0) - (left.responseMs || 0))
+      .slice(0, 12),
+    transferBytes: requestTiming.reduce(
+      (sum, item) => sum + Number(item.encodedBytes || 0),
+      0,
+    ),
   };
 
   console.log(JSON.stringify(result, null, 2));

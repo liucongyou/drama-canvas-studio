@@ -2123,6 +2123,8 @@ async function getProjectionCanvasWorkspace(
   epId?: string | null,
   signal?: AbortSignal,
   workspaceIndexPromise?: Promise<WorkspaceProjectMeta>,
+  episodeKnownFromUrl = false,
+  prevalidatedNodesPromise?: Promise<WorkspaceNodes | null> | null,
 ): Promise<{
   canvas: Canvas | {empty: true};
   notes: CanvasNote[];
@@ -2137,6 +2139,13 @@ async function getProjectionCanvasWorkspace(
   }>;
   tasks: GenerationTask[];
 }> {
+  const requestedEpisode = String(epId || '').trim().toUpperCase();
+  const earlyNodesPromise = prevalidatedNodesPromise
+    || (
+      episodeKnownFromUrl && requestedEpisode
+        ? getWorkspaceNodes(sessionId, requestedEpisode, signal)
+        : null
+    );
   const index = await (
     workspaceIndexPromise || getWorkspaceIndex(sessionId, signal)
   );
@@ -2154,16 +2163,21 @@ async function getProjectionCanvasWorkspace(
         nodeIds: [],
         videoNodeIds: [],
       }];
-  const requestedEpisode = String(epId || '').trim().toUpperCase();
   const currentEpisode = episodes.some((item) => (
     String(item.id || '').toUpperCase() === requestedEpisode
   ))
     ? requestedEpisode
     : String(episodes[0]?.id || 'EP001').toUpperCase();
-  const [nodesPayload, tasks] = await Promise.all([
-    getWorkspaceNodes(sessionId, currentEpisode, signal),
-    getGenerationTasks(sessionId, 80, currentEpisode),
-  ]);
+  // Render the graph first; task history is auxiliary and reconciles again
+  // through its own polling cadence.
+  const preloadedNodes = earlyNodesPromise
+    ? await earlyNodesPromise
+    : null;
+  const nodesPayload = (
+    preloadedNodes && currentEpisode === requestedEpisode
+      ? preloadedNodes
+      : await getWorkspaceNodes(sessionId, currentEpisode, signal)
+  );
   if (
     !nodesPayload
     || !Array.isArray(nodesPayload.nodes)
@@ -2209,6 +2223,12 @@ async function getProjectionCanvasWorkspace(
     currentEpisode,
     pseudoProject,
   );
+  let tasks: GenerationTask[] = [];
+  try {
+    tasks = await getGenerationTasks(sessionId, 80, currentEpisode);
+  } catch {
+    // An auxiliary task-panel read must never block the interactive canvas.
+  }
   return {
     canvas,
     notes,
@@ -2225,6 +2245,8 @@ export async function getCanvasWorkspace(
   epId?: string | null,
   signal?: AbortSignal,
   workspaceIndexPromise?: Promise<WorkspaceProjectMeta>,
+  episodeKnownFromUrl = false,
+  prevalidatedNodesPromise?: Promise<WorkspaceNodes | null> | null,
 ): Promise<{
   canvas: Canvas | {empty: true};
   notes: CanvasNote[];
@@ -2245,6 +2267,8 @@ export async function getCanvasWorkspace(
       epId,
       signal,
       workspaceIndexPromise,
+      episodeKnownFromUrl,
+      prevalidatedNodesPromise,
     );
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {

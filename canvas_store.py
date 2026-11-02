@@ -4084,85 +4084,88 @@ def update_project_viewport(
     episode_id=None,
     if_revision=None,
 ):
-    """Persist one viewport and legacy rollback copy without touching graph rows."""
+    """Persist one viewport without rewriting the project document.
+
+    The viewport is a frequent, isolated UI fact. Storing it in the episode
+    projection row keeps drag/zoom saves small and prevents them from competing
+    with node, edge, and generation writes for the full payload JSON.
+    """
     def write(con):
-        row = con.execute(
-            "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?",
+        project_row = con.execute(
+            "SELECT title,revision FROM canvas_projects WHERE id=?",
             (project_id,),
         ).fetchone()
-        if not row:
+        if not project_row:
             return None
-        current_revision = int(row[2] or 0)
-        if if_revision is not None and current_revision != int(if_revision):
+        current_revision = int(project_row[1] or 0)
+        if (
+            if_revision is not None
+            and current_revision != int(if_revision)
+        ):
             raise RevisionConflictError(
                 f"项目已更新：期望 revision={if_revision}，实际 revision={current_revision}"
             )
-        try:
-            payload = json.loads(row[1] or "{}")
-        except (TypeError, ValueError):
-            payload = {}
-        if not isinstance(payload, dict):
-            payload = {}
         normalized = {
             "x": float(viewport.get("x") or 0),
             "y": float(viewport.get("y") or 0),
             "zoom": float(viewport.get("zoom") or 1),
         }
         ep_id = str(episode_id or "").strip().upper()
-        if ep_id:
-            payload.setdefault("episodeViewports", {})[ep_id] = normalized
-        else:
-            payload["viewport"] = normalized
         stamp = _now_iso()
-        payload["revision"] = current_revision + 1
-        payload["updatedAt"] = stamp
+        if ep_id:
+            existing = con.execute(
+                "SELECT title FROM canvas_projection_episodes "
+                "WHERE project_id=? AND episode_id=?",
+                (project_id, ep_id),
+            ).fetchone()
+            con.execute(
+                "INSERT INTO canvas_projection_episodes("
+                "project_id,episode_id,title,viewport_json,updated_at"
+                ") VALUES(?,?,?,?,?) "
+                "ON CONFLICT(project_id,episode_id) DO UPDATE SET "
+                "viewport_json=excluded.viewport_json,"
+                "updated_at=excluded.updated_at",
+                (
+                    project_id,
+                    ep_id,
+                    str(existing[0] if existing else ep_id),
+                    json.dumps(normalized, ensure_ascii=False),
+                    stamp,
+                ),
+            )
+        else:
+            meta_row = con.execute(
+                "SELECT meta_json FROM canvas_project_meta WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            try:
+                meta = json.loads(meta_row[0] or "{}") if meta_row else {}
+            except (TypeError, ValueError):
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            meta["viewport"] = normalized
+            con.execute(
+                "INSERT INTO canvas_project_meta(project_id,meta_json,updated_at) "
+                "VALUES(?,?,?) ON CONFLICT(project_id) DO UPDATE SET "
+                "meta_json=excluded.meta_json,updated_at=excluded.updated_at",
+                (
+                    project_id,
+                    json.dumps(meta, ensure_ascii=False),
+                    stamp,
+                ),
+            )
+        new_revision = current_revision + 1
         cursor = con.execute(
-            "UPDATE canvas_projects SET payload_json=?,revision=?,updated_at=? "
+            "UPDATE canvas_projects SET revision=?,updated_at=? "
             "WHERE id=? AND revision=?",
-            (
-                json.dumps(payload, ensure_ascii=False),
-                current_revision + 1,
-                stamp,
-                project_id,
-                current_revision,
-            ),
+            (new_revision, stamp, project_id, current_revision),
         )
         if cursor.rowcount != 1:
             raise RevisionConflictError("项目写入冲突，请重新读取后再试")
-        if ep_id:
-            sync_projection_episode(
-                con,
-                project_id,
-                ep_id,
-                {
-                    "id": ep_id,
-                    "title": ep_id,
-                    "nodeIds": [
-                        str(row[0])
-                        for row in con.execute(
-                            "SELECT node_id FROM canvas_projection_nodes "
-                            "WHERE project_id=? AND episode_id=? ORDER BY rowid",
-                            (project_id, ep_id),
-                        )
-                    ],
-                    "videoNodeIds": [
-                        str(row[0])
-                        for row in con.execute(
-                            "SELECT node_id FROM canvas_projection_nodes "
-                            "WHERE project_id=? AND episode_id=? "
-                            "AND node_type='video' ORDER BY rowid",
-                            (project_id, ep_id),
-                        )
-                    ],
-                    "connectionIds": [],
-                },
-                viewport_json=json.dumps(normalized, ensure_ascii=False),
-                updated_at=stamp,
-            )
-        sync_projection_meta(con, project_id, payload, updated_at=stamp)
         return {
             "viewport": normalized,
-            "revision": current_revision + 1,
+            "revision": new_revision,
             "updated_at": stamp,
         }
 
