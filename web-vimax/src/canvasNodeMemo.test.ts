@@ -121,4 +121,47 @@ describe('画布媒体卡片 memo 判等', () => {
     expect(sameStringList(['a'], ['a', 'b'])).toBe(false);
     expect(sameStringList(['b', 'a'], ['a', 'b'])).toBe(false);
   });
+
+  // 下面几条守的是「签名漏字段 → 卡片永远停在旧显示」：
+  // 依赖徽标显示的是引用节点的产物状态、标题和坐标，三者任一变了都必须重渲染。
+  describe('依赖签名必须覆盖引用节点的全部可见字段', () => {
+    const self = node({params: {refs: [{nodeId: 'media-b'}]}} as Partial<CanvasMediaNode>);
+    const signatureFor = (b: CanvasMediaNode) =>
+      mediaNodeDependencySignature(self, pool(self, b));
+
+    it('文本节点从空变有内容：阻断状态翻转必须重渲染', () => {
+      const empty = node({id: 'media-b', kind: 'text', prompt: '   '});
+      const filled = node({id: 'media-b', kind: 'text', prompt: '第一幕'});
+      expect(signatureFor(empty)).not.toBe(signatureFor(filled));
+    });
+
+    it('媒体被标记缺失：mediaUrl 还在也必须重渲染', () => {
+      const ok = node({id: 'media-b', kind: 'image', mediaUrl: '/uploads/b.png'});
+      const missing = node({
+        id: 'media-b',
+        kind: 'image',
+        mediaUrl: '/uploads/b.png',
+        mediaAvailability: 'missing',
+      } as Partial<CanvasMediaNode>);
+      expect(signatureFor(ok)).not.toBe(signatureFor(missing));
+    });
+
+    it('改名后徽标 tooltip 要跟着变', () => {
+      const before = node({id: 'media-b', kind: 'image', title: '角色-小美'});
+      const after = node({id: 'media-b', kind: 'image', title: '角色-阿强'});
+      expect(signatureFor(before)).not.toBe(signatureFor(after));
+    });
+
+    it('引用节点挪位置后要重渲染，否则点徽标会跳到旧坐标', () => {
+      const before = node({id: 'media-b', kind: 'image', x: 100, y: 200});
+      const after = node({id: 'media-b', kind: 'image', x: 640, y: 200});
+      expect(signatureFor(before)).not.toBe(signatureFor(after));
+    });
+
+    it('亚像素位移不触发重渲染（拖动时不该抖）', () => {
+      const before = node({id: 'media-b', kind: 'image', x: 100.2, y: 200.4});
+      const after = node({id: 'media-b', kind: 'image', x: 100.4, y: 200.49});
+      expect(signatureFor(before)).toBe(signatureFor(after));
+    });
+  });
 });

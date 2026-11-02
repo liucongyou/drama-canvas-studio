@@ -3,7 +3,6 @@ import {claimGenerationOperationId, generationIntentSignature, releaseGeneration
 import {memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode, type RefObject, type SyntheticEvent} from 'react';
 import * as ReactDOM from 'react-dom';
 import {createPortal} from 'react-dom';
-import {toPng} from 'html-to-image';
 import {
   BaseEdge,
   Background,
@@ -15392,6 +15391,9 @@ function CanvasViewInner({
       const isLight = root.getAttribute('data-theme') === 'light';
       const surfaceVar = getComputedStyle(root).getPropertyValue('--surface').trim();
       const backgroundColor = isLight ? '#ffffff' : (surfaceVar || '#17191d');
+      // html-to-image 只在"导出画布 PNG"这一条路径用到，却被打进首屏主包。
+      // 改成用到时再取，首屏少下载一份图片序列化实现。
+      const {toPng} = await import('html-to-image');
       const dataUrl = await toPng(el, {pixelRatio: 2, cacheBust: true, backgroundColor});
       const a = document.createElement('a');
       a.href = dataUrl;

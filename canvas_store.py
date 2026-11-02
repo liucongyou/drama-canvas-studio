@@ -29,6 +29,8 @@ _SCHEMA_LOCK = __import__("threading").RLock()
 _WAL_READY_PATHS: set[str] = set()
 _WRITE_RETRY_SECONDS = 35.0
 _WRITE_RETRY_MAX_DELAY = 0.5
+# readonly 属于瞬态竞态，重试 4 次（约 1.15s）足够；超过就当真的没有写权限。
+_MAX_READONLY_RETRIES = 4
 _UNASSIGNED_EPISODE_ID = "__UNASSIGNED__"
 
 
@@ -554,9 +556,23 @@ def _connect():
     return con
 
 
+def _is_readonly_write_error(exc: sqlite3.OperationalError) -> bool:
+    return "readonly" in str(exc).lower()
+
+
 def _is_retryable_write_error(exc: sqlite3.OperationalError) -> bool:
+    """写失败是否值得重试。
+
+    `readonly` 看起来完全不像"忙"，但在 Windows + WAL 下它确实是并发打开数据库的
+    瞬态结果：20 线程同时写同一个库，300 次写里实测有 2 次抛
+    "attempt to write a readonly database"，紧接着重试就成功（文件存在、目录可写）。
+    旧实现只认 locked/busy，这两次会直接冒到接口变成 500，用户看到"保存失败"，
+    但再点一次又能存上——正好是这种"偶发失败"的手感。
+    """
     message = str(exc).lower()
-    return "database is locked" in message or "database is busy" in message
+    if "database is locked" in message or "database is busy" in message:
+        return True
+    return _is_readonly_write_error(exc)
 
 
 def payload_stats(payload):
@@ -2214,18 +2230,11 @@ def reconcile_project_projection(project_id):
 
 def ensure_project_default_episode(project_id):
     """Materialize EP001 for legacy projects that have nodes but no episode row."""
-    con = _connect()
-    try:
-        con.execute("BEGIN IMMEDIATE")
-        changed = ensure_default_episode_on_connection(con, project_id)
-        con.commit()
-        return changed
-    except Exception:
-        if con.in_transaction:
-            con.rollback()
-        raise
-    finally:
-        con.close()
+    # 打开老项目时会走这里做一次补写。它在读路径上，写失败会直接让画布打不开，
+    # 所以要跟其它写路径一样带重试。
+    return _run_write_transaction(
+        lambda con: ensure_default_episode_on_connection(con, project_id)
+    )
 
 
 def get_project_workspace_index(project_id):
@@ -2638,11 +2647,24 @@ def _run_write_transaction(callback):
     """Retry SQLite writer contention beyond a single busy_timeout window."""
     deadline = time.monotonic() + _WRITE_RETRY_SECONDS
     delay = 0.05
+    # readonly 只给几次机会：瞬态竞态重试一两次就好；真·只读（权限、只读介质）
+    # 不该白等满 35 秒才报错。
+    readonly_budget = _MAX_READONLY_RETRIES
+
+    def retryable(exc: sqlite3.OperationalError) -> bool:
+        nonlocal readonly_budget
+        if _is_readonly_write_error(exc):
+            if readonly_budget <= 0:
+                return False
+            readonly_budget -= 1
+            return True
+        return _is_retryable_write_error(exc)
+
     while True:
         try:
             con = _connect()
         except sqlite3.OperationalError as exc:
-            if not _is_retryable_write_error(exc) or time.monotonic() >= deadline:
+            if not retryable(exc) or time.monotonic() >= deadline:
                 raise
             print(
                 f"[sqlite-write] retry connect error={exc}",
@@ -2659,7 +2681,7 @@ def _run_write_transaction(callback):
         except sqlite3.OperationalError as exc:
             if con.in_transaction:
                 con.rollback()
-            if not _is_retryable_write_error(exc) or time.monotonic() >= deadline:
+            if not retryable(exc) or time.monotonic() >= deadline:
                 raise
             print(
                 f"[sqlite-write] retry transaction error={exc}",
@@ -2853,7 +2875,6 @@ def is_local_validation_error(message):
 
 
 def create_project(title, payload=None):
-    con = _connect()
     pid = _rid(22)
     now = _now_iso()
     if payload is None:
@@ -2882,27 +2903,31 @@ def create_project(title, payload=None):
         payload.setdefault("workspaceProjectId", pid)
         payload.setdefault("title", title)
         payload.setdefault("revision", 1)
-    con.execute(
-        "INSERT INTO canvas_projects(id,user_id,title,payload_json,revision,"
-        "created_at,updated_at,node_count,connection_count,episode_count,"
-        "failed_count,local_blocked_count) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            pid,
-            tenant_context.current_tenant_id(),
-            title,
-            json.dumps(payload, ensure_ascii=False),
-            1,
-            now,
-            now,
-            *payload_stats(payload),
-        ),
-    )
-    sync_payload_projection(con, pid, payload, updated_at=now)
-    _snapshot(con, pid, title, payload, 1, kind="auto")
-    con.commit()
-    con.close()
-    return pid
+    # 以前这里是裸连接直写：没开 BEGIN IMMEDIATE、没走重试包装，出错时
+    # con.close() 也不会执行（连接泄漏）。并发建项目时实测会抛
+    # "attempt to write a readonly database" 直接导致建项目失败。
+    def write(con):
+        con.execute(
+            "INSERT INTO canvas_projects(id,user_id,title,payload_json,revision,"
+            "created_at,updated_at,node_count,connection_count,episode_count,"
+            "failed_count,local_blocked_count) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                pid,
+                tenant_context.current_tenant_id(),
+                title,
+                json.dumps(payload, ensure_ascii=False),
+                1,
+                now,
+                now,
+                *payload_stats(payload),
+            ),
+        )
+        sync_payload_projection(con, pid, payload, updated_at=now)
+        _snapshot(con, pid, title, payload, 1, kind="auto")
+        return pid
+
+    return _run_write_transaction(write)
 
 
 def update_project(
@@ -2913,26 +2938,24 @@ def update_project(
     if_revision=None,
     snapshot_mode="auto",
 ):
-    con = _connect()
-    try:
-        con.execute("BEGIN IMMEDIATE")
+    # 画布每次保存都走这里，是全项目最关键的写路径。以前是裸 BEGIN IMMEDIATE，
+    # 并发下偶发的 "attempt to write a readonly database" 会让用户看到"保存失败"，
+    # 但再点一次又成功。乐观锁 WHERE revision=? 保证重跑不会重复写。
+    def write(con):
         row = con.execute(
             "SELECT title, payload_json, revision FROM canvas_projects WHERE id=?",
             (pid,),
         ).fetchone()
         if not row:
-            con.rollback()
             return False
         current_revision = int(row[2])
         if if_revision is not None and current_revision != int(if_revision):
-            con.rollback()
             raise RevisionConflictError(
                 f"项目已更新：期望 revision={if_revision}，实际 revision={current_revision}"
             )
         new_title = title if title is not None else row[0]
         new_payload = json.loads(row[1]) if payload is None else payload
         if not isinstance(new_payload, dict):
-            con.rollback()
             raise ValueError("payload must be an object")
         new_rev = (current_revision + 1) if revision is None else int(revision)
         now = _now_iso()
@@ -2956,7 +2979,6 @@ def update_project(
             ),
         )
         if cursor.rowcount != 1:
-            con.rollback()
             raise RevisionConflictError("项目写入冲突，请重新读取后再试")
         sync_payload_projection(
             con,
@@ -2973,28 +2995,23 @@ def update_project(
             mode=snapshot_mode,
             now=now,
         )
-        con.commit()
         return True
-    except Exception:
-        if con.in_transaction:
-            con.rollback()
-        raise
-    finally:
-        con.close()
+
+    return _run_write_transaction(write)
 
 
 def delete_project(pid):
-    con = _connect()
-    con.execute("DELETE FROM generation_tasks WHERE project_id=?", (pid,))
-    con.execute("DELETE FROM canvas_snapshots WHERE canvas_id=?", (pid,))
-    con.execute("DELETE FROM canvas_projection_nodes WHERE project_id=?", (pid,))
-    con.execute("DELETE FROM canvas_projection_edges WHERE project_id=?", (pid,))
-    con.execute("DELETE FROM canvas_projection_episodes WHERE project_id=?", (pid,))
-    con.execute("DELETE FROM canvas_projection_notes WHERE project_id=?", (pid,))
-    con.execute("DELETE FROM canvas_project_meta WHERE project_id=?", (pid,))
-    con.execute("DELETE FROM canvas_projects WHERE id=?", (pid,))
-    con.commit()
-    con.close()
+    def write(con):
+        con.execute("DELETE FROM generation_tasks WHERE project_id=?", (pid,))
+        con.execute("DELETE FROM canvas_snapshots WHERE canvas_id=?", (pid,))
+        con.execute("DELETE FROM canvas_projection_nodes WHERE project_id=?", (pid,))
+        con.execute("DELETE FROM canvas_projection_edges WHERE project_id=?", (pid,))
+        con.execute("DELETE FROM canvas_projection_episodes WHERE project_id=?", (pid,))
+        con.execute("DELETE FROM canvas_projection_notes WHERE project_id=?", (pid,))
+        con.execute("DELETE FROM canvas_project_meta WHERE project_id=?", (pid,))
+        con.execute("DELETE FROM canvas_projects WHERE id=?", (pid,))
+
+    return _run_write_transaction(write)
 
 
 _TASK_FIELDS = {
@@ -3059,28 +3076,30 @@ def _merge_generation_task_update(task: dict | None, updates: dict) -> dict:
 
 def append_event(project_id, kind, node_id="", payload=None):
     """写一条画布事件。落库不是给"在线的人"看的，是为了断线重连能补齐。"""
-    con = _connect()
-    cur = con.execute(
-        "INSERT INTO canvas_events(project_id,kind,node_id,payload_json,created_at) "
-        "VALUES(?,?,?,?,?)",
-        (
-            project_id,
-            str(kind),
-            str(node_id or ""),
-            json.dumps(payload or {}, ensure_ascii=False),
-            _now_iso(),
-        ),
-    )
-    event_id = int(cur.lastrowid or 0)
-    if event_id > 0:
-        # 只保留最近 2000 条：够补发一次断线，也不会让表无限增长
-        con.execute(
-            "DELETE FROM canvas_events WHERE project_id=? AND id<=?",
-            (project_id, event_id - 2000),
+
+    def write(con):
+        cur = con.execute(
+            "INSERT INTO canvas_events(project_id,kind,node_id,payload_json,created_at) "
+            "VALUES(?,?,?,?,?)",
+            (
+                project_id,
+                str(kind),
+                str(node_id or ""),
+                json.dumps(payload or {}, ensure_ascii=False),
+                _now_iso(),
+            ),
         )
-    con.commit()
-    con.close()
-    return event_id
+        event_id = int(cur.lastrowid or 0)
+        if event_id > 0:
+            # 只保留最近 2000 条：够补发一次断线，也不会让表无限增长
+            con.execute(
+                "DELETE FROM canvas_events WHERE project_id=? AND id<=?",
+                (project_id, event_id - 2000),
+            )
+        return event_id
+
+    # 每次生成进度/完成都会打一行，是全库最热的写路径之一，必须走统一重试。
+    return _run_write_transaction(write)
 
 
 def list_events(project_id, since_id=0, limit=200):

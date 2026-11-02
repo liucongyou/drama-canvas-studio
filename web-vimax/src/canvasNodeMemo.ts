@@ -12,8 +12,9 @@ import {voiceRefList, type CanvasMediaNode} from './api';
  * - `node`：本卡自身数据（媒体地址 / 状态 / 提示词 / 版本），引用变即重渲染；
  * - `active` / `generationBusy` / `renderMode` / `contentVisible` / `catalog`；
  * - `groupMembers`：按内容比较（每次 groupMap 重算都会给新数组，比引用必然不等）；
- * - 依赖签名：本卡 `refs` / `voiceRefs` 指向的节点「状态 + 是否有产物 + 是否待更新」，
- *   用于卡片上的依赖徽章（未就绪 / 待更新）。只遍历本卡自己的引用，成本 O(refs)。
+ * - 依赖签名：本卡 `refs` / `voiceRefs` 指向的节点「状态 + 类型 + 是否有产物 +
+ *   标题 + 位置」，用于卡片上的依赖徽章（未就绪 / 待更新）和点徽标定位。只遍历
+ *   本卡自己的引用，成本 O(refs)。
  *
  * 刻意**不**比较回调（onChange / onGenerate / ...）：它们都是 setState 包装，
  * 不捕获会过期的值；也不比较 `assetsById` 本身——它是每次 mediaNodes 变化都会
@@ -51,11 +52,37 @@ export function mediaNodeDependencySignature(
   let signature = '';
   for (const id of ids) {
     const source = assetsById?.get(id);
-    signature += source
-      ? `${id}:${source.status}/${source.kind}/${source.promptStale ? 'stale' : 'fresh'}/${source.mediaUrl ? 'has' : 'empty'};`
-      : `${id}:missing;`;
+    signature += source ? `${id}${sourceSlug(source)};` : `${id}:missing;`;
   }
   return signature;
+}
+
+/**
+ * 依赖节点上「会改变本卡画面」的全部字段。
+ *
+ * 卡片用到引用节点的四处信息，任何一处漏进签名都会变成"永远停在旧值"：
+ * 1. `mediaOutputReady()` → 依赖徽标是「就绪」还是「缺 N 项」，含 kind /
+ *    promptStale / mediaAvailability / mediaUrl，文本节点看 prompt 是否为空；
+ * 2. `title` → 徽标 tooltip 里"点击定位缺失依赖：<标题>"；
+ * 3. `x` / `y` → 点徽标要 `setCenter` 跳过去，位置不进签名就会跳到旧坐标；
+ * 4. `kind` → 徽标的「N图 / N音色 / N文本」计数。
+ *
+ * 只取整坐标：亚像素位移不需要刷新卡片，拖动时的抖动就落在这里。
+ */
+function sourceSlug(source: CanvasMediaNode): string {
+  const prompt = typeof source.prompt === 'string' ? source.prompt : '';
+  const textReady = source.kind === 'text' ? (prompt.trim() ? '1' : '0') : '-';
+  return [
+    source.kind,
+    source.status,
+    source.promptStale ? 'stale' : 'fresh',
+    source.mediaAvailability || '',
+    source.mediaUrl ? 'has' : 'empty',
+    textReady,
+    source.title || '',
+    Math.round(source.x || 0),
+    Math.round(source.y || 0),
+  ].join('/');
 }
 
 export function sameStringList(

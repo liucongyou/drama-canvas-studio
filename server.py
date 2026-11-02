@@ -25,6 +25,7 @@ import re
 import sys
 import base64
 import binascii
+import gzip
 import hashlib
 import inspect
 import mimetypes
@@ -65,6 +66,93 @@ WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 # 以前 / 返回的是 web/index.html，用户从 8890 进来看见的是一个功能完全不同的旧页面。
 # 现在优先 dist，找不到才退回旧页（不删旧文件，避免打断任何外部引用）。
 WEBAPP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web-vimax", "dist")
+
+# 静态产物是首屏的关键路径：当前 CSS 583KB + JS 533KB 全走明文，弱网下光传输就
+# 要好几秒。文本类资源 gzip 后通常剩 15%，且带指纹的文件内容永不变，压缩一次可
+# 以一直复用。图片/字体/媒体本身已压缩，再 gzip 只会更大更慢，直接排除。
+_STATIC_COMPRESSIBLE_EXT = {
+    ".html", ".htm", ".js", ".mjs", ".css", ".json", ".svg", ".map",
+    ".txt", ".xml", ".webmanifest",
+}
+_STATIC_COMPRESS_MIN_BYTES = 1024
+# key=(绝对路径, mtime_ns, size)：重新构建后 mtime 变化，旧的压缩结果自然失效。
+_STATIC_GZIP_CACHE: dict[tuple[str, int, int], bytes] = {}
+_STATIC_GZIP_CACHE_MAX_BYTES = 24 * 1024 * 1024
+_STATIC_GZIP_LOCK = threading.Lock()
+
+
+def _accepts_gzip(header: str) -> bool:
+    """解析 Accept-Encoding，尊重 `gzip;q=0` 这种显式拒绝。"""
+    explicit_gzip: float | None = None
+    wildcard: float | None = None
+    for item in str(header or "").split(","):
+        part = item.strip().lower()
+        if not part:
+            continue
+        name, _, params = part.partition(";")
+        coding = name.strip()
+        if coding not in {"gzip", "*"}:
+            continue
+        quality = 1.0
+        for param in params.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip() == "q":
+                try:
+                    quality = float(value.strip())
+                except ValueError:
+                    quality = 0.0
+        if coding == "gzip":
+            explicit_gzip = quality if explicit_gzip is None else max(explicit_gzip, quality)
+        else:
+            wildcard = quality if wildcard is None else max(wildcard, quality)
+    # An explicit gzip entry wins over wildcard, including `gzip;q=0, *;q=1`.
+    if explicit_gzip is not None:
+        return explicit_gzip > 0
+    return wildcard is not None and wildcard > 0
+
+
+def _compressible_content_type(content_type: str) -> bool:
+    """只压文本类响应：图片/音视频/zip 本身已压缩，再 gzip 是纯浪费 CPU。"""
+    base = str(content_type or "").split(";")[0].strip().lower()
+    if not base:
+        return False
+    return (
+        base.startswith("text/")
+        or base == "application/json"
+        or base.endswith("+json")
+        or base == "application/xml"
+        or base.endswith("+xml")
+        or base in {"application/javascript", "application/x-javascript"}
+    )
+
+
+def _static_gzip(path: str, mtime_ns: int, size: int, body: bytes) -> bytes | None:
+    """按 (路径, mtime, 大小) 缓存 gzip 结果。
+
+    dist 的文件内容一旦构建就固定，同一个文件会被每个访客反复请求，压缩只做一次。
+    缓存上限 24MB，超了就整体清空——dist 总共才 1.6MB，正常永远碰不到上限。
+    """
+    key = (path, mtime_ns, size)
+    with _STATIC_GZIP_LOCK:
+        cached = _STATIC_GZIP_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        packed = gzip.compress(body, compresslevel=6)
+    except (OSError, ValueError):
+        # 压缩失败不能影响静态资源本身，退回明文即可。
+        return None
+    if len(packed) >= len(body):
+        # 已经压不动的资源（极小 JSON、已优化过的 svg）发原样更划算。
+        return None
+    with _STATIC_GZIP_LOCK:
+        total = sum(len(value) for value in _STATIC_GZIP_CACHE.values())
+        if total + len(packed) > _STATIC_GZIP_CACHE_MAX_BYTES:
+            _STATIC_GZIP_CACHE.clear()
+            return None
+        _STATIC_GZIP_CACHE[key] = packed
+    return packed
+
 # 上传落地目录：data/uploads/<yyyymm>/<随机名>.<ext>
 # 为什么必须真落盘：前端原来的 uploadWorkspaceFile 只是 URL.createObjectURL 造了个
 # blob: 地址，刷新即失效 → 拖进来的图全变破图（用户实测）。落盘后给出稳定 URL，
@@ -3898,7 +3986,7 @@ def start_storage_maintenance():
         time.sleep(90)
         while True:
             try:
-                freed = _run_for_active_tenants(canvas_store.maintain_storage)
+                freed = _run_for_active_tenants(store.maintain_storage)
                 if freed:
                     print(
                         f"[storage] 回收数据库空闲页 {freed / (1024 * 1024):.1f}MB",
@@ -4725,6 +4813,18 @@ class Handler(BaseHTTPRequestHandler):
             body = raw.encode("utf-8") if isinstance(raw, str) else raw
         else:
             body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        # 画布读接口一次就吐 400~500KB JSON（127 个节点的那本实测 487KB），
+        # 生成结束后的整份刷新还要再来一次。不压缩等于每次首屏都多下半个 MB。
+        encoding = ""
+        compressible = _compressible_content_type(content_type) and len(body) >= _STATIC_COMPRESS_MIN_BYTES
+        if compressible and _accepts_gzip(self.headers.get("Accept-Encoding", "")):
+            try:
+                packed = gzip.compress(body, compresslevel=6)
+            except (OSError, ValueError):
+                packed = body
+            if len(packed) < len(body):
+                body = packed
+                encoding = "gzip"
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -4734,6 +4834,16 @@ class Handler(BaseHTTPRequestHandler):
             **self._cors_headers(),
             **(headers or {}),
         }
+        if encoding:
+            response_headers["Content-Encoding"] = encoding
+        if compressible:
+            # 同一 URL 会按 Accept-Encoding 给出两种表示，必须声明 Vary。
+            # CORS 已经写过 Vary: Origin，合并成一条，避免重复头被代理误读。
+            existing = str(response_headers.get("Vary") or "").strip()
+            parts = [part.strip() for part in existing.split(",") if part.strip()]
+            if "Accept-Encoding" not in parts:
+                parts.append("Accept-Encoding")
+            response_headers["Vary"] = ", ".join(parts)
         for key, value in response_headers.items():
             self.send_header(str(key), str(value))
         self.end_headers()
@@ -5173,21 +5283,66 @@ class Handler(BaseHTTPRequestHandler):
 
         ext = os.path.splitext(target)[1].lower()
         ctype = self._STATIC_EXT.get(ext) or mimetypes.guess_type(target)[0] or "application/octet-stream"
-        with open(target, "rb") as f:
-            body = f.read()
+        try:
+            stat = os.stat(target)
+        except OSError:
+            return False
+        etag = f'"{stat.st_size:x}-{stat.st_mtime_ns:x}"'
+        # assets 下都是带指纹的文件，可长缓存；index.html 必须每次回源，
+        # 否则重建后旧 HTML 会继续引用已被删除的旧 chunk → 白屏。
+        if rel.startswith("assets/"):
+            cache_control = "public, max-age=31536000, immutable"
+        else:
+            cache_control = "no-cache, must-revalidate"
+
+        try:
+            with open(target, "rb") as f:
+                body = f.read()
+        except OSError:
+            return False
+
+        encoding = ""
+        if (
+            ext in _STATIC_COMPRESSIBLE_EXT
+            and len(body) >= _STATIC_COMPRESS_MIN_BYTES
+            and _accepts_gzip(self.headers.get("Accept-Encoding", ""))
+        ):
+            compressed = _static_gzip(target, stat.st_mtime_ns, stat.st_size, body)
+            if compressed is not None:
+                body = compressed
+                encoding = "gzip"
+
+        # no-cache 的 index.html 每次导航都要回源确认，用 ETag 换 304 可省掉整包
+        # 重传；immutable 的 assets 正常不会走到这里，命中也不亏。
+        if (
+            self.command in {"GET", "HEAD"}
+            and str(self.headers.get("If-None-Match") or "").strip() == etag
+        ):
+            self.send_response(304)
+            for key, value in _security_headers().items():
+                self.send_header(key, value)
+                self.send_header("Content-Type", ctype)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", cache_control)
+            self.send_header("Vary", "Accept-Encoding")
+            self.end_headers()
+            return True
+
         self.send_response(200)
         for key, value in _security_headers().items():
             self.send_header(key, value)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        # assets 下都是带指纹的文件，可长缓存；index.html 必须每次回源，
-        # 否则重建后旧 HTML 会继续引用已被删除的旧 chunk → 白屏。
-        if rel.startswith("assets/"):
-            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
-        else:
-            self.send_header("Cache-Control", "no-cache, must-revalidate")
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", cache_control)
+        # 同一 URL 会按 Accept-Encoding 给出两种表示，必须声明 Vary，
+        # 否则中间代理可能把 gzip 响应喂给不支持解压的客户端。
+        self.send_header("Vary", "Accept-Encoding")
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
         return True
 
     # ---------- tenant request boundary ----------
@@ -5228,6 +5383,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "资源不存在"})
                 return None
             if path in {"/api/auth/login", "/api/auth/session", "/api/auth/logout"}:
+                return nullcontext()
+            if not is_api_path and self.command in {"GET", "HEAD"}:
+                # The login page and its own JS/CSS must be reachable before a
+                # session exists. Only API and media paths carry tenant data.
                 return nullcontext()
             cookie = SimpleCookie()
             try:
