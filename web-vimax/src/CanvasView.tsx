@@ -179,6 +179,7 @@ import {
   mergeEpisodeViewport,
   selectEpisodeViewport,
   selectCanvasViewport,
+  terminalTaskSignature,
   viewportForCanvasBounds,
   viewportLoadBounds,
   validRestoredViewport,
@@ -8813,14 +8814,13 @@ function CanvasViewInner({
   // 提示词弹窗是否打开（供全局 Esc / 快捷键判断，避免闭包读到旧值）。
   // 真实 state 在下方 editNodeId；这里只做镜像，渲染时同步。
   const editNodeRef = useRef<string | null>(null);
-  // 实时缩放百分比（onMove 回写），工具栏显示 + 点击重置 100%
-  const [zoomPct, setZoomPct] = useState(100);
+  // 缩放百分比只从视口派生。独立 state 会在滚轮缩放时落后于
+  // canvasViewport，导致画面已缩、底纹/端口/流光/卡片档位仍是旧值。
   const zoomPctLabelRef = useRef<HTMLSpanElement | null>(null);
   // 底纹（第 29 轮）：**屏幕坐标**的贴图 —— 随缩放变密度、但不随平移移动。
   // 即梦的行为就是这样（用户原话「即梦拖动背景点阵是不动的」）：拖画布时点阵钉在原地，
   // 只有缩放时点和间距才跟着变大变小。所以这里只按 zoomPct 算出两个 CSS 变量，
   // 平移期间一个样式都不写（也就不需要重绘，比 SVG pattern 更省）。
-  const bgVars = canvasBackgroundCss(zoomPct / 100);
   const fitViewRef = useRef<() => void>(() => {});
   // ref 桥接：Ctrl+0「重置 100%」的键盘分支在文件里比 zoomToLevel 早 1700 行，
   // 直接引用会命中 TDZ（本项目踩过两次，白屏 + 所有选择器失效）。
@@ -8930,6 +8930,8 @@ function CanvasViewInner({
   const groupsRef = useRef<CanvasGroup[]>([]);
   groupsRef.current = groups;   // persistLayout 里要读最新值（不能挂 deps，会连锁重建回调）
   const [canvasViewport, setCanvasViewport] = useState<CanvasViewport>({x: 0, y: 0, zoom: 1});
+  const zoomPct = Math.round(canvasViewport.zoom * 100);
+  const bgVars = canvasBackgroundCss(zoomPct / 100);
   const viewportRef = useRef(canvasViewport);
   const overviewReturnViewportRef = useRef<CanvasViewport | null>(null);
   const focusSelectionRef = useRef<(showEmptyHint?: boolean) => void>(() => {});
@@ -9271,6 +9273,7 @@ function CanvasViewInner({
   const refreshWorkspaceFactsRef = useRef<() => Promise<void>>(async () => {});
   const workspaceScopeRef = useRef({session, episode: currentEp});
   workspaceScopeRef.current = {session, episode: currentEp};
+  const workspaceReadyAtRef = useRef(0);
   const workspaceLoadEpochRef = useRef(0);
   const optimisticGenerationStartsRef = useRef<Map<string, OptimisticGenerationSubmission>>(new Map());
   /**
@@ -9301,6 +9304,12 @@ function CanvasViewInner({
   ), []);
   useEffect(() => { mediaNodesRef.current = mediaNodes; }, [mediaNodes]);
   const refreshWorkspaceFacts = useCallback(() => {
+    if (
+      workspaceReadyAtRef.current > 0
+      && performance.now() - workspaceReadyAtRef.current < 1_500
+    ) {
+      return Promise.resolve();
+    }
     if (workspaceRefreshInFlightRef.current) {
       workspaceRefreshQueuedRef.current = true;
       return workspaceRefreshInFlightRef.current;
@@ -9476,61 +9485,26 @@ function CanvasViewInner({
     });
   }, [generationTasks]);
 
-  const terminalRefreshRef = useRef<Map<string, string>>(new Map());
-  const succeededRefreshRef = useRef('');
+  const terminalRefreshRef = useRef('');
+  const terminalSnapshotPrimedRef = useRef(false);
   useEffect(() => {
     // The initial workspace read includes tasks. Those records are a snapshot,
     // not a new completion event, so they must not trigger another full reload.
-    if (loading) return;
-    const terminalSignatures = new Map<string, string>();
-    for (const task of generationTasks) {
-      if (
-        !['succeeded', 'failed', 'interrupted'].includes(task.status)
-        || !task.node_id
-      ) {
-        continue;
-      }
-      terminalSignatures.set(
-        task.node_id,
-        `${task.id}:${task.status}:${task.finished_at || task.updated_at || ''}`,
-      );
+    if (loading) {
+      terminalSnapshotPrimedRef.current = false;
+      return;
     }
-    const newlyTerminal = [...terminalSignatures].some(
-      ([nodeId, signature]) => (
-        terminalRefreshRef.current.get(nodeId) !== signature
-      ),
-    );
-    terminalRefreshRef.current = terminalSignatures;
-    if (!newlyTerminal) return;
-
-    void refreshWorkspaceFacts().catch(() => {
-      // Keep the signatures unchanged so the next task poll retries the
-      // terminal refresh instead of depending on a manual browser refresh.
-      terminalRefreshRef.current.clear();
-    });
-  }, [generationTasks, loading, refreshWorkspaceFacts]);
-
-  /**
-   * A succeeded generation task is authoritative, even when an earlier
-   * provider attempt had already flipped the node to "failed". The task center
-   * is the source of truth for media generation, so reconcile the final media
-   * URL back into the local node instead of leaving a stale failure card.
-   */
-  useEffect(() => {
-    if (loading) return;
-    const succeededTasks = generationTasks.filter(
-      (task) => task.status === 'succeeded',
-    );
-    if (succeededTasks.length === 0) return;
-    const succeededSignature = succeededTasks
-      .map((task) => `${task.id}:${task.finished_at || task.updated_at || ''}`)
-      .sort()
-      .join('|');
-    if (succeededRefreshRef.current === succeededSignature) return;
-    succeededRefreshRef.current = succeededSignature;
+    const signature = terminalTaskSignature(generationTasks);
+    if (!terminalSnapshotPrimedRef.current) {
+      terminalSnapshotPrimedRef.current = true;
+      terminalRefreshRef.current = signature;
+      return;
+    }
+    if (!signature || terminalRefreshRef.current === signature) return;
+    terminalRefreshRef.current = signature;
     void refreshWorkspaceFacts().catch(() => {
       // Keep the task unmarked so the next poll retries the reconciliation.
-      succeededRefreshRef.current = '';
+      terminalRefreshRef.current = '';
     });
   }, [generationTasks, loading, refreshWorkspaceFacts]);
   const mediaSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -9731,8 +9705,13 @@ function CanvasViewInner({
       if (message.type === 'canvas-connections-updated') {
         if (pendingConnectionsRef.current || connectionSaveInFlightRef.current) return;
         if (!currentEp) return;
-        void getCanvasWorkspace(session, currentEp)
-          .then(({connections}) => {
+        // A cross-tab notification only needs the connection projection.
+        // Calling getCanvasWorkspace here re-fetched index, nodes and tasks on
+        // every tab edit, making an otherwise cheap broadcast look like a full
+        // project reload.
+        void getWorkspaceNodes(session, currentEp)
+          .then((workspace) => {
+            const connections = workspace.connections;
             projectConnectionsRef.current = connections;
             const remoteEdges = connections
               .filter((connection) => connection.source === 'user')
@@ -9802,6 +9781,9 @@ function CanvasViewInner({
   useEffect(() => {
     let alive = true;
     const loadGeneration = taskLoadGenerationRef.current;
+    // The projection workspace already returned the task snapshot. Do not
+    // issue a second task read on mount; only a subsequent interval or explicit
+    // task-center refresh needs a new snapshot.
     let pollingStarted = false;
     const refreshTasks = () => {
       if (!pollingStarted) return;
@@ -9816,15 +9798,13 @@ function CanvasViewInner({
         })
         .catch(() => {});
     };
-    // The workspace read already contains the initial task snapshot. Delay the
-    // first duplicate read so a project switch does not contend with itself.
+    // The first interval is the first allowed task refresh. It preserves the
+    // low-frequency safety net without racing the workspace task snapshot.
     const startTimer = window.setTimeout(() => {
-      if (document.visibilityState !== 'visible') return;
       pollingStarted = true;
-      refreshTasks();
-    }, 2500);
+    }, 900);
     // Only poll quickly while there is active work. Closed task center with no
-    // active workments still gets a low-frequency reconciliation, not 1.2s churn.
+    // active work still gets a low-frequency reconciliation, not 1.2s churn.
     const interval = taskCenterOpen && activeGenerationTaskCount > 0
       ? 1200
       : activeGenerationTaskCount > 0
@@ -10066,7 +10046,9 @@ function CanvasViewInner({
       window.clearTimeout(workspaceRetryTimerRef.current);
       workspaceRetryTimerRef.current = null;
     }
-    succeededRefreshRef.current = '';
+    terminalRefreshRef.current = '';
+    terminalSnapshotPrimedRef.current = false;
+    workspaceReadyAtRef.current = 0;
     workspaceRefreshQueuedRef.current = false;
     workspaceRefreshInFlightRef.current = null;
     savedLayoutScopeRef.current = '';
@@ -10085,7 +10067,11 @@ function CanvasViewInner({
     const requestedEpisodeForNodes = String(currentEp || '')
       .trim()
       .toUpperCase();
-    const indexedNodesPromise = requestedEpisodeForNodes
+    // Only preload when the URL explicitly names an episode. Without ?ep=,
+    // currentEp may be stale local memory from another project; guessing EP001
+    // here causes an extra workspace-nodes request and then a second request
+    // after workspace-index corrects the active episode.
+    const indexedNodesPromise = episodeKnownFromUrl && requestedEpisodeForNodes
       ? getWorkspaceNodes(
           session,
           requestedEpisodeForNodes,
@@ -10189,6 +10175,7 @@ function CanvasViewInner({
         // target episode's canvas and measured nodes exist.
         setDataReady(true);
         setLoading(false);
+        workspaceReadyAtRef.current = performance.now();
       })
       .catch((err: unknown) => {
         if (loadEpoch === workspaceLoadEpochRef.current) {
@@ -10219,7 +10206,71 @@ function CanvasViewInner({
         workspaceLoadEpochRef.current += 1;
       }
     };
-  }, [session, currentEp, pidRetry]);
+  // The initial workspace response may correct currentEp from stale local
+  // memory to the server episode. Depending on currentEp here would abort that
+  // very request and immediately reload the identical workspace. Episode
+  // switches after mount are handled explicitly by switchEpisode/pidRetry.
+  }, [session, pidRetry]);
+
+  // Explicit episode switches after the initial workspace paint. The initial
+  // loader already installs the server-corrected episode and records it in
+  // activeWorkspaceEpisodeRef, so the `target === active` guard prevents the
+  // first render from reloading the same workspace.
+  useEffect(() => {
+    const target = String(currentEp || '').trim().toUpperCase();
+    const active = String(activeWorkspaceEpisodeRef.current || '').trim().toUpperCase();
+    if (!target || !active || target === active) return;
+    const epoch = workspaceLoadEpochRef.current + 1;
+    workspaceLoadEpochRef.current = epoch;
+    const abort = new AbortController();
+    setLoading(true);
+    setDataReady(false);
+    workspaceReadyAtRef.current = 0;
+    setCanvas(null);
+    setMediaNodes([]);
+    setNotes([]);
+    setGenerationTasks([]);
+    setGenerationBusyIds(new Set());
+    taskLoadGenerationRef.current += 1;
+    getCanvasWorkspace(session, target, abort.signal)
+      .then((workspace) => {
+        if (epoch !== workspaceLoadEpochRef.current) return;
+        const loadedEpisode = String(
+          workspace.activeEpisodeId || target,
+        ).trim().toUpperCase();
+        activeWorkspaceEpisodeRef.current = loadedEpisode;
+        serverEpisodeViewportsRef.current = workspace.episodeViewports || {};
+        projectConnectionsRef.current = workspace.connections;
+        if ('empty' in workspace.canvas) {
+          setCanvas(null);
+        } else {
+          setCanvas(workspace.canvas);
+        }
+        startTransition(() => {
+          setNotes(workspace.notes);
+          setMediaNodes(workspace.mediaNodes);
+          setGenerationTasks(workspace.tasks);
+        });
+        if (loadedEpisode && loadedEpisode !== target) {
+          setCurrentEp(loadedEpisode);
+        }
+        setDataReady(true);
+        setLoading(false);
+        workspaceReadyAtRef.current = performance.now();
+      })
+      .catch((error: unknown) => {
+        if (epoch !== workspaceLoadEpochRef.current) return;
+        const aborted = error instanceof DOMException && error.name === 'AbortError';
+        setError(
+          aborted
+            ? '画布加载超时，项目数据未丢失。请重新加载或稍后再试。'
+            : error instanceof Error ? error.message : String(error),
+        );
+        setDataReady(false);
+        setLoading(false);
+      });
+    return () => abort.abort();
+  }, [session, currentEp]);
 
   // 拉取创作质量自评报告：这是非首屏辅助数据，延后到画布可交互后再取，
   // 避免与 workspace-nodes / 任务列表争抢首屏带宽和主线程。
@@ -11177,6 +11228,11 @@ function CanvasViewInner({
     ? (eventsConnected ? 4_000 : 1_500)
     : eventsConnected ? 7_000 : 15_000;
   useEffect(() => {
+    // Nothing is generating in this episode. Initial workspace-load already
+    // reconciled terminal node rows, so an immediate project-JSON poll only
+    // duplicates the first screen and competes with workspace-nodes. Resume
+    // polling as soon as a task/node becomes active.
+    if (!hasGeneratingMedia && activeGenerationTaskCount === 0) return;
     let alive = true;
     let syncing = false;
     const syncTerminalState = async () => {
@@ -11295,7 +11351,14 @@ function CanvasViewInner({
       alive = false;
       window.clearInterval(timer);
     };
-  }, [session, currentEp, generationSyncMs, generationBusyIds]);
+  }, [
+    session,
+    currentEp,
+    generationSyncMs,
+    generationBusyIds,
+    hasGeneratingMedia,
+    activeGenerationTaskCount,
+  ]);
 
   // 事件流：后端拿到供应商结果、落盘完成、失败时都会推一条，卡片直接改，
   // 不再等下一次轮询。EventSource 自带重连，服务端按 Last-Event-ID 补发。
@@ -11314,7 +11377,12 @@ function CanvasViewInner({
       terminalRefreshTimer = window.setTimeout(() => {
         terminalRefreshTimer = null;
         if (disposed) return;
-        void refreshWorkspaceFacts().catch(() => {});
+        // `media` events already carry the node's terminal status, media URL,
+        // versions and storage result; applyEvent has updated the card above.
+        // A full workspace read on every terminal event races the initial
+        // workspace paint and duplicates index/nodes/tasks for no new data.
+        // Polling and visibility/network recovery remain the consistency net
+        // for older servers that omit fields from the event.
       }, 120);
     };
 
@@ -11489,7 +11557,9 @@ function CanvasViewInner({
         if (disposed) return;
         reconnectAttempts = 0;
         setEventsConnected(true);
-        void refreshWorkspaceFacts().catch(() => {});
+        // A successful SSE connection carries a replay cursor and projected
+        // node data. The initial workspace is already authoritative; forcing
+        // a full index/nodes read on every open only duplicates first paint.
       };
       source.onerror = () => {
         if (disposed) return;
@@ -11528,7 +11598,9 @@ function CanvasViewInner({
 
   useEffect(() => {
     let lastRefreshAt = 0;
-    const refreshWhenVisible = () => {
+    const visibilityRef = {hidden: document.visibilityState === 'hidden'};
+    const networkRef = {offline: typeof navigator !== 'undefined' && !navigator.onLine};
+    const refreshAfterResume = () => {
       if (document.visibilityState === 'hidden') return;
       if (typeof navigator !== 'undefined' && !navigator.onLine) return;
       const now = Date.now();
@@ -11537,13 +11609,26 @@ function CanvasViewInner({
       workspaceRetryAttemptRef.current = 0;
       void refreshWorkspaceFacts().catch(() => {});
     };
-    document.addEventListener('visibilitychange', refreshWhenVisible);
-    window.addEventListener('focus', refreshWhenVisible);
-    window.addEventListener('online', refreshWhenVisible);
+    const onVisibilityChange = () => {
+      const hidden = document.visibilityState === 'hidden';
+      const resumed = visibilityRef.hidden && !hidden;
+      visibilityRef.hidden = hidden;
+      if (resumed) refreshAfterResume();
+    };
+    const onOnline = () => {
+      if (networkRef.offline) refreshAfterResume();
+      networkRef.offline = false;
+    };
+    const onOffline = () => {
+      networkRef.offline = true;
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
     return () => {
-      document.removeEventListener('visibilitychange', refreshWhenVisible);
-      window.removeEventListener('focus', refreshWhenVisible);
-      window.removeEventListener('online', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
     };
   }, [refreshWorkspaceFacts]);
   useEffect(() => () => {
@@ -11998,7 +12083,6 @@ function CanvasViewInner({
         );
         viewportRef.current = next;
         setCanvasViewport(next);
-        setZoomPct(Math.round(next.zoom * 100));
       }
     }));
     return count;
@@ -15503,7 +15587,6 @@ function CanvasViewInner({
     );
     viewportRef.current = viewport;
     setCanvasViewport(viewport);
-    setZoomPct(Math.round(viewport.zoom * 100));
   }, [canvas, effectiveSegments, notes, assetRatios, mediaNodes]);
 
   const fitView = useCallback(() => {
@@ -15542,7 +15625,6 @@ function CanvasViewInner({
       );
       viewportRef.current = next;
       setCanvasViewport(next);
-      setZoomPct(Math.round(next.zoom * 100));
     });
   }, [mediaNodes, rf, setToast]);
   const focusWorkspace = useCallback(() => {
@@ -15556,7 +15638,6 @@ function CanvasViewInner({
       if (viewport) {
         viewportRef.current = viewport;
         setCanvasViewport(viewport);
-        setZoomPct(Math.round(viewport.zoom * 100));
       }
       else fitCanvas({animate: true, focus: true});
     });
@@ -15585,7 +15666,6 @@ function CanvasViewInner({
     };
     viewportRef.current = next;
     setCanvasViewport(next);
-    setZoomPct(Math.round(zoom * 100));
   }, []);
   const updateLargeCanvasViewport = useCallback((viewport: CanvasViewport) => {
     if (mediaNodes.length <= 400 || largeCanvasOverview) return;
@@ -15735,7 +15815,6 @@ function CanvasViewInner({
     if (nextViewport) {
       viewportRef.current = nextViewport;
       setCanvasViewport(nextViewport);
-      setZoomPct(Math.round(nextViewport.zoom * 100));
       lastPersistedViewportRef.current = {
         key: `${session}:${currentEp || '__project__'}`,
         viewport: nextViewport,
@@ -15886,7 +15965,6 @@ function CanvasViewInner({
       ) {
         viewportRef.current = parsed.viewport;
         setCanvasViewport(parsed.viewport);
-        setZoomPct(Math.round(parsed.viewport.zoom * 100));
       }
       persistLayout(
         layoutPositionsForExport({
@@ -15985,7 +16063,6 @@ function CanvasViewInner({
     };
     viewportRef.current = next;
     setCanvasViewport(next);
-    setZoomPct(Math.round(zoom * 100));
     setSelectedId(hit.nodeId);
     setSearchFocused(false);
     // ★ 选中态必须落到 React Flow 的节点上（只 setSelectedId 是内部 state，画布上没有任何视觉反馈，
@@ -16151,7 +16228,6 @@ function CanvasViewInner({
     };
     viewportRef.current = next;
     setCanvasViewport(next);
-    setZoomPct(Math.round(zoom * 100));
   }, [segNodeId]);
 
   const contextNode = useMemo(() => {

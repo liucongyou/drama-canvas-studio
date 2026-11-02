@@ -130,6 +130,21 @@ try {
   const zoomLabel = await page.evaluate(
     () => document.querySelector('.canvas-toolbar-zoom span')?.textContent || '',
   );
+  const zoomCssVars = await page.evaluate(() => {
+    const flow = document.querySelector('.react-flow');
+    const pattern = document.querySelector('.canvas-background-pattern');
+    return {
+      pitch: pattern
+        ? getComputedStyle(pattern).getPropertyValue('--canvas-pitch').trim()
+        : '',
+      portShrink: flow
+        ? getComputedStyle(flow).getPropertyValue('--port-shrink').trim()
+        : '',
+      edgeFlowWidth: flow
+        ? getComputedStyle(flow).getPropertyValue('--edge-flow-width').trim()
+        : '',
+    };
+  });
   const metricsAfter = await page.metrics();
 
   const result = {
@@ -141,6 +156,7 @@ try {
     zoom,
     zoomLabel,
     expectedZoomLabel: expectedZoomLabel || zoomLabel,
+    zoomCssVars,
     heapMB: Number((metricsAfter.JSHeapUsedSize / 1048576).toFixed(1)),
     heapDeltaMB: Number(
       ((metricsAfter.JSHeapUsedSize - metricsBefore.JSHeapUsedSize) / 1048576).toFixed(1),
@@ -160,6 +176,9 @@ try {
   if (outPath) {
     const {writeFileSync} = await import('node:fs');
     writeFileSync(outPath, `${JSON.stringify(result, null, 2)}\n`);
+  }
+  if (!zoomCssVars.pitch || !zoomCssVars.portShrink || !zoomCssVars.edgeFlowWidth) {
+    throw new Error(`zoom CSS vars missing: ${JSON.stringify(zoomCssVars)}`);
   }
 } finally {
   await browser.close();

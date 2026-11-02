@@ -9,7 +9,10 @@ import {ErrorBoundary, ToastHost, installGlobalErrorHandlers} from './ErrorBound
 import {installNetworkStatusToasts} from './networkStatus';
 import {applyTheme, normalizeThemePreference, THEMES, type StoredThemePreference, type Theme} from './theme';
 import {mergeSavedPreferences, type ShellPreferences} from './settingsSnapshot';
-import {reconcileSelectedProjectId} from './projectSelection';
+import {
+  reconcileSelectedProjectId,
+  shouldClearEpisodeOnProjectRestore,
+} from './projectSelection';
 // ★ 全局对话框：替换原生 prompt/confirm/alert（2026-10-25）
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
 import {DialogHost, dialog} from './GDialog';
@@ -233,11 +236,14 @@ function Shell({
   useEffect(() => { pidRef.current = pid; }, [pid]);
 
   const selectProject = (projectId: string) => {
+    const previousProjectId = pidRef.current;
     pidRef.current = projectId;
     setPid(projectId);
     try {
       const url = new URL(window.location.href);
-      url.searchParams.delete('ep');
+      if (shouldClearEpisodeOnProjectRestore(previousProjectId, projectId)) {
+        url.searchParams.delete('ep');
+      }
       url.hash = projectId;
       window.history.replaceState(
         null,

@@ -2163,10 +2163,19 @@ async function getProjectionCanvasWorkspace(
         nodeIds: [],
         videoNodeIds: [],
       }];
+  // The URL is a navigation hint, but it must never silently override the
+  // project's persisted current episode. Older clients could arrive with a
+  // stale EP001 URL and then load EP001 even though the project itself was on
+  // EP003, causing repeated project switches and wrong episode writes.
+  const projectEpisodeHint = String(
+    (index.projectMeta as Record<string, unknown> | undefined)?.episodeId
+    || '',
+  ).trim().toUpperCase();
+  const preferredEpisode = requestedEpisode || projectEpisodeHint;
   const currentEpisode = episodes.some((item) => (
-    String(item.id || '').toUpperCase() === requestedEpisode
+    String(item.id || '').toUpperCase() === preferredEpisode
   ))
-    ? requestedEpisode
+    ? preferredEpisode
     : String(episodes[0]?.id || 'EP001').toUpperCase();
   // Render the graph first; task history is auxiliary and reconciles again
   // through its own polling cadence.
@@ -2218,6 +2227,10 @@ async function getProjectionCanvasWorkspace(
   const notes = Array.isArray(nodesPayload.notes)
     ? nodesPayload.notes
     : await getCanvasNotes(sessionId, currentEpisode);
+  // The projection response already contains this episode's payload nodes.
+  // Reusing pseudoProject avoids issuing /api/projects/{id} again solely to
+  // reproject nodes that are already in memory. Fallback mode above still
+  // reads the complete project once when the projection is unavailable.
   const mediaNodes = await getCanvasMediaNodes(
     sessionId,
     currentEpisode,

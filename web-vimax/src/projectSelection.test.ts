@@ -1,5 +1,8 @@
 import {describe, expect, it} from 'vitest';
-import {reconcileSelectedProjectId} from './projectSelection';
+import {
+  reconcileSelectedProjectId,
+  shouldClearEpisodeOnProjectRestore,
+} from './projectSelection';
 
 describe('reconcileSelectedProjectId', () => {
   it('keeps the current project while it still exists', () => {
@@ -20,5 +23,11 @@ describe('reconcileSelectedProjectId', () => {
 
   it('selects the first project after refreshing with no current selection', () => {
     expect(reconcileSelectedProjectId('', ['a', 'b'], '')).toBe('a');
+  });
+
+  it('does not clear the episode when restoring the same project from a hash', () => {
+    expect(shouldClearEpisodeOnProjectRestore('', 'b')).toBe(false);
+    expect(shouldClearEpisodeOnProjectRestore('b', 'b')).toBe(false);
+    expect(shouldClearEpisodeOnProjectRestore('a', 'b')).toBe(true);
   });
 });

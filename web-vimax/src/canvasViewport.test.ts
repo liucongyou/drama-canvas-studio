@@ -8,6 +8,7 @@ import {
   mergeEpisodeViewport,
   selectEpisodeViewport,
   selectCanvasViewport,
+  terminalTaskSignature,
   episodeIdFromWorkspace,
   shouldPersistViewport,
   shouldSaveViewport,
@@ -37,6 +38,51 @@ describe('restored canvas viewport validation', () => {
 });
 
 describe('canvas viewport persistence threshold', () => {
+  it('coalesces duplicate terminal snapshots into one reconciliation signature', () => {
+    const tasks = [
+      {
+        id: 'task-image',
+        node_id: 'node-image',
+        status: 'succeeded',
+        finished_at: '2026-11-03T06:00:00Z',
+      },
+      {
+        id: 'task-video-old',
+        node_id: 'node-video',
+        status: 'failed',
+        finished_at: '2026-11-03T05:00:00Z',
+      },
+      {
+        id: 'task-running',
+        node_id: 'node-running',
+        status: 'running',
+        updated_at: '2026-11-03T06:01:00Z',
+      },
+    ];
+    const first = terminalTaskSignature(tasks);
+    expect(terminalTaskSignature([...tasks].reverse())).toBe(first);
+    expect(terminalTaskSignature(tasks)).toBe(first);
+    expect(first).toContain('task-image:node-image:succeeded');
+    expect(first).toContain('task-video-old:node-video:failed');
+    expect(first).not.toContain('task-running');
+  });
+
+  it('invalidates the signature for a genuinely newer retry', () => {
+    const before = terminalTaskSignature([{
+      id: 'task-video-1',
+      node_id: 'node-video',
+      status: 'failed',
+      finished_at: '2026-11-03T05:00:00Z',
+    }]);
+    const after = terminalTaskSignature([{
+      id: 'task-video-2',
+      node_id: 'node-video',
+      status: 'succeeded',
+      finished_at: '2026-11-03T06:00:00Z',
+    }]);
+    expect(after).not.toBe(before);
+  });
+
   it('does not send a network write for identical movement callbacks', () => {
     expect(shouldPersistViewport(
       {x: 10, y: 20, zoom: 0.5},
@@ -97,6 +143,107 @@ describe('canvas viewport persistence threshold', () => {
     const block = source.slice(start, end);
     expect(block.indexOf('await getWorkspaceNodes('))
       .toBeLessThan(block.indexOf('await getGenerationTasks('));
+  });
+
+  it('does not guess an episode for payload-node prefetch without ?ep=', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    expect(source).toMatch(
+      /const indexedNodesPromise = episodeKnownFromUrl && requestedEpisodeForNodes/,
+    );
+  });
+
+  it('does not poll project JSON when no generation is active', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    expect(source).toMatch(
+      /if \(!hasGeneratingMedia && activeGenerationTaskCount === 0\) return;/,
+    );
+  });
+
+  it('does not force a full workspace read when SSE reconnects', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    const openBlock = source.slice(
+      source.indexOf('source.onopen = () => {'),
+      source.indexOf('source.onerror = () => {'),
+    );
+    expect(openBlock).not.toContain('refreshWorkspaceFacts()');
+  });
+
+  it('applies terminal media events without re-reading the whole workspace', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    const terminalTimerBlock = source.slice(
+      source.indexOf('const refreshAfterTerminalEvent = () => {'),
+      source.indexOf('const applyEvent = (raw: string) => {'),
+    );
+    expect(terminalTimerBlock).not.toContain('refreshWorkspaceFacts()');
+  });
+
+  it('keeps cross-tab connection updates on the node projection only', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    const broadcastBlock = source.slice(
+      source.indexOf("if (message.type === 'canvas-connections-updated')"),
+      source.indexOf("if (message.type !== 'canvas-nodes-updated')"),
+    );
+    expect(broadcastBlock).toContain('getWorkspaceNodes(session, currentEp)');
+    expect(broadcastBlock).not.toContain('getCanvasWorkspace(');
+  });
+
+  it('reconciles visibility and network recovery, not the initial focus', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    const start = source.indexOf('const visibilityRef = {hidden:');
+    const recoveryBlock = source.slice(
+      start,
+      source.indexOf(
+        "document.addEventListener('visibilitychange', onVisibilityChange)",
+        start,
+      ),
+    );
+    expect(recoveryBlock).toContain('const resumed = visibilityRef.hidden && !hidden;');
+    expect(recoveryBlock).toContain('if (networkRef.offline) refreshAfterResume();');
+    expect(recoveryBlock).not.toContain("window.addEventListener('focus'");
+  });
+
+  it('treats historical terminal tasks as the initial reconciliation baseline', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    const terminalBlock = source.slice(
+      source.indexOf('const terminalSnapshotPrimedRef'),
+      source.indexOf('const mediaSaveTimer'),
+    );
+    expect(terminalBlock).toContain('terminalSnapshotPrimedRef.current = true;');
+    expect(terminalBlock).toContain('terminalRefreshRef.current = signature;');
+    expect(terminalBlock).toContain('return;');
+  });
+
+  it('suppresses implicit duplicate workspace refresh immediately after first paint', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    expect(source).toMatch(
+      /workspaceReadyAtRef\.current > 0\s*&&\s*performance\.now\(\) - workspaceReadyAtRef\.current < 1_500/s,
+    );
+    expect(source).toMatch(
+      /setLoading\(false\);\s*(?:workspaceReadyAtRef\.current = performance\.now\(\);)/s,
+    );
+  });
+
+  it('does not let the initial episode correction re-run the workspace loader', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    const loaderEnd = source.slice(
+      source.indexOf('void completedWorkspace;'),
+      source.indexOf('// 拉取创作质量自评报告', source.indexOf('void completedWorkspace;')),
+    );
+    expect(loaderEnd).toContain('}, [session, pidRetry]);');
+    expect(loaderEnd).not.toContain('}, [session, currentEp, pidRetry]);');
+  });
+
+  it('loads only genuinely different target episodes after first paint', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    const block = source.slice(
+      source.indexOf('// Explicit episode switches after the initial workspace paint.'),
+      source.indexOf('// 拉取创作质量自评报告'),
+    );
+    expect(block).toContain(
+      'if (!target || !active || target === active) return;',
+    );
+    expect(block).toContain('getCanvasWorkspace(session, target, abort.signal)');
+    expect(block).toContain('}, [session, currentEp]);');
   });
 });
 

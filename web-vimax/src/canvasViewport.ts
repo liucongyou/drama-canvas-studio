@@ -12,6 +12,35 @@ export type CanvasViewport = {
   zoom: number;
 };
 
+export type TerminalTask = {
+  id: string;
+  node_id?: string | null;
+  status: string;
+  finished_at?: string | null;
+  updated_at?: string | null;
+};
+
+const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'interrupted']);
+
+/**
+ * One settled task generation is one workspace-fact change.
+ *
+ * The previous UI had separate effects for "any terminal task" and "successful
+ * tasks". Both listened to the same snapshot, which could queue a second full
+ * workspace read after a single completion. The signature includes task id,
+ * node id, status and finish time so a genuine retry still reconciles while
+ * duplicate SSE/poll snapshots do not.
+ */
+export function terminalTaskSignature(tasks: TerminalTask[]): string {
+  return tasks
+    .filter((task) => task.node_id && TERMINAL_TASK_STATUSES.has(task.status))
+    .map((task) => (
+      `${task.id}:${task.node_id}:${task.status}:${task.finished_at || task.updated_at || ''}`
+    ))
+    .sort()
+    .join('|');
+}
+
 export type EpisodeViewportMap = Record<string, CanvasViewport>;
 
 export type CanvasVisibleBounds = {
