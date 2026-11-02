@@ -1,3 +1,4 @@
+import {useState} from 'react';
 import {History, X} from 'lucide-react';
 import {APP_VERSION} from './changelog';
 import {CHANGELOG} from './changelogEntries';
@@ -9,7 +10,9 @@ import {CHANGELOG} from './changelogEntries';
  * 只有点开「更新记录」时才加载。DOM 结构与 class 名保持原样，样式不受影响。
  */
 export default function ChangelogDialog({onClose}: {onClose: () => void}) {
-  const entries = CHANGELOG;
+  const [visibleCount, setVisibleCount] = useState(12);
+  const entries = CHANGELOG.slice(0, visibleCount);
+  const latest = CHANGELOG[0];
   const formatReleaseTime = (value: string) => {
     const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)(?:\s*([+-]\d{2}:?\d{2}))?/.exec(value || '');
     if (match) {
@@ -28,7 +31,7 @@ export default function ChangelogDialog({onClose}: {onClose: () => void}) {
             <span><History size={17} strokeWidth={1.9} aria-hidden="true" /></span>
             <div>
               <h2 id="changelog-title">更新记录</h2>
-              <p>当前版本 v{APP_VERSION} · 最近更新 {entries[0]?.releasedAt ? formatReleaseTime(entries[0].releasedAt) : (entries[0]?.date || '-')}</p>
+              <p>当前版本 v{APP_VERSION} · 最近更新 {latest?.releasedAt ? formatReleaseTime(latest.releasedAt) : (latest?.date || '-')}</p>
             </div>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭更新记录"><X size={16} strokeWidth={2} /></button>
@@ -47,6 +50,15 @@ export default function ChangelogDialog({onClose}: {onClose: () => void}) {
               </ul>
             </article>
           ))}
+          {visibleCount < CHANGELOG.length && (
+            <button
+              type="button"
+              className="canvas-changelog-more"
+              onClick={() => setVisibleCount((count) => Math.min(CHANGELOG.length, count + 12))}
+            >
+              加载更多记录（已显示 {visibleCount} / {CHANGELOG.length}）
+            </button>
+          )}
         </div>
         <footer>
           <span>当前页面 v{APP_VERSION} · 记录与前端代码同仓维护</span>

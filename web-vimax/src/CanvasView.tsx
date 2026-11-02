@@ -673,6 +673,20 @@ const DIST_GAP = 60;
 //   ★ 口径：这里的 1.7 = 基线连线宽度（styles.css 的 --edge-line-w）。
 //     彗星三层都是它的倍数（1.15~1.4），保证"细小的彗星，不比连线大很多"。
 const EDGE_LINE_WIDTH_PX = 1.7;
+type BudgetDialogCacheEntry = {
+  status: BudgetStatus;
+  loadedAt: number;
+};
+const budgetDialogCache = new Map<string, BudgetDialogCacheEntry>();
+
+type ProjectVersionCacheEntry = {
+  versions: ProjectVersion[];
+  currentRevision: number;
+  loadedAt: number;
+};
+const projectVersionCache = new Map<string, ProjectVersionCacheEntry>();
+const projectVersionPreviewCache = new Map<string, Map<string, ProjectVersionPreview>>();
+
 function edgeFlowVars(zoom: number): CSSProperties {
   const z = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
   // 画布单位 = 屏幕像素 / zoom（两个维度同一套补偿，缺一就会变形）
@@ -4101,13 +4115,13 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const isAud = node?.kind === 'audio';
   // 文本节点：不参与生成，弹窗里不能出现模型/比例/清晰度/费用/生成按钮（点了也没意义）。
   const isTxt = node?.kind === 'text';
-  const atCands = (assets || []).filter((a) => {
+  const atCands = useMemo(() => (assets || []).filter((asset) => {
     if (!node) return false;
-    if (node.kind === 'video') return ['image', 'video', 'audio', 'text'].includes(a.kind);
-    if (node.kind === 'image') return ['image', 'text'].includes(a.kind);
-    if (node.kind === 'audio') return ['image', 'text'].includes(a.kind);
-    return a.kind === 'text';
-  });
+    if (node.kind === 'video') return ['image', 'video', 'audio', 'text'].includes(asset.kind);
+    if (node.kind === 'image') return ['image', 'text'].includes(asset.kind);
+    if (node.kind === 'audio') return ['image', 'text'].includes(asset.kind);
+    return asset.kind === 'text';
+  }), [assets, node?.kind]);
   const filteredAtCands = useMemo(() => {
     const query = atQuery.trim().toLocaleLowerCase('zh-CN');
     if (!query) return atCands;
@@ -4123,7 +4137,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
       ].join(' ').toLocaleLowerCase('zh-CN');
       return haystack.includes(query);
     });
-  }, [assets, atCands, atQuery]);
+  }, [atCands, atQuery]);
   const openMenuRef = useRef(openMenu); openMenuRef.current = openMenu;
   const atOpenRef = useRef(atOpen); atOpenRef.current = atOpen;
   // 展开态也要给 growTa 读最新值（它在 onChange 里被调用，闭包可能是旧的）
@@ -4302,18 +4316,19 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     setPopupMode(spaceAbove >= need ? 'above' : (spaceAbove > spaceBelow ? 'center' : 'center'));
   }, [node, anchor, taExpanded, refCount]);
 
-  if (!node) return null;
-  const meta = MEDIA_KIND_META[node.kind];
+  const nodeKind = node?.kind ?? 'image';
   const generateAndClose = () => {
-    if (onGenerate(node)) requestClose();
+    if (node && onGenerate(node)) requestClose();
   };
-  paramsRef.current = node.params || {};
+  paramsRef.current = node?.params || {};
   const patch = (key: keyof CanvasMediaParams, value: unknown) => {
+    if (!node) return;
     const next: CanvasMediaParams = {...paramsRef.current, [key]: value};
     paramsRef.current = next;   // 同一 tick 内的下一次 patch 基于本次结果，避免互相覆盖
     onChange(node.id, {params: next} as Partial<CanvasMediaNode>);
   };
   const selectModel = (spec: ModelSpec) => {
+    if (!node) return;
     const next = inheritModelParams(paramsRef.current, spec);
     const defaults = spec.defaultParams || {};
     if (spec.capability === 'image' && defaults.size) {
@@ -4329,17 +4344,34 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     setOpenMenu(null);
   };
   // 模型选项来自后端目录。旧节点里保存的真实模型 ID 会先做一次兼容映射。
-  const catalogModels = (catalog?.models || []).filter((item) => item.enabled !== false && item.capability === node.kind);
+  const catalogModels = useMemo(
+    () => (catalog?.models || []).filter(
+      (item) => item.enabled !== false && item.capability === nodeKind,
+    ),
+    [catalog?.models, nodeKind],
+  );
   // Fallback metadata is only for a temporarily unavailable catalog. When the
   // catalog loaded successfully but a provider/model was disabled, showing the
   // built-in list again would let users select a model the backend cannot use.
-  const modelOptions = catalog ? catalogModels : fallbackModelSpecs(node.kind);
+  const modelOptions = useMemo(
+    () => (catalog ? catalogModels : fallbackModelSpecs(nodeKind)),
+    [catalog, catalogModels, nodeKind],
+  );
   const storedModel = canonicalModelId(p.model || p.ttsModel);
-  const modelPickerGroups = groupModelsByProvider(modelOptions, catalog?.providers, modelSearch);
-  const favoriteModelOptions = favoriteModelsForProvider(modelOptions, favoriteModelIds);
-  const modelProviderGroups = pickerProviderGroups(
-    modelPickerGroups,
-    favoriteModelOptions.map((item) => ({id: item.id})),
+  const modelPickerGroups = useMemo(
+    () => groupModelsByProvider(modelOptions, catalog?.providers, modelSearch),
+    [catalog?.providers, modelOptions, modelSearch],
+  );
+  const favoriteModelOptions = useMemo(
+    () => favoriteModelsForProvider(modelOptions, favoriteModelIds),
+    [favoriteModelIds, modelOptions],
+  );
+  const modelProviderGroups = useMemo(
+    () => pickerProviderGroups(
+      modelPickerGroups,
+      favoriteModelOptions.map((item) => ({id: item.id})),
+    ),
+    [favoriteModelOptions, modelPickerGroups],
   );
   const activeModelProvider = modelProviderId === '__favorites__'
     ? modelProviderGroups.find((item) => item.id === '__favorites__') ?? null
@@ -4351,11 +4383,11 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const selectedModelGroup = modelPickerGroups.find(
     (group) => group.id === activeModelProvider?.id,
   ) ?? null;
-  const visibleModelOptions = (
-    modelProviderId === '__favorites__'
+  const visibleModelOptions = useMemo(() => {
+    const options = modelProviderId === '__favorites__'
       ? favoriteModelOptions
-      : selectedModelGroup?.models ?? []
-  ).sort((left, right) => {
+      : selectedModelGroup?.models ?? [];
+    return [...options].sort((left, right) => {
       const favoriteDelta = Number(favoriteModelIds.includes(right.id)) - Number(favoriteModelIds.includes(left.id));
       if (favoriteDelta) return favoriteDelta;
       const leftRecent = recentModelIds.indexOf(left.id);
@@ -4367,6 +4399,9 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
       }
       return 0;
     });
+  }, [favoriteModelIds, favoriteModelOptions, modelProviderId, recentModelIds, selectedModelGroup]);
+  if (!node) return null;
+  const meta = MEDIA_KIND_META[node.kind];
   const requestedProvider = String(p.provider || '');
   const curModelSpec = modelOptions.find((item) => item.id === storedModel || item.remoteModel === storedModel)
     || modelOptions.find((item) => item.providerId === requestedProvider)
@@ -7650,34 +7685,43 @@ function BatchModelPicker({kindLabel, models, providers: catalogProviders, value
 function GenerationBudgetDialog({
   onClose,
   onMessage,
+  session,
 }: {
   onClose: () => void;
   onMessage: (message: string) => void;
+  session: string;
 }) {
   const dialogRef = useDialogFocusTrap();
-  const [config, setConfig] = useState<BudgetConfig>({
+  const cached = budgetDialogCache.get(session);
+  const emptyConfig: BudgetConfig = {
     enabled: false,
     currency: 'CNY',
     dailyLimit: 0,
     monthlyLimit: 0,
     maxRequestCost: 0,
     allowUnknownCost: false,
-  });
-  const [status, setStatus] = useState<BudgetStatus | null>(null);
-  const [loading, setLoading] = useState(true);
+  };
+  const [config, setConfig] = useState<BudgetConfig>(cached?.status.budget ?? emptyConfig);
+  const [status, setStatus] = useState<BudgetStatus | null>(cached?.status ?? null);
+  const [loading, setLoading] = useState(!cached);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    setLoading(true);
+    if (cached && Date.now() - cached.loadedAt < 15_000) {
+      setLoading(false);
+      return;
+    }
+    setLoading(!cached);
     void getBudgetStatus()
       .then((data) => {
+        budgetDialogCache.set(session, {status: data, loadedAt: Date.now()});
         setStatus(data);
         setConfig(data.budget);
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [cached, session]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -7702,6 +7746,7 @@ function GenerationBudgetDialog({
     setError('');
     try {
       const data = await saveBudgetConfig(config);
+      budgetDialogCache.set(session, {status: data, loadedAt: Date.now()});
       setStatus(data);
       setConfig(data.budget);
       onMessage(config.enabled ? '生成预算保护已启用' : '生成预算保护已关闭');
@@ -7826,22 +7871,29 @@ function ProjectVersionsDialog({
   onMessage: (message: string) => void;
 }) {
   const dialogRef = useDialogFocusTrap();
-  const [versions, setVersions] = useState<ProjectVersion[]>([]);
-  const [currentRevision, setCurrentRevision] = useState(0);
+  const cached = projectVersionCache.get(projectId);
+  const [versions, setVersions] = useState<ProjectVersion[]>(cached?.versions || []);
+  const [currentRevision, setCurrentRevision] = useState(cached?.currentRevision || 0);
   const [selected, setSelected] = useState<ProjectVersionPreview | null>(null);
   const [title, setTitle] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cached);
   const [working, setWorking] = useState(false);
   const [confirmRestore, setConfirmRestore] = useState(false);
   const [error, setError] = useState('');
 
   const refresh = useCallback(async () => {
-    setLoading(true);
+    setLoading(!projectVersionCache.has(projectId));
     setError('');
     try {
       const data = await getProjectVersions(projectId);
       setVersions(data.versions || []);
       setCurrentRevision(Number(data.currentRevision || 0));
+      projectVersionCache.set(projectId, {
+        versions: data.versions || [],
+        currentRevision: Number(data.currentRevision || 0),
+        loadedAt: Date.now(),
+      });
+      projectVersionPreviewCache.delete(projectId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -7850,8 +7902,13 @@ function ProjectVersionsDialog({
   }, [projectId]);
 
   useEffect(() => {
+    const entry = projectVersionCache.get(projectId);
+    if (entry && Date.now() - entry.loadedAt < 30_000) {
+      setLoading(false);
+      return;
+    }
     void refresh();
-  }, [refresh]);
+  }, [projectId, refresh]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -7869,7 +7926,16 @@ function ProjectVersionsDialog({
     setError('');
     setConfirmRestore(false);
     try {
-      setSelected(await previewProjectVersion(projectId, version.id));
+      const cachedPreview = projectVersionPreviewCache.get(projectId)?.get(version.id);
+      if (cachedPreview) {
+        setSelected(cachedPreview);
+      } else {
+        const preview = await previewProjectVersion(projectId, version.id);
+        const entries = projectVersionPreviewCache.get(projectId) || new Map<string, ProjectVersionPreview>();
+        entries.set(version.id, preview);
+        projectVersionPreviewCache.set(projectId, entries);
+        setSelected(preview);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -8667,6 +8733,25 @@ function CanvasViewInner({
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void getBudgetStatus()
+        .then((status) => {
+          budgetDialogCache.set(session, {status, loadedAt: Date.now()});
+        })
+        .catch(() => undefined);
+      void getProjectVersions(session)
+        .then((data) => {
+          projectVersionCache.set(session, {
+            versions: data.versions || [],
+            currentRevision: Number(data.currentRevision || 0),
+            loadedAt: Date.now(),
+          });
+        })
+        .catch(() => undefined);
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [session]);
   const toolsTriggerRef = useRef<HTMLButtonElement>(null);
   const [userEdges, setUserEdges] = useState<Edge[]>([]);
   const projectConnectionsRef = useRef<Array<{
@@ -17616,6 +17701,7 @@ function CanvasViewInner({
           )}
           {budgetOpen && (
             <GenerationBudgetDialog
+              session={session}
               onClose={() => setBudgetOpen(false)}
               onMessage={setToast}
             />

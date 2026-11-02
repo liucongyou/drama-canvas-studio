@@ -338,6 +338,7 @@ function Shell({
     const preload = () => {
       void requestSettings('storage').catch(() => undefined);
       void requestSettings('models').catch(() => undefined);
+      void loadChangelogDialog().catch(() => undefined);
       if (isAdmin && !localMode) void requestSettings('accounts').catch(() => undefined);
     };
     const timer = window.setTimeout(preload, 0);

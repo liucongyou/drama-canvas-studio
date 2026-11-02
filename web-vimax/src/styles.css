@@ -14900,6 +14900,20 @@ button:disabled, [role="button"]:disabled { transition: none; }
 .canvas-changelog-list article.is-current {
   border-color: color-mix(in srgb, var(--v-accent) 50%, var(--v-border));
 }
+.canvas-changelog-more {
+  min-height: 36px;
+  color: var(--v-text-3);
+  background: var(--v-surface);
+  border: 1px solid var(--v-border);
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+}
+.canvas-changelog-more:hover {
+  color: var(--v-text);
+  border-color: var(--v-border-strong);
+  background: var(--v-surface-hover);
+}
 
 .canvas-changelog-version {
   display: flex;
