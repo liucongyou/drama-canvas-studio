@@ -152,7 +152,7 @@
   --v-radius-pill: 999px;
 
   /* ── 底纹（画布背景，各视图共用） ─────────────────────────────── */
-  --v-dot: rgba(255, 255, 255, 0.075);
+  --v-dot: rgba(255, 255, 255, 0.11);
   --v-grid-line: rgba(255, 255, 255, 0.045);
 
   /* ── 状态点（媒体卡"● 已生成/待生成"前面那个小圆点）───────────────
@@ -1948,29 +1948,10 @@ html[data-theme='dark'][data-variant='immersive'] .canvas-node.canvas-media-node
   box-shadow: var(--v-shadow-overlay) !important;
 }
 
-.canvas-stage[data-bg='dots'] {
-  background-image: radial-gradient(circle, var(--v-dot) 1px, transparent 1px) !important;
-}
-
-.canvas-stage[data-bg='lines'] {
-  background-image:
-    linear-gradient(var(--v-grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--v-grid-line) 1px, transparent 1px) !important;
-}
-
-/* The canvas is the work surface, not a decorative backdrop. Keep optional
-   grid modes, but no latent diagonal stroke layer may sit underneath nodes. */
-.canvas-flow,
-.canvas-stage {
+/* The canvas pattern is an explicit layer (see canvas-background-pattern).
+   Never paint a latent background directly on React Flow. */
+.canvas-flow {
   background-image: none;
-}
-.canvas-stage[data-bg='dots'] {
-  background-image: radial-gradient(circle, var(--v-dot) 1px, transparent 1px) !important;
-}
-.canvas-stage[data-bg='lines'] {
-  background-image:
-    linear-gradient(var(--v-grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--v-grid-line) 1px, transparent 1px) !important;
 }
 
 .canvas-minimap .react-flow__minimap-node {

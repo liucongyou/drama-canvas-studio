@@ -2433,9 +2433,6 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 .canvas-toolbar button.is-active{background:var(--v-selected);color:var(--v-text);border:none;box-shadow:none}
 .canvas-toolbar button.is-active .canvas-tool-ico{color:#fff}
 .canvas-minimap{border-radius:12px;border:1px solid #2b3140;box-shadow:0 10px 30px rgba(0,0,0,.5);overflow:hidden}
-/* 点阵底纹更细更密（贴近参考图） */
-.canvas-stage[data-bg='dots']{background-size:22px 22px}
-
 /* ============================================================
    配色统一（2026-10-23）
    基准 #121212 中性灰阶，去掉原有偏蓝灰（#191b20 / #161b24 /
@@ -2715,7 +2712,11 @@ html[data-theme='dark'][data-variant='immersive']{
   box-shadow:0 8px 20px rgba(0,0,0,.32),inset 0 0 0 1px rgba(255,255,255,.18);
   backdrop-filter:blur(8px);
   cursor:pointer;
-  opacity:.9;
+  /* Hidden until the card is hovered or keyboard-focused. This applies to
+     both playing and paused states: leaving the mouse hides every control so
+     the picture is never covered. */
+  opacity:0;
+  pointer-events:none;
   transform:translate(-50%,-50%);
   transition:opacity .16s ease,transform .16s ease,background .16s ease;
 }
@@ -2726,13 +2727,9 @@ html[data-theme='dark'][data-variant='immersive']{
 .canvas-video-shell button.canvas-video-center-play:active{
   transform:translate(-50%,-50%);
 }
-.canvas-video-shell.is-playing .canvas-video-center-play{
-  opacity:0;
-  pointer-events:none;
-}
-.canvas-video-shell.is-playing:hover .canvas-video-center-play,
-.canvas-video-shell.is-playing:focus-within .canvas-video-center-play{
-  opacity:.8;
+.canvas-video-shell:hover .canvas-video-center-play,
+.canvas-video-shell:focus-within .canvas-video-center-play{
+  opacity:.85;
   pointer-events:auto;
 }
 .canvas-video-controls{
@@ -3492,17 +3489,6 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 
 /* 画布点阵/网格：原来是 rgba(15,23,42,.18)（比 #121212 还暗，等于看不见），
    改成中性微亮点；网格线原本是浅色主题的 #e2e4e8，在深底上刺眼，同样压淡 */
-.canvas-stage[data-bg='dots']{
-  background-image:radial-gradient(circle,rgba(255,255,255,.075) 1px,transparent 1px);
-  background-size:22px 22px;
-}
-.canvas-stage[data-bg='lines']{
-  background-image:
-    linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);
-  background-size:22px 22px;
-}
-.canvas-stage[data-bg='blank']{background-image:none}
 /* 旧提示词弹窗 / 切集进度条：底与边框里的暗蓝一并换掉 */
 .canvas-prompt-overlay{background:rgba(0,0,0,.58)}
 .canvas-prompt-text{background:var(--v-canvas);color:var(--v-text)}
