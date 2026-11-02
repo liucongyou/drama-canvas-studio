@@ -67,9 +67,11 @@ function Switch({
 export function TosSettingsDialog({
   onClose,
   initialStorage,
+  onStorageChange,
 }: {
   onClose: () => void;
   initialStorage: StorageSpec;
+  onStorageChange?: (storage: StorageSpec) => void;
 }) {
   const [storage, setStorage] = useState<StorageSpec>(initialStorage);
   const [draft, setDraft] = useState<StorageDraft>(() => draftFromStorage(initialStorage));
@@ -80,6 +82,7 @@ export function TosSettingsDialog({
   const [testState, setTestState] = useState<{ok: boolean; message: string} | null>(null);
 
   const apply = (next: StorageSpec) => {
+    onStorageChange?.(next);
     setStorage(next);
     setDraft(draftFromStorage(next));
   };

@@ -4291,6 +4291,14 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 .model-settings-backdrop {
   z-index: 120;
 }
+.settings-dialog-slot {
+  display: contents;
+}
+.settings-dialog-slot.is-closed .canvas-help-backdrop {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
 
 /* ★ 2026-10-25 第 26 轮：用户「模型接口也做的精致些」
    这个弹窗原本继承 .canvas-help 的旧样式（底色/描边都不在令牌体系内），
@@ -4307,6 +4315,8 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   border: 1px solid var(--v-border);
   border-radius: var(--v-radius-xl);
   box-shadow: var(--v-shadow-overlay), inset 0 1px 0 rgba(255,255,255,.055);
+  contain: layout paint style;
+  isolation: isolate;
 }
 
 .model-settings-dialog > header {
@@ -5014,6 +5024,8 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   background: var(--v-surface);
   border-color: var(--v-border);
   box-shadow: var(--v-shadow-overlay);
+  contain: layout paint style;
+  isolation: isolate;
 }
 .tos-settings-dialog > header {
   flex: none;
@@ -5273,6 +5285,8 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   min-height: 48px;
   padding: 7px 8px;
   gap: 7px;
+  content-visibility: auto;
+  contain-intrinsic-size: 48px;
 }
 .model-settings-body .model-settings-list-item {
   display: grid;

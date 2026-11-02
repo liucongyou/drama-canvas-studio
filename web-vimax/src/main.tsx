@@ -15,7 +15,8 @@ import {DialogHost, dialog} from './GDialog';
 import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, getAuthSession, getManagedAccounts, getModelCatalog, getStorageConfig, loginAccount, logoutAccount, resetManagedAccountPassword, saveTenantPreferences, setManagedAccountStatus, type ManagedAccount, type ManagedAccountsSnapshot, type ModelCatalog, type StorageSpec} from './api';
 import {APP_VERSION, RELEASE_SEEN_KEY} from './changelog';
 // 更新记录弹窗连带 55KB 发布文本一起异步加载，首屏不再背这个包袱。
-const ChangelogDialog = lazy(() => import('./ChangelogDialog'));
+const loadChangelogDialog = () => import('./ChangelogDialog');
+const ChangelogDialog = lazy(loadChangelogDialog);
 import './styles.css';
 import './ui-refinements.css';
 import './immersive-theme.css';
@@ -146,7 +147,6 @@ function Shell({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
   const [tosSettingsOpen, setTosSettingsOpen] = useState(false);
-  const [settingsOpening, setSettingsOpening] = useState<'models' | 'storage' | 'accounts' | ''>('');
   const [modelCatalogSnapshot, setModelCatalogSnapshot] = useState<ModelCatalog | null>(null);
   const [storageSnapshot, setStorageSnapshot] = useState<StorageSpec | null>(null);
   const [accountsSnapshot, setAccountsSnapshot] = useState<ManagedAccountsSnapshot | null>(null);
@@ -166,6 +166,7 @@ function Shell({
   >(preferences?.canvasBackgroundMode || 'blank');
   const settingsWrapRef = useRef<HTMLDivElement | null>(null);
   const settingsRequestsRef = useRef<Record<string, Promise<unknown> | undefined>>({});
+  const settingsOpeningRef = useRef(false);
 
   useEffect(() => {
     const next = preferences?.canvasBackgroundMode;
@@ -344,11 +345,23 @@ function Shell({
   }, [isAdmin, localMode]);
 
   const openSettings = async (kind: 'models' | 'storage' | 'accounts') => {
-    if (settingsOpening) return;
-    setSettingsOpening(kind);
+    if (settingsOpeningRef.current) return;
+    settingsOpeningRef.current = true;
+    setSettingsOpen(false);
+    const cached = kind === 'models'
+      ? modelCatalogSnapshot
+      : kind === 'storage'
+        ? storageSnapshot
+        : accountsSnapshot;
+    if (cached) {
+      if (kind === 'models') setModelSettingsOpen(true);
+      if (kind === 'storage') setTosSettingsOpen(true);
+      if (kind === 'accounts') setAdminAccountsOpen(true);
+      settingsOpeningRef.current = false;
+      return;
+    }
     try {
       await requestSettings(kind);
-      setSettingsOpen(false);
       if (kind === 'models') setModelSettingsOpen(true);
       if (kind === 'storage') setTosSettingsOpen(true);
       if (kind === 'accounts') setAdminAccountsOpen(true);
@@ -359,7 +372,7 @@ function Shell({
         tone: 'danger',
       });
     } finally {
-      setSettingsOpening('');
+      settingsOpeningRef.current = false;
     }
   };
 
@@ -788,7 +801,12 @@ function Shell({
           <button
             type="button"
             className={`shell-topbar-btn ${settingsOpen ? 'is-open' : ''} ${releaseSeen ? '' : 'has-release'}`}
-            onClick={() => setSettingsOpen((value) => !value)}
+            onClick={() => {
+              setSettingsOpen((value) => {
+                if (!value) void loadChangelogDialog();
+                return !value;
+              });
+            }}
             title="主题、模型接口与项目设置"
             aria-expanded={settingsOpen}
           >
@@ -952,6 +970,20 @@ function Shell({
     </div>
   );
 
+  const handleCanvasBackgroundModeChange = useCallback(async (mode: 'dots' | 'lines' | 'blank') => {
+    const saved = await saveTenantPreferences({
+      canvasBackgroundMode: mode,
+    });
+    const committed = saved.preferences?.canvasBackgroundMode;
+    setCanvasBackgroundMode(
+      committed === 'dots'
+        || committed === 'lines'
+        || committed === 'blank'
+        ? committed
+        : mode,
+    );
+  }, []);
+
   return (
     <div style={{display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--v-canvas)', color: 'var(--v-text)'}}>
       {actions}
@@ -972,19 +1004,7 @@ function Shell({
               key={`${pid}:${canvasEpoch}`}
               session={pid}
               initialBackgroundMode={canvasBackgroundMode}
-              onBackgroundModeChange={async (mode) => {
-                const saved = await saveTenantPreferences({
-                  canvasBackgroundMode: mode,
-                });
-                const committed = saved.preferences?.canvasBackgroundMode;
-                setCanvasBackgroundMode(
-                  committed === 'dots'
-                    || committed === 'lines'
-                    || committed === 'blank'
-                    ? committed
-                    : mode,
-                );
-              }}
+              onBackgroundModeChange={handleCanvasBackgroundModeChange}
             />
           </ErrorBoundary>
         ) : (
@@ -999,15 +1019,33 @@ function Shell({
           </div>
         )}
       </div>
-      {modelSettingsOpen && modelCatalogSnapshot && (
-        <ErrorBoundary scope="dialog" label="模型接口设置" onDismiss={() => setModelSettingsOpen(false)}>
-          <ModelSettingsDialog initialCatalog={modelCatalogSnapshot} onClose={() => setModelSettingsOpen(false)} />
-        </ErrorBoundary>
+      {modelCatalogSnapshot && (
+        <div
+          className={`settings-dialog-slot ${modelSettingsOpen ? 'is-open' : 'is-closed'}`}
+          aria-hidden={!modelSettingsOpen}
+        >
+          <ErrorBoundary scope="dialog" label="模型接口设置" onDismiss={() => setModelSettingsOpen(false)}>
+            <ModelSettingsDialog
+              initialCatalog={modelCatalogSnapshot}
+              onCatalogChange={setModelCatalogSnapshot}
+              onClose={() => setModelSettingsOpen(false)}
+            />
+          </ErrorBoundary>
+        </div>
       )}
-      {tosSettingsOpen && storageSnapshot && (
-        <ErrorBoundary scope="dialog" label="对象存储设置" onDismiss={() => setTosSettingsOpen(false)}>
-          <TosSettingsDialog initialStorage={storageSnapshot} onClose={() => setTosSettingsOpen(false)} />
-        </ErrorBoundary>
+      {storageSnapshot && (
+        <div
+          className={`settings-dialog-slot ${tosSettingsOpen ? 'is-open' : 'is-closed'}`}
+          aria-hidden={!tosSettingsOpen}
+        >
+          <ErrorBoundary scope="dialog" label="对象存储设置" onDismiss={() => setTosSettingsOpen(false)}>
+            <TosSettingsDialog
+              initialStorage={storageSnapshot}
+              onStorageChange={setStorageSnapshot}
+              onClose={() => setTosSettingsOpen(false)}
+            />
+          </ErrorBoundary>
+        </div>
       )}
       {passwordOpen && (
         <ErrorBoundary scope="dialog" label="修改密码" onDismiss={() => setPasswordOpen(false)}>
@@ -1016,7 +1054,11 @@ function Shell({
       )}
       {isAdmin && adminAccountsOpen && (
         <ErrorBoundary scope="dialog" label="账号管理" onDismiss={() => setAdminAccountsOpen(false)}>
-          <AdminAccountsDialog onClose={() => setAdminAccountsOpen(false)} />
+          <AdminAccountsDialog
+            initialSnapshot={accountsSnapshot ?? undefined}
+            onSnapshotChange={setAccountsSnapshot}
+            onClose={() => setAdminAccountsOpen(false)}
+          />
         </ErrorBoundary>
       )}
       {changelogOpen && (
@@ -1042,9 +1084,11 @@ const EMPTY_ACCOUNTS_SNAPSHOT: ManagedAccountsSnapshot = {
 function AdminAccountsDialog({
   onClose,
   initialSnapshot,
+  onSnapshotChange,
 }: {
   onClose: () => void;
   initialSnapshot?: ManagedAccountsSnapshot;
+  onSnapshotChange?: (snapshot: ManagedAccountsSnapshot) => void;
 }) {
   // 打开入口没有预取快照，这里必须容忍 undefined：直接读 initialSnapshot.accounts
   // 会让管理员点「账号管理」瞬间 TypeError 白屏。首屏用空快照，挂载后立即拉真实数据。
@@ -1066,6 +1110,7 @@ function AdminAccountsDialog({
   const load = async () => {
     try {
       const snapshot = await getManagedAccounts();
+      onSnapshotChange?.(snapshot);
       setAccounts(snapshot.accounts);
       setOnlineCount(snapshot.onlineCount);
       const current = new Set(snapshot.onlineUsers.map((account) => account.id));

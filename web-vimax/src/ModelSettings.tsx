@@ -1,4 +1,4 @@
-import {useEffect, useLayoutEffect, useRef, useState} from 'react';
+import {useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import {dialog} from './GDialog';
 import {filterDiscoveredModels} from './modelDiscoveryFilter';
 import {Box, Braces, Check, ChevronDown, Plus, RefreshCw, Save, Search, Trash2, Upload, X} from 'lucide-react';
@@ -606,9 +606,11 @@ function initialModelDraft(catalog: ModelCatalog): ModelDraft {
 export function ModelSettingsDialog({
   onClose,
   initialCatalog,
+  onCatalogChange,
 }: {
   onClose: () => void;
   initialCatalog: ModelCatalog;
+  onCatalogChange?: (catalog: ModelCatalog) => void;
 }) {
   const [catalog, setCatalog] = useState<ModelCatalog>(initialCatalog);
   const [provider, setProvider] = useState<ProviderDraft>(() => initialProviderDraft(initialCatalog));
@@ -644,25 +646,38 @@ export function ModelSettingsDialog({
   );
   const providerIconInputRef = useRef<HTMLInputElement | null>(null);
 
-  const providerModels = (catalog?.models || []).filter(
-    (item) => Boolean(provider.id) && item.providerId === provider.id,
+  const providerModels = useMemo(
+    () => (catalog?.models || []).filter(
+      (item) => Boolean(provider.id) && item.providerId === provider.id,
+    ),
+    [catalog, provider.id],
   );
   const discoverQueryText = discoverQuery.trim().toLowerCase();
-  const filteredDiscoveredModels = filterDiscoveredModels(
-    discoveredModels || [],
-    discoverCapability,
-    Object.fromEntries(
+  const discoveryCapabilities = useMemo(
+    () => Object.fromEntries(
       Object.entries(discoveredCapabilities).map(([key, value]) => [
         key.split(':').slice(1).join(':'),
         value,
       ]),
     ),
-    discoverQueryText,
+    [discoveredCapabilities],
+  );
+  const filteredDiscoveredModels = useMemo(
+    () => filterDiscoveredModels(
+      discoveredModels || [],
+      discoverCapability,
+      discoveryCapabilities,
+      discoverQueryText,
+    ),
+    [discoverCapability, discoverQueryText, discoveredModels, discoveryCapabilities],
   );
   const selectableFilteredDiscoveredModels = filteredDiscoveredModels;
-  const discoveredSelectedCount = selectableFilteredDiscoveredModels.filter(
-    (item) => discoveredSelected[`${item.providerId}:${item.remoteModel}`],
-  ).length;
+  const discoveredSelectedCount = useMemo(
+    () => selectableFilteredDiscoveredModels.filter(
+      (item) => discoveredSelected[`${item.providerId}:${item.remoteModel}`],
+    ).length,
+    [discoveredSelected, selectableFilteredDiscoveredModels],
+  );
   const allFilteredDiscoveredSelected = Boolean(selectableFilteredDiscoveredModels.length)
     && discoveredSelectedCount === selectableFilteredDiscoveredModels.length;
 
@@ -722,6 +737,7 @@ export function ModelSettingsDialog({
   };
 
   const applyCatalog = (next: ModelCatalog) => {
+    onCatalogChange?.(next);
     setCatalog(next);
     setProvider((current) => current.id || !next.providers.length
       ? current

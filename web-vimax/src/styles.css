@@ -3989,7 +3989,6 @@ html[data-theme='dark'] .activity-media-video:has(video.is-landscape) {
   place-items: center;
   padding: 28px;
   background: rgba(20, 25, 31, 0.64);
-  backdrop-filter: blur(7px);
   animation: dialog-backdrop-in 140ms ease both;
 }
 
@@ -4212,7 +4211,6 @@ html[data-theme='dark'] .activity-media-video:has(video.is-landscape) {
   place-items: center;
   padding: 20px;
   background: rgba(27, 34, 42, 0.26);
-  backdrop-filter: blur(2px);
   animation: dialog-backdrop-in 140ms ease both;
 }
 
@@ -8228,7 +8226,6 @@ html[data-theme='dark'] .dialog-actions button.primary:hover:not(:disabled) {
   display: flex;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(2px);
 }
 .canvas-prompt-modal {
   width: min(560px, 92vw);
@@ -14896,6 +14893,8 @@ button:disabled, [role="button"]:disabled { transition: none; }
   border: 1px solid var(--v-border);
   border-radius: 9px;
   background: var(--surface-soft);
+  content-visibility: auto;
+  contain-intrinsic-size: 180px;
 }
 
 .canvas-changelog-list article.is-current {

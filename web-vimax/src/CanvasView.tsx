@@ -332,22 +332,16 @@ function CanvasEdgeWithDelete(props: EdgeProps) {
               14 屏幕像素 → **0 条**
             所以定 14：屏幕恒定、够点、又不抢邻线。宽度在 styles.css 里统一声明。 */}
         <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={style} interactionWidth={14} />
-        {/* ★★ 第 19 轮：**递减拖尾彗星**（三层，右端严格对齐）
-            ① .canvas-edge-flow-tail —— 最长最暗的焰尾（54px，22%）
-            ② .canvas-edge-flow      —— 中亮彗身（24px，55%）
-            ③ .canvas-edge-flow-head —— 近白过曝彗头（5px，100%）
-            三层右端重合、左端依次缩短 ⇒ 叠出"从白到透明"的拖尾。
-            ★ 顺序不能反：DOM 顺序就是图层顺序，头必须最后画（盖在最上面）。
-            vector-effect 必须给：non-scaling-stroke 让线宽/虚线间距恒为屏幕像素，
-            否则缩到 40% 时 2.2px 只剩 0.9px，屏幕上一片模糊。 */}
-        <path d={edgePath} className={`canvas-edge-flow-tail ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`} style={flowPhase} vectorEffect="non-scaling-stroke" />
-        <path d={edgePath} className={`canvas-edge-flow ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`} style={flowPhase} vectorEffect="non-scaling-stroke" />
-        <path d={edgePath} className={`canvas-edge-flow-head ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`} style={flowPhase} vectorEffect="non-scaling-stroke" />
-        {/* 终点火花：贴着 target 端点的一颗呼吸光点，强化"流到这里了"的方向感。
-            用 circle 而非 path —— 位置就是 targetX/targetY，不需要跟着 dash 跑。 */}
-        <circle
-          cx={targetX} cy={targetY} r={2.6}
-          className={`canvas-edge-spark ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`}
+        {/* 单个隐藏路径只作为 Canvas 流光的几何与状态来源。
+            三层尾巴、彗身、彗头和终点火花统一由 CanvasEdgeFlowOverlay 绘制，
+            不再为每条连线保留 4 份隐藏 SVG 节点。 */}
+        <path
+          d={edgePath}
+          className={`canvas-edge-flow ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`}
+          data-spark-x={targetX}
+          data-spark-y={targetY}
+          style={flowPhase}
+          vectorEffect="non-scaling-stroke"
         />
       </g>
       {/* 剪刀只在「单独单击选中这一条线」时出现（批量选中节点 / 多选连线一律不出）。 */}
@@ -415,6 +409,7 @@ function CanvasEdgeFlowOverlay() {
     let cachedZoom = -1;
     let pausedAt = 0;
     let pausedDuration = 0;
+    let hadPaint = false;
     const metaCache = new Map<string, EdgeFlowPaintMeta>();
     const pathCache = new Map<string, {source: string; path: Path2D; bounds: DOMRect}>();
     const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
@@ -429,6 +424,22 @@ function CanvasEdgeFlowOverlay() {
         frame = requestAnimationFrame(paint);
         return;
       }
+      const activeBodies = document.querySelectorAll<SVGPathElement>(
+        '.react-flow__edge:hover .canvas-edge-flow,'
+        + '.react-flow__edge.selected .canvas-edge-flow,'
+        + '.canvas-edge-flow.is-busy,'
+        + '.canvas-edge-flow.is-linked',
+      );
+      if (!activeBodies.length) {
+        if (hadPaint) {
+          context.setTransform(1, 0, 0, 1, 0, 0);
+          context.clearRect(0, 0, canvas.width, canvas.height);
+          hadPaint = false;
+        }
+        frame = requestAnimationFrame(paint);
+        return;
+      }
+      hadPaint = true;
 
       if (document.body.dataset.canvasInteracting === '1') {
         if (!pausedAt) pausedAt = now;
@@ -469,12 +480,6 @@ function CanvasEdgeFlowOverlay() {
       context.lineCap = 'round';
       context.lineJoin = 'round';
 
-      const activeBodies = document.querySelectorAll<SVGPathElement>(
-        '.react-flow__edge:hover .canvas-edge-flow,'
-        + '.react-flow__edge.selected .canvas-edge-flow,'
-        + '.canvas-edge-flow.is-busy,'
-        + '.canvas-edge-flow.is-linked',
-      );
       for (const body of activeBodies) {
         const edgeElement = body.closest<SVGGElement>('.react-flow__edge');
         if (!edgeElement) continue;
@@ -565,9 +570,8 @@ function CanvasEdgeFlowOverlay() {
         paintLayer('#ffffff', headWidth, meta.headDash, meta.headPhase, 0.95);
 
         if (sparkOn) {
-          const spark = edgeElement.querySelector<SVGCircleElement>('.canvas-edge-spark');
-          const sparkX = Number.parseFloat(spark?.getAttribute('cx') || '');
-          const sparkY = Number.parseFloat(spark?.getAttribute('cy') || '');
+          const sparkX = Number.parseFloat(body.dataset.sparkX || '');
+          const sparkY = Number.parseFloat(body.dataset.sparkY || '');
           if (Number.isFinite(sparkX) && Number.isFinite(sparkY)) {
             const pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(animationNow / (busy ? 150 : 185));
             context.globalAlpha = 0.25 + pulse * 0.75;
@@ -17976,10 +17980,11 @@ function CanvasViewInner({
 }
 
 // useReactFlow() 必须在 ReactFlowProvider 内调用；此前缺失 Provider 导致挂载即崩溃、整页白屏
-export function CanvasView(props: Props) {
+function CanvasViewComponent(props: Props) {
   return (
     <ReactFlowProvider>
       <CanvasViewInner {...props} />
     </ReactFlowProvider>
   );
 }
+export const CanvasView = memo(CanvasViewComponent);
