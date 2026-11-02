@@ -5,7 +5,6 @@ import * as ReactDOM from 'react-dom';
 import {createPortal} from 'react-dom';
 import {
   BaseEdge,
-  Background,
   EdgeLabelRenderer,
   Handle,
   MiniMap,
@@ -152,6 +151,7 @@ import {
 import {validateModelParams} from './modelParamContract';
 import {clampDurationInput} from './durationInput';
 import {
+  canvasBackgroundCss,
   isCanvasBackgroundMode,
   type CanvasBackgroundMode,
 } from './canvasBackground';
@@ -167,7 +167,7 @@ import {
   modelMaxRefs,
   type BatchGenerationCandidate,
 } from './batchGeneration';
-import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, ALIGN_VISIBLE_PX, applyLayoutPositions, canvasIdlePresentation, computeAlignSnap, createAlignState, createUserEdgeIdFactory, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, resolveLoadedEpisodeId, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignState} from './canvasLayout';
+import {absolutePositionOf, ALIGN_ENTER_PX, ALIGN_GUIDE_FADE_MS, ALIGN_GUIDE_HOLD_MS, ALIGN_GLUE_PX, ALIGN_RELEASE_PX, alignGuideDashDevicePx, alignGuideDeviceQuantum, alignGuideStrokeDevicePx, applyLayoutPositions, mergeAdjacentAlignGuides, canvasIdlePresentation, createAlignState, createUserEdgeIdFactory, easeAlignSnap, fallbackSegmentsOf, layoutPositionsForExport, pickDefaultEpisode, resolveInitialEpisode, resolveLoadedEpisodeId, segShotIdxsOf, solveAlignSnap, validUserConnections, workspaceScopeMatches, type AlignBox, type AlignGuide, type AlignGuideItem, type AlignState} from './canvasLayout';
 import {
   CANVAS_VIEWPORT_POLICY_VERSION,
   filterMediaNodesInBounds,
@@ -242,6 +242,28 @@ function newMediaNodeId(): string {
 //
 // 以前是 hovered || selected：鼠标划过就冒剪刀，批量框选节点时一屏全是剪刀图标。
 // 用户要求与即梦一致 —— 只有单击选中才给删除入口，所以这里不再监听 hover。
+
+/**
+ * 流光的**每条线独立相位**（第 29 轮）。
+ *
+ * 原来所有连线共用同一套 keyframes、同样 3.2s、同样相位 0：一屏几十条线
+ * 完全同步地闪 —— 远看像节拍器/贴图平铺，完全没有"能量在流动"的感觉，
+ * 这也是用户说"连线动画细节要优化"最直观的一处。
+ *
+ * 用边 id 做稳定哈希给一个负 delay（-0 ~ -3.2s）：
+ *   · 每条线的彗星处在周期里不同的位置，整屏看着是**各自在流**；
+ *   · 负延迟同时解决了"每次 hover 彗星都从起点重新出发"——
+ *     动画被重新启用时直接从周期的中段开始，观感是"本来就在流，只是被我看见了"。
+ * 哈希必须稳定（不能用 Math.random）：React Flow 会重渲染边组件，
+ * 随机相位会让彗星每帧乱跳。
+ */
+function edgeFlowPhaseDelay(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i += 1) h = (h * 31 + id.charCodeAt(i)) | 0;
+  const frac = (h >>> 0) % 1000 / 1000;
+  return `-${(frac * 3.2).toFixed(3)}s`;
+}
+
 function CanvasEdgeWithDelete(props: EdgeProps) {
   const {id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, selected, style, data, source, target} = props;
   const [edgePath, labelX, labelY] = getBezierPath({sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition});
@@ -290,6 +312,8 @@ function CanvasEdgeWithDelete(props: EdgeProps) {
     });
   });
   const busy = busyFromNodes || !!(data as {busy?: boolean} | undefined)?.busy;
+  // 三层必须给**同一个**相位：拖尾/彗身/彗头是同一颗彗星的三段，错开就变"串珠"。
+  const flowPhase = useMemo(() => ({animationDelay: edgeFlowPhaseDelay(id)}), [id]);
   return (
     <>
       <g>
@@ -316,9 +340,9 @@ function CanvasEdgeWithDelete(props: EdgeProps) {
             ★ 顺序不能反：DOM 顺序就是图层顺序，头必须最后画（盖在最上面）。
             vector-effect 必须给：non-scaling-stroke 让线宽/虚线间距恒为屏幕像素，
             否则缩到 40% 时 2.2px 只剩 0.9px，屏幕上一片模糊。 */}
-        <path d={edgePath} className={`canvas-edge-flow-tail ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`} vectorEffect="non-scaling-stroke" />
-        <path d={edgePath} className={`canvas-edge-flow ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`} vectorEffect="non-scaling-stroke" />
-        <path d={edgePath} className={`canvas-edge-flow-head ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`} vectorEffect="non-scaling-stroke" />
+        <path d={edgePath} className={`canvas-edge-flow-tail ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`} style={flowPhase} vectorEffect="non-scaling-stroke" />
+        <path d={edgePath} className={`canvas-edge-flow ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`} style={flowPhase} vectorEffect="non-scaling-stroke" />
+        <path d={edgePath} className={`canvas-edge-flow-head ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`} style={flowPhase} vectorEffect="non-scaling-stroke" />
         {/* 终点火花：贴着 target 端点的一颗呼吸光点，强化"流到这里了"的方向感。
             用 circle 而非 path —— 位置就是 targetX/targetY，不需要跟着 dash 跑。 */}
         <circle
@@ -404,15 +428,32 @@ const ASSET_ROW = 150;
 // 等距分布：放不下时回退用的固定间距（画布坐标）。60 在 190~300 宽卡片上是"看起来分得开、
 // 又不至于把整排拉到屏幕外"的折中值。
 const DIST_GAP = 60;
-// 流光参数随缩放注入（见 .canvas-edge-flow 的注释）：
-//   线宽恒为屏幕像素（non-scaling-stroke），但 dash 的"屏幕像素密度"必须随 zoom 调整，
-//   否则放大后亮段相对路径变稀 → 用户感觉"流光没了"。
-// zoom 越大，亮段越长、空隙越短；同时提高不透明度，让放大后仍然明显。
+// ★★ 第 31 轮定稿：**连线与彗星的所有尺寸都按"画布单位 = 屏幕像素 ÷ zoom"注入**。
+//
+//   这是"放大后彗星变形"的真因，也是本轮最贵的一课：
+//     `vector-effect="non-scaling-stroke"` 只抵消 **SVG 内部**的变换，
+//     而 React Flow 的缩放是加在 `.react-flow__viewport`（一个 **div**）上的
+//     **CSS transform: scale(z)** —— 对描边完全无效。
+//   实测探针（父 div scale + 两条对照 path，量真实像素）：
+//       z=1 → 线宽 2px、亮段 36px
+//       z=2 → 线宽 4px、亮段 36px
+//       z=3 → 线宽 6px、亮段 36px
+//   也就是说：长度早就屏幕恒定（dasharray 除过 zoom），
+//   但**宽度仍在跟着 zoom 线性变粗** ⇒ 放大后彗星变成"又短又粗的胖墩"。
+//   用户原话：「一个维度不动、另一个维度在动，就是变形」—— 完全对上。
+//
+//   ⇒ 正确做法：长度和宽度**用同一套补偿**，全部写成 `屏幕像素 / zoom` 的画布单位。
+//     这样 `屏幕尺寸 = 画布单位 × zoom = 屏幕像素`，任何缩放下形状完全一致（即梦的做法）。
+//     non-scaling-stroke 保留（无害），但绝不能再把它当成"线宽恒定"的保证。
+//
+//   ★ 口径：这里的 1.7 = 基线连线宽度（styles.css 的 --edge-line-w）。
+//     彗星三层都是它的倍数（1.15~1.4），保证"细小的彗星，不比连线大很多"。
+const EDGE_LINE_WIDTH_PX = 1.7;
 function edgeFlowVars(zoom: number): CSSProperties {
   const z = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
-  // 线宽：屏幕像素（non-scaling-stroke 保证不被画布 transform 放大）
-  const width = Math.round(Math.min(2.6, 1.4 + (z - 0.4) * 0.55) * 10) / 10;
-  const op = Math.round(Math.min(0.62, Math.max(0.3, 0.3 + (z - 0.4) * 0.22)) * 100) / 100;
+  // 画布单位 = 屏幕像素 / zoom（两个维度同一套补偿，缺一就会变形）
+  const width = Math.round((EDGE_LINE_WIDTH_PX / z) * 100) / 100;
+  const op = 0.43;
 
   // ★★★ 第 19 轮定稿：**递减拖尾彗星**
   //
@@ -437,17 +478,22 @@ function edgeFlowVars(zoom: number): CSSProperties {
   //     （source→target）移动，所以段尾站在运动方向前面。头必须在段尾，
   //     否则整条光看起来在**倒着飞**。
   //
-  //   ★★★ dasharray 不吃 non-scaling-stroke（实测确认）：
-  //     `vector-effect: non-scaling-stroke` 只让 stroke-width 按屏幕像素算，
-  //     dasharray 始终按**画布单位**解析。所以所有长度必须除以 zoom，
-  //     否则全览 19% 时屏幕周期只有 25px（密成刻度尺）、放大 200% 时 264px（稀成断线）。
-  //     实测修复后三档缩放的屏幕周期稳定在 131.3 / 131.7 / 131.3px。
+  //   ★★★ 长度同样必须除以 zoom（这条从第 19 轮起就没错过）：
+  //     dasharray 按**画布单位**解析，写死 132 时全览 19% 屏幕周期只剩 25px
+  //     （密成刻度尺）、放大 200% 时 264px（稀成断线）。
+  //     除以 zoom 后实测三档缩放屏幕周期稳定在 131.3 / 131.7 / 131.3px。
+  //     ★ 修正一处旧结论：以前注释写"dasharray 不吃 non-scaling-stroke 所以
+  //       stroke-width 才是屏幕像素" —— 前半句对，后半句错（见函数头第 31 轮的实测）。
+  //       真实情况是 non-scaling-stroke 对外层 CSS transform 完全无效，
+  //       所以**宽度也必须手动除 zoom**，否则就只剩长度恒定 ⇒ 变形。
   const cycleScreen = 132;
   const tailScreen = 36;
   const bodyScreen = 14;
   const headScreen = 4.5;
   // 除以 zoom → 画布单位
-  const toCanvas = (screenPx: number) => Math.round((screenPx / z) * 10) / 10;
+  // 取整到 0.01 画布单位：以前只取到 0.1，放大 4 倍时在屏幕上会抖 ±0.4px，
+  // 流光长度肉眼可见地"呼吸"。取到 0.01 后抖动小于 0.05px，完全恒定。
+  const toCanvas = (screenPx: number) => Math.round((screenPx / z) * 100) / 100;
   const cycle = toCanvas(cycleScreen);
   const tailLen = toCanvas(tailScreen);
   const bodyLen = toCanvas(bodyScreen);
@@ -465,7 +511,10 @@ function edgeFlowVars(zoom: number): CSSProperties {
     '--edge-flow-tail-phase': '0px',
     '--edge-flow-body-phase': `${bodyPhase}px`,
     '--edge-flow-head-phase': `${headPhase}px`,
+    // 画布单位（= 1.7 屏幕像素 ÷ zoom）：彗星三层宽度都是它的倍数
     '--edge-flow-width': String(width),
+    // 基线连线用**同一个**口径，否则放大后"线变粗、光不变粗"又是另一种变形
+    '--edge-line-w': String(width),
     '--edge-flow': String(op),
   } as CSSProperties;
 }
@@ -8444,7 +8493,15 @@ function CanvasViewInner({
   const editNodeRef = useRef<string | null>(null);
   // 实时缩放百分比（onMove 回写），工具栏显示 + 点击重置 100%
   const [zoomPct, setZoomPct] = useState(100);
+  // 底纹（第 29 轮）：**屏幕坐标**的贴图 —— 随缩放变密度、但不随平移移动。
+  // 即梦的行为就是这样（用户原话「即梦拖动背景点阵是不动的」）：拖画布时点阵钉在原地，
+  // 只有缩放时点和间距才跟着变大变小。所以这里只按 zoomPct 算出两个 CSS 变量，
+  // 平移期间一个样式都不写（也就不需要重绘，比 SVG pattern 更省）。
+  const bgVars = canvasBackgroundCss(zoomPct / 100);
   const fitViewRef = useRef<() => void>(() => {});
+  // ref 桥接：Ctrl+0「重置 100%」的键盘分支在文件里比 zoomToLevel 早 1700 行，
+  // 直接引用会命中 TDZ（本项目踩过两次，白屏 + 所有选择器失效）。
+  const zoomToLevelRef = useRef<(target: number) => void>(() => {});
   const [largeCanvasOverview, setLargeCanvasOverview] = useState(false);
   const [largeCanvasVisibleBounds, setLargeCanvasVisibleBounds] = useState<CanvasVisibleBounds | null>(null);
   const overviewKeyRef = useRef('');
@@ -8469,12 +8526,9 @@ function CanvasViewInner({
   //   before initialization"直接整树崩溃）。所以这里只翻转开关，取消选线的副作用
   //   放到 setEdges 定义之后的 effect 里做（见下方 edgesHidden effect）。
   const alignGuidesRef = useRef<HTMLDivElement | null>(null);
-  const guideVRef = useRef<HTMLDivElement | null>(null);
-  const guideHRef = useRef<HTMLDivElement | null>(null);
-  // 参考线读数标签（显示剩余偏差 px，即梦/Figma 同款）：线在 17% 缩放下只有 1~2 屏幕像素，
-  // 光有线读不出"还差多少"，标签补上这个信息。
-  const guideVLabelRef = useRef<HTMLDivElement | null>(null);
-  const guideHLabelRef = useRef<HTMLDivElement | null>(null);
+  // 参考线节点池：一次拖动可能同时有多条线（上/中/下边缘同时对齐），
+  // 所以不再固定两个 DOM 节点，而是按需创建、复用的池（见 updateAlignGuides）。
+  const guidePoolRef = useRef<HTMLDivElement[]>([]);
   // 吸附后的最终位置：RF 拖拽结束时给的 node.position 是「未吸附」的指针坐标，
   // 写回位置真源前要用这里的值，否则松手瞬间会弹回未对齐位置。
   const snappedPosRef = useRef<Map<string, {x: number; y: number}>>(new Map());
@@ -8810,6 +8864,29 @@ function CanvasViewInner({
   // 拖动节点期间给画布加类名，把节点提升为独立合成层（见 styles.css .is-node-dragging）。
   // 否则每次 pointermove 都会重绘整个画布区域。
   const [draggingNode, setDraggingNode] = useState(false);
+
+  // ── 交互期开关（第 30 轮）：拖动卡片 / 平移 / 缩放期间暂停连线的流光动画 ──
+  // 静止时流光是不跑的（`.canvas-edge-flow` 只有在 is-busy / is-linked / hover / selected
+  // 时才挂动画，实测空闲画布上 216 个流光层里 0 个在跑）。但**拖动选中卡片**时，
+  // 与它相连的连线会全部变成 is-linked —— 三层 dashoffset 同时开跑，
+  // 而这三层的贝塞尔路径每一帧还要跟着节点重排：一边重排一边重绘，
+  // 实测暂停后拖动 p99 从 116ms 降到 66ms、最长帧从 416ms 降到 83ms。
+  // ★ 开关写在 body 的 data 属性上，**不用 React state**：
+  //   改 state 会在手势开始那一帧触发整棵画布重渲染，恰好是手感最敏感的一刻；
+  //   而 React 从不管理 body 的属性，直接写 DOM 不会和任何一次 render 打架。
+  const interactionDepthRef = useRef(0);
+  const beginCanvasInteraction = useCallback(() => {
+    interactionDepthRef.current += 1;
+    if (interactionDepthRef.current === 1) {
+      document.body.setAttribute('data-canvas-interacting', '1');
+    }
+  }, []);
+  const endCanvasInteraction = useCallback(() => {
+    interactionDepthRef.current = Math.max(0, interactionDepthRef.current - 1);
+    if (interactionDepthRef.current === 0) {
+      document.body.removeAttribute('data-canvas-interacting');
+    }
+  }, []);
 
   // 撤销/重做（作用于用户连线、备注节点与自动边删除状态）
   const pastRef = useRef<HistorySnapshot[]>([]);
@@ -12141,88 +12218,197 @@ function CanvasViewInner({
     childIdsRef.current = new Set(nodes.filter((item) => item.parentId).map((item) => item.id));
   }, [nodes]);
 
-  // 参考线绘制：命令式 DOM（每帧 setState 会让整棵树重渲染，拖动必然掉帧）。
-  // 参考线挂在 ViewportPortal 里 —— 它渲染在 .react-flow__viewport 内部，
-  // 因此可以直接用「画布坐标」定位，不必手算 zoom/pan 换算。
-  const updateAlignGuides = useCallback((guides: AlignGuide[], zoom = 1) => {
-    const vEl = guideVRef.current;
-    const hEl = guideHRef.current;
-    if (!vEl || !hEl) return;
-    // 参考线父级带 zoom 变换，这里反向补偿，保证屏幕上恒为 1px（缩到 20% 也不会消失）
-    const z = Math.max(zoom, 0.05);
-    // ★ 线身 = 「屏幕上 1px」（第 17 轮修）：之前是 2px，用户反馈"太粗"。
-    //   1px 之所以之前被判定"看不清"，真正原因是那时颜色用了高饱和洋红 + 1px 外描边，
-    //   在深色画布上发闷；现在换成统一蓝 + 柔光晕，1px 实线反而更准更利落
-    //   （Figma / 即梦的参考线同样是 1px）。保持 1/zoom 反向补偿，任何缩放下都是 1 屏幕 px。
-    const thickness = 1 / z;
-    const v = guides.find((g) => g.axis === 'v');
-    const h = guides.find((g) => g.axis === 'h');
-    // ★ 区间兜底：求解器给的 from/to 只覆盖「被拖盒子 + 对齐目标」那一段，
-    //   卡片小时只有几十像素长，缩到 17% 后屏幕上只剩 5px —— 用户根本看不到，
-    //   反馈就是"没有辅助线"。这里把区间向两端各外扩 24 屏幕像素（换算成画布坐标），
-    //   保证任何缩放下都有一段清晰可见的线；外扩量不改变吸附语义，只是视觉延长。
-    const pad = 24 / z;
-    const span = (a: number, b: number) => {
-      const lo = Math.min(a, b);
-      const hi = Math.max(a, b);
-      // NaN / Infinity 守卫：以前 movingBox 用 Infinity 起步会算成 NaN，
-      // 写进 style 就是 "NaNpx" 被浏览器丢弃 → 零长度线（见 handleNodesChange 注释）。
-      const safeLo = Number.isFinite(lo) ? lo : 0;
-      const safeHi = Number.isFinite(hi) ? hi : safeLo + 120 / z;
-      return {lo: safeLo - pad, len: Math.max(60 / z, safeHi - safeLo + pad * 2)};
-    };
-    // ★★ 第 16 轮修（用户反馈「拖动辅助线功能细节还需打磨优化」）：
-    //   ① 用 class 切换代替 style.opacity —— 之前每帧写 opacity='1' 但 CSS 上有
-    //      `transition: opacity 90ms`，拖动中反复"消失→出现"会采到 0.71 这种半透明中间帧，
-    //      肉眼就是"辅助线一闪一闪"。现在加 `.is-on`：transition 只在显示时给短淡入，
-    //      隐藏时立即生效（0ms），彻底消除中间帧。
-    //   ② 显示位置数值标签：即梦/Figma 都会在参考线上标出距目标边的距离，
-    //      用户才能判断"还差多少对不齐"。之前只有一条线，看不出偏差量。
-    const setOn = (el: HTMLElement, on: boolean) => {
-      el.classList.toggle('is-on', on);
-    };
-    if (v) {
-      const {lo, len} = span(v.from, v.to);
-      setOn(vEl, true);
-      vEl.style.left = `${v.pos}px`;
-      vEl.style.top = `${lo}px`;
-      vEl.style.width = `${thickness}px`;
-      vEl.style.height = `${len}px`;
-      // 垂直线的读数放在线的顶部（跟随线走，不遮挡被拖的卡片）
-      const lblV = guideVLabelRef.current;
-      if (lblV) {
-        const val = v.delta ?? 0;
-        lblV.textContent = val === 0 ? '0' : `${val > 0 ? '+' : ''}${val}`;
-        lblV.classList.toggle('is-zero', val === 0);
-        lblV.style.left = `${v.pos}px`;
-        lblV.style.top = `${lo}px`;
-        lblV.classList.add('is-on');
-      }
-    } else {
-      setOn(vEl, false);
-      guideVLabelRef.current?.classList.remove('is-on');
+  // ── 参考线的「配对描边」与「松手驻留」（第 28 轮）───────────────────
+  //
+  // ① 配对描边：虚线只能表达"对上了"，不能表达"跟谁对上了"。拖动时把参考线另一端
+  //    那张卡描上同色 1px 边，配对关系就不用用户自己去找。
+  //    用 DOM class 而不是 setState：每帧都变，走 React 会把整棵树重渲染，拖动必掉帧。
+  //    缓存 element 引用，稳定帧里 querySelector 次数为 0。
+  const alignPeerMarksRef = useRef<Map<string, HTMLElement>>(new Map());
+  const syncAlignPeerMarks = useCallback((ids: Set<string>) => {
+    const marks = alignPeerMarksRef.current;
+    for (const [id, el] of marks) {
+      // isConnected：换集/换项目会把节点整批卸载，旧引用留着会往孤儿节点上写 class
+      if (ids.has(id) && el.isConnected) continue;
+      el.classList.remove('is-align-peer');
+      marks.delete(id);
     }
-    if (h) {
-      const {lo, len} = span(h.from, h.to);
-      setOn(hEl, true);
-      hEl.style.left = `${lo}px`;
-      hEl.style.top = `${h.pos}px`;
-      hEl.style.width = `${len}px`;
-      hEl.style.height = `${thickness}px`;
-      const lblH = guideHLabelRef.current;
-      if (lblH) {
-        const val = h.delta ?? 0;
-        lblH.textContent = val === 0 ? '0' : `${val > 0 ? '+' : ''}${val}`;
-        lblH.classList.toggle('is-zero', val === 0);
-        lblH.style.left = `${lo}px`;
-        lblH.style.top = `${h.pos}px`;
-        lblH.classList.add('is-on');
+    for (const id of ids) {
+      const el = marks.get(id);
+      if (el && el.isConnected) {
+        // React Flow 每帧都会重算节点的 className 并整体写回，会把我们挂的 class 冲掉。
+        // 每帧补一次（只在真的掉了时才写 DOM），拖动过程中就一直亮着。
+        if (!el.classList.contains('is-align-peer')) el.classList.add('is-align-peer');
+        continue;
       }
-    } else {
-      setOn(hEl, false);
-      guideHLabelRef.current?.classList.remove('is-on');
+      const node = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"]`);
+      if (!node) continue;
+      node.classList.add('is-align-peer');
+      marks.set(id, node);
     }
   }, []);
+  // ② 松手驻留：参考线在松手的那一帧就消失，用户来不及确认"刚才吸到的是哪几条边"。
+  //    改成「原样停 120ms → 140ms 淡出」。拖动过程仍然瞬时（那才是跟手的反馈）。
+  const guideHoldTimerRef = useRef<number | null>(null);
+  const guideFadeTimerRef = useRef<number | null>(null);
+  const clearGuideTimers = useCallback(() => {
+    if (guideHoldTimerRef.current !== null) {
+      window.clearTimeout(guideHoldTimerRef.current);
+      guideHoldTimerRef.current = null;
+    }
+    if (guideFadeTimerRef.current !== null) {
+      window.clearTimeout(guideFadeTimerRef.current);
+      guideFadeTimerRef.current = null;
+    }
+  }, []);
+
+  // ── 智能对齐参考线（第 26 轮：对标即梦重做）─────────────────────────
+  //
+  // 旧实现的问题（用户两次反馈"很难跟上面对齐"，并贴了即梦的截图）：
+  //   ① 一根轴上永远只画**一条**线，贯穿「被拖盒 ∪ 目标」再外扩 24px ——
+  //      拖一张卡时线常常横跨半个画布、穿过一堆无关卡片，看不出"这条线是谁跟谁的事"；
+  //   ② 线是实线 + 光晕，比内容还抢眼；
+  //   ③ 线上还挂两个数字读数，两轴的数字会在卡片左上角叠在一起，
+  //      数值还每帧跳动，反而干扰"到底对上没有"的判断。
+  //
+  // 即梦的做法（用户贴的参考）：只有**真的对齐**时才出现线，而且是虚线；
+  // 一次把所有对上的边都画出来（等高的两张卡并排时，上/中/下三条同时出现）；
+  // 每条线只画在**两个元素之间**那一段，长度本身就说明"是哪两张卡的事"。
+  // 现在照这个模型实现，纯函数是 canvasLayout.alignGuideSegments。
+  //
+  // 仍然走命令式 DOM：每帧 setState 会让整棵树重渲染，拖动必掉帧。
+  // 参考线层铺在画布容器的**屏幕坐标**上（不再挂 ViewportPortal），见 JSX 处的说明。
+  const updateAlignGuides = useCallback((guides: AlignGuide[], zoom = 1) => {
+    const layer = alignGuidesRef.current;
+    if (!layer) return;
+    // 任何一帧新数据都作废"松手驻留"的计时器：用户又拖起来了，线必须立刻跟着走
+    clearGuideTimers();
+    // 用画布真实 viewport 而不是调用方传的 zoom：平移量 pan 也要参与像素对齐。
+    const vp = rf.getViewport();
+    const z = Math.max(vp.zoom || zoom || 1, 0.05);
+    const panX = vp.x;
+    const panY = vp.y;
+    // ── 屏幕像素直出（第 29 轮定稿，彻底解决「虚线有深有浅」）──────────────
+    // 前两版的思路是「在画布坐标系里画，再靠 1/zoom 反算把尺寸还原成屏幕像素」，
+    // 于是永远在和 transform 的亚像素相位打架：
+    //   · 线宽 1/zoom 画布像素 × zoom = 1 CSS px，但落在半像素上就被劈成两列；
+    //   · 虚线节奏 4/zoom 也一样，实测每一段还少了约 1px（3 实 5 空，而设计是 4/4）；
+    //   · DPR 是小数（Windows 125% / 150%）时，整数 CSS 像素仍不是物理像素边界。
+    // 现在参考线层**移出画布 transform**，直接铺在画布容器上（见 JSX 注释），
+    // 位置 = 世界坐标 × zoom + pan，单位就是屏幕 CSS px —— 没有中间缩放，也就没有相位问题。
+    const dpr = Math.max(1, Math.min(8, (typeof window === 'undefined' ? 1 : window.devicePixelRatio) || 1));
+    const quantum = alignGuideDeviceQuantum(dpr);      // 1 个物理像素（CSS px）
+    // 线宽 / 虚线节奏都取整到整数物理像素：屏幕上恒为 1px 线、4 实 4 空，且边缘不做覆盖率混合。
+    const stroke = alignGuideStrokeDevicePx(z, dpr);
+    const dash = alignGuideDashDevicePx(dpr);
+    const snapS = (v: number) => Math.round(v / quantum) * quantum;
+    const pool = guidePoolRef.current;
+    // 画布被重建（换集 / 换项目）时容器节点是新的，旧池子已经脱离文档 —— 直接重置，
+    // 否则线会被 append 到已被卸载的节点上，表现为"辅助线再也出不来了"。
+    if (pool.length > 0 && pool[0].parentElement !== layer) pool.length = 0;
+    while (pool.length < 8) {
+      const el = document.createElement('div');
+      el.className = 'canvas-align-guide';
+      layer.appendChild(el);
+      pool.push(el);
+    }
+    const hide = (el: HTMLElement) => {
+      el.classList.remove('is-fading');
+      el.classList.remove('is-on');
+    };
+    // 每一条线都落到「屏幕列 + 区间」：世界坐标先乘 zoom 加 pan，再吸附到物理像素。
+    const rawItems: AlignGuideItem[] = [];
+    const peerIds = new Set<string>();
+    for (const g of guides) {
+      // NaN 守卫：写进 style 会变成 "NaNpx" 被浏览器丢弃 → 线停在上一帧的位置。
+      if (!Number.isFinite(g.pos) || !Number.isFinite(g.from) || !Number.isFinite(g.to)) continue;
+      if (g.peerId) peerIds.add(g.peerId);
+      const axis = g.axis;
+      const pos = snapS(axis === 'v' ? g.pos * z + panX : g.pos * z + panY);
+      const loRaw = Math.min(g.from, g.to);
+      const hiRaw = Math.max(g.from, g.to);
+      const lo = snapS(axis === 'v' ? loRaw * z + panY : loRaw * z + panX);
+      const hi = snapS(axis === 'v' ? hiRaw * z + panY : hiRaw * z + panX);
+      const hit = rawItems.find((it) => it.axis === axis && Math.abs(it.pos - pos) < 1e-6);
+      if (hit) {
+        hit.from = Math.min(hit.from, lo);
+        hit.to = Math.max(hit.to, hi);
+        if (!hit.peerId) hit.peerId = g.peerId;
+      } else {
+        rawItems.push({axis, pos, from: lo, to: hi, peerId: g.peerId});
+      }
+    }
+    // ★ 再把「挨在一起」的线并成一条：两条目标边只差 ~1 个像素时，吸附后会落到相邻两列 ——
+    //   视觉上是一条 2px 粗线，而且两套虚线相位不同互相穿插，看起来就是「一根深、一根浅」。
+    const items = mergeAdjacentAlignGuides(rawItems, quantum);
+    // 配对描边：和线同帧出现/消失（guides 为空时这里就是一次全清）
+    syncAlignPeerMarks(peerIds);
+    let used = 0;
+    for (const it of items) {
+      const el = pool[used];
+      if (!el) break;
+      el.classList.toggle('is-v', it.axis === 'v');
+      el.classList.toggle('is-h', it.axis === 'h');
+      // 新一帧要把线画出来：撤掉上一轮松手时的淡出态，否则会从半透明慢慢浮上来
+      el.classList.remove('is-fading');
+      el.style.setProperty('--dash', `${dash}px`);
+      // ★ 不要给虚线做「相位对齐」：虚线周期是 8px（4 实 4 空），
+      //   一旦把图案锚到世界坐标，短线段（两卡之间的窄缝）的起点可能正好落进"空"档，
+      //   整根线只剩一两段、甚至完全看不见 —— 表现为"对齐时少了一根虚线"。
+      //   每条线都从自己的起点开始画实段，短线才一定有可见内容。
+      el.style.backgroundPosition = '0 0';
+      const span = Math.max(8, Math.abs(it.to - it.from));
+      if (it.axis === 'v') {
+        el.style.left = `${it.pos}px`;
+        el.style.top = `${it.from}px`;
+        el.style.width = `${stroke}px`;
+        el.style.height = `${span}px`;
+      } else {
+        el.style.left = `${it.from}px`;
+        el.style.top = `${it.pos}px`;
+        el.style.width = `${span}px`;
+        el.style.height = `${stroke}px`;
+      }
+      el.classList.add('is-on');
+      used += 1;
+    }
+    for (let i = used; i < pool.length; i += 1) hide(pool[i]);
+  }, [clearGuideTimers, rf, syncAlignPeerMarks]);
+
+  // 松手：不立刻清线，先原样停 ALIGN_GUIDE_HOLD_MS，再淡出 ALIGN_GUIDE_FADE_MS。
+  // 停留期间线是"最后那一帧的真实几何"，所以读起来就是"停住给你看一眼"，不是残影。
+  const releaseAlignGuides = useCallback(() => {
+    const layer = alignGuidesRef.current;
+    if (!layer) return;
+    clearGuideTimers();
+    const active = guidePoolRef.current.filter((el) => el.classList.contains('is-on'));
+    // 本来就没线（没吸上任何东西）：直接走常规清空，不必空等两拍
+    if (active.length === 0) {
+      updateAlignGuides([]);
+      return;
+    }
+    guideHoldTimerRef.current = window.setTimeout(() => {
+      guideHoldTimerRef.current = null;
+      for (const el of guidePoolRef.current) {
+        if (!el.classList.contains('is-on')) continue;
+        el.classList.add('is-fading');
+        el.classList.remove('is-on');
+      }
+      // 描边跟着线一起收：线开始淡出的那一帧松开配对高亮
+      syncAlignPeerMarks(new Set());
+      guideFadeTimerRef.current = window.setTimeout(() => {
+        guideFadeTimerRef.current = null;
+        // 淡出结束后彻底归位（is-fading 只负责这一次过渡，不能留给下一轮拖动）
+        for (const el of guidePoolRef.current) el.classList.remove('is-fading');
+      }, ALIGN_GUIDE_FADE_MS + 60);
+    }, ALIGN_GUIDE_HOLD_MS);
+  }, [clearGuideTimers, syncAlignPeerMarks, updateAlignGuides]);
+
+  // 预热参考线节点池：池子原本在"第一次真的要画线"时才建（8 个 div + 首帧样式写入），
+  // 这一下会被算进首次拖动的卡顿里（实测首次拖动最长帧 416ms）。挂载后先空跑一次建好。
+  useEffect(() => {
+    updateAlignGuides([]);
+  }, [updateAlignGuides]);
 
   // ── 多选浮动操作条（对标即梦）─────────────────────────────────
   // 选区变化 / 画布平移缩放 / 拖拽中，都把「选中卡片的屏幕包围盒」算出来，
@@ -12363,6 +12549,9 @@ function CanvasViewInner({
   //   handleNodesChange 收到的 position change 就是这一帧的最终值，在这里记下来，
   //   框用它来算，和卡片同帧、零延迟。拖动结束（onNodeDragStop）清空。
   const livePosRef = useRef<Map<string, {x: number; y: number}>>(new Map());
+  // 编组外框的两个缓存（第 30 轮）：DOM 映射 + 上一帧写入的几何签名
+  const groupFrameDomRef = useRef<{key: string; layer: HTMLElement; map: Map<string, HTMLElement>} | null>(null);
+  const groupFrameSigRef = useRef<Map<string, string>>(new Map());
   const syncGroupFrames = useCallback(() => {
     // ★★ 定位方式：框挂在 **ViewportPortal** 里（.react-flow__viewport 内部），
     //   用**画布坐标**定位 —— 框的位置和缩放由画布的 transform 自动带着走，
@@ -12378,11 +12567,23 @@ function CanvasViewInner({
     const layer = groupFrameRef.current;
     if (!layer) return;
     const list = groupsRef.current.filter((g) => g.members.length >= 2);
-    // 复用已有 DOM（按 data-group-id），数量不变时只改 style
-    const existing = new Map<string, HTMLElement>();
-    layer.querySelectorAll<HTMLElement>('[data-group-id]').forEach((el) => {
-      existing.set(el.dataset.groupId || '', el);
-    });
+    // ★ 第 30 轮：DOM 映射按「组 id 列表」缓存。拖动时本函数每帧被调用两次
+    //   （onNodeDrag + handleNodesChange 各一次），每次都 querySelectorAll 重建 Map 是白花钱。
+    const listKey = list.map((g) => g.id).join('|');
+    const cachedDom = groupFrameDomRef.current;
+    // layer 也要比对：换集 / 换项目后画布容器是新的 DOM 节点，
+    // 沿用旧映射会把样式写进已卸载的节点（表现为"框不动了"）。
+    let existing = cachedDom && cachedDom.key === listKey && cachedDom.layer === layer
+      ? cachedDom.map
+      : null;
+    if (!existing) {
+      existing = new Map<string, HTMLElement>();
+      layer.querySelectorAll<HTMLElement>('[data-group-id]').forEach((el) => {
+        existing!.set(el.dataset.groupId || '', el);
+      });
+      groupFrameSigRef.current.clear();
+      groupFrameDomRef.current = {key: listKey, layer, map: existing};
+    }
     const st = storeApi.getState();
     const lookup = st.nodeLookup;
     const live = livePosRef.current;
@@ -12419,6 +12620,8 @@ function CanvasViewInner({
       keep.add(g.id);
       let el = existing.get(g.id);
       if (!el) {
+        // 新建的必须立刻登记，否则上面的 DOM 缓存（按 listKey 复用）会漏掉它，
+        // 下一帧同样的 key 命中缓存 → 又创建一个 → 框越拖越多。
         el = document.createElement('div');
         el.className = 'canvas-group-frame';
         el.dataset.groupId = g.id;
@@ -12464,8 +12667,8 @@ function CanvasViewInner({
           el.appendChild(band);
         }
         layer.appendChild(el);
+        existing.set(g.id, el);
       }
-      el.style.display = '';
       // 画布坐标 → 直接写 left/top/width/height（viewport 已负责缩放平移）。
       //
       // ★★ PAD/HEAD 必须**按 zoom 反向放大**（除以 scale），否则在缩小视图下框内根本没有空白：
@@ -12478,10 +12681,26 @@ function CanvasViewInner({
       const HEAD_SCREEN = 20;  // 顶部组名标签带（屏幕像素）
       const PAD = PAD_SCREEN / scale;
       const HEAD = HEAD_SCREEN / scale;
-      el.style.left = `${minX - PAD}px`;
-      el.style.top = `${minY - PAD - HEAD}px`;
-      el.style.width = `${maxX - minX + PAD * 2}px`;
-      el.style.height = `${maxY - minY + PAD * 2 + HEAD}px`;
+      // ★ 无条件写 style 会让这一层每帧失效、整块重绘。
+      //   这里把「要写进去的字符串」先算出来和上一帧比：完全一样就一个字节都不写。
+      //   拖动中框确实每帧都变，但静止 / 平移 / 只切换选中态时全部命中缓存。
+      //
+      // ★★ 这段必须放在 PAD / HEAD 声明**之后**：它们是用 const 声明的，
+      //    在声明之前读取会命中 TDZ（ReferenceError: Cannot access ... before initialization）。
+      //    踩过一次：只要项目里存在编组，加载即整页报错、卡片全部不渲染。
+      const nextLeft = `${minX - PAD}px`;
+      const nextTop = `${minY - PAD - HEAD}px`;
+      const nextW = `${maxX - minX + PAD * 2}px`;
+      const nextH = `${maxY - minY + PAD * 2 + HEAD}px`;
+      const flags = `${anySelected ? '1' : '0'}${allSelected ? '1' : '0'}`;
+      const sig = `${nextLeft}|${nextTop}|${nextW}|${nextH}|${flags}|${g.name}|${g.members.length}`;
+      if (groupFrameSigRef.current.get(g.id) === sig) continue;
+      groupFrameSigRef.current.set(g.id, sig);
+      if (el.style.display === 'none') el.style.display = '';
+      el.style.left = nextLeft;
+      el.style.top = nextTop;
+      el.style.width = nextW;
+      el.style.height = nextH;
       el.classList.toggle('is-active', anySelected);
       el.classList.toggle('is-full', allSelected);
       const nameEl = el.querySelector<HTMLElement>('.canvas-group-tag-name');
@@ -12492,7 +12711,10 @@ function CanvasViewInner({
     }
     // 清掉已经不存在的组
     for (const [id, el] of existing) {
-      if (!keep.has(id)) el.remove();
+      if (keep.has(id)) continue;
+      el.remove();
+      existing.delete(id);
+      groupFrameSigRef.current.delete(id);
     }
   }, [storeApi]);
 
@@ -12717,29 +12939,69 @@ function CanvasViewInner({
   //   命中卡片时恢复默认，卡片自己的 cursor 才能正常生效。
   useEffect(() => {
     let last = '';
-    const onMove = (e: PointerEvent) => {
-      const layer = groupFrameRef.current;
-      if (!layer) return;
-      const hitEl = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-      let want = '';
-      if (hitEl && !hitEl.closest?.('.react-flow__node') && !hitEl.closest?.('.canvas-selbar, .jim-bar, .canvas-context-menu, .canvas-seg-menu, .canvas-inspector, .canvas-topbar, .canvas-toolbar')) {
-        for (const f of layer.querySelectorAll<HTMLElement>('[data-group-id]')) {
-          const r = f.getBoundingClientRect();
-          if (r.width === 0 || r.height === 0) continue;
-          if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
-            want = 'move';
-            break;
+    let raf = 0;
+    let pending: {x: number; y: number} | null = null;
+    // ★ 第 30 轮：pointermove 一秒能来上百次，原实现每次都
+    //   ① elementFromPoint（整棵树命中测试，且会强制同步布局）
+    //   ② 逐个框 getBoundingClientRect（又一次强制布局）
+    //   实测 pan 时 elementFromPoint 单独就占 1.3% CPU，而且会把同一帧里
+    //   真正的交互工作往后推。现在改成三件事：
+    //     · rAF 合批：一帧最多算一次，中间的事件只留最后一个坐标；
+    //     · 先做纯算术的矩形判定，只有在框内才去做 elementFromPoint；
+    //     · 框矩形缓存 + 250ms 兜底失效（框会随卡片移动，但不会每帧都变）。
+    const BLOCKERS = '.canvas-selbar, .jim-bar, .canvas-context-menu, .canvas-seg-menu, .canvas-inspector, .canvas-topbar, .canvas-toolbar';
+    let rects: {left: number; top: number; right: number; bottom: number}[] | null = null;
+    const run = () => {
+      raf = 0;
+      const pt = pending;
+      pending = null;
+      if (!pt) return;
+      // 拖动/平移/缩放期间不参与：那时光标另有表达，而且每帧省一次命中测试最值
+      if (draggingRef.current || interactionDepthRef.current > 0) {
+        if (last !== '') {
+          last = '';
+          document.body.style.cursor = '';
+        }
+        return;
+      }
+      if (!rects) {
+        const layer = groupFrameRef.current;
+        rects = [];
+        if (layer) {
+          for (const f of layer.querySelectorAll<HTMLElement>('[data-group-id]')) {
+            const r = f.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            rects.push({left: r.left, top: r.top, right: r.right, bottom: r.bottom});
           }
         }
+      }
+      let want = '';
+      for (const r of rects) {
+        if (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom) {
+          want = 'move';
+          break;
+        }
+      }
+      if (want) {
+        const hitEl = document.elementFromPoint(pt.x, pt.y) as HTMLElement | null;
+        if (hitEl && (hitEl.closest?.('.react-flow__node') || hitEl.closest?.(BLOCKERS))) want = '';
       }
       if (want !== last) {
         last = want;
         document.body.style.cursor = want;
       }
     };
+    const onMove = (e: PointerEvent) => {
+      pending = {x: e.clientX, y: e.clientY};
+      if (!raf) raf = requestAnimationFrame(run);
+    };
+    const invalidate = () => { rects = null; };
     document.addEventListener('pointermove', onMove, true);
+    const timer = window.setInterval(invalidate, 250);
     return () => {
       document.removeEventListener('pointermove', onMove, true);
+      window.clearInterval(timer);
+      if (raf) cancelAnimationFrame(raf);
       document.body.style.cursor = '';
     };
   }, []);
@@ -12749,6 +13011,16 @@ function CanvasViewInner({
   // 子卡位置策略：
   // - 分段卡（type=segment）：允许自由拖拽 + Shift 多选批量拖动，位置持久化到 positionRef。
   // - 资产卡（资产分组框的子节点）：位置完全由槽位派生，不接受任何位置变更，避免闪帧。
+  // ── 每帧开销优化（第 30 轮）──────────────────────────────────────────
+  // ① 对齐候选（others）：拖动过程中「其它卡片」是**不会动**的（本项目没有自动布局），
+  //    所以一轮拖动只快照一次，后面每帧直接复用 —— 每帧从 O(节点数) 降到 O(拖动数)。
+  //    127 个节点时，这省掉的是每帧 127 次取 measured + 一次数组和 Map 的分配。
+  //    只在 draggingRef 为真时才敢复用（键盘微移/程序化移动不走拖动，缓存会陈旧）。
+  const alignOthersRef = useRef<AlignBox[] | null>(null);
+  // ② 吸附缓动：上一帧实际施加的修正量（见 canvasLayout.easeAlignSnap）
+  const snapEaseRef = useRef<{x: number; y: number}>({x: 0, y: 0});
+  // ③ 缓动残差：松手时补上，保证落点精确贴线（否则卡片会停在差 1~2px 的地方）
+  const snapResidualRef = useRef<{x: number; y: number}>({x: 0, y: 0});
   const handleNodesChange = useCallback((changes: NodeChange<FlowNode>[]) => {
     const segmentIds = new Set(nodesRef.current.filter((n) => n.type === 'segment').map((n) => n.id));
     const allowed = changes.filter((change) => {
@@ -12793,10 +13065,9 @@ function CanvasViewInner({
       return;
     }
     const dragIds = new Set(posChanges.map((c) => c.id));
-    const storeNodes = rf.getNodes();
-    const storeById = new Map(storeNodes.map((n) => [n.id, n]));
+    // ★ 只按 id 单点查询，不再为取尺寸而把全部节点铺成 Map（每帧 127 条 → 拖动数条）
     const sizeOf = (id: string) => {
-      const sn = storeById.get(id);
+      const sn = rf.getNode(id);
       const mw = (sn?.measured?.width ?? sn?.width ?? 0) as number;
       const mh = (sn?.measured?.height ?? sn?.height ?? 0) as number;
       if (mw > 0 && mh > 0) return {w: mw, h: mh};
@@ -12826,39 +13097,53 @@ function CanvasViewInner({
     const movingBox = {id: '__moving__', x: bx0, y: by0, w: bx1 - bx0, h: by1 - by0};
     // 对齐候选：画布上其它「可自由摆放」的卡片（媒体卡 / 备注）。段卡与资产卡是派生布局，
     // 参与对齐反而会给出无意义的参考线，故排除。
-    const others: AlignBox[] = [];
-    for (const sn of storeNodes) {
-      if (dragIds.has(sn.id)) continue;
-      if (sn.parentId) continue;
-      if (sn.type !== 'media' && sn.type !== 'note') continue;
-      const {w, h} = sizeOf(sn.id);
-      if (w <= 0 || h <= 0) continue;
-      others.push({id: sn.id, x: sn.position.x, y: sn.position.y, w, h});
+    let others = draggingRef.current ? alignOthersRef.current : null;
+    if (!others) {
+      const storeNodes = rf.getNodes();
+      const boxes: AlignBox[] = [];
+      for (const sn of storeNodes) {
+        if (dragIds.has(sn.id)) continue;
+        if (sn.parentId) continue;
+        if (sn.type !== 'media' && sn.type !== 'note') continue;
+        const {w, h} = sizeOf(sn.id);
+        if (w <= 0 || h <= 0) continue;
+        boxes.push({id: sn.id, x: sn.position.x, y: sn.position.y, w, h});
+      }
+      others = boxes;
+      if (draggingRef.current) alignOthersRef.current = boxes;
     }
     // 三个距离档都按「屏幕像素」手感换算成画布坐标（缩到 20% 时也能正常吸附）
     const zoom = rf.getZoom() || 1;
     const enter = Math.max(3, Math.min(30, ALIGN_ENTER_PX / zoom));
     const glue = Math.max(enter + 2, Math.min(90, ALIGN_GLUE_PX / zoom));
     const release = Math.max(glue + 4, Math.min(160, ALIGN_RELEASE_PX / zoom));
-    const visible = Math.max(enter, ALIGN_VISIBLE_PX / zoom);
     const solved = solveAlignSnap(movingBox, others, alignStateRef.current, enter, glue, release);
-    const liveGuides = computeAlignSnap(movingBox, others, visible).guides;
-    const displayGuides = [
-      ...solved.guides,
-      ...liveGuides.filter((guide) => !solved.guides.some((active) => active.axis === guide.axis)),
-    ];
+    const targetDx = Number.isFinite(solved.dx) ? solved.dx : 0;
+    const targetDy = Number.isFinite(solved.dy) ? solved.dy : 0;
     alignStateRef.current = solved.state;
-    updateAlignGuides(displayGuides, zoom);
+    // ★ 逐帧缓动（第 30 轮）：一次把 dx 加满，卡片会在跨进阈值那一帧瞬间横移 8px，
+    //   主观上是"被拽过去"；现在每帧补一半，4 帧内滑过去贴上，是"被吸过去"。
+    //   参考线画的是**最终**位置（solved 算的是目标值），所以线先出现、卡片再滑进去。
+    const easeEps = Math.max(0.2, 0.5 / zoom);   // 0.5 屏幕像素（换算回画布 px）
+    const ease = snapEaseRef.current;
+    ease.x = easeAlignSnap(ease.x, targetDx, easeEps);
+    ease.y = easeAlignSnap(ease.y, targetDy, easeEps);
+    const dx = ease.x;
+    const dy = ease.y;
+    snapResidualRef.current = {x: targetDx - dx, y: targetDy - dy};
+    // 参考线只画「确实已对齐」的边对（见 canvasLayout.alignGuideSegments）：
+    // 不再额外显示"即将对齐"的预览线，也不再挂数字读数 —— 那正是旧版最吵的部分。
+    updateAlignGuides(solved.guides, zoom);
     // 修正量叠加到 position change 上（同一批统一叠加，保持多选组相对位置）
     const patched = allowed.map((c) => {
       if (c.type !== 'position' || !c.position) return c;
       if (!dragIds.has(c.id)) return c;
-      return {...c, position: {x: c.position.x + solved.dx, y: c.position.y + solved.dy}};
+      return {...c, position: {x: c.position.x + dx, y: c.position.y + dy}};
     });
     for (const c of posChanges) {
-      snappedPosRef.current.set(c.id, {x: c.position.x + solved.dx, y: c.position.y + solved.dy});
+      snappedPosRef.current.set(c.id, {x: c.position.x + dx, y: c.position.y + dy});
       // 吸附后的位置才是这一帧真正落地的坐标，覆盖掉上面记录的原始值
-      livePosRef.current.set(c.id, {x: c.position.x + solved.dx, y: c.position.y + solved.dy});
+      livePosRef.current.set(c.id, {x: c.position.x + dx, y: c.position.y + dy});
     }
     onNodesChange(patched);
     syncGroupFrames();
@@ -12883,6 +13168,11 @@ function CanvasViewInner({
     // 新一轮拖拽：重置磁吸状态与吸附坐标，避免上一轮的锁定/偏移残留
     alignStateRef.current = createAlignState();
     snappedPosRef.current.clear();
+    // 每帧缓存/缓动状态作废：这一轮的候选快照和修正量都从头算
+    alignOthersRef.current = null;
+    snapEaseRef.current = {x: 0, y: 0};
+    snapResidualRef.current = {x: 0, y: 0};
+    beginCanvasInteraction();
     // Every draggable node type (media, segment, note, group frame, child card)
     // needs a position snapshot before the first movement. Media-only snapshots
     // left segments/groups/notes impossible to undo and caused the card to snap
@@ -12908,7 +13198,7 @@ function CanvasViewInner({
           pointerStart: pointer,
         }
       : null;
-  }, [pushHistory]);
+  }, [beginCanvasInteraction, pushHistory]);
 
   const onNodeDrag = useCallback((event: MouseEvent | TouchEvent, node: FlowNode) => {
     // ★ 编组外框必须**跟着节点一起动**（用户："编组框起来的节点拖动的时候框框不连节点一起动"）。
@@ -12944,8 +13234,9 @@ function CanvasViewInner({
     draggingRef.current = false;
     // 拖动结束：实时位置表作废，之后一律读 store（store 此时已经是最新值）
     livePosRef.current.clear();
-    // 拖动结束：清掉参考线
-    updateAlignGuides([]);
+    // 拖动结束：参考线不立刻清 —— 先驻留 120ms 再淡出（见 releaseAlignGuides），
+    // 否则松手瞬间线就没了，用户来不及确认"刚才到底吸到了哪几条边"。
+    releaseAlignGuides();
     // 浮动操作条跟随落点（拖完不会停在旧位置）
     syncSelBar();
     // ★ 编组外框的落点同步**不能**放在这里（原来就在这儿）。
@@ -12956,7 +13247,17 @@ function CanvasViewInner({
     // RF 在拖拽结束时给的 node.position 是「未吸附」的指针坐标（dragItem.position 是指针推导值）。
     // 若直接写回位置真源，节点会在松手瞬间弹回未对齐位置 —— 必须用吸附后的坐标。
     const snapped = snappedPosRef.current.get(node.id);
-    const finalPos = snapped ?? node.position;
+    // ★ 补上缓动残差：吸附是逐帧逼近的，松手时可能还差 1~2px 没走完。
+    //   不加这一段，卡片会停在"差一点点"的位置 —— 肉眼能看出没对齐，等于白吸。
+    const residual = snapResidualRef.current;
+    const rx = Number.isFinite(residual.x) ? residual.x : 0;
+    const ry = Number.isFinite(residual.y) ? residual.y : 0;
+    const finalPos = snapped
+      ? {x: snapped.x + rx, y: snapped.y + ry}
+      : {x: node.position.x + rx, y: node.position.y + ry};
+    snapResidualRef.current = {x: 0, y: 0};
+    alignOthersRef.current = null;
+    endCanvasInteraction();
     const drag = childDragRef.current;
     if (drag && drag.childId === node.id) {
       const parent = dragNodesRef.current.find((item) => item.id === drag.parentId);
@@ -12976,10 +13277,12 @@ function CanvasViewInner({
       for (const sel of selected) {
         const selSnapped = snappedPosRef.current.get(sel.id);
         const selPos = selSnapped ?? sel.position;
+        // 同一批拖动共享同一个修正量，残差也一样
+        const selFinal = {x: selPos.x + rx, y: selPos.y + ry};
         if (sel.id.startsWith('media-')) {
-          updateMediaNode(sel.id.slice('media-'.length), {x: selPos.x, y: selPos.y});
+          updateMediaNode(sel.id.slice('media-'.length), {x: selFinal.x, y: selFinal.y});
         } else {
-          positionRef.current[sel.id] = {x: selPos.x, y: selPos.y};
+          positionRef.current[sel.id] = {x: selFinal.x, y: selFinal.y};
         }
       }
       // 段卡拖出父框范围时，动态撑开 ep-box 高度
@@ -13016,7 +13319,7 @@ function CanvasViewInner({
     //      保证框和卡片像素级贴合（实测只有①时仍差 11px）。
     syncGroupFrames();
     requestAnimationFrame(() => syncGroupFrames());
-  }, [commitNotePositions, persistLayout, setNodes, updateMediaNode, updateAlignGuides, syncSelBar, syncGroupFrames]);
+  }, [beginCanvasInteraction, commitNotePositions, endCanvasInteraction, persistLayout, releaseAlignGuides, setNodes, updateMediaNode, syncSelBar, syncGroupFrames]);
 
   const clearStuckDrag = useCallback(() => {
     // Run after React Flow's own pointer handlers. A normal drag has already
@@ -13028,10 +13331,13 @@ function CanvasViewInner({
       setDraggingNode(false);
       livePosRef.current.clear();
       snappedPosRef.current.clear();
-      updateAlignGuides([]);
+      snapResidualRef.current = {x: 0, y: 0};
+      alignOthersRef.current = null;
+      endCanvasInteraction();
+      releaseAlignGuides();
       syncGroupFrames();
     });
-  }, [syncGroupFrames, updateAlignGuides]);
+  }, [endCanvasInteraction, releaseAlignGuides, syncGroupFrames]);
 
   const onCanvasPointerDownCapture = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -13667,11 +13973,8 @@ function CanvasViewInner({
         }
         if (key === '0') {
           event.preventDefault();
-          const current = rf.getViewport();
-          const next = {x: current.x, y: current.y, zoom: 1};
-          viewportRef.current = next;
-          setCanvasViewport(next);
-          setZoomPct(100);
+          // 走 zoomToLevel：以视口中心为锚 + 180ms 过渡（直接写 zoom=1 会绕左上角缩放）
+          zoomToLevelRef.current(1);
           return;
         }
         if (key === '1') { event.preventDefault(); fitViewRef.current(); return; }
@@ -15366,20 +15669,38 @@ function CanvasViewInner({
     return () => window.removeEventListener('keydown', onKey);
   }, [setNodes]);
 
-  const zoomIn = useCallback(() => {
+  // ★ 第 30 轮：缩放按钮原来是「把 zoom ×1.2 直接写进 viewport」，两个毛病：
+  //   ① 瞬跳 —— 点一下画面整个跳一格，连点几下像在闪；
+  //   ② 锚点错了 —— viewport 的 x/y 保持不变时，缩放是绕**画布左上角**发生的
+  //      （screen = world × zoom + {x,y}），内容会往右下方漂，连点几下视野就跑了，
+  //      用户还得重新平移回来找卡片。
+  //   现在以视口中心为锚点反算新的 x/y，并给 180ms 过渡（RF 的 setViewport 支持 duration）。
+  //   过渡期间由 onViewportChange 逐帧回写 viewportRef / canvasViewport / zoomPct，
+  //   所以这里只负责发起，不再自己 setState。
+  const zoomToLevel = useCallback((target: number) => {
     const current = viewportRef.current;
-    const next = {...current, zoom: Math.min(8, current.zoom * 1.2)};
-    viewportRef.current = next;
-    setCanvasViewport(next);
-    setZoomPct(Math.round(next.zoom * 100));
-  }, []);
-  const zoomOut = useCallback(() => {
-    const current = viewportRef.current;
-    const next = {...current, zoom: Math.max(0.12, current.zoom / 1.2)};
-    viewportRef.current = next;
-    setCanvasViewport(next);
-    setZoomPct(Math.round(next.zoom * 100));
-  }, []);
+    const z = current.zoom || 1;
+    const nextZoom = Math.min(8, Math.max(0.12, target));
+    if (Math.abs(nextZoom - z) < 1e-6) return;
+    const stage = stageRef.current;
+    const cx = stage ? stage.clientWidth / 2 : 0;
+    const cy = stage ? stage.clientHeight / 2 : 0;
+    const k = nextZoom / z;
+    const next = {
+      x: cx - (cx - current.x) * k,
+      y: cy - (cy - current.y) * k,
+      zoom: nextZoom,
+    };
+    void rf.setViewport(next, {duration: 180});
+    // 程序化缩放到不了 onMoveEnd（那是手势才有的），得自己记一次，否则刷新后回到旧缩放
+    rememberViewport(next);
+  }, [rememberViewport, rf]);
+  zoomToLevelRef.current = zoomToLevel;
+  const zoomStep = useCallback((factor: number) => {
+    zoomToLevel((viewportRef.current.zoom || 1) * factor);
+  }, [zoomToLevel]);
+  const zoomIn = useCallback(() => { zoomStep(1.2); }, [zoomStep]);
+  const zoomOut = useCallback(() => { zoomStep(1 / 1.2); }, [zoomStep]);
 
   // 一键导出画布 PNG（html-to-image 对当前视口截图，2x 像素；背景色随主题）
   const exportCanvasPng = useCallback(async () => {
@@ -15739,6 +16060,8 @@ function CanvasViewInner({
           ref={stageRef}
           className={`canvas-stage ${selectedShot ? 'has-inspector' : ''}`}
           data-bg={bgMode}
+          // 底纹的两个尺寸变量只随缩放变化；平移时不变 → 点阵固定不动（即梦行为）。
+          style={{'--canvas-pitch': bgVars.pitch, '--canvas-dot': bgVars.dot} as CSSProperties}
           onDragOver={(e) => { e.preventDefault(); setDropArmed(true); }}
           onDragLeave={(e) => { if (e.currentTarget === e.target) setDropArmed(false); }}
           onDrop={handleCanvasDrop}
@@ -16156,12 +16479,14 @@ function CanvasViewInner({
             }}
             onMoveStart={() => {
               viewportUserInteractingRef.current = true;
+              beginCanvasInteraction();
             }}
             onMoveEnd={(_event, viewport) => {
               if (viewportUserInteractingRef.current) {
                 rememberViewport(viewport);
               }
               viewportUserInteractingRef.current = false;
+              endCanvasInteraction();
               flushViewportNow();
             }}
             // 连线中点的剪断按钮挂在 EdgeLabelRenderer 里，会被画布的 zoom 一起缩放：
@@ -16229,21 +16554,23 @@ function CanvasViewInner({
             />
 
             {/* 智能对齐参考线（对标即梦）：挂在 ViewportPortal 里，随画布缩放平移。
-                坐标由 updateAlignGuides 命令式写入（每帧 setState 会让整棵树重渲染，拖动必然掉帧）。 */}
+                容器留空 —— 线的 DOM 由 updateAlignGuides 按需创建并复用（一次可能多条），
+                命令式写入坐标（每帧 setState 会让整棵树重渲染，拖动必然掉帧）。 */}
             <ViewportPortal>
-              <div className="canvas-align-guides" ref={alignGuidesRef} aria-hidden="true">
-                <div ref={guideVRef} className="canvas-align-guide is-v" />
-                <div ref={guideHRef} className="canvas-align-guide is-h" />
-                {/* 读数标签：显示距参考线的剩余偏差（颜色与线同属画布统一蓝 #4d9fff） */}
-                <div ref={guideVLabelRef} className="canvas-align-guide-label is-v" />
-                <div ref={guideHLabelRef} className="canvas-align-guide-label is-h" />
-              </div>
               {/* 编组外框：同样挂在 viewport 内、用**画布坐标**定位 ——
                   位置和缩放由画布 transform 自动带着走，拖卡片时框必然同步（不存在量 DOM 的时序问题）。
                   DOM 由 syncGroupFrames 命令式维护；框本体 pointer-events:none，不吃卡片点击，
                   只有组名标签（可抓取拖整组）和解组按钮可点。 */}
               <div className="canvas-group-frames" ref={groupFrameRef} aria-hidden="true" />
             </ViewportPortal>
+
+            {/* 智能对齐参考线（第 29 轮定稿）：**不挂在 viewport 里**。
+                放在 viewport 里就得跟着画布 transform 一起缩放，线宽/虚线节奏只能靠 1/zoom 反算，
+                永远在和亚像素相位打架（深浅不一、虚线少一像素）。
+                现在是画布容器上的屏幕坐标覆盖层：位置 = 世界 × zoom + pan，直接写 CSS px，
+                线宽恒为 1 个物理像素、虚线恒为 4 实 4 空，任何缩放/DPR 下都一致。
+                DOM 仍由 updateAlignGuides 命令式维护（每帧 setState 会整树重渲染，拖动必掉帧）。 */}
+            <div className="canvas-align-guides" ref={alignGuidesRef} aria-hidden="true" />
 
             {/* 图例面板（工业级）：节点/连线/状态语义；右下角固定可折叠 */}
             <CanvasLegend isOverview={currentEp === null} />
@@ -16487,13 +16814,9 @@ function CanvasViewInner({
                   <span className="canvas-tool-ico"><ScanSearch size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">聚焦</span>
                 </button>
                 <button type="button" onClick={zoomOut} title="缩小" aria-label="缩小"><Minus size={14} strokeWidth={2.2} aria-hidden="true" /></button>
-                <button type="button" className="canvas-toolbar-zoom" onClick={() => {
-                  const current = viewportRef.current;
-                  const next = {...current, zoom: 1};
-                  viewportRef.current = next;
-                  setCanvasViewport(next);
-                  setZoomPct(100);
-                }} title="重置为 100%（Ctrl+0）">{zoomPct}%</button>
+                {/* 「重置 100%」同样要以视口中心为锚：直接写 zoom=1 会绕左上角缩放，
+                    点一下卡片全跑到右下角外面去。 */}
+                <button type="button" className="canvas-toolbar-zoom" onClick={() => zoomToLevel(1)} title="重置为 100%（Ctrl+0）">{zoomPct}%</button>
                 <button type="button" onClick={zoomIn} title="放大" aria-label="放大"><Plus size={14} strokeWidth={2.2} aria-hidden="true" /></button>
                 <span className="canvas-toolbar-sep" />
                 <button type="button" className={snapGrid ? 'is-active' : ''} onClick={() => setSnapGrid((v) => !v)} title="网格吸附：拖动时按 12px 栅格对齐" aria-label="网格吸附">
@@ -16795,11 +17118,7 @@ function CanvasViewInner({
                     <button type="button" onClick={() => { const n = pasteNodeClipboard(); if (n > 0) setToast(`已粘贴 ${n} 个节点`); setContextMenu(null); }}>粘贴（Ctrl+V）</button>
                   )}
                   <button type="button" onClick={() => {
-                    const current = viewportRef.current;
-                    const next = {...current, zoom: 1};
-                    viewportRef.current = next;
-                    setCanvasViewport(next);
-                    setZoomPct(100);
+                    zoomToLevel(1);
                     setContextMenu(null);
                   }}>重置为 100%（Ctrl+0）</button>
                   <button type="button" onClick={() => { fitView(); setContextMenu(null); }}>适应视图</button>

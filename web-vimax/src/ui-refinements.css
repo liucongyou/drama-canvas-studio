@@ -3336,18 +3336,21 @@ html[data-theme='dark'][data-variant='immersive']{
    以前按类型分三种色相（冷灰绿 / 中性灰 / 琥珀金），手动线是金橙色，在深色画布上
    比卡片还抢眼，同一屏里像两套体系。现在只保留「基色 + 悬停/选中变蓝」两档状态。
    状态色由 --edge-tone 驱动（styles.css 里统一开关）。 ---------- */
+/* 常态灰底稿，悬停 = 选中 = 同一个蓝（用户要求两者同色）。
+   这条排在本文件里、晚于 styles.css，所以兜底值必须跟着分成两档。 */
 .canvas-edge-auto .react-flow__edge-path,
 .canvas-edge-chain .react-flow__edge-path,
-.canvas-edge-user .react-flow__edge-path{stroke:var(--edge-tone,#6b7684);stroke-width:1.7}
+.canvas-edge-user .react-flow__edge-path{stroke:var(--edge-tone,#6b7684);stroke-width:var(--edge-line-w,1.7)}
 .react-flow__edge.canvas-edge-auto .canvas-edge-source-dot,
 .react-flow__edge.canvas-edge-chain .canvas-edge-source-dot,
 .react-flow__edge.canvas-edge-user .canvas-edge-source-dot{fill:var(--edge-tone,#6b7684)}
-/* 悬停与选中同为青蓝（悬停就是在预告"点下去会选中它"），靠粗细/发光区分。
-   原来悬停 #d9dfe6、选中 #4d9fff 是两套色相，用户分不清划过还是选中。 */
-.react-flow__edge:hover .react-flow__edge-path{stroke:#4d9fff;stroke-width:2}
-.react-flow__edge:hover .canvas-edge-source-dot{fill:#4d9fff}
-.react-flow__edge.selected .react-flow__edge-path{stroke:#4d9fff;stroke-width:2.4}
-.react-flow__edge.selected .canvas-edge-source-dot{fill:#4d9fff}
+/* 悬停与选中**完全同色**（用户原话「把悬停连线颜色改成选中连线颜色那么难吗？」），
+   都吃 --v-edge-highlight；常态化是灰底稿，所以鼠标划过时"从灰变蓝"非常明确。
+   这里连兜底值也一起写成蓝，避免某个作用域没继承到变量时又冒出一条灰线。 */
+.react-flow__edge:hover .react-flow__edge-path{stroke:var(--v-edge-highlight,#4d9fff);stroke-width:calc(var(--edge-line-w,1.7) * 1.18)}
+.react-flow__edge:hover .canvas-edge-source-dot{fill:var(--v-edge-highlight,#4d9fff)}
+.react-flow__edge.selected .react-flow__edge-path{stroke:var(--v-edge-highlight,#4d9fff);stroke-width:calc(var(--edge-line-w,1.7) * 1.4)}
+.react-flow__edge.selected .canvas-edge-source-dot{fill:var(--v-edge-highlight,#4d9fff)}
 /* html 自身底色原本是 #090a0c（窗口边缘/滚动回弹处会露出来），一并压平到 #121212 */
 html[data-theme='dark'][data-variant='immersive']{background:#121212}
 
@@ -7355,11 +7358,11 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
          避免鼠标划过某根线时它亮起来，看着像"批量选中的一部分"。
        ★ 流光动画必须保留（用户明确要求）：只压颜色，不压透明度/动画。 */
 .canvas-flow.has-multi-selection .react-flow__edge .react-flow__edge-path{
-  stroke:var(--edge-tone,#6b7684) !important;
-  stroke-width:1.7 !important;
+  stroke:var(--edge-tone,#4d9fff) !important;
+  stroke-width:var(--edge-line-w,1.7) !important;
 }
 .canvas-flow.has-multi-selection .react-flow__edge .canvas-edge-source-dot{
-  fill:var(--edge-tone,#6b7684) !important;
+  fill:var(--edge-tone,#4d9fff) !important;
 }
 /* ★ 第 19 轮：批量选中（框选 10+ 张卡）时**关掉彗尾与火花**。
    理由不是性能，而是视觉：彗尾宽 3.6 倍，几十条一起亮会把画布糊成一片雾，
@@ -7379,11 +7382,15 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 /* ★ 第 19 轮：拖动节点期间关掉彗尾。
    拖动的每一帧都要重排 60+ 条贝塞尔路径，此时再让每条多跑一层宽描边的
    位移动画，主线程和合成器都被占满（实测拖动整组掉帧）。拖完立刻恢复。 */
+/* ★ 第 30 轮补：光设 opacity:0 只是看不见，动画照样在跑（dashoffset 每帧变、
+   路径每帧重排）。既然拖动态就是要关掉彗尾彗头，直接把动画也停掉。 */
 .canvas-flow.is-node-dragging .react-flow__edge .canvas-edge-flow-tail{
   opacity:0 !important;
+  animation:none !important;
 }
 .canvas-flow.is-node-dragging .react-flow__edge .canvas-edge-flow-head{
   opacity:0 !important;
+  animation:none !important;
 }
 
 /* ===== 24) 画布列表（左侧滑出）细节 =====
@@ -7506,9 +7513,15 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
    注意与 23) 的批量选中规则的关系：23) 用 .has-multi-selection 把「基色描边层」
    压成中性灰（防一屏蓝线糊成一片），这里只提亮「流光层」，不碰基色层 ——
    两者叠加后的效果是：灰底 + 亮流光，既能看清拓扑，又能看出哪些线属于选中卡片。 */
+/* ★ 第 31 轮：宽度统一改成"--edge-flow-width × 倍数"（该变量已是 ÷zoom 的画布单位）。
+   这里原来是写死的 2.2 / 4.6 倍 —— 两个后果：
+     ① 不随 zoom 补偿 ⇒ 放大后跟着画布一起变粗（"变形"）；
+     ② 4.6 倍 = 7.8px 压在 1.7px 的线上 ⇒ "比连线大很多"，根本不是彗星。
+   现在与常态同口径，只是倍数略高（选中态要能一眼看见）。 */
+/* ★ 第 31 轮定稿：**这里不再改颜色**（连线已统一成一个蓝，彗星三层是一套固定亮色）。
+   只留"选中卡片时相连线跑得更快一点（1.35s）+ 彗尾/彗头/火花一起点亮 + 略微加粗"。 */
 .canvas-flow .react-flow__edge .canvas-edge-flow.is-linked{
-  stroke:#7fc4ff;
-  stroke-width:2.2;
+  stroke-width:calc(var(--edge-flow-width,1.7) * 1.55);
   opacity:1;
   animation-duration:1.35s;
   filter:drop-shadow(0 0 3px rgba(127,196,255,.75));
@@ -7521,33 +7534,36 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
      几十秒后亮核会跑到彗尾的间隙里 → 看起来像"光断成一截一截"。
      （相位只能靠 duration 相等来锁，CSS 做不到"同相位不同速度"。） */
 .canvas-flow .react-flow__edge .canvas-edge-flow-tail.is-linked{
-  stroke:rgba(127,196,255,.92);
-  stroke-width:calc(var(--edge-flow-width,1.4) * 4.6);
-  opacity:.5;
+  stroke-width:calc(var(--edge-flow-width,1.7) * 2.5);
+  opacity:.55;
   animation-duration:1.35s;
 }
 /* 选中卡片 → 相连线的彗头也点亮，且**必须同步 1.35s**（相位锁） */
 .canvas-flow .react-flow__edge .canvas-edge-flow-head.is-linked{
-  stroke:#dff1ff;
-  stroke-width:calc(var(--edge-flow-width,1.4) * 1.8);
+  stroke-width:calc(var(--edge-flow-width,1.7) * 1.7);
   opacity:1;
   animation-duration:1.35s;
 }
 .canvas-flow .react-flow__edge .canvas-edge-spark.is-linked{
-  fill:#9fd0ff;
+  fill:#c6e7ff;
   opacity:.9;
   animation:canvas-edge-spark-pulse 1.1s ease-in-out infinite;
 }
-/* 选中卡片的连线，基线统一提到与悬停一致的蓝色。
-   批量选中时同样通过 :has(.is-linked) 只点亮与选中卡片相连的线，
-   不会把画布上所有无关连线一起染蓝。 */
+/* 选中卡片的相连线：基线**不再单独改色**（整块画布只有一种线色，常态 .42 透明、
+   交互态 1.0）。这里只把它提到不透明并略加粗，等于"从底稿骨架里浮上来"。
+   批量选中时同样通过 :has(.is-linked) 只作用于与选中卡片相连的线，
+   不会把画布上所有无关连线一起提亮。 */
+/* 选中卡片的相连线：提到不透明 + 换成选中那个蓝（和悬停/选中一致）。
+   ★ 之前这里只改 opacity 不改色，于是"选中卡片"时连线还是灰的，
+     和"悬停变蓝"不一致 —— 用户会读成两套规则。 */
 .canvas-flow .react-flow__edge:has(.canvas-edge-flow.is-linked) .react-flow__edge-path{
-  stroke:#4d9fff !important;
-  stroke-width:1.9 !important;
+  stroke:var(--v-edge-highlight,#4d9fff) !important;
+  opacity:1 !important;
+  stroke-width:calc(var(--edge-line-w,1.7) * 1.12) !important;
 }
 .canvas-flow .react-flow__edge:has(.canvas-edge-flow.is-linked) .canvas-edge-source-dot{
-  fill:#7fc4ff !important;
-  r:3.4;
+  fill:var(--v-edge-highlight,#4d9fff) !important;
+  r:calc(var(--edge-line-w,1.7) * 2);
 }
 /* 降低动效偏好：不要跑马灯，只保留静态高亮 */
 @media (prefers-reduced-motion: reduce){

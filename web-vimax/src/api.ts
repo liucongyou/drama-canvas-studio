@@ -870,6 +870,8 @@ export async function getAuthSession(): Promise<{
   slug?: string;
   role?: 'admin' | 'member' | string;
   isAdmin?: boolean;
+  /** 本机单用户模式（无账号表）：服务端只在 CANVAS_AUTH_MODE != accounts 时回 true。 */
+  local?: boolean;
   preferences?: {
     canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
     [key: string]: unknown;

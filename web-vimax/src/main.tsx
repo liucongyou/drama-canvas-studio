@@ -101,10 +101,13 @@ function importPreviewMessage(preview: Record<string, unknown>) {
 function Shell({
   onLogout,
   isAdmin,
+  localMode = false,
   preferences,
 }: {
   onLogout?: () => void;
   isAdmin?: boolean;
+  /** 本机单用户模式：没有账号表，别再去轮询 /api/admin/accounts。 */
+  localMode?: boolean;
   preferences?: {
     canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
     [key: string]: unknown;
@@ -126,7 +129,8 @@ function Shell({
     latest_task_error_kind?: string;
   }[]>([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
-  const [onlineCount, setOnlineCount] = useState(0);
+  // 本机模式不轮询在线人数（在线数由下面那个 effect 直接置 1），否则顶栏会永久停在「在线状态同步中」
+  const [onlineCount, setOnlineCount] = useState(localMode ? 1 : 0);
   const [pid, setPid] = useState<string>('');
   const [canvasEpoch, setCanvasEpoch] = useState(0);
   const [feedPath, setFeedPath] = useState('');
@@ -266,6 +270,18 @@ function Shell({
   }, []);
 
   useEffect(() => {
+    // 本机单用户模式没有账号体系：这个接口一次都不该发。
+    // 以前这里无条件每 30 秒拉一次，只为拿 onlineCount（本机恒为 1），
+    // 服务端还会回 403，控制台每 30 秒一条红字。
+    //
+    // 注意：localMode 是 AuthGate 里 useSession 回来后异步置位的，首帧一定是 false，
+    // 所以既不能把它写进 useState 初值（那个初值只算一次，之后不会再算），
+    // 也不能只写在下面的 return 条件里 —— 依赖数组漏了它，等它变 true 时
+    // 这个 effect 不会重跑，30 秒轮询会一直挂着。两处都补。
+    if (localMode) {
+      setOnlineCount(1);
+      return;
+    }
     if (!isAdmin) return;
     let cancelled = false;
     const refresh = () => {
@@ -285,7 +301,7 @@ function Shell({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [isAdmin]);
+  }, [isAdmin, localMode]);
 
   const prefetchSettings = async (kind: 'models' | 'storage' | 'accounts') => {
     if (kind === 'models') {
@@ -321,11 +337,11 @@ function Shell({
     const preload = () => {
       void requestSettings('storage').catch(() => undefined);
       void requestSettings('models').catch(() => undefined);
-      if (isAdmin) void requestSettings('accounts').catch(() => undefined);
+      if (isAdmin && !localMode) void requestSettings('accounts').catch(() => undefined);
     };
     const timer = window.setTimeout(preload, 0);
     return () => window.clearTimeout(timer);
-  }, [isAdmin]);
+  }, [isAdmin, localMode]);
 
   const openSettings = async (kind: 'models' | 'storage' | 'accounts') => {
     if (settingsOpening) return;
@@ -841,19 +857,23 @@ function Shell({
                 </button>
               </div>
 
-              <div className="shell-settings-section">
-                <div className="shell-tools-menu-head">账号安全</div>
-                <button
-                  type="button"
-                  className="shell-tools-menu-item"
-                  onClick={() => { setSettingsOpen(false); setPasswordOpen(true); }}
-                >
-                  <KeyRound size={13} strokeWidth={1.9} aria-hidden="true" />
-                  <span>修改密码</span>
-                </button>
-              </div>
+              {/* 本机单用户模式没有账号表：改密要 account_id（服务端会回 401「请先登录」），
+                  创建账号更是无凭无据。两项都按事实隐藏，避免点进去撞死路。 */}
+              {!localMode && (
+                <div className="shell-settings-section">
+                  <div className="shell-tools-menu-head">账号安全</div>
+                  <button
+                    type="button"
+                    className="shell-tools-menu-item"
+                    onClick={() => { setSettingsOpen(false); setPasswordOpen(true); }}
+                  >
+                    <KeyRound size={13} strokeWidth={1.9} aria-hidden="true" />
+                    <span>修改密码</span>
+                  </button>
+                </div>
+              )}
 
-              {isAdmin && (
+              {isAdmin && !localMode && (
                 <div className="shell-settings-section">
                   <div className="shell-tools-menu-head">管理员</div>
                   <button
@@ -1308,6 +1328,7 @@ function ChangePasswordDialog({onClose}: {onClose: () => void}) {
 function AuthGate() {
   const [state, setState] = useState<'checking' | 'anonymous' | 'authenticated'>('checking');
   const [isAdmin, setIsAdmin] = useState(false);
+  const [localMode, setLocalMode] = useState(false);
   const [preferences, setPreferences] = useState<{
     canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
     [key: string]: unknown;
@@ -1323,6 +1344,7 @@ function AuthGate() {
       .then((session) => {
         if (!cancelled) {
           setIsAdmin(Boolean(session.isAdmin || session.role === 'admin'));
+          setLocalMode(Boolean(session.local));
           setPreferences(session.preferences || {});
           setState(session.authenticated ? 'authenticated' : 'anonymous');
         }
@@ -1421,6 +1443,7 @@ function AuthGate() {
     <Shell
       onLogout={() => void logout()}
       isAdmin={isAdmin}
+      localMode={localMode}
       preferences={preferences}
     />
   );

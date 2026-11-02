@@ -116,7 +116,8 @@
   --v-accent-mid-hover: #7a7ff2;
   /* 中性蓝灰：连线常态基色，与本主题同色相（H≈213） */
   --v-edge-tone: #6b7684;
-  /* 连线交互高亮是画布结构色，不跟随按钮强调色调整。 */
+  /* 连线交互高亮是画布结构色，不跟随按钮强调色调整。
+     ★ 悬停和选中**共用这一支**（用户要求两者同色）。 */
   --v-edge-highlight: #4d9fff;
 
   /* ── 语义色（各一支，亮度对齐；不要再用 #f87171/#3ecf8e 这类旧值） ──
@@ -1430,6 +1431,16 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
 .canvas-flow {
   --guide-tone: var(--v-accent-mid);
 }
+/* ★★ 第 31 轮：连线**只用一种颜色**（用户原话「你连线都用单个卡片选中连线颜色不就行了」）。
+   以前是「常态灰 --v-edge-tone / 交互变蓝 --v-edge-highlight」两套色相，
+   结果彗星要在两种底色上各配一套颜色，还出现"线和彗星同一个蓝、彗星看不见"的问题。
+   现在两档都用同一个蓝 --v-edge-highlight，**只靠透明度分层次**：
+     常态 .42（退成底稿骨架） → 悬停/选中 1（跳出来）
+   彗星因此只需要一套配色，压在任意一档上都是同一颗亮彗星。 */
+/* ★★ 常识态必须用**灰**（--v-edge-tone），这条带 !important、优先级最高。
+   上一版我把它也写成 highlight 蓝，结果：常态是蓝、悬停也是蓝 ⇒
+   用户看到的就是「鼠标悬停连线颜色还是没变」。颜色没变不是层级问题，
+   是**根本没有第二个颜色**可用。 */
 .canvas-edge-auto .react-flow__edge-path,
 .canvas-edge-chain .react-flow__edge-path,
 .canvas-edge-user .react-flow__edge-path {
@@ -1437,6 +1448,8 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
   opacity: .42;
   transition: opacity 140ms ease, stroke 140ms ease;
 }
+/* 悬停 = 选中 = 同一个蓝（用户原话「把悬停连线颜色改成选中连线颜色那么难吗？」）。
+   一个值，不另造"更亮一档"的第三色（上一版加的专用 hover 令牌已删除）。 */
 .react-flow__edge:hover .react-flow__edge-path,
 .react-flow__edge.selected .react-flow__edge-path {
   stroke: var(--v-edge-highlight) !important;

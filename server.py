@@ -5748,6 +5748,28 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _handle_admin_list_accounts(self):
+        if _auth_mode() != "accounts":
+            # 本机单用户模式压根没有账号表，系统里只有一个隐式 local 身份。
+            #
+            # 这里以前走 _admin_session() → 403 ADMIN_REQUIRED：但前端 Shell 每 30 秒
+            # 拉一次这个接口只为拿「在线人数」，于是控制台每 30 秒稳定刷一条红色 403，
+            # 用户却没有任何账号可管 —— 既污染控制台（"0 报错"永远做不到），
+            # 又让「账号管理」弹窗在本机模式下必然报错。
+            # 现在按事实返回：零个可管理账号 + 本机那一个在线身份。
+            context = tenant_context.current()
+            now = store._now_iso()
+            return self._send(200, {
+                "accounts": [],
+                "onlineCount": 1,
+                "onlineUsers": [{
+                    "id": "local",
+                    "username": "local",
+                    "lastSeenAt": now,
+                }],
+                "generatedAt": now,
+                "local": True,
+                "tenantId": context.tenant_id if context else "legacy",
+            })
         if self._admin_session() is None:
             return
         rows = []
