@@ -505,23 +505,29 @@ def update_tenant_preferences(
     tenant = get_tenant_by_id(tenant_id)
     if not tenant:
         raise ValueError("租户不存在")
-    current = get_tenant_preferences(tenant_id)
-    current.update(updates)
     con = _connect()
-    con.execute(
-        "INSERT INTO tenant_preferences(tenant_id,preferences_json,updated_at)"
-        " VALUES(?,?,?) ON CONFLICT(tenant_id) DO UPDATE SET"
-        " preferences_json=excluded.preferences_json,"
-        " updated_at=excluded.updated_at",
-        (
-            str(tenant_id),
-            json.dumps(current, ensure_ascii=False, separators=(",", ":")),
-            _iso(),
-        ),
-    )
-    con.commit()
-    con.close()
-    return current
+    try:
+        # json_patch merges at the database write boundary. Reading preferences
+        # into Python and writing the whole object back allows two browser
+        # sessions to erase each other's unrelated changes.
+        con.execute(
+            "INSERT INTO tenant_preferences(tenant_id,preferences_json,updated_at)"
+            " VALUES(?,?,?) ON CONFLICT(tenant_id) DO UPDATE SET"
+            " preferences_json=json_patch(tenant_preferences.preferences_json,excluded.preferences_json),"
+            " updated_at=excluded.updated_at",
+            (
+                str(tenant_id),
+                json.dumps(updates, ensure_ascii=False, separators=(",", ":")),
+                _iso(),
+            ),
+        )
+        con.commit()
+        return get_tenant_preferences(tenant_id)
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
 
 
 def create_invite(

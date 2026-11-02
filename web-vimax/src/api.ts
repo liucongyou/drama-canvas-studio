@@ -874,6 +874,7 @@ export async function getAuthSession(): Promise<{
   local?: boolean;
   preferences?: {
     canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
+    theme?: 'light' | 'dark' | 'immersive' | 'forest' | 'copper';
     [key: string]: unknown;
   };
 }> {
@@ -881,11 +882,13 @@ export async function getAuthSession(): Promise<{
 }
 
 export async function saveTenantPreferences(updates: {
-  canvasBackgroundMode: 'dots' | 'lines' | 'blank';
+  canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
+  theme?: 'light' | 'dark' | 'immersive' | 'forest' | 'copper';
 }): Promise<{
   ok: boolean;
   preferences: {
     canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
+    theme?: 'light' | 'dark' | 'immersive' | 'forest' | 'copper';
     [key: string]: unknown;
   };
 }> {
@@ -906,6 +909,7 @@ export async function loginAccount(username: string, password: string): Promise<
   // setPreferences(session.preferences || {}) 永远落空。
   preferences?: {
     canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
+    theme?: 'light' | 'dark' | 'immersive' | 'forest' | 'copper';
     [key: string]: unknown;
   };
 }> {
@@ -2118,6 +2122,7 @@ async function getProjectionCanvasWorkspace(
   sessionId: string,
   epId?: string | null,
   signal?: AbortSignal,
+  workspaceIndexPromise?: Promise<WorkspaceProjectMeta>,
 ): Promise<{
   canvas: Canvas | {empty: true};
   notes: CanvasNote[];
@@ -2132,7 +2137,9 @@ async function getProjectionCanvasWorkspace(
   }>;
   tasks: GenerationTask[];
 }> {
-  const index = await getWorkspaceIndex(sessionId, signal);
+  const index = await (
+    workspaceIndexPromise || getWorkspaceIndex(sessionId, signal)
+  );
   if (!Array.isArray(index.episodes)) {
     throw withRequestStatus(
       new Error('workspace index contract unavailable'),
@@ -2217,6 +2224,7 @@ export async function getCanvasWorkspace(
   sessionId: string,
   epId?: string | null,
   signal?: AbortSignal,
+  workspaceIndexPromise?: Promise<WorkspaceProjectMeta>,
 ): Promise<{
   canvas: Canvas | {empty: true};
   notes: CanvasNote[];
@@ -2236,6 +2244,7 @@ export async function getCanvasWorkspace(
       sessionId,
       epId,
       signal,
+      workspaceIndexPromise,
     );
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
@@ -2489,6 +2498,25 @@ export async function generateCanvasNodeNow(
   } finally {
     inflight.delete(key);
   }
+}
+
+export async function recoverCanvasNodeMedia(
+  sessionId: string,
+  nodeId: string,
+): Promise<{
+  restored: boolean;
+  reason?: string;
+  content?: string;
+  taskId?: string;
+}> {
+  return request(
+    `/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/recover-media`,
+    {
+      method: 'POST',
+      body: '{}',
+      timeoutMs: 300_000,
+    },
+  );
 }
 
 const listeners = new Set<(event: AgentEvent) => void>();

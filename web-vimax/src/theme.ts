@@ -1,10 +1,16 @@
 export type Theme = 'light' | 'dark' | 'tech' | 'immersive' | 'forest' | 'copper';
+export type StoredThemePreference =
+  | 'light'
+  | 'dark'
+  | 'immersive'
+  | 'forest'
+  | 'copper';
 
 export const THEME_STORAGE_KEY = 'vimax-web-theme';
 export const THEME_COOKIE_KEY = 'vimax-web-theme';
 
 export const THEMES: Array<{key: Theme; label: string; desc: string}> = [
-  {key: 'immersive', label: '石墨蓝', desc: '当前默认，深灰底与沉稳蓝灰'},
+  {key: 'immersive', label: '石墨黑', desc: '当前默认，深灰底与沉稳蓝灰'},
   {key: 'forest', label: '松石绿', desc: '黑绿灰底与柔和青绿强调'},
   {key: 'copper', label: '暖铜灰', desc: '深暖灰底与低饱和铜色'},
   {key: 'dark', label: 'AIGC 暗色', desc: '靛灰科技感与克制冷色强调'},
@@ -15,12 +21,20 @@ export function isDarkTheme(theme: Theme): boolean {
   return theme !== 'light';
 }
 
-export function resolveTheme(stored: string | null | undefined, prefersDark: boolean): Theme {
+export function resolveTheme(stored: string | null | undefined, _prefersDark: boolean): Theme {
   if (stored === 'gold' || stored === 'tech') return 'immersive';
   if (stored === 'light' || stored === 'dark' || stored === 'immersive' || stored === 'forest' || stored === 'copper') {
     return stored;
   }
-  return prefersDark ? 'immersive' : 'light';
+  return 'immersive';
+}
+
+export function normalizeThemePreference(value: unknown): StoredThemePreference {
+  if (value === 'gold' || value === 'tech') return 'immersive';
+  if (value === 'light' || value === 'dark' || value === 'immersive' || value === 'forest' || value === 'copper') {
+    return value;
+  }
+  return 'immersive';
 }
 
 export function readStoredTheme(): string | null {
@@ -42,7 +56,7 @@ export function readStoredTheme(): string | null {
   }
 }
 
-export function storeTheme(theme: Theme) {
+export function storeTheme(theme: StoredThemePreference) {
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch {

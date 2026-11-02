@@ -2192,6 +2192,14 @@ def _record_media_version(
     if kind == "video":
         media_params["videoVersions"] = [dict(item) for item in versions]
         media_params["videoVersionIndex"] = len(versions) - 1
+    # When a task was synced before provider-result receipts were introduced,
+    # refresh the version with the new durable receipt rather than adding a
+    # second version for the same paid result.
+    normalized_provider_result = str(provider_result_url or "").strip()
+    if normalized_task_id and normalized_provider_result:
+        for item in versions:
+            if str(item.get("taskId") or "").strip() == normalized_task_id:
+                item["providerResultUrl"] = normalized_provider_result
     return versions
 
 
@@ -3046,6 +3054,87 @@ def _recover_persisted_result_to_canvas(project_id, node_id, task):
         },
     )
     return bool(committed.get("committed"))
+
+
+def recover_missing_generated_media(project_id, node_id):
+    """Restore a missing local file from its successful provider receipt only."""
+    project = store.get_project(project_id)
+    if not project:
+        raise KeyError("项目不存在")
+    node = next(
+        (
+            item
+            for item in project["payload"].get("nodes", [])
+            if item.get("id") == node_id
+        ),
+        None,
+    )
+    if not node or node.get("type") not in {"image", "audio", "video"}:
+        raise ValueError("节点不是可恢复的媒体节点")
+    meta = node.get("metadata") or {}
+    content = str(meta.get("content") or "")
+    if content.startswith("/uploads/"):
+        try:
+            existing = provider_client.local_upload_path(content)
+        except RuntimeError:
+            existing = None
+        if existing:
+            return {"restored": False, "reason": "本地文件仍存在", "content": content}
+    task = store.list_latest_success_task_for_node(project_id, node_id)
+    if not task:
+        return {"restored": False, "reason": "没有可恢复的供应商成功记录"}
+    task_kind = str(task.get("kind") or node.get("type") or "image")
+    fallback_ext = {
+        "image": ".png",
+        "video": ".mp4",
+        "audio": ".mp3",
+    }.get(task_kind, ".bin")
+    provider = {}
+    model = {}
+    try:
+        provider, model, _ = provider_catalog.resolve_model(
+            task.get("provider"),
+            task.get("model"),
+            task_kind,
+        )
+    except Exception:
+        # A historical task can outlive a disabled model profile. Its persisted
+        # result URL remains recoverable without issuing a new provider call.
+        provider = {}
+        model = {}
+    provider_url = str(task.get("provider_result_url") or "").strip()
+    if not provider_url:
+        return {"restored": False, "reason": "任务没有保存供应商原链"}
+    try:
+        local_url = persist_generated_media(
+            provider_url,
+            fallback_ext,
+            provider=provider,
+            model=model,
+        )
+    except Exception as exc:
+        return {
+            "restored": False,
+            "reason": f"供应商原链重新落盘失败：{exc}",
+        }
+    if not local_url.startswith("/uploads/"):
+        return {"restored": False, "reason": "供应商原链未成功写入本地存储"}
+    recovered = _recover_persisted_result_to_canvas(
+        project_id,
+        node_id,
+        {
+            **task,
+            "status": "succeeded",
+            "local_result_url": local_url,
+            "delivery_status": "pending",
+        },
+    )
+    return {
+        "restored": bool(recovered),
+        "reason": "" if recovered else "画布回写未完成",
+        "content": local_url,
+        "taskId": task.get("id"),
+    }
 
 
 def _recover_existing_local_task_result(project_id, node_id, task):
@@ -3997,6 +4086,28 @@ def start_storage_maintenance():
             time.sleep(6 * 60 * 60)
 
     threading.Thread(target=run, name="storage-maintenance", daemon=True).start()
+
+
+def start_wal_maintenance():
+    """Checkpoint WAL away from paid generation commits.
+
+    SQLite's default autocheckpoint runs inside whichever commit crosses the
+    page threshold. On Windows that turns an otherwise ~20ms task update into a
+    0.2-2s stall. Keep automatic checkpoints disabled at connection level and
+    converge the WAL from this low-frequency maintenance thread instead.
+    """
+    def run():
+        time.sleep(20)
+        while True:
+            try:
+                _run_for_active_tenants(
+                    lambda: store.checkpoint_wal(mode="PASSIVE")
+                )
+            except Exception as exc:
+                print(f"[storage] WAL checkpoint 失败：{exc}", file=sys.stderr)
+            time.sleep(30)
+
+    threading.Thread(target=run, name="wal-maintenance", daemon=True).start()
 
 
 def start_generation_task_reconciler():
@@ -5597,6 +5708,12 @@ class Handler(BaseHTTPRequestHandler):
                 "error": "画布底纹参数格式错误",
                 "code": "CANVAS_BACKGROUND_INVALID",
             })
+        theme = body.get("theme")
+        if theme is not None and not isinstance(theme, str):
+            return self._send(400, {
+                "error": "主题参数格式错误",
+                "code": "THEME_INVALID",
+            })
         updates = {}
         if isinstance(background_mode, str):
             if background_mode not in {"dots", "lines", "blank"}:
@@ -5605,6 +5722,14 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "CANVAS_BACKGROUND_INVALID",
                 })
             updates["canvasBackgroundMode"] = background_mode
+        if isinstance(theme, str):
+            normalized_theme = "immersive" if theme in {"gold", "tech"} else theme
+            if normalized_theme not in {"light", "dark", "immersive", "forest", "copper"}:
+                return self._send(400, {
+                    "error": "主题值无效",
+                    "code": "THEME_INVALID",
+                })
+            updates["theme"] = normalized_theme
         if not updates:
             return self._send(400, {
                 "error": "没有可保存的偏好设置",
@@ -6786,6 +6911,21 @@ class Handler(BaseHTTPRequestHandler):
             if result is None:
                 return self._send(404, {"error": "项目不存在"})
             return self._send(200, {"ok": True, **result})
+        m = re.match(r"^/api/projects/([^/]+)/nodes/([^/]+)/recover-media$", path)
+        if m:
+            pid, nid = unquote(m.group(1)), unquote(m.group(2))
+            try:
+                result = recover_missing_generated_media(pid, nid)
+            except KeyError as exc:
+                return self._send(404, {"error": str(exc)})
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
+            except Exception as exc:
+                return self._send(502, {
+                    "error": f"恢复生成结果失败：{exc}",
+                    "code": "MEDIA_RECOVERY_FAILED",
+                })
+            return self._send(200 if result.get("restored") else 409, result)
         m = re.match(r"^/api/projects/([^/]+)/nodes/([^/]+)/generate$", path)
         if m:
             pid, nid = unquote(m.group(1)), unquote(m.group(2))
@@ -9364,6 +9504,7 @@ def main():
         print(f"[generation-tasks] 对账任务记录失败：{exc}", file=sys.stderr)
     start_generation_task_reconciler()
     start_storage_maintenance()
+    start_wal_maintenance()
     try:
         start_pending_video_resumers()
     except Exception as exc:

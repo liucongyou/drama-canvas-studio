@@ -10,9 +10,10 @@ describe('theme selection', () => {
     expect(resolveTheme('light', true)).toBe('light');
   });
 
-  it('falls back to the system preference', () => {
+  it('always falls back to the graphite default', () => {
     expect(resolveTheme(null, true)).toBe('immersive');
-    expect(resolveTheme(undefined, false)).toBe('light');
+    expect(resolveTheme(undefined, false)).toBe('immersive');
+    expect(resolveTheme('light', false)).toBe('light');
   });
 
   it('exposes exactly the five product themes', () => {

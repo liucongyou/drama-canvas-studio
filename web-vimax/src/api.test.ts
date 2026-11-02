@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
 
 describe('project event cursor', () => {
   it('reconnects SSE from the last rendered events for this project', () => {
@@ -957,6 +957,59 @@ describe('api request recovery', () => {
     expect(workspace.tasks).toHaveLength(1);
     expect(workspace.mediaNodes[0].status).toBe('generating');
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('reuses the preloaded workspace index instead of fetching it twice', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const target = String(url);
+      const body = target.includes('/api/generation-tasks')
+        ? {tasks: []}
+        : target.includes('/workspace-index')
+          ? {
+              id: 'project-shared-index',
+              title: '共享索引',
+              revision: 1,
+              updatedAt: '2026-11-03T00:00:00Z',
+              projectMeta: {extras: {notes: []}},
+              episodes: [{
+                id: 'EP001',
+                title: '第01集',
+                nodeIds: [],
+                videoNodeIds: [],
+              }],
+              episodeViewports: {},
+            }
+          : {
+              episodeId: 'EP001',
+              episode: {
+                id: 'EP001',
+                title: '第01集',
+                nodeIds: [],
+              },
+              nodes: [],
+              connections: [],
+              layouts: {},
+              notes: [],
+            };
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const index = await getWorkspaceIndex('project-shared-index');
+    const workspace = await getCanvasWorkspace(
+      'project-shared-index',
+      'EP001',
+      undefined,
+      index,
+    );
+
+    expect(workspace.activeEpisodeId).toBe('EP001');
+    expect(fetchMock.mock.calls.filter(
+      ([url]) => String(url).includes('/workspace-index'),
+    )).toHaveLength(1);
   });
 
   it('renders the backend node row without deriving card state from tasks', async () => {

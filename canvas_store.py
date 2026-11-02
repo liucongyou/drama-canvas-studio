@@ -31,6 +31,14 @@ _WRITE_RETRY_SECONDS = 35.0
 _WRITE_RETRY_MAX_DELAY = 0.5
 # readonly 属于瞬态竞态，重试 4 次（约 1.15s）足够；超过就当真的没有写权限。
 _MAX_READONLY_RETRIES = 4
+# WAL 自动 checkpoint 默认每约 1000 页触发一次，并且会撞在业务提交线程里。
+# 实测同一 INSERT 平时约 17ms，触发 checkpoint 时会突然到 0.2~2s。改为关闭
+# 自动触发，由后台维护线程在受控窗口做 PASSIVE checkpoint；保留硬上限，
+# 即使维护线程停摆也不会让 WAL 无限增长。
+_WAL_AUTOCHECKPOINT_PAGES = 0
+_WAL_SOFT_LIMIT_BYTES = 16 * 1024 * 1024
+_WAL_LAST_MAINTENANCE: dict[str, float] = {}
+_WAL_MAINTENANCE_INTERVAL_SECONDS = 30.0
 _UNASSIGNED_EPISODE_ID = "__UNASSIGNED__"
 
 
@@ -68,14 +76,21 @@ def _connect():
     con = sqlite3.connect(path, timeout=30)
     con.execute("PRAGMA busy_timeout=30000")
     con.execute("PRAGMA foreign_keys=ON")
+    con.execute(
+        f"PRAGMA wal_autocheckpoint={_WAL_AUTOCHECKPOINT_PAGES}"
+    )
     if path not in _WAL_READY_PATHS:
         with _SCHEMA_LOCK:
             if path not in _WAL_READY_PATHS:
                 con.execute("PRAGMA journal_mode=WAL")
                 con.execute("PRAGMA synchronous=NORMAL")
                 _WAL_READY_PATHS.add(path)
-    if not _SCHEMA_READY or path not in _SCHEMA_READY_PATHS:
+    if path not in _SCHEMA_READY_PATHS:
         with _SCHEMA_LOCK:
+            # Double-check under the lock: concurrent first connections must
+            # run the DDL/migrations once, not once per thread.
+            if path in _SCHEMA_READY_PATHS:
+                return con
             con.execute(
             """CREATE TABLE IF NOT EXISTS canvas_projects(
                 id TEXT PRIMARY KEY,
@@ -2677,6 +2692,25 @@ def _run_write_transaction(callback):
             con.execute("BEGIN IMMEDIATE")
             result = callback(con)
             con.commit()
+            # PASSIVE never blocks writers or readers. A soft hard-limit check
+            # only runs after a commit and is rate-limited, so normal canvas
+            # saves do not pay a checkpoint on every write.
+            path = _db_path()
+            now = time.monotonic()
+            wal_path = f"{path}-wal"
+            if (
+                now - _WAL_LAST_MAINTENANCE.get(path, 0.0)
+                >= _WAL_MAINTENANCE_INTERVAL_SECONDS
+                and os.path.exists(wal_path)
+                and os.path.getsize(wal_path) >= _WAL_SOFT_LIMIT_BYTES
+            ):
+                _WAL_LAST_MAINTENANCE[path] = now
+                try:
+                    con.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except sqlite3.OperationalError:
+                    # The next maintenance window retries; business writes must
+                    # never fail because a passive checkpoint was busy.
+                    pass
             return result
         except sqlite3.OperationalError as exc:
             if con.in_transaction:
@@ -4899,6 +4933,28 @@ def list_generation_tasks_for_node_ids(
     return tasks[:capped_limit]
 
 
+def list_latest_success_task_for_node(project_id, node_id):
+    """Return the newest successful task that still carries a provider URL."""
+    if not project_id or not node_id:
+        return None
+    con = _connect()
+    columns = [
+        item[0]
+        for item in con.execute(
+            "SELECT * FROM generation_tasks LIMIT 0"
+        ).description
+    ]
+    row = con.execute(
+        "SELECT * FROM generation_tasks "
+        "WHERE project_id=? AND node_id=? AND status='succeeded' "
+        "AND COALESCE(provider_result_url,'')!='' "
+        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (project_id, node_id),
+    ).fetchone()
+    con.close()
+    return dict(zip(columns, row)) if row else None
+
+
 def list_due_provider_tasks(limit=50, now=None):
     """Return only provider tasks whose indexed next poll is due.
 
@@ -5694,3 +5750,32 @@ def maintain_storage(min_free_ratio: float = 0.35, min_free_bytes: int = 32 * 10
             con.close()
     after = storage_stats()["file_bytes"]
     return max(0, before - after)
+
+
+def checkpoint_wal(*, mode: str = "PASSIVE") -> dict:
+    """Move WAL pages back into the main database outside business commits."""
+    path = _db_path()
+    if not os.path.exists(path):
+        return {"ok": True, "busy": 0, "log": 0, "checkpointed": 0}
+    normalized = str(mode or "PASSIVE").strip().upper()
+    if normalized not in {"PASSIVE", "TRUNCATE"}:
+        raise ValueError("不支持的 WAL checkpoint 模式")
+    con = None
+    try:
+        con = sqlite3.connect(path, timeout=1)
+        con.execute("PRAGMA busy_timeout=1000")
+        con.execute("PRAGMA wal_autocheckpoint=0")
+        busy, log, checkpointed = con.execute(
+            f"PRAGMA wal_checkpoint({normalized})"
+        ).fetchone()
+        return {
+            "ok": int(busy or 0) == 0,
+            "busy": int(busy or 0),
+            "log": int(log or 0),
+            "checkpointed": int(checkpointed or 0),
+        }
+    except (sqlite3.Error, OSError):
+        return {"ok": False, "busy": 1, "log": 0, "checkpointed": 0}
+    finally:
+        if con is not None:
+            con.close()

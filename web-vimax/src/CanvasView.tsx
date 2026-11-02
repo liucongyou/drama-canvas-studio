@@ -108,7 +108,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getWorkspaceIndex, getWorkspaceShell, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getWorkspaceIndex, getWorkspaceShell, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -1920,6 +1920,7 @@ type MediaNodeData = {
   suppressNodeOpen: () => void;
   isNodeOpenSuppressed: () => boolean;
   onMediaAvailability?: (nodeId: string, availability: 'available' | 'missing') => void;
+  onRecoverMedia?: (nodeId: string) => void;
 };
 
 // ---- 生成参数面板（详细属性：模型/清晰度/比例/推理强度/引用资产/音色） ----
@@ -2596,7 +2597,7 @@ function mediaNodePropsEqual(
 }
 
 const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
-  const {node, renderMode = 'full', contentVisible = true, onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, assetsById, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed, onMediaAvailability} = data;
+  const {node, renderMode = 'full', contentVisible = true, onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, assetsById, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed, onMediaAvailability, onRecoverMedia} = data;
   const [menu, setMenu] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoShellRef = useRef<HTMLDivElement>(null);
@@ -3732,6 +3733,18 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
               {mediaMissing ? '媒体文件丢失' : '点击设置提示词'}
             </span>
             <small>{mediaMissing ? '请重新生成或重新导入' : '右键可导入本地素材'}</small>
+            {mediaMissing && onRecoverMedia && (
+              <button
+                type="button"
+                className="nodrag"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRecoverMedia(node.id);
+                }}
+              >
+                从原结果恢复
+              </button>
+            )}
           </div>
         )}
         {!isText && (
@@ -10067,7 +10080,11 @@ function CanvasViewInner({
     const workspaceTimeout = window.setTimeout(() => {
       workspaceAbort.abort();
     }, 20_000);
-    getWorkspaceIndex(session, workspaceAbort.signal)
+    const workspaceIndexPromise = getWorkspaceIndex(
+      session,
+      workspaceAbort.signal,
+    );
+    workspaceIndexPromise
       .then((index) => {
         if (loadEpoch !== workspaceLoadEpochRef.current) return;
         const shellStartedAt = performance.now();
@@ -10100,7 +10117,12 @@ function CanvasViewInner({
         // The projection contract is optional during rollout. The complete
         // workspace request below remains the compatibility fallback.
       });
-    const completedWorkspace = getCanvasWorkspace(session, currentEp, workspaceAbort.signal)
+    const completedWorkspace = getCanvasWorkspace(
+      session,
+      currentEp,
+      workspaceAbort.signal,
+      workspaceIndexPromise,
+    )
       .then(({
         canvas: data,
         notes: noteList,
@@ -10498,6 +10520,38 @@ function CanvasViewInner({
       return changed ? next : prev;
     });
   }, []);
+
+  const recoveringMediaIdsRef = useRef(new Set<string>());
+  const [recoveringMediaCount, setRecoveringMediaCount] = useState(0);
+  const recoverMissingMedia = useCallback((nodeId: string) => {
+    if (!currentEp || recoveringMediaIdsRef.current.has(nodeId)) return;
+    recoveringMediaIdsRef.current.add(nodeId);
+    setRecoveringMediaCount(recoveringMediaIdsRef.current.size);
+    void recoverCanvasNodeMedia(session, nodeId)
+      .then(async (result) => {
+        if (!result.restored) {
+          if (result.reason && !result.reason.includes('本地文件仍存在')) {
+            setToast(result.reason);
+          }
+          return;
+        }
+        const remoteNodes = await getCanvasMediaNodes(session, currentEp);
+        const remote = remoteNodes.find((node) => node.id === nodeId);
+        if (remote) {
+          setMediaNodes((prev) => prev.map(
+            (node) => node.id === nodeId ? {...node, ...remote} : node,
+          ));
+        }
+        setToast('已从供应商原结果恢复本地文件，没有重新生成或重复扣费');
+      })
+      .catch((error) => {
+        setToast(error instanceof Error ? error.message : '恢复生成结果失败');
+      })
+      .finally(() => {
+        recoveringMediaIdsRef.current.delete(nodeId);
+        setRecoveringMediaCount(recoveringMediaIdsRef.current.size);
+      });
+  }, [currentEp, session, setToast]);
 
   const importLocalFileToNode = useCallback(async (
     target: CanvasMediaNode,
@@ -15249,6 +15303,7 @@ function CanvasViewInner({
           onPressGroup: pressGroup,
           onUploadLocal: importLocalFileToNode,
           onMediaAvailability: updateMediaAvailability,
+          onRecoverMedia: recoverMissingMedia,
           suppressNodeOpen,
           isNodeOpenSuppressed,
         },
@@ -15267,7 +15322,7 @@ function CanvasViewInner({
       return saved ? {...node, position: saved} : node;
     });
     return placed;
-  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, mediaById, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasVisibleBounds, largeCanvasOverview, editNode?.id]);
+  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, mediaById, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasVisibleBounds, largeCanvasOverview, editNode?.id, recoverMissingMedia]);
   const renderedEdges = useMemo(() => {
     if (largeCanvasOverview) return [];
     const ids = new Set(flowNodes.map((node) => node.id));
@@ -16335,6 +16390,11 @@ function CanvasViewInner({
       {error && <div className="inline-error canvas-error" role="alert"><span>{error}</span></div>}
       {saveError && <div className="inline-error canvas-error" role="alert"><span>保存失败：{saveError}</span><button onClick={() => clearSaveError()} aria-label="关闭"><X size={12} strokeWidth={2.2} aria-hidden="true" /></button></div>}
       {toast && <div className="canvas-toast" onClick={() => setToast('')}>{toast}</div>}
+      {recoveringMediaCount > 0 && (
+        <div className="canvas-media-recovery-status" role="status">
+          正在从供应商原结果恢复本地文件，不会重新生成…
+        </div>
+      )}
 
       {!dataReady ? (
         <div className="canvas-skeleton" role="status" aria-live="polite">

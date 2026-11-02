@@ -93,6 +93,30 @@ class StorageMaintenanceTests(unittest.TestCase):
             # 连接都建不起来时必须安静返回，不能把后台线程炸掉
             self.assertEqual(canvas_store.maintain_storage(min_free_ratio=0.1, min_free_bytes=1024), 0)
 
+    def test_wal_checkpoint_reports_success_and_keeps_autocheckpoint_off(self):
+        project_id = canvas_store.create_project("wal-checkpoint")
+        task = canvas_store.create_generation_task(
+            project_id,
+            "wal-node",
+            kind="video",
+            episode_id="EP001",
+        )
+        canvas_store.finish_generation_task(
+            task["id"],
+            status="succeeded",
+            phase="done",
+        )
+        result = canvas_store.checkpoint_wal(mode="TRUNCATE")
+        self.assertTrue(result["ok"], result)
+        con = canvas_store._connect()
+        try:
+            self.assertEqual(
+                con.execute("PRAGMA wal_autocheckpoint").fetchone()[0],
+                0,
+            )
+        finally:
+            con.close()
+
 
 if __name__ == "__main__":
     unittest.main()

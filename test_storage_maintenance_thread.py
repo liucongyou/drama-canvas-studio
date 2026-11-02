@@ -31,6 +31,23 @@ class StorageMaintenanceThreadTests(unittest.TestCase):
                 server.start_storage_maintenance()
         run.assert_called_once_with(server.store.maintain_storage)
 
+    def test_wal_maintenance_is_wired_to_the_store_checkpoint(self):
+        class ImmediateThread:
+            def __init__(self, target, name, daemon):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        with (
+            mock.patch.object(server.time, "sleep", side_effect=[None, StopIteration]),
+            mock.patch.object(server, "_run_for_active_tenants", return_value=0) as run,
+            mock.patch.object(server.threading, "Thread", ImmediateThread),
+        ):
+            with self.assertRaises(StopIteration):
+                server.start_wal_maintenance()
+        run.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

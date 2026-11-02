@@ -1,4 +1,4 @@
-import {lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent} from 'react';
+import {lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent} from 'react';
 import {createRoot} from 'react-dom/client';
 import {createPortal} from 'react-dom';
 import {Check, ChevronDown, CloudUpload, Copy, Download, ExternalLink, FolderOpen, FolderPlus, History, KeyRound, LogOut, MoreHorizontal, Palette, Pencil, Plus, Settings, ShieldCheck, Trash2, Upload, X} from 'lucide-react';
@@ -7,7 +7,8 @@ import {ModelSettingsDialog} from './ModelSettings';
 import {TosSettingsDialog} from './TosSettings';
 import {ErrorBoundary, ToastHost, installGlobalErrorHandlers} from './ErrorBoundary';
 import {installNetworkStatusToasts} from './networkStatus';
-import {applyTheme, readStoredTheme, resolveTheme, storeTheme, THEMES, type Theme} from './theme';
+import {applyTheme, normalizeThemePreference, THEMES, type StoredThemePreference, type Theme} from './theme';
+import {mergeSavedPreferences, type ShellPreferences} from './settingsSnapshot';
 import {reconcileSelectedProjectId} from './projectSelection';
 // ★ 全局对话框：替换原生 prompt/confirm/alert（2026-10-25）
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
@@ -33,9 +34,7 @@ import './error-boundary.css';
 import './theme-tokens.css';
 
 function initialCanvasTheme(): Theme {
-  const stored = readStoredTheme();
-  const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true;
-  return resolveTheme(stored, prefersDark);
+  return 'immersive';
 }
 
 const bootTheme = initialCanvasTheme();
@@ -104,16 +103,19 @@ function Shell({
   isAdmin,
   localMode = false,
   preferences,
+  onPreferencesSaved,
 }: {
   onLogout?: () => void;
   isAdmin?: boolean;
   /** 本机单用户模式：没有账号表，别再去轮询 /api/admin/accounts。 */
   localMode?: boolean;
-  preferences?: {
-    canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
-    [key: string]: unknown;
-  };
+  preferences?: ShellPreferences;
+  onPreferencesSaved?: (preferences: ShellPreferences) => void;
 }) {
+  const preferencesRef = useRef<ShellPreferences>(preferences || {});
+  preferencesRef.current = preferences || {};
+  const backgroundPreference = preferences?.canvasBackgroundMode;
+  const themePreference = preferences?.theme;
   const shellStartedAtRef = useRef<number>(
     typeof performance !== 'undefined' ? performance.now() : Date.now(),
   );
@@ -160,25 +162,61 @@ function Shell({
       return false;
     }
   });
-  const [theme, setTheme] = useState<Theme>(bootTheme);
+  const serverTheme = normalizeThemePreference(themePreference);
+  const [themeOverride, setThemeOverride] = useState<Theme | null>(null);
+  const theme: Theme = themeOverride ?? serverTheme;
+  const themeSaveRef = useRef<Promise<unknown>>(Promise.resolve());
+  const latestThemeRequestRef = useRef(0);
   const [canvasBackgroundMode, setCanvasBackgroundMode] = useState<
     'dots' | 'lines' | 'blank'
-  >(preferences?.canvasBackgroundMode || 'blank');
+  >(backgroundPreference || 'blank');
   const settingsWrapRef = useRef<HTMLDivElement | null>(null);
   const settingsRequestsRef = useRef<Record<string, Promise<unknown> | undefined>>({});
   const settingsOpeningRef = useRef(false);
 
   useEffect(() => {
-    const next = preferences?.canvasBackgroundMode;
+    const next = backgroundPreference;
     if (next === 'dots' || next === 'lines' || next === 'blank') {
       setCanvasBackgroundMode(next);
     }
-  }, [preferences?.canvasBackgroundMode]);
+  }, [backgroundPreference]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     applyTheme(theme);
-    storeTheme(theme);
   }, [theme]);
+
+  const changeTheme = async (next: Theme) => {
+    const savedTheme = normalizeThemePreference(next);
+    const requestId = latestThemeRequestRef.current + 1;
+    latestThemeRequestRef.current = requestId;
+    setThemeOverride(savedTheme);
+    const save = themeSaveRef.current
+      .catch(() => undefined)
+      .then(() => saveTenantPreferences({theme: savedTheme}));
+    themeSaveRef.current = save;
+    try {
+      const result = await save;
+      const committed = normalizeThemePreference(result.preferences?.theme);
+      onPreferencesSaved?.(
+        mergeSavedPreferences(preferencesRef.current, result.preferences || {}),
+      );
+      if (latestThemeRequestRef.current === requestId) {
+        setThemeOverride(committed);
+      }
+    } catch (error) {
+      if (latestThemeRequestRef.current !== requestId) return;
+      await dialog.alert({
+        title: '主题保存失败',
+        message: error instanceof Error ? error.message : String(error),
+        tone: 'danger',
+      });
+      if (latestThemeRequestRef.current === requestId) {
+        setThemeOverride(
+          normalizeThemePreference(preferencesRef.current.theme),
+        );
+      }
+    }
+  };
 
   const openChangelog = () => {
     setSettingsOpen(false);
@@ -828,7 +866,7 @@ function Shell({
                       aria-checked={theme === item.key}
                       className={`shell-theme-option ${theme === item.key ? 'is-active' : ''}`}
                       title={item.desc}
-                      onClick={() => setTheme(item.key)}
+                      onClick={() => void changeTheme(item.key)}
                     >
                       <i className={`theme-swatch is-${item.key}`} aria-hidden="true" />
                       <span>{item.label}</span>
@@ -982,6 +1020,9 @@ function Shell({
         || committed === 'blank'
         ? committed
         : mode,
+    );
+    onPreferencesSaved?.(
+      mergeSavedPreferences(preferencesRef.current, saved.preferences || {}),
     );
   }, []);
 
@@ -1375,10 +1416,10 @@ function AuthGate() {
   const [state, setState] = useState<'checking' | 'anonymous' | 'authenticated'>('checking');
   const [isAdmin, setIsAdmin] = useState(false);
   const [localMode, setLocalMode] = useState(false);
-  const [preferences, setPreferences] = useState<{
-    canvasBackgroundMode?: 'dots' | 'lines' | 'blank';
-    [key: string]: unknown;
-  }>({});
+  const [preferences, setPreferences] = useState<ShellPreferences>({});
+  const rememberSavedPreferences = useCallback((saved: ShellPreferences) => {
+    setPreferences((current) => mergeSavedPreferences(current, saved));
+  }, []);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -1491,6 +1532,7 @@ function AuthGate() {
       isAdmin={isAdmin}
       localMode={localMode}
       preferences={preferences}
+      onPreferencesSaved={rememberSavedPreferences}
     />
   );
 }

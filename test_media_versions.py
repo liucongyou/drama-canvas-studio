@@ -169,6 +169,34 @@ class MediaVersionTests(unittest.TestCase):
         self.assertEqual(params["mediaVersionIndex"], 1)
         self.assertEqual(params["videoVersionIndex"], 1)
 
+    def test_recovery_receipt_updates_existing_version_without_duplicate(self):
+        meta = {
+            "content": "/uploads/old.png",
+            "status": "done",
+            "params": {
+                "mediaVersions": [{
+                    "url": "/uploads/old.png",
+                    "taskId": "provider-task-1",
+                    "sourceType": "generated",
+                }],
+                "mediaVersionIndex": 0,
+            },
+        }
+        versions = server._record_media_version(
+            meta,
+            "image",
+            "/uploads/recovered.png",
+            "provider-task-1",
+            "2026-11-03T00:00:00Z",
+            provider_result_url="https://provider.example/result.png",
+        )
+        self.assertEqual(len(versions), 1)
+        self.assertEqual(versions[0]["url"], "/uploads/recovered.png")
+        self.assertEqual(
+            versions[0]["providerResultUrl"],
+            "https://provider.example/result.png",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
