@@ -51,4 +51,16 @@ describe('media node modal interaction performance', () => {
     );
     expect(source).toMatch(/setTimeout\(finish, 120\)/);
   });
+
+  it('lets the same card reopen while its previous exit animation is closing', () => {
+    expect(source).toMatch(/const \[editModalOpenToken, setEditModalOpenToken\] = useState\(0\)/);
+    expect(source).toMatch(/setEditModalOpenToken\(\(token\) => token \+ 1\)/);
+    expect(source).toMatch(/if \(closeAttemptRef\.current !== attempt\) return;/);
+    expect(source).toMatch(
+      /useLayoutEffect\(\(\) => \{[\s\S]*?closeAttemptRef\.current \+= 1;[\s\S]*?\}, \[node\?\.id, openToken\]\)/,
+    );
+    expect(source).toMatch(
+      /if \(closing\) openMediaModal\(nextNode\);/,
+    );
+  });
 });

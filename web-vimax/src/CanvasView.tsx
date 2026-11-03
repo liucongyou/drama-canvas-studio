@@ -4110,7 +4110,7 @@ function AnchoredJimPopover({owner, className = '', children}: {
 }
 
 /** 媒体节点提示词栏（即梦风：底部居中浮动编辑栏 + 内联参数 pill + 图标下拉面板） */
-function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onDelete, onClose, onRemoveRef, onUploadRef, onPickRef, onBackdropPick, onRevealAt, anchor}: {
+function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onDelete, onClose, onRemoveRef, onUploadRef, onPickRef, onBackdropPick, onRevealAt, anchor, openToken}: {
   node: CanvasMediaNode | null;
   assets: CanvasMediaNode[];
   edges: Edge[];
@@ -4128,9 +4128,10 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   onPickRef?: (node: CanvasMediaNode, refNodeId: string) => void;
   // ★ 弹窗开着时点「另一张卡片」→ 直接切到那张卡（即梦行为），而不是先关掉再点一次。
   //   参数是画布 flow 节点 id（media-xxx）。返回 true 表示已接管这次点击。
-  onBackdropPick?: (flowNodeId: string) => boolean;
+  onBackdropPick?: (flowNodeId: string, closing: boolean) => boolean;
   onRevealAt?: (requiredBottom: number) => void;
   anchor?: {x: number; y: number; w: number; h: number} | null;
+  openToken: number;
 }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);   // model/ratio/clarity/style/res/dur/tpl/more
   const [prepareOpen, setPrepareOpen] = useState(false);
@@ -4178,6 +4179,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const [refNotice, setRefNotice] = useState('');
   const [closing, setClosing] = useState(false);
   const closeTimerRef = useRef<number | null>(null);
+  const closeAttemptRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
@@ -4222,13 +4224,15 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const canvasPickRef = useRef(canvasPickOpen); canvasPickRef.current = canvasPickOpen;
   const requestClose = useCallback((reason: 'preserve' | 'clear' = 'preserve') => {
     if (closing) return;
-    // Let the canvas accept the next click immediately. The DOM is removed on
-    // animation end for the visual fade, but it no longer owns an interaction
-    // lock during that 120ms.
+    const attempt = closeAttemptRef.current + 1;
+    closeAttemptRef.current = attempt;
     setClosing(true);
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
     const el = barRef.current;
     const finish = () => {
+      // A rapid reopen of the same card bumps the attempt before this exit
+      // animation/timer can finish. The stale close must never null editNodeId.
+      if (closeAttemptRef.current !== attempt) return;
       if (closeTimerRef.current !== null) {
         window.clearTimeout(closeTimerRef.current);
         closeTimerRef.current = null;
@@ -4242,13 +4246,14 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   useEffect(() => () => {
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
   }, []);
-  useEffect(() => {
+  useLayoutEffect(() => {
+    closeAttemptRef.current += 1;
     if (closeTimerRef.current) {
       window.clearTimeout(closeTimerRef.current);
       closeTimerRef.current = null;
     }
     setClosing(false);
-  }, [node?.id]);
+  }, [node?.id, openToken]);
   // 最近一次写入的 params：同一 tick 内连发 patch（选比例 = ratio + size）时要基于它叠加，
   // 否则第二份快照里的旧值会把第一次写的覆盖掉（★ hook 必须在条件 return 之前）
   const paramsRef = useRef<CanvasMediaParams>(node?.params || {});
@@ -4987,7 +4992,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
         const hit = under.find((el): el is HTMLElement =>
           el instanceof HTMLElement && el.classList.contains('react-flow__node'));
         const flowId = hit?.dataset?.id;
-        if (flowId && onBackdropPick(flowId)) return;
+        if (flowId && onBackdropPick(flowId, closing)) return;
       }
       requestClose('clear');
     }}>
@@ -14803,6 +14808,7 @@ function CanvasViewInner({
   // 旧写法把整份节点快照存进 state：改参数后栏里的 pill / 提示词停在旧值
   // （选了比例 pill 不变、打字丢字符），只有重开弹窗才刷新。
   const [editNodeId, setEditNodeId] = useState<string | null>(null);
+  const [editModalOpenToken, setEditModalOpenToken] = useState(0);
   const editNode = useMemo(
     () => mediaNodes.find((n) => n.id === editNodeId) ?? null,
     [mediaNodes, editNodeId],
@@ -14902,6 +14908,7 @@ function CanvasViewInner({
       setModalAnchor(null);
     }
     setEditNodeId(node.id);
+    setEditModalOpenToken((token) => token + 1);
     // ★ 打开弹窗时必须把该节点置为选中（用户反馈"单击节点弹出输入框了却没有流光"）。
     //   根因：卡片的 onClick 里做了 e.stopPropagation()，React Flow 收不到这次点击，
     //   node.selected 永远是 false；而连线流光（is-linked）是靠端点 selected 驱动的
@@ -18342,13 +18349,18 @@ function CanvasViewInner({
         onRemoveRef={(refNodeId) => { if (editNode) removeRefAndEdge(editNode.id, refNodeId); }}
         onUploadRef={uploadRefFile}
         onPickRef={(node, refNodeId) => addRefById(node, refNodeId)}
-        onBackdropPick={(flowId) => {
+        onBackdropPick={(flowId, closing) => {
           // 只处理媒体卡（media-xxx）；备注等其它类型照旧走"点外部即关闭"。
           if (!flowId.startsWith('media-')) return false;
           const mnId = flowId.slice('media-'.length);
           const nextNode = mediaNodes.find((m) => m.id === mnId);
           if (!nextNode) return false;
-          if (editNode?.id === mnId) return true;   // 点的就是当前这张：什么都不做
+          if (editNode?.id === mnId) {
+            // Still-open card: preserve the current editor. Closing card:
+            // cancel the exit and reopen it instead of swallowing the click.
+            if (closing) openMediaModal(nextNode);
+            return true;
+          }
           // 不能只替换 editNodeId：那样只换标题/内容，modalAnchor 仍停在旧卡片，
           // 弹窗看起来不会跟着新卡片走，选中态和引用补全也会漏掉。
           openMediaModal(nextNode);
@@ -18385,6 +18397,7 @@ function CanvasViewInner({
             : prev);
         }}
         anchor={modalAnchor}
+        openToken={editModalOpenToken}
       />
     </div>
   );
