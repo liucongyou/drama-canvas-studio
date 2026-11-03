@@ -1609,13 +1609,26 @@ class ProviderCatalogTests(unittest.TestCase):
                     patch.dict(sys.modules, {"imageio_ffmpeg": module}):
                 self.assertEqual(provider_client._ffmpeg_executable(), bundled)
 
-    def test_legacy_remote_ids_resolve_without_mutating_nodes(self):
+    def test_remote_model_ids_are_exact_catalog_fields(self):
         provider, model, _ = provider_catalog.resolve_model(
             None, "doubao-seedance-2-0-mini-260615", "video"
         )
         self.assertEqual(provider["id"], "ark")
         self.assertEqual(model["id"], "doubao-seedance-2-0-mini")
         self.assertEqual(model["remoteModel"], "doubao-seedance-2-0-mini-260615")
+
+    def test_catalog_id_and_remote_model_id_are_distinct_exact_fields(self):
+        provider, model, _ = provider_catalog.resolve_model(
+            "ark",
+            "doubao-seedream-5-0-pro",
+            "image",
+        )
+        self.assertEqual(provider["id"], "ark")
+        self.assertEqual(model["id"], "doubao-seedream-5-0-pro")
+        self.assertEqual(
+            model["remoteModel"],
+            "doubao-seedream-5-0-pro-260628",
+        )
 
     def test_missing_model_uses_default_for_each_capability(self):
         expected = {
@@ -1648,6 +1661,43 @@ class ProviderCatalogTests(unittest.TestCase):
                 "doubao-seedance-9-9-unknown",
                 "video",
             )
+
+    def test_exact_dated_remote_model_wins_over_legacy_alias(self):
+        cfg = {
+            "providers": [{
+                "id": "ark",
+                "name": "火山方舟",
+                "protocol": "ark",
+                "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                "api_key": "ark-test",
+                "enabled": True,
+            }],
+            "models": [{
+            "id": "doubao-seedream-5-0-pro",
+                "providerId": "ark",
+                "capability": "image",
+                "remoteModel": "doubao-seedream-5-0-pro-260628",
+                "label": "doubao-seedream-5-0-pro-260628",
+                "adapter": "ark_image",
+                "enabled": True,
+            }],
+        }
+        with patch.object(
+            provider_catalog,
+            "load_config",
+            return_value=copy.deepcopy(cfg),
+        ):
+            provider, model, _ = provider_catalog.resolve_model(
+                "ark",
+                "doubao-seedream-5-0-pro-260628",
+                "image",
+            )
+        self.assertEqual(provider["id"], "ark")
+        self.assertEqual(model["id"], "doubao-seedream-5-0-pro")
+        self.assertEqual(
+            model["remoteModel"],
+            "doubao-seedream-5-0-pro-260628",
+        )
 
     def test_adapter_and_capability_must_match(self):
         cfg = {
@@ -2239,6 +2289,41 @@ class ProviderPayloadTests(unittest.TestCase):
         self.assertIn("角色｜甲", body["prompt"])
         self.assertIn("保持旧工厂冷色光影", body["prompt"])
         self.assertIn("high detail", body["prompt"])
+
+    def test_ark_image_sends_exact_model_id_and_resolution_tier(self):
+        provider = {
+            "id": "ark",
+            "name": "火山方舟",
+            "base_url": "https://ark.example/api/v3",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "doubao-seedream-5-0-pro",
+            "remoteModel": "doubao-seedream-5-0-pro-260628",
+            "adapter": "ark_image",
+            "params": {},
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, timeout=120):
+            calls.append((method, url, body))
+            return {"data": [{"url": "https://image.example/result.png"}]}
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request):
+            provider_client.generate_image(
+                provider,
+                model,
+                "test",
+                {"clarity": "1.5K", "ratio": "16:9"},
+                [],
+            )
+
+        self.assertEqual(
+            calls[0][1],
+            "https://ark.example/api/v3/images/generations",
+        )
+        self.assertEqual(calls[0][2]["model"], "doubao-seedream-5-0-pro-260628")
+        self.assertEqual(calls[0][2]["size"], "1.5K")
 
     def test_seedream_invalid_small_size_is_replaced_before_request(self):
         provider = {

@@ -257,10 +257,10 @@ DEFAULT_MODELS = [
         "ark_image",
         "顶级画质，多参考图与图文生成",
         badge="Pro",
-        default_params={"ratio": "1:1", "clarity": "1.5K", "size": "1536x1536", "guidance": "中等"},
+        default_params={"ratio": "1:1", "clarity": "1.5K", "guidance": "中等"},
         params={
             "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"]),
-            "clarity": _select(["1.5K", "2K", "4K"]),
+            "clarity": _select(["1K", "1.5K", "2K"]),
             "guidance": _select(["轻度", "中等", "高", "极高", "最高"]),
         },
         limits={"maxRefs": 10, "maxImages": 10, "maxTextRefs": 10, "maxPromptChars": 4000},
@@ -1198,11 +1198,11 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
                 max(0.5, float(model["defaultParams"].get("previewDuration") or 4.5)),
             )
         if model.get("id") == "doubao-seedream-5-0-pro":
-            # Seedream 5.0 Pro rejects images below 921600 pixels. 1K 宽幅尺寸
-            # (1024x576, 1024x438) are below that hard floor.
-            model["params"]["clarity"]["options"] = ["1.5K", "2K", "4K"]
-            if model["defaultParams"].get("clarity") == "1K":
-                model["defaultParams"]["clarity"] = "1.5K"
+            model["params"]["clarity"]["options"] = ["1K", "1.5K", "2K"]
+            clarity = str(model["defaultParams"].get("clarity") or "").upper()
+            model["defaultParams"]["clarity"] = (
+                clarity if clarity in {"1K", "1.5K", "2K"} else "1.5K"
+            )
         if (
             str(model.get("remoteModel") or "") == "即梦-65-seedream-5-pro"
             and model.get("capability") == "image"
@@ -2346,56 +2346,23 @@ def resolve_model(
         and m.get("providerId") in providers
     ]
     raw = str(model_ref or "").strip()
-    legacy_aliases = {
-        "doubao-seedream-5-0-pro-260628": "doubao-seedream-5-0-pro",
-        "doubao-seedance-2-0-260128": "doubao-seedance-2-0",
-        "doubao-seedance-2-0-mini": "doubao-seedance-2-0-mini",
-        "doubao-seedance-2-0-mini-260615": "doubao-seedance-2-0-mini",
-        "doubao-seedance-2-0-fast": "doubao-seedance-2-0-fast",
-        "doubao-seedance-2-0-fast-260128": "doubao-seedance-2-0-fast",
-        "doubao-seedance-2-5": "doubao-seedance-2-5",
-        "doubao-seedance-2-5-260628": "doubao-seedance-2-5",
-        "cosyvoice-v3.5-flash": "cosyvoice-v3-5-flash",
-    }
     model = None
     if raw:
-        # Exact configured identifiers must win over compatibility aliases. A
-        # remote model can legitimately end with a dated suffix that is also an
-        # alias key; rewriting it first makes an existing model look missing.
+        # Model identity comes only from persisted catalog fields. Never infer
+        # from a display label, strip a date suffix, normalize a model name, or
+        # substitute another model with the same capability.
         if provider_id:
             model = next(
                 (m for m in candidates if m.get("providerId") == provider_id
-                 and raw in {m.get("id"), m.get("remoteModel"), m.get("label")}),
+                 and raw in {m.get("id"), m.get("remoteModel")}),
                 None,
             )
         if model is None:
             model = next(
                 (m for m in candidates
-                 if raw in {m.get("id"), m.get("remoteModel"), m.get("label")}),
+                 if raw in {m.get("id"), m.get("remoteModel")}),
                 None,
             )
-        if model is None:
-            canonical = legacy_aliases.get(raw, raw)
-            if provider_id:
-                model = next(
-                    (m for m in candidates if m.get("providerId") == provider_id
-                     and canonical in {
-                         m.get("id"),
-                         m.get("remoteModel"),
-                         m.get("label"),
-                     }),
-                    None,
-                )
-            if model is None:
-                model = next(
-                    (m for m in candidates
-                     if canonical in {
-                         m.get("id"),
-                         m.get("remoteModel"),
-                         m.get("label"),
-                     }),
-                    None,
-                )
     if model is None:
         if raw:
             raise RuntimeError(f"模型 {raw} 不可用、已禁用或不属于当前能力，请重新选择")

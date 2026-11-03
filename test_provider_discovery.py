@@ -94,6 +94,37 @@ class ProviderDiscoveryTests(unittest.TestCase):
             ["image", "unknown", "video"],
         )
 
+    def test_ark_capabilities_come_from_response_metadata_only(self):
+        self.config["providers"][0].update({
+            "id": "ark",
+            "name": "火山方舟",
+            "protocol": "ark",
+            "base_url": "https://ark.example/api/v3",
+        })
+        result = self.discover(
+            json.dumps({
+                "data": [
+                    {
+                        "id": "model-with-image-metadata",
+                        "modalities": {"output_modalities": ["image"]},
+                    },
+                    {
+                        "id": "model-with-video-metadata",
+                        "task_type": ["text_to_video"],
+                    },
+                    {"id": "doubao-seedream-5-0-pro-260628"},
+                ],
+            })
+        )
+        self.assertEqual(
+            [item["capability"] for item in result["models"]],
+            ["image", "video", "unknown"],
+        )
+        self.assertEqual(
+            result["models"][2]["remoteModel"],
+            "doubao-seedream-5-0-pro-260628",
+        )
+
     def test_marks_existing_remote_models_without_writing(self):
         self.config["models"] = [{
             "id": "demo-image-pro",
@@ -107,6 +138,21 @@ class ProviderDiscoveryTests(unittest.TestCase):
             "providerId": "demo",
             "remoteModel": "demo-image-pro",
         }])
+
+    def test_discovered_model_id_is_preserved_as_remote_model(self):
+        result = self.discover(
+            '{"data":[{"id":"doubao-seedream-5-0-pro-260628",'
+            '"supported_endpoint_types":["openai_image"]}]}'
+        )
+        draft = result["models"][0]
+        self.assertEqual(
+            draft["remoteModel"],
+            "doubao-seedream-5-0-pro-260628",
+        )
+        self.assertEqual(
+            draft["id"],
+            "doubao-seedream-5-0-pro-260628",
+        )
 
     def test_rejects_model_list_without_ids(self):
         with self.assertRaises(RuntimeError):

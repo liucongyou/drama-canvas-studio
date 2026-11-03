@@ -162,6 +162,7 @@ _GUIDANCE_WORDS = {
 }
 
 _SEEDREAM_MIN_PIXELS = 921_600
+_SEEDREAM_TIER_SIZES = {"1K", "1.5K", "2K", "3K", "4K"}
 _SEEDREAM_SAFE_SIZES = {
     "1:1": "1536x1536",
     "16:9": "1536x864",
@@ -180,6 +181,9 @@ NEWAPI_VIDEO_MAX_BODY_BYTES = 8 * 1024 * 1024
 
 def _safe_seedream_size(size: Any, ratio: Any) -> str:
     raw = str(size or "").strip()
+    tier = raw.upper().replace(" ", "")
+    if tier in _SEEDREAM_TIER_SIZES:
+        return tier
     match = re.match(r"^(\d+)\s*[x×]\s*(\d+)$", raw, re.IGNORECASE)
     if match:
         width, height = int(match.group(1)), int(match.group(2))
@@ -1883,10 +1887,11 @@ def _ark_image(
     if guidance:
         semantic_prompt += _GUIDANCE_WORDS.get(guidance, "")
 
+    requested_size = params.get("clarity") or params.get("size")
     body: dict[str, Any] = {
         "model": model["remoteModel"],
         "prompt": semantic_prompt,
-        "size": _safe_seedream_size(params.get("size"), params.get("ratio")),
+        "size": _safe_seedream_size(requested_size, params.get("ratio")),
         "response_format": "url",
         "watermark": bool(params.get("watermark", False)),
     }

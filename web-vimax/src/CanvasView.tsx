@@ -1749,7 +1749,7 @@ const VIDEO_MODELS = [
 const TEXT_MODELS = ['deepseek-flash-1017'];
 const AUDIO_MODELS = ['cosyvoice-v3-5-flash'];
 const RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4', '21:9', 'adaptive'];
-const CLARITIES = ['1.5K', '2K', '4K'];
+const CLARITIES = ['1K', '1.5K', '2K'];
 const GUIDANCES = ['轻度', '中等', '高', '极高', '最高'];
 const RESOLUTIONS = ['480P', '720P', '1080P'];
 /**
@@ -1824,19 +1824,8 @@ function writeStoredStringArray(key: string, values: string[]) {
   }
 }
 
-const LEGACY_MODEL_IDS: Record<string, string> = {
-  'doubao-seedream-5-0-pro-260628': 'doubao-seedream-5-0-pro',
-  'doubao-seedance-2-0-260128': 'doubao-seedance-2-0',
-  'doubao-seedance-2-0-mini-260615': 'doubao-seedance-2-0-mini',
-  'doubao-seedance-2-0-mini': 'doubao-seedance-2-0-mini',
-  'doubao-seedance-2-0-fast-260128': 'doubao-seedance-2-0-fast',
-  'doubao-seedance-2-5-260628': 'doubao-seedance-2-5',
-  'cosyvoice-v3.5-flash': 'cosyvoice-v3-5-flash',
-};
-
 function canonicalModelId(value?: string): string {
-  const raw = String(value || '').trim();
-  return LEGACY_MODEL_IDS[raw] || raw;
+  return String(value || '').trim();
 }
 
 function fallbackModelSpecs(kind: CanvasMediaNodeKind): ModelSpec[] {
@@ -4233,7 +4222,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     writeStoredStringArray(MODEL_RECENT_KEY, nextRecent);
     setOpenMenu(null);
   };
-  // 模型选项来自后端目录。旧节点里保存的真实模型 ID 会先做一次兼容映射。
+  // 模型选项来自后端目录；节点保存的目录 ID 与远程 Model ID 都按原值精确匹配。
   const catalogModels = useMemo(
     () => (catalog?.models || []).filter(
       (item) => item.enabled !== false && item.capability === nodeKind,

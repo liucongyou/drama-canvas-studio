@@ -39,19 +39,6 @@ export type BatchGenerationCandidate = {
 
 export const BATCH_GENERATION_KINDS = new Set(['image', 'audio', 'video']);
 
-function canonicalModelId(value?: string): string {
-  const raw = String(value || '').trim();
-  const aliases: Record<string, string> = {
-    'doubao-seedream-5-0-pro-260628': 'doubao-seedream-5-0-pro',
-    'doubao-seedance-2-0-260128': 'doubao-seedance-2-0',
-    'doubao-seedance-2-0-mini-260615': 'doubao-seedance-2-0-mini',
-    'doubao-seedance-2-0-fast-260128': 'doubao-seedance-2-0-fast',
-    'doubao-seedance-2-5-260628': 'doubao-seedance-2-5',
-    'cosyvoice-v3.5-flash': 'cosyvoice-v3-5-flash',
-  };
-  return aliases[raw] || raw;
-}
-
 export function modelMaxRefs(model?: ModelSpec | null): number {
   const keys = ['maxImages', 'maxVideos', 'maxAudios', 'maxTextRefs'] as const;
   const categoryTotal = keys
@@ -68,7 +55,7 @@ export function resolveGenerationModel(node: CanvasMediaNode, catalog: ModelCata
   const candidates = (catalog?.models || []).filter(
     (model) => model.enabled !== false && model.capability === node.kind,
   );
-  const stored = canonicalModelId(node.params?.model || node.params?.ttsModel);
+  const stored = String(node.params?.model || node.params?.ttsModel || '').trim();
   return candidates.find((model) => model.id === stored || model.remoteModel === stored)
     || candidates.find((model) => model.providerId === node.params?.provider)
     || candidates[0]
