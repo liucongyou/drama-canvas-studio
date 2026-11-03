@@ -337,7 +337,7 @@ class ProviderDiscoveryTests(unittest.TestCase):
         )
         self.assertEqual(saved["adapter"], "openai_video")
 
-    def test_fourstoken_video_without_a_declared_contract_is_not_locked(self):
+    def test_fourstoken_model_without_declared_type_requires_explicit_selection(self):
         self.config["providers"][0].update({
             "id": "4stoken",
             "name": "4SToken",
@@ -347,10 +347,9 @@ class ProviderDiscoveryTests(unittest.TestCase):
             '{"data":[{"id":"future-video-model"}]}'
         )
         draft = result["models"][0]
-        self.assertFalse(draft.get("disabled", False))
-        self.assertEqual(draft["capability"], "video")
-        self.assertEqual(draft["adapter"], "fourstoken_video")
-        self.assertIn("首次生成", draft["description"])
+        self.assertEqual(draft["capability"], "unknown")
+        self.assertEqual(draft["remoteModel"], "future-video-model")
+        self.assertFalse(draft["enabled"])
 
     def test_documented_video_profiles_are_loaded_by_exact_model_id(self):
         self.assertEqual(

@@ -1311,24 +1311,6 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
                 resolution if resolution in available else available[0]
             )
             params["resolution"] = _select(available)
-        model_ref = " ".join(
-            str(model.get(key) or "")
-            for key in ("id", "label", "remoteModel")
-        )
-        if (
-            provider.get("protocol") == "openai"
-            and _looks_like_image_model(model_ref)
-            and model.get("capability") == "text"
-        ):
-            model["capability"] = "image"
-            model["adapter"] = (
-                "newapi_image"
-                if (
-                    _is_newapi_relay(provider)
-                    and _uses_newapi_image_route(model.get("remoteModel") or model.get("id"))
-                )
-                else "openai_image"
-            )
         if (
             _is_fourstoken_relay(provider)
             and model.get("capability") == "image"
@@ -1350,7 +1332,6 @@ def load_config(*, migrate: bool = True) -> dict[str, Any]:
         if (
             provider.get("protocol") == "openai"
             and model.get("capability") == "image"
-            and _looks_like_image_model(model_ref)
         ):
             params = model.setdefault("params", {})
             if "temperature" in params:
@@ -2564,11 +2545,7 @@ def _model_ids_from_response(payload: Any) -> list[str]:
     ids: list[str] = []
     for item in raw_items:
         value = (
-            (
-                item.get("id")
-                or item.get("model")
-                or item.get("name")
-            )
+            (item.get("id") or item.get("model"))
             if isinstance(item, dict)
             else item
         )
@@ -2600,7 +2577,7 @@ def _model_type_metadata_from_response(
     for item in raw_items:
         if not isinstance(item, dict):
             continue
-        model_id = str(item.get("id") or item.get("model") or item.get("name") or "").strip()
+        model_id = str(item.get("id") or item.get("model") or "").strip()
         if not model_id:
             continue
         values = (
@@ -2659,27 +2636,11 @@ def _infer_discovered_model(
     declared_capability: str | None = None,
 ) -> dict[str, Any]:
     """Create a conservative editable draft from a provider /models row."""
-    name = remote_model.lower()
     fourstoken = _is_fourstoken_relay(provider)
-    endpoint_marker = " ".join(
-        str(item).lower() for item in (supported_endpoint_types or [])
-    )
-    marker = " ".join([
-        name,
-        str(provider.get("name") or "").lower(),
-        str(provider.get("id") or "").lower(),
-        endpoint_marker,
-    ])
     capability = (
         _capability_from_endpoint_types(supported_endpoint_types)
         or declared_capability
         or _documented_provider_capability(provider, remote_model)
-        or (_fourstoken_model_name(remote_model) if fourstoken else None)
-        or (
-            "video"
-            if _is_newapi_relay(provider) and _looks_like_video_model(remote_model)
-            else None
-        )
     )
     if capability is None:
         return {
