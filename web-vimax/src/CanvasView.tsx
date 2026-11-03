@@ -314,8 +314,6 @@ function CanvasEdgeWithDelete(props: EdgeProps) {
     });
   });
   const busy = busyFromNodes || !!(data as {busy?: boolean} | undefined)?.busy;
-  // 三层必须给**同一个**相位：拖尾/彗身/彗头是同一颗彗星的三段，错开就变"串珠"。
-  const flowPhase = useMemo(() => ({animationDelay: edgeFlowPhaseDelay(id)}), [id]);
   return (
     <>
       <g>
@@ -334,16 +332,27 @@ function CanvasEdgeWithDelete(props: EdgeProps) {
               14 屏幕像素 → **0 条**
             所以定 14：屏幕恒定、够点、又不抢邻线。宽度在 styles.css 里统一声明。 */}
         <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={style} interactionWidth={14} />
-        {/* 单个隐藏路径只作为 Canvas 流光的几何与状态来源。
-            三层尾巴、彗身、彗头和终点火花统一由 CanvasEdgeFlowOverlay 绘制，
-            不再为每条连线保留 4 份隐藏 SVG 节点。 */}
+        {/* 三层流光直接使用 React Flow 的原生 SVG 坐标，与基线共享同一个
+            viewport transform。矢量路径在任意 zoom/DPR 下都由浏览器重绘。 */}
+        <path
+          d={edgePath}
+          className={`canvas-edge-flow-tail ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`}
+          vectorEffect="non-scaling-stroke"
+        />
         <path
           d={edgePath}
           className={`canvas-edge-flow ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`}
-          data-spark-x={targetX}
-          data-spark-y={targetY}
-          style={flowPhase}
           vectorEffect="non-scaling-stroke"
+        />
+        <path
+          d={edgePath}
+          className={`canvas-edge-flow-head ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`}
+          vectorEffect="non-scaling-stroke"
+        />
+        <circle
+          cx={targetX}
+          cy={targetY}
+          className={`canvas-edge-spark ${busy ? 'is-busy' : ''} ${linkedSelected ? 'is-linked' : ''}`}
         />
       </g>
       {/* 剪刀只在「单独单击选中这一条线」时出现（批量选中节点 / 多选连线一律不出）。 */}
@@ -369,252 +378,6 @@ function CanvasEdgeWithDelete(props: EdgeProps) {
   );
 }
 const CANVAS_EDGE_TYPES = {deletable: CanvasEdgeWithDelete};
-
-type EdgeFlowPaintMeta = {
-  width: number;
-  cycle: number;
-  tailDash: number[];
-  bodyDash: number[];
-  headDash: number[];
-  tailPhase: number;
-  bodyPhase: number;
-  headPhase: number;
-  delay: number;
-};
-
-function parseFlowDash(value: string, fallback: string): number[] {
-  return (value || fallback)
-    .trim()
-    .split(/\s+/)
-    .map(Number)
-    .filter((number) => Number.isFinite(number) && number >= 0);
-}
-
-/**
- * All animated edge comets are painted into one canvas layer.
- *
- * The visual definition is still the same three-layer SVG comet. Only the
- * renderer moves from dozens of independent SVG dashoffset animations to one
- * rAF paint loop, preventing each moving path from repainting the whole canvas.
- */
-function CanvasEdgeFlowOverlay() {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const store = useStoreApi();
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const context = canvas.getContext('2d');
-    if (!context) return;
-
-    let frame = 0;
-    let cachedZoom = -1;
-    let pausedAt = 0;
-    let pausedDuration = 0;
-    let hadPaint = false;
-    const metaCache = new Map<string, EdgeFlowPaintMeta>();
-    const pathCache = new Map<string, {source: string; path: Path2D; bounds: DOMRect}>();
-    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-
-    const paint = (now: number) => {
-      const state = store.getState();
-      const [panX, panY, zoomRaw] = state.transform;
-      const zoom = Number.isFinite(zoomRaw) && zoomRaw > 0 ? zoomRaw : 1;
-      const width = Number(state.width || 0);
-      const height = Number(state.height || 0);
-      if (!width || !height) {
-        frame = requestAnimationFrame(paint);
-        return;
-      }
-      const activeBodies = document.querySelectorAll<SVGPathElement>(
-        '.react-flow__edge:hover .canvas-edge-flow,'
-        + '.react-flow__edge.selected .canvas-edge-flow,'
-        + '.canvas-edge-flow.is-busy,'
-        + '.canvas-edge-flow.is-linked',
-      );
-      if (!activeBodies.length) {
-        if (hadPaint) {
-          context.setTransform(1, 0, 0, 1, 0, 0);
-          context.clearRect(0, 0, canvas.width, canvas.height);
-          hadPaint = false;
-        }
-        frame = requestAnimationFrame(paint);
-        return;
-      }
-      hadPaint = true;
-
-      if (document.body.dataset.canvasInteracting === '1') {
-        if (!pausedAt) pausedAt = now;
-      } else if (pausedAt) {
-        pausedDuration += now - pausedAt;
-        pausedAt = 0;
-      }
-      const animationNow = (pausedAt || now) - pausedDuration;
-
-      const dpr = Math.max(1, window.devicePixelRatio || 1);
-      const worldWidth = width / zoom;
-      const worldHeight = height / zoom;
-      const originX = -panX / zoom;
-      const originY = -panY / zoom;
-      // The canvas lives inside React Flow's ViewportPortal, so CSS scales the
-      // whole element by `zoom`. Without putting zoom into the backing store,
-      // a 200% view is a 1x bitmap stretched to 2x: the SVG edge stays sharp
-      // while the Canvas comet becomes visibly blurry.
-      const maxBackingPx = 4096;
-      const pixelScale = Math.min(
-        maxBackingPx / Math.max(1, worldWidth),
-        maxBackingPx / Math.max(1, worldHeight),
-        dpr * zoom,
-      );
-      const backingWidth = Math.max(1, Math.round(worldWidth * pixelScale));
-      const backingHeight = Math.max(1, Math.round(worldHeight * pixelScale));
-      if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
-        canvas.width = backingWidth;
-        canvas.height = backingHeight;
-      }
-      const left = `${originX}px`;
-      const top = `${originY}px`;
-      const cssWidth = `${worldWidth}px`;
-      const cssHeight = `${worldHeight}px`;
-      if (canvas.style.left !== left) canvas.style.left = left;
-      if (canvas.style.top !== top) canvas.style.top = top;
-      if (canvas.style.width !== cssWidth) canvas.style.width = cssWidth;
-      if (canvas.style.height !== cssHeight) canvas.style.height = cssHeight;
-
-      if (cachedZoom !== zoom) {
-        cachedZoom = zoom;
-        metaCache.clear();
-      }
-
-      context.setTransform(pixelScale, 0, 0, pixelScale, 0, 0);
-      context.clearRect(0, 0, backingWidth, backingHeight);
-      context.setTransform(
-        pixelScale,
-        0,
-        0,
-        pixelScale,
-        -originX * pixelScale,
-        -originY * pixelScale,
-      );
-      context.lineCap = 'round';
-      context.lineJoin = 'round';
-
-      for (const body of activeBodies) {
-        const edgeElement = body.closest<SVGGElement>('.react-flow__edge');
-        if (!edgeElement) continue;
-        const busy = body.classList.contains('is-busy');
-        const linked = body.classList.contains('is-linked');
-        const selected = edgeElement.classList.contains('selected');
-        const hovered = edgeElement.matches(':hover');
-        const source = body.getAttribute('d') || '';
-        if (!source) continue;
-        const edgeId = edgeElement.dataset.id || '';
-        let pathEntry = pathCache.get(edgeId);
-        if (!pathEntry || pathEntry.source !== source) {
-          const bounds = body.getBBox();
-          pathEntry = {source, path: new Path2D(source), bounds};
-          pathCache.set(edgeId, pathEntry);
-        }
-        const screenLeft = pathEntry.bounds.x * zoom + panX;
-        const screenTop = pathEntry.bounds.y * zoom + panY;
-        const screenRight = screenLeft + pathEntry.bounds.width * zoom;
-        const screenBottom = screenTop + pathEntry.bounds.height * zoom;
-        const cullMargin = 48;
-        if (
-          screenRight < -cullMargin
-          || screenBottom < -cullMargin
-          || screenLeft > width + cullMargin
-          || screenTop > height + cullMargin
-        ) {
-          continue;
-        }
-
-        let meta = metaCache.get(edgeId);
-        if (!meta) {
-          const style = getComputedStyle(body);
-          const delayText = style.animationDelay || body.style.animationDelay || '0s';
-          meta = {
-            width: Number.parseFloat(style.getPropertyValue('--edge-flow-width')) || 1.7 / zoom,
-            cycle: Number.parseFloat(style.getPropertyValue('--edge-flow-cycle')) || 132 / zoom,
-            tailDash: parseFlowDash(style.getPropertyValue('--edge-flow-tail'), '36 96'),
-            bodyDash: parseFlowDash(style.getPropertyValue('--edge-flow-body'), '14 118'),
-            headDash: parseFlowDash(style.getPropertyValue('--edge-flow-head'), '4.5 127.5'),
-            tailPhase: Number.parseFloat(style.getPropertyValue('--edge-flow-tail-phase')) || 0,
-            bodyPhase: Number.parseFloat(style.getPropertyValue('--edge-flow-body-phase')) || -22,
-            headPhase: Number.parseFloat(style.getPropertyValue('--edge-flow-head-phase')) || -31.5,
-            delay: Number.parseFloat(delayText) || 0,
-          };
-          metaCache.set(edgeId, meta);
-        }
-
-        const progress = reduceMotion ? 0 : (((animationNow / 1000 - meta.delay) / 3.2) % 1 + 1) % 1;
-        const bodyWidth = meta.width * (
-          hovered ? 1.75
-            : selected ? 1.8
-              : busy && !linked ? 1.75
-                : 1.4
-        );
-        const tailWidth = meta.width * (
-          hovered ? 2.8
-            : selected ? 2.6
-              : busy && !linked ? 2.8
-                : 1.85
-        );
-        const headWidth = meta.width * (
-          hovered ? 1.95
-            : selected ? 2.05
-              : busy && !linked ? 1.95
-                : 1.6
-        );
-        const sparkOn = hovered || selected || (busy && !linked);
-
-        const paintLayer = (
-          color: string,
-          lineWidth: number,
-          dash: number[],
-          phase: number,
-          alpha: number,
-        ) => {
-          if (dash.length < 2) return;
-          context.strokeStyle = color;
-          context.lineWidth = lineWidth;
-          context.globalAlpha = alpha;
-          context.setLineDash(dash);
-          context.lineDashOffset = phase - meta!.cycle * progress;
-          context.stroke(pathEntry!.path);
-        };
-
-        paintLayer('#71c8ff', tailWidth, meta.tailDash, meta.tailPhase, hovered || selected || busy ? 0.55 : 0.42);
-        paintLayer('#d7f1ff', bodyWidth, meta.bodyDash, meta.bodyPhase, 0.82);
-        paintLayer('#ffffff', headWidth, meta.headDash, meta.headPhase, 0.95);
-
-        if (sparkOn) {
-          const sparkX = Number.parseFloat(body.dataset.sparkX || '');
-          const sparkY = Number.parseFloat(body.dataset.sparkY || '');
-          if (Number.isFinite(sparkX) && Number.isFinite(sparkY)) {
-            const pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(animationNow / (busy ? 150 : 185));
-            context.globalAlpha = 0.25 + pulse * 0.75;
-            context.fillStyle = '#c9ecff';
-            context.beginPath();
-            context.arc(sparkX, sparkY, meta.width * 1.5, 0, Math.PI * 2);
-            context.fill();
-          }
-        }
-      }
-
-      frame = requestAnimationFrame(paint);
-    };
-
-    frame = requestAnimationFrame(paint);
-    return () => {
-      cancelAnimationFrame(frame);
-      context.setTransform(1, 0, 0, 1, 0, 0);
-      context.clearRect(0, 0, canvas.width, canvas.height);
-    };
-  }, [store]);
-
-  return <canvas ref={canvasRef} className="canvas-edge-flow-canvas" aria-hidden="true" />;
-}
 
 // ★★★ 第 20 轮（用户原话「不是盖住的问题，是功能问题，我放大看到剪刀按钮就是点了没反应」）：
 //
@@ -17215,7 +16978,6 @@ function CanvasViewInner({
                 容器留空 —— 线的 DOM 由 updateAlignGuides 按需创建并复用（一次可能多条），
                 命令式写入坐标（每帧 setState 会让整棵树重渲染，拖动必然掉帧）。 */}
             <ViewportPortal>
-              <CanvasEdgeFlowOverlay />
               {/* 编组外框：同样挂在 viewport 内、用**画布坐标**定位 ——
                   位置和缩放由画布 transform 自动带着走，拖卡片时框必然同步（不存在量 DOM 的时序问题）。
                   DOM 由 syncGroupFrames 命令式维护；框本体 pointer-events:none，不吃卡片点击，

@@ -3,6 +3,17 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.03.14',
+    date: '2026-11-03',
+    title: '原生矢量流光与主题选中框',
+    releasedAt: '2026-11-03 14:22:00 +08:00',
+    changes: [
+      '流光恢复为 React Flow 原生 SVG 三层路径，与连线共享同一缩放坐标，避免位图放大导致的模糊和漂移。',
+      '画布选区框、节点选中光晕改为跟随主题强调色，不再固定紫色。',
+      '保留连线悬停、选中、执行中已经确认的冷天蓝配色。',
+    ],
+  },
+  {
     version: '2026.11.03.13',
     date: '2026-11-03',
     releasedAt: '2026-11-03 13:58:00 +08:00',

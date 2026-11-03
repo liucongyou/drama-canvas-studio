@@ -2629,8 +2629,8 @@ html[data-theme='dark'][data-variant='immersive']{
   --card-c3:#1b1f25;
   border-color:transparent;
   box-shadow:
-    0 0 0 2px rgba(93,98,233,.16),
-    0 0 26px rgba(93,98,233,.26),
+    0 0 0 2px color-mix(in srgb, var(--v-accent) 18%, transparent),
+    0 0 26px color-mix(in srgb, var(--v-accent) 28%, transparent),
     0 14px 32px -10px rgba(0,0,0,.88),
     inset 0 1px 0 rgba(255,255,255,.07);
 }
@@ -7568,8 +7568,8 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   --card-c3:#1c2026;
   border-color:transparent;
   box-shadow:
-    0 0 0 2px rgba(93,98,233,.18),
-    0 0 28px rgba(93,98,233,.24),
+    0 0 0 2px color-mix(in srgb, var(--v-accent) 20%, transparent),
+    0 0 28px color-mix(in srgb, var(--v-accent) 26%, transparent),
     0 14px 34px -10px rgba(0,0,0,.86),
     inset 0 1px 0 rgba(255,255,255,.07);
 }

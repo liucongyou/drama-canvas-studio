@@ -723,13 +723,6 @@ describe('连线流光（屏幕像素恒定：长度 + 宽度同口径）', () =
     expect(canvasSource).toMatch(/const op = 0\.43;/);
   });
 
-  it('★ 放大后 Canvas 流光不靠拉大低分辨率位图', () => {
-    expect(canvasSource).toMatch(/const pixelScale = Math\.min\(/);
-    expect(canvasSource).toMatch(/dpr \* zoom/);
-    expect(canvasSource).toMatch(/worldWidth \* pixelScale/);
-    expect(canvasSource).toMatch(/context\.setTransform\(\s*pixelScale,/);
-  });
-
   it('长度与宽度共用同一套 ÷zoom 补偿（toCanvas 与 width 同源）', () => {
     expect(canvasSource).toMatch(/const toCanvas = \(screenPx: number\) => Math\.round\(\(screenPx \/ z\)/);
     // 基线连线与彗星三层必须吃**同一个**变量，否则又是一种变形
@@ -792,14 +785,12 @@ describe('连线流光（屏幕像素恒定：长度 + 宽度同口径）', () =
     expect(linked && linked[0]).not.toMatch(/stroke:/);
   });
 
-  it('★ 三层流光由单个 Canvas 图层绘制，原 SVG 只保留几何来源', () => {
-    const viewSource = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
-    expect(viewSource).toContain('function CanvasEdgeFlowOverlay()');
-    expect(viewSource).toContain('<CanvasEdgeFlowOverlay />');
-    expect(stylesSource).toMatch(/\.canvas-edge-flow-canvas \{[^}]*position:\s*absolute;[^}]*pointer-events:\s*none;/);
-    expect(stylesSource).toMatch(
-      /\.canvas-flow \.canvas-edge-flow,[\s\S]*?\.canvas-flow \.canvas-edge-spark \{\s*visibility:\s*hidden !important;\s*animation:\s*none !important;/,
-    );
+  it('★ 三层流光使用 React Flow 原生矢量路径', () => {
+    expect(canvasSource).toContain('className={`canvas-edge-flow-tail');
+    expect(canvasSource).toContain('className={`canvas-edge-flow ');
+    expect(canvasSource).toContain('className={`canvas-edge-flow-head');
+    expect(canvasSource).not.toContain('CanvasEdgeFlowOverlay');
+    expect(stylesSource).not.toContain('.canvas-edge-flow-canvas');
   });
 
   it('★ 连线层禁止 paint containment：该 SVG 实测为 0×0，会被整体裁掉', () => {
@@ -856,16 +847,12 @@ describe('连线流光（屏幕像素恒定：长度 + 宽度同口径）', () =
       return 0.2126 * r + 0.7152 * g + 0.0722 * b;
     };
     const LINE = luma('#009efa');    // 悬停线色
-    const tail = luma('#71c8ff');
-    const body = luma('#d7f1ff');
+    const tail = luma('#b8e0ff');
+    const body = luma('#e6f5ff');
     const head = luma('#ffffff');
     expect(tail).toBeGreaterThan(LINE + 50);
     expect(body).toBeGreaterThan(tail);
     expect(head).toBeGreaterThan(body);
-    // 实际流光由 Canvas 绘制，必须锁住真正上屏的三层色值。
-    expect(canvasSource).toMatch(/paintLayer\('#71c8ff'/);
-    expect(canvasSource).toMatch(/paintLayer\('#d7f1ff'/);
-    expect(canvasSource).toMatch(/paintLayer\('#ffffff'/);
   });
 });
 
