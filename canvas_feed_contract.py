@@ -43,6 +43,7 @@ class WarningCode(StrEnum):
     WARN_GENERATOR_METADATA_MISSING = "WARN_GENERATOR_METADATA_MISSING"
     WARN_CODE_CANONICALIZED = "WARN_CODE_CANONICALIZED"
     WARN_RETRIED_AFTER_REVISION = "WARN_RETRIED_AFTER_REVISION"
+    WARN_ASSET_IDENTITY_AUTO_CORRECTED = "WARN_ASSET_IDENTITY_AUTO_CORRECTED"
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,7 @@ def issue_dict(issue: ValidationIssue) -> dict:
 
 
 SCHEMA_VERSION = "drama-canvas-feed/v2"
+AUDIO_PROMPT_FORMAT = "audio-prompt-v1"
 AUDIO_PROMPT_SUFFIX = (
     "short drama dubbing reference clip, 4.5 seconds clean voice, no background noise."
 )
@@ -143,6 +145,7 @@ LEGACY_ASSET_REF_RE = re.compile(
     r"@//(?:chr|scn|prp)\s*/\s*-\s*[^（(\n]+[（(](?:参考)?图\s*(\d+)[）)]"
 )
 CODE_RE = re.compile(r"图\s*(\d+)")
+SEMANTIC_CODE_RE = re.compile(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*")
 TITLE_CODE_RE = re.compile(r"[（(]图\s*(\d+)[）)]")
 TITLE_ROLE_RE = re.compile(r"^(?:音频|角色|场景|道具)｜([^（(\n]+)")
 BAD_AGE_RE = re.compile(
@@ -163,6 +166,12 @@ def canonical_code(value: Any) -> str:
 def canonical_code_from_text(value: Any) -> str:
     match = CODE_RE.search(str(value or ""))
     return canonical_code(match.group(0)) if match else ""
+
+
+def canonical_semantic_code(value: Any) -> str:
+    """Return a stable asset code such as CHR-001 when one is present."""
+    text = str(value or "").strip().upper()
+    return text if SEMANTIC_CODE_RE.fullmatch(text) else ""
 
 
 def dialogue_speakers(text: str) -> set[str]:
@@ -538,8 +547,13 @@ def analyze_declared_feed(payload: dict) -> GateResult:
             issues.append(_issue(code, f"音色缺字段：{', '.join(missing)}", path=path, role=name))
         if gender and gender not in {"male", "female"}:
             issues.append(_issue(ErrorCode.VOICE_PROMPT_INCOMPLETE, f"gender 非法：{gender}", path=f"{path}.gender", role=name))
-        if fmt != "audio-prompt-v1":
-            issues.append(_issue(ErrorCode.VOICE_PROMPT_INCOMPLETE, "format 必须是 audio-prompt-v1", path=f"{path}.format", role=name))
+        if fmt != AUDIO_PROMPT_FORMAT:
+            issues.append(_issue(
+                ErrorCode.VOICE_PROMPT_INCOMPLETE,
+                f"format 必须是 {AUDIO_PROMPT_FORMAT}",
+                path=f"{path}.format",
+                role=name,
+            ))
         if not prompt.casefold().endswith(AUDIO_PROMPT_SUFFIX.casefold()):
             issues.append(_issue(ErrorCode.VOICE_PROMPT_INCOMPLETE, "prompt 缺固定音频结尾", path=f"{path}.prompt", role=name))
         if BAD_AGE_RE.search(prompt):
@@ -784,7 +798,342 @@ def analyze_declared_feed(payload: dict) -> GateResult:
 
 def validate_declared_feed(payload: dict) -> list[ValidationIssue]:
     """Return Gate 1 errors and warnings."""
-    return list(analyze_declared_feed(payload).issues)
+    normalized, normalization_issues = _prepare_feed_for_import(payload)
+    issues = list(analyze_declared_feed(normalized).issues)
+    if normalization_issues:
+        issues = [*normalization_issues, *issues]
+    return issues
+
+
+def _prepare_feed_for_import(payload: Any) -> tuple[Any, list[ValidationIssue]]:
+    """Normalize an import-only copy without weakening the strict feed schema.
+
+    ``assets[]`` is the authoritative bridge between stable semantic identities
+    (CHR-001) and canvas slot identities (图1). Early v7.4.29 exports put the
+    semantic identity in ``asset_prompts[].code`` and left segment canvas
+    projections empty. Normalize those projections here; again, the source
+    payload is never mutated.
+    """
+    if not isinstance(payload, dict):
+        return payload, []
+
+    normalized = copy.deepcopy(payload)
+    issues: list[ValidationIssue] = []
+    semantic_to_figure: dict[str, str] = {}
+    figure_to_semantic: dict[str, str] = {}
+    top_assets = payload.get("assets")
+    if isinstance(top_assets, list):
+        for index, asset in enumerate(top_assets):
+            if not isinstance(asset, dict):
+                continue
+            path = f"assets[{index}]"
+            semantic = canonical_semantic_code(asset.get("code"))
+            figure = canonical_code(asset.get("img"))
+            if not semantic:
+                issues.append(_issue(
+                    ErrorCode.ASSET_CODE_INVALID,
+                    f"资产语义码非法：{asset.get('code')!r}",
+                    path=f"{path}.code",
+                ))
+                continue
+            if semantic in semantic_to_figure:
+                issues.append(_issue(
+                    ErrorCode.ASSET_CODE_DUPLICATE,
+                    f"资产语义码重复：{semantic}",
+                    path=f"{path}.code",
+                    node_code=semantic_to_figure[semantic],
+                ))
+                continue
+            if not figure:
+                issues.append(_issue(
+                    ErrorCode.ASSET_CODE_INVALID,
+                    f"{semantic} 缺合法 img 画布槽位码",
+                    path=f"{path}.img",
+                ))
+                continue
+            if figure in figure_to_semantic:
+                issues.append(_issue(
+                    ErrorCode.ASSET_CODE_DUPLICATE,
+                    f"画布槽位码重复：{figure} 同时属于 "
+                    f"{figure_to_semantic[figure]} 和 {semantic}",
+                    path=f"{path}.img",
+                    node_code=figure,
+                ))
+                continue
+            semantic_to_figure[semantic] = figure
+            figure_to_semantic[figure] = semantic
+
+    if not semantic_to_figure:
+        return normalized, issues
+
+    def resolve_code(value: Any) -> tuple[str, str]:
+        semantic = canonical_semantic_code(value)
+        if semantic:
+            return semantic_to_figure.get(semantic, ""), semantic
+        return canonical_code(value), ""
+
+    for asset in normalized.get("asset_prompts") or []:
+        if not isinstance(asset, dict):
+            continue
+        figure, semantic = resolve_code(asset.get("code"))
+        if not figure:
+            continue
+        explicit_semantic = canonical_semantic_code(asset.get("semanticCode"))
+        asset["code"] = figure
+        asset["semanticCode"] = explicit_semantic or semantic
+        canvas = asset.get("canvas")
+        if isinstance(canvas, dict):
+            canvas_semantic = canonical_semantic_code(canvas.get("semanticCode"))
+            canvas_code = canonical_semantic_code(canvas.get("code"))
+            if canvas_semantic or canvas_code:
+                canvas["semanticCode"] = canvas_semantic or canvas_code
+                canvas["code"] = figure
+        if semantic:
+            issues.append(_issue(
+                WarningCode.WARN_ASSET_IDENTITY_AUTO_CORRECTED,
+                f"{semantic} 已自动映射为画布槽位 {figure}",
+                path=f"asset_prompts.{figure}",
+                node_code=figure,
+            ))
+
+    for voice in normalized.get("voice_prompts") or []:
+        if not isinstance(voice, dict):
+            continue
+        figure, semantic = resolve_code(voice.get("code"))
+        if figure:
+            voice["code"] = figure
+            voice["semanticCode"] = (
+                canonical_semantic_code(voice.get("semanticCode"))
+                or semantic
+            )
+
+    voice_by_role: dict[str, dict] = {}
+    for voice in normalized.get("voice_prompts") or []:
+        if not isinstance(voice, dict):
+            continue
+        role = str(voice.get("name") or "").strip()
+        figure = canonical_code(voice.get("code"))
+        if role and figure:
+            voice_by_role[role] = voice
+
+    contract = normalized.get("canvas_contract")
+    ledger = contract.get("asset_ledger") if isinstance(contract, dict) else None
+    conflicts = contract.get("ageConflicts") if isinstance(contract, dict) else None
+    if isinstance(conflicts, dict):
+        for semantic, conflict in conflicts.items():
+            if not isinstance(conflict, dict):
+                continue
+            visual_age = _normalize_age(conflict.get("visualAge"))
+            voice_age = _normalize_age(conflict.get("voiceAge"))
+            if not visual_age or not voice_age or visual_age == voice_age:
+                continue
+            figure = semantic_to_figure.get(str(semantic).strip().upper(), "")
+            issues.append(_issue(
+                WarningCode.WARN_ASSET_IDENTITY_AUTO_CORRECTED,
+                f"{semantic} 视觉年龄 {visual_age} 与声线年龄 {voice_age} 冲突，"
+                "已保留图像/声线各自明确值；请在源稿统一",
+                path=f"canvas_contract.ageConflicts.{semantic}",
+                node_code=figure,
+            ))
+    if isinstance(ledger, list):
+        for entry in ledger:
+            if not isinstance(entry, dict):
+                continue
+            title = str(entry.get("title") or "")
+            title_match = re.fullmatch(
+                r"\s*角色[｜|]\s*(.+?)\s*[（(]\s*"
+                r"([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\s*[）)]\s*",
+                title,
+            )
+            if not title_match:
+                continue
+            role, semantic = title_match.groups()
+            figure = semantic_to_figure.get(semantic, "")
+            if role in voice_by_role or not figure:
+                continue
+            prompt = str(entry.get("voicePrompt") or "").strip()
+            description = str(entry.get("voiceDescription") or "").strip()
+            label = str(entry.get("voiceLabel") or "").strip()
+            age = _normalize_age(entry.get("voiceAge"))
+            gender = str(entry.get("voiceGender") or "").strip().lower()
+            dialect = str(entry.get("voiceDialect") or "").strip()
+            if not (
+                prompt
+                and description
+                and label
+                and age
+                and gender
+                and dialect
+                and prompt.casefold().endswith(AUDIO_PROMPT_SUFFIX.casefold())
+            ):
+                continue
+            voice = {
+                "code": figure,
+                "semanticCode": semantic,
+                "name": role.strip(),
+                "title": title.strip(),
+                "assetId": str(entry.get("identity") or "").strip(),
+                "format": AUDIO_PROMPT_FORMAT,
+                "prompt": prompt,
+                "label": label,
+                "description": description,
+                "age": age,
+                "gender": gender,
+                "dialect": dialect,
+            }
+            normalized.setdefault("voice_prompts", []).append(voice)
+            voice_by_role[voice["name"]] = voice
+
+    for asset in normalized.get("asset_prompts") or []:
+        if not isinstance(asset, dict):
+            continue
+        canvas = asset.get("canvas")
+        if not isinstance(canvas, dict) or canvas.get("kind") != "character":
+            continue
+        role = str(canvas.get("name") or "").strip()
+        figure = canonical_code(asset.get("code"))
+        if not role or not figure or role in voice_by_role:
+            continue
+        raw = str(asset.get("raw") or "")
+        prompt_start = raw.find("Voice Description 完整版")
+        label_start = raw.find("Voice Description Label", prompt_start)
+        if prompt_start < 0 or label_start <= prompt_start:
+            continue
+        description = re.sub(
+            r"^\s*Voice Description 完整版[^\n]*?\*\*\s*",
+            "",
+            raw[prompt_start:label_start],
+        ).strip()
+        label_match = re.search(
+            r"Voice Description Label[^\n]*?\*\*\s*[:：]\s*([A-Za-z][^/\n]*)",
+            raw[label_start:],
+        )
+        label = re.sub(r"\*\*.*$", "", label_match.group(1)).strip() if label_match else ""
+        age_match = re.search(r"(\d+\s*[~～-]\s*\d+|\d+)\s*岁", description)
+        if age_match:
+            age = _normalize_age(age_match.group(1))
+        else:
+            asset_age_match = re.search(
+                r"\b(\d{1,3}(?:\s*-\s*\d{1,3})?)-year-old\b",
+                raw,
+                re.IGNORECASE,
+            )
+            age = _normalize_age(asset_age_match.group(1)) if asset_age_match else ""
+        gender = (
+            "female"
+            if re.search(r"女性|\bfemale\s+voice\b", description, re.IGNORECASE)
+            else (
+                "male"
+                if re.search(r"男性|\bmale\s+voice\b", description, re.IGNORECASE)
+                else ""
+            )
+        )
+        dialect = (
+            "northeastern-accented"
+            if "northeastern" in description.casefold()
+            else "standard"
+        )
+        identity = f"A {gender} aged {age}" if gender and age else (
+            f"A {gender}" if gender else ""
+        )
+        prompt = " ".join(
+            part for part in (
+                f"{label}." if label else "",
+                description,
+                (
+                    f"{identity}, speaking {dialect} Mandarin, "
+                    "short drama dubbing reference clip, "
+                        "4.5 seconds clean voice, no background noise."
+                ),
+            )
+            if part
+        ).strip()
+        if not (
+            prompt.casefold().endswith(AUDIO_PROMPT_SUFFIX.casefold())
+            and age
+            and gender
+        ):
+            continue
+        voice = {
+            "code": figure,
+            "semanticCode": (
+                canonical_semantic_code(asset.get("semanticCode"))
+                or canonical_semantic_code(canvas.get("semanticCode"))
+            ),
+            "name": role,
+            "title": f"角色｜{role}（{figure}）",
+            "assetId": str(canvas.get("assetId") or "").strip(),
+            "format": AUDIO_PROMPT_FORMAT,
+            "prompt": prompt,
+            "label": label,
+            "description": description,
+            "age": age,
+            "gender": gender,
+            "dialect": dialect,
+        }
+        normalized.setdefault("voice_prompts", []).append(voice)
+        voice_by_role[role] = voice
+
+    for segment in normalized.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        raw = str(segment.get("raw") or "")
+        if "【音色引用】" not in raw:
+            speaking = [
+                role
+                for role in sorted(dialogue_speakers(raw))
+                if role in voice_by_role
+            ]
+            if speaking:
+                references = "；".join(
+                    f"@音频｜{role}（{voice_by_role[role]['code']}）"
+                    for role in speaking
+                )
+                section = f"【音色引用】{references}"
+                core = re.search(r"(?m)^【核心人物】[^\n]*(?:\n|$)", raw)
+                if core:
+                    raw = raw[:core.end()] + section + "\n" + raw[core.end():]
+                else:
+                    raw = raw.rstrip() + "\n" + section + "\n"
+                segment["raw"] = raw
+        actual_codes = {
+            canonical_code(f"图{number}")
+            for number in re.findall(r"图\s*(\d+)", raw)
+        }
+        actual_codes.discard("")
+        canvas = segment.get("canvas")
+        if isinstance(canvas, dict):
+            for field in ("asset_codes", "asset_refs"):
+                declared = canvas.get(field)
+                if isinstance(declared, list) and not declared and actual_codes:
+                    if field == "asset_codes":
+                        canvas[field] = sorted(
+                            actual_codes,
+                            key=lambda code: int(code[1:]),
+                        )
+                    else:
+                        canvas[field] = [
+                            {"code": code}
+                            for code in sorted(
+                                actual_codes,
+                                key=lambda code: int(code[1:]),
+                            )
+                        ]
+
+    if isinstance(contract, dict):
+        if isinstance(ledger, list):
+            for entry in ledger:
+                if not isinstance(entry, dict):
+                    continue
+                title = str(entry.get("title") or "")
+                match = re.search(
+                    r"[（(]\s*([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\s*[）)]",
+                    title,
+                )
+                if match:
+                    entry["semanticCode"] = match.group(1)
+
+    return normalized, issues
 
 
 def _voice_ref_ids(video: dict) -> set[str]:
@@ -1177,7 +1526,12 @@ def prepare_import(
     """Pure import planner shared by dry-run and commit."""
     import import_feed
 
-    gate1 = analyze_declared_feed(feed)
+    normalized_feed, normalization_issues = _prepare_feed_for_import(feed)
+    gate1 = analyze_declared_feed(normalized_feed)
+    gate1 = GateResult(
+        issues=(*normalization_issues, *gate1.issues),
+        expectations=gate1.expectations,
+    )
     if gate1.errors:
         return ImportPlan(
             project_id=project_id,
@@ -1187,13 +1541,13 @@ def prepare_import(
             errors=tuple(gate1.errors),
             warnings=tuple(gate1.warnings),
             summary={"diff": _payload_diff(existing, existing)},
-            provenance=_source_provenance(feed, source),
+            provenance=_source_provenance(normalized_feed, source),
         )
 
     candidate = copy.deepcopy(existing)
     asset_pool = import_feed.build_asset_pool_from_payload(candidate, project_id)
     incoming = import_feed.build_payload(
-        feed,
+        normalized_feed,
         asset_pool=asset_pool,
         target_project_id=project_id,
     )
@@ -1216,7 +1570,7 @@ def prepare_import(
     warnings = [*gate1.warnings, *gate2_issues]
     errors = [issue for issue in warnings if isinstance(issue.code, ErrorCode)]
     warning_items = [issue for issue in warnings if isinstance(issue.code, WarningCode)]
-    provenance = _source_provenance(feed, source)
+    provenance = _source_provenance(normalized_feed, source)
     if not errors:
         _attach_provenance(merged, episode_id, provenance, warning_items)
     summary = {

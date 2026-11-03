@@ -943,9 +943,7 @@ def _extract_voice(raw):
     return voice
 
 
-_AUDIO_PROMPT_SUFFIX = (
-    "short drama dubbing reference clip, 4.5 seconds clean voice, no background noise."
-)
+_AUDIO_PROMPT_SUFFIX = canvas_feed_contract.AUDIO_PROMPT_SUFFIX
 
 
 def _compose_audio_prompt(label, description, gender, age, dialect):
@@ -1056,6 +1054,11 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
     ]
     voice_by_code = {item["code"]: item for item in normalized_voices if item.get("code")}
     voice_by_role = {item["name"]: item for item in normalized_voices if item.get("name")}
+    voice_figures_by_role = {
+        item["name"]: _canonical_figure(item.get("code"))
+        for item in normalized_voices
+        if item.get("name") and _canonical_figure(item.get("code"))
+    }
     segs = feed.get("segments", [])              # N 段
     meta = feed.get("meta", {}) or {}
     p0a = feed.get("p0a") or {}
@@ -1313,11 +1316,14 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
     speaking = set()
     for _s in segs:
         speaking |= _dialog_speaker_names(_s.get("raw", ""))
-    character_names = {
-        a.get("code", ""): _short_asset_name(a.get("name", ""))
-        for a in assets
-        if "角色立绘" in a.get("name", "")
-    }
+    character_names = {}
+    for asset in assets:
+        if not isinstance(asset, dict) or "角色立绘" not in str(asset.get("name") or ""):
+            continue
+        canvas = asset.get("canvas") if isinstance(asset.get("canvas"), dict) else {}
+        role = str(canvas.get("name") or _short_asset_name(asset.get("name", ""))).strip()
+        if role:
+            character_names[asset.get("code", "")] = role
     audio_ids, audio_by_role = {}, {}
     audio_y = 0
     for a in assets:
@@ -1340,6 +1346,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             if catalog_voice
             else _compose_audio_prompt(label, voice, gender, age, dialect)
         )
+        code = voice_figures_by_role.get(role) or code
         aid = _rid_audio()
         audio_ids[code], audio_by_role[role] = aid, aid
         audio_composer = f"角色：{role}（{code}）\n\n【音色自动提示词 · Audio Prompt · 4.5S 参考音色】\n{audio_prompt}"

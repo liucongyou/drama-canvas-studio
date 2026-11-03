@@ -24,6 +24,83 @@ VALID_FIXTURES = Path(__file__).parent / "tests" / "fixtures" / "canvas-feed-val
 
 
 class CanvasFeedNegativeContractTests(unittest.TestCase):
+    def semantic_v2_feed(self):
+        feed = json.loads(
+            (VALID_FIXTURES / "generic.json").read_text(encoding="utf-8")
+        )
+        feed["assets"] = [{
+            "code": "CHR-009",
+            "name": "Lin Xia（角色立绘）",
+            "img": "图9",
+        }]
+        asset = feed["asset_prompts"][0]
+        asset["code"] = "CHR-009"
+        asset["semanticCode"] = "CHR-009"
+        asset["canvas"] = {
+            "code": "CHR-009",
+            "semanticCode": "CHR-009",
+            "kind": "character",
+            "name": "Lin Xia",
+            "assetId": "character:Lin Xia:default",
+            "seriesId": "character:Lin Xia",
+            "variantKey": "default",
+        }
+        feed["voice_prompts"][0]["code"] = "CHR-009"
+        feed["voice_prompts"][0]["semanticCode"] = "CHR-009"
+        feed["segments"][0]["canvas"] = {
+            "asset_codes": [],
+            "asset_refs": [],
+        }
+        return feed
+
+    def test_v2_semantic_codes_normalize_to_figure_slots(self):
+        feed = self.semantic_v2_feed()
+        original = copy.deepcopy(feed)
+
+        plan = prepare_import(
+            {"nodes": [], "connections": [], "episodeImports": []},
+            feed,
+            "project-1",
+            1,
+        )
+
+        self.assertTrue(plan.ok, [issue_dict(item) for item in plan.errors])
+        self.assertEqual(feed, original)
+        image = next(
+            node
+            for node in plan.merged_payload["nodes"]
+            if node.get("type") == "image"
+        )
+        audio = next(
+            node
+            for node in plan.merged_payload["nodes"]
+            if node.get("type") == "audio"
+        )
+        self.assertIn("（图9）", image["title"])
+        self.assertIn("（图9）", audio["title"])
+        self.assertEqual(image["metadata"]["assetId"], "character:Lin Xia:default")
+
+    def test_semantic_code_conflicts_are_rejected_explicitly(self):
+        feed = self.semantic_v2_feed()
+        feed["assets"].append({
+            "code": "CHR-010",
+            "name": "Other",
+            "img": "图9",
+        })
+
+        plan = prepare_import(
+            {"nodes": [], "connections": [], "episodeImports": []},
+            feed,
+            "project-1",
+            1,
+        )
+
+        self.assertFalse(plan.ok)
+        self.assertIn(
+            ErrorCode.ASSET_CODE_DUPLICATE,
+            {issue.code for issue in plan.errors},
+        )
+
     def two_segment_feed(self):
         feed = json.loads((VALID_FIXTURES / "generic.json").read_text(encoding="utf-8"))
         feed["asset_prompts"].append({

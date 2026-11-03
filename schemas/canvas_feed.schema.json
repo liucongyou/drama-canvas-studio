@@ -63,6 +63,10 @@
             "type": "string",
             "pattern": "^图\\s*[0-9]+$"
           },
+          "semanticCode": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$"
+          },
           "name": {
             "type": "string",
             "minLength": 1
@@ -118,6 +122,10 @@
           "code": {
             "type": "string",
             "pattern": "^图\\s*[0-9]+$"
+          },
+          "semanticCode": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$"
           },
           "name": {
             "type": "string",
