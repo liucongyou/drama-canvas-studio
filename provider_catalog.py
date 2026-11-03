@@ -2357,21 +2357,45 @@ def resolve_model(
         "doubao-seedance-2-5-260628": "doubao-seedance-2-5",
         "cosyvoice-v3.5-flash": "cosyvoice-v3-5-flash",
     }
-    canonical = legacy_aliases.get(raw, raw)
     model = None
     if raw:
+        # Exact configured identifiers must win over compatibility aliases. A
+        # remote model can legitimately end with a dated suffix that is also an
+        # alias key; rewriting it first makes an existing model look missing.
         if provider_id:
             model = next(
                 (m for m in candidates if m.get("providerId") == provider_id
-                 and canonical in {m.get("id"), m.get("remoteModel"), m.get("label")}),
+                 and raw in {m.get("id"), m.get("remoteModel"), m.get("label")}),
                 None,
             )
         if model is None:
             model = next(
                 (m for m in candidates
-                 if canonical in {m.get("id"), m.get("remoteModel"), m.get("label")}),
+                 if raw in {m.get("id"), m.get("remoteModel"), m.get("label")}),
                 None,
             )
+        if model is None:
+            canonical = legacy_aliases.get(raw, raw)
+            if provider_id:
+                model = next(
+                    (m for m in candidates if m.get("providerId") == provider_id
+                     and canonical in {
+                         m.get("id"),
+                         m.get("remoteModel"),
+                         m.get("label"),
+                     }),
+                    None,
+                )
+            if model is None:
+                model = next(
+                    (m for m in candidates
+                     if canonical in {
+                         m.get("id"),
+                         m.get("remoteModel"),
+                         m.get("label"),
+                     }),
+                    None,
+                )
     if model is None:
         if raw:
             raise RuntimeError(f"模型 {raw} 不可用、已禁用或不属于当前能力，请重新选择")
