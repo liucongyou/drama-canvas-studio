@@ -1868,12 +1868,6 @@ function friendlyTaskError(raw?: string): string {
     const detail = providerHttp[2].replace(/\s+/g, ' ').trim();
     return `供应商返回 HTTP ${status}：${detail.slice(0, 500)}`;
   }
-  if (text.includes('提交结果未确认，可能已被供应商受理')) {
-    return `供应商提交结果未确认，可能已经受理。系统不会自动重提；请先核对供应商账单或任务记录，确认前不要重复提交。${text ? `详情：${text.slice(0, 220)}` : ''}`;
-  }
-  if (lower.includes('没有返回任务号') && lower.includes('server_error')) {
-    return `供应商提交结果未确认，可能已经受理。系统不会自动重提；请先核对供应商账单或任务记录，确认前不要重复提交。${text ? `详情：${text.slice(0, 220)}` : ''}`;
-  }
   if (lower.includes('http 429') || lower.includes('rate limit') || lower.includes('too many') || text.includes('过于频繁')) {
     return '供应商限流。请等待 30–60 秒，系统会优先复用已有任务，不要连续重复提交。';
   }
@@ -11069,94 +11063,48 @@ function CanvasViewInner({
       try {
         const remoteNodes = await getCanvasMediaNodes(session, currentEp);
         if (!alive) return;
-        const remoteById = new Map(remoteNodes.map((node) => [node.id, node]));
-        const generatingIds = new Set(
-          mediaNodesRef.current
-            .filter((node) => node.status === 'generating' || generationBusyIds.has(node.id))
-            .map((node) => node.id),
-        );
         const remoteCompleted = remoteNodes.some(
-          (node) => generatingIds.has(node.id) && node.status === 'done',
+          (node) => node.status === 'done',
         );
         setMediaNodes((prev) => {
           let changed = false;
-          const next = prev.map((node) => {
-            // 还有一种漏网状态：本地已经标成 done，但没有地址（任务先落终态、
-            // 内容稍后才写回，或刷新打断了提交）。只要远端有内容就补上。
-            const needsContent = !node.mediaUrl
-              && remoteById.get(node.id)?.status === 'done'
-              && !!remoteById.get(node.id)?.mediaUrl;
-            const remoteVersionCount = remoteById.get(node.id)?.params?.mediaVersions?.length || 0;
-            const localVersionCount = node.params?.mediaVersions?.length || 0;
-            const hasNewRemoteVersion = remoteVersionCount > localVersionCount
-              && remoteById.get(node.id)?.status === 'done';
-            if (
-              node.status !== 'generating'
-              && !generationBusyIds.has(node.id)
-              && !needsContent
-              && !hasNewRemoteVersion
-            ) return node;
-            const remote = remoteById.get(node.id);
-            if (!remote) return node;
-            if (remote.status === 'generating') {
-              const changedProgress = node.status !== 'generating'
-                || node.providerTaskStatus !== remote.providerTaskStatus
-                || node.providerTaskPhase !== remote.providerTaskPhase
-                || node.providerTaskProgress !== remote.providerTaskProgress
-                || node.generationStartedAt !== remote.generationStartedAt;
-              if (!changedProgress) return node;
-              changed = true;
-              return {
-                ...node,
-                status: 'generating' as CanvasMediaNode['status'],
-                generationStartedAt: remote.generationStartedAt || node.generationStartedAt,
-                providerTaskStatus: remote.providerTaskStatus,
-                providerTaskPhase: remote.providerTaskPhase,
-                providerTaskProgress: remote.providerTaskProgress,
-              };
-            }
-            // A newly submitted attempt owns the status until its result is
-            // distinguishable from the previous version. A remote node with
-            // the same URL/version count is the old result, not this attempt.
-            // Do not compare browser and server clocks here: they can differ
-            // enough to hide a real regeneration or accept the old result.
-            if (generationBusyIds.has(node.id)) {
-              const remoteVersionCount = mediaVersionList(remote).length;
-              const localVersionCount = mediaVersionList(node).length;
-              if (
-                remote.status !== 'failed'
-                && remoteVersionCount <= localVersionCount
-              ) {
-                return node;
-              }
-            }
-            if (remote.status !== 'done' && remote.status !== 'failed') return node;
-            changed = true;
+          const next = remoteNodes.map((remote) => {
+            const local = prev.find((node) => node.id === remote.id);
+            if (!local) return remote;
+            const remoteParams = remote.params || {};
+            const sameGenerationState = (
+              local.status === remote.status
+              && local.mediaUrl === remote.mediaUrl
+              && local.generationFinishedAt === remote.generationFinishedAt
+              && local.providerTaskStatus === remote.providerTaskStatus
+              && local.providerTaskPhase === remote.providerTaskPhase
+              && local.providerTaskProgress === remote.providerTaskProgress
+              && local.lastError === remote.lastError
+            );
+            if (!sameGenerationState) changed = true;
             return {
-              ...node,
-              status: remote.status,
-              mediaUrl: remote.status === 'done' ? (remote.mediaUrl || node.mediaUrl) : node.mediaUrl,
+              ...local,
+              ...remote,
+              prompt: local.prompt,
               params: {
-                ...(node.params || {}),
-                mediaVersions: remote.params?.mediaVersions || node.params?.mediaVersions,
-                mediaVersionIndex: remote.params?.mediaVersionIndex ?? node.params?.mediaVersionIndex,
-                ...(node.kind === 'video'
+                ...remoteParams,
+                ...(local.params || {}),
+                ...(remoteParams.mediaVersions
                   ? {
-                      videoVersions: remote.params?.videoVersions || node.params?.videoVersions,
-                      videoVersionIndex: remote.params?.videoVersionIndex ?? node.params?.videoVersionIndex,
+                      mediaVersions: remoteParams.mediaVersions,
+                      mediaVersionIndex: remoteParams.mediaVersionIndex,
+                    }
+                  : {}),
+                ...(remoteParams.videoVersions
+                  ? {
+                      videoVersions: remoteParams.videoVersions,
+                      videoVersionIndex: remoteParams.videoVersionIndex,
                     }
                   : {}),
               },
-              lastError: remote.status === 'failed' ? (remote.lastError || '生成失败') : undefined,
-              generationFinishedAt: remote.generationFinishedAt,
-              providerTaskStatus: remote.providerTaskStatus,
-              providerTaskPhase: remote.providerTaskPhase,
-              providerTaskProgress: remote.providerTaskProgress,
-              finalizePending: remote.finalizePending,
-              promptStale: remote.promptStale,
-              promptStaleReason: remote.promptStaleReason,
-              sourcePromptUpdatedAt: remote.sourcePromptUpdatedAt,
-              updatedAt: new Date().toISOString(),
+              x: local.x,
+              y: local.y,
+              positionUpdatedAt: local.positionUpdatedAt,
             };
           });
           return changed ? next : prev;
@@ -11182,7 +11130,6 @@ function CanvasViewInner({
     session,
     currentEp,
     generationSyncMs,
-    generationBusyIds,
     hasGeneratingMedia,
     activeGenerationTaskCount,
   ]);
@@ -14681,16 +14628,9 @@ function CanvasViewInner({
       next.add(node.id);
       return next;
     });
-    updateMediaNode(node.id, {
-      status: 'generating',
-      lastError: undefined,
-      generationStartedAt,
-      generationFinishedAt: undefined,
-      providerTaskStatus: 'starting',
-      providerTaskPhase: '提交中',
-      providerTaskProgress: 0,
-      params,
-    }, {persist: false});
+    // Persist only the explicit request parameters. The generating card state
+    // arrives from the backend task/node projection after POST acceptance.
+    updateMediaNode(node.id, {params}, {persist: false});
     const startedLabel = node.status === 'done' ? '重新生成已连接供应商' : '正在连接供应商';
     setToast(`${startedLabel}：${kindLabel[node.kind]}，结果会自动回写`);
     void (async () => {
@@ -17706,15 +17646,13 @@ function CanvasViewInner({
                                         updated_at: finishedAt,
                                       }
                                     : item));
-                                  if (node) {
-                                    updateMediaNode(node.id, {
-                                      status: 'failed',
-                                      lastError: '已取消生成排队',
-                                      providerTaskStatus: 'interrupted',
-                                      providerTaskPhase: '已取消',
-                                      generationFinishedAt: finishedAt,
-                                    });
-                                  }
+                                  setGenerationBusyIds((prev) => {
+                                    if (!prev.has(task.node_id)) return prev;
+                                    const next = new Set(prev);
+                                    next.delete(task.node_id);
+                                    return next;
+                                  });
+                                  void refreshWorkspaceFactsRef.current().catch(() => {});
                                   setToast('已取消排队任务');
                                 })
                                 .catch((error) => setToast(error instanceof Error ? error.message : '取消任务失败'));

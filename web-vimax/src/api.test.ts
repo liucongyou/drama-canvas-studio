@@ -10,24 +10,24 @@ describe('project event cursor', () => {
 });
 
 describe('friendlyMediaError', () => {
-  it('describes a 5xx submission without a task id as unconfirmed, not definitely rejected', () => {
+  it('renders persisted provider errors without deriving a card outcome', () => {
     const message = friendlyMediaError(
       '供应商请求返回 HTTP 503，但没有返回任务号；'
       + '提交结果未确认，可能已被供应商受理。'
       + '详情：{"error":{"code":"server_error","message":"Task request failed"}}',
     );
-    expect(message).toContain('未确认');
-    expect(message).toContain('可能已经受理');
-    expect(message).toContain('不会自动重提');
-    expect(message).not.toContain('供应商提交失败');
+    expect(message).toContain('HTTP 503');
+    expect(message).toContain('Task request failed');
+    expect(message).not.toContain('可能已经受理');
   });
 
-  it('translates persisted write/read timeout errors before rendering', () => {
+  it('renders persisted timeout errors without claiming background work', () => {
     const write = friendlyMediaError('供应商接口连接失败：The write operation timed out');
-    expect(write).toContain('后台仍在继续处理');
-    expect(write).not.toContain('未创建供应商任务');
-    expect(write).not.toContain('timed out');
-    expect(friendlyMediaError('供应商接口连接失败：The read operation timed out')).toBe(write);
+    const read = friendlyMediaError('供应商接口连接失败：The read operation timed out');
+    expect(write).toContain('write operation timed out');
+    expect(read).toContain('read operation timed out');
+    expect(write).not.toContain('后台仍在继续处理');
+    expect(read).not.toContain('后台仍在继续处理');
   });
 
   it('treats a recoverable provider task as still generating', () => {

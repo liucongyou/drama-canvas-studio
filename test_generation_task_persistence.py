@@ -500,6 +500,16 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             "adapter": "agnes_video",
         }
         started = []
+        original_thread = server.threading.Thread
+
+        class CapturedThread:
+            def __init__(self, *args, **kwargs):
+                self.target = kwargs.get("target")
+                self._thread = original_thread(*args, **kwargs)
+
+            def start(self):
+                started.append(self.target)
+
         with (
             patch.object(server, "_active_tenants", return_value=[None]),
             patch.object(
@@ -522,16 +532,23 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
                 "resolve_model",
                 return_value=(provider, model, {}),
             ),
-            patch.object(server.threading, "Thread") as thread_cls,
+            patch.object(server.threading, "Thread", CapturedThread),
             patch.object(
                 server,
                 "_dispatch_due_provider_tasks",
                 return_value=0,
             ),
+            patch.object(
+                server,
+                "reconcile_pending_generation_deliveries",
+                return_value=0,
+            ),
+            patch.object(
+                server,
+                "reconcile_generation_task_records",
+                return_value=0,
+            ),
         ):
-            thread_cls.return_value.start.side_effect = lambda: started.append(
-                thread_cls.call_args.kwargs["target"]
-            )
             result = server.reconcile_generation_runtime_once()
 
         self.assertEqual(result["resumed"], 1)
@@ -3224,6 +3241,201 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertFalse(reused["created_new"])
         self.assertEqual(reused["status"], "succeeded")
         self.assertEqual(reused["phase"], "已完成")
+
+    def test_stale_interrupted_task_does_not_override_newer_done_node(self):
+        node = {
+            "id": "node-newer-image",
+            "type": "image",
+            "metadata": {
+                "status": "error",
+                "content": "/uploads/generated-new.jpg",
+                "generatedAt": "2026-11-03T18:00:00.000Z",
+                "generationFinishedAt": "2026-11-03T18:00:00.000Z",
+                "providerTaskStatus": "completed",
+                "providerTaskPhase": "已完成",
+            },
+        }
+        stale_task = {
+            "id": "old-interrupted",
+            "node_id": node["id"],
+            "status": "interrupted",
+            "phase": "结果待确认",
+            "created_at": "2026-11-03T17:00:00.000Z",
+            "provider_task_id": "",
+            "local_result_url": "",
+            "error": "供应商请求可能已经发出，但本地未取得确认回执",
+        }
+
+        projected = server.project_generation_node_state(node, stale_task)
+
+        self.assertEqual(projected["metadata"]["status"], "done")
+        self.assertEqual(
+            projected["metadata"]["content"],
+            "/uploads/generated-new.jpg",
+        )
+        self.assertEqual(
+            projected["metadata"]["providerTaskStatus"],
+            "completed",
+        )
+
+    def test_stale_failed_task_does_not_override_newer_done_node(self):
+        node = {
+            "id": "node-newer-video",
+            "type": "video",
+            "metadata": {
+                "status": "done",
+                "content": "/uploads/generated-new.mp4",
+                "providerTaskStatus": "completed",
+                "providerTaskPhase": "已完成",
+            },
+        }
+        stale_task = {
+            "id": "old-failed",
+            "node_id": node["id"],
+            "status": "failed",
+            "phase": "任务异常",
+            "created_at": "2026-11-03T17:00:00.000Z",
+            "provider_task_id": "",
+            "local_result_url": "",
+            "error": "旧任务失败",
+        }
+        node["metadata"]["generationFinishedAt"] = "2026-11-03T18:00:00.000Z"
+
+        projected = server.project_generation_node_state(node, stale_task)
+
+        self.assertEqual(projected["metadata"]["status"], "done")
+        self.assertEqual(
+            projected["metadata"]["content"],
+            "/uploads/generated-new.mp4",
+        )
+
+    def test_old_provider_task_id_does_not_override_newer_done_node(self):
+        node = {
+            "id": "node-old-provider-new-done",
+            "type": "image",
+            "metadata": {
+                "status": "error",
+                "content": "/uploads/new-image.jpg",
+                "generatedAt": "2026-11-03T18:00:00.000Z",
+                "generationFinishedAt": "2026-11-03T18:00:00.000Z",
+                "providerTaskStatus": "completed",
+                "providerTaskPhase": "已完成",
+            },
+        }
+        old_task = {
+            "id": "old-provider-task",
+            "node_id": node["id"],
+            "status": "interrupted",
+            "phase": "结果待确认",
+            "created_at": "2026-11-03T17:00:00.000Z",
+            "provider_task_id": "provider-old-running",
+            "local_result_url": "",
+            "error": "旧任务等待恢复",
+        }
+
+        projected = server.project_generation_node_state(node, old_task)
+
+        self.assertEqual(projected["metadata"]["status"], "done")
+        self.assertEqual(projected["metadata"]["lastError"], "")
+        self.assertEqual(
+            projected["metadata"]["content"],
+            "/uploads/new-image.jpg",
+        )
+
+    def test_newer_failed_regeneration_is_visible_and_keeps_previous_media(self):
+        node = {
+            "id": "node-newer-failure",
+            "type": "video",
+            "metadata": {
+                "status": "done",
+                "content": "/uploads/previous.mp4",
+                "generatedAt": "2026-11-03T18:00:00.000Z",
+                "generationFinishedAt": "2026-11-03T18:00:00.000Z",
+                "providerTaskStatus": "completed",
+                "providerTaskPhase": "已完成",
+            },
+        }
+        failed_task = {
+            "id": "new-failed",
+            "node_id": node["id"],
+            "status": "failed",
+            "phase": "生成失败",
+            "created_at": "2026-11-03T18:05:00.000Z",
+            "finished_at": "2026-11-03T18:06:00.000Z",
+            "provider_task_id": "",
+            "local_result_url": "",
+            "error": "供应商视频队列已满",
+        }
+
+        projected = server.project_generation_node_state(node, failed_task)
+
+        self.assertEqual(projected["metadata"]["status"], "failed")
+        self.assertEqual(
+            projected["metadata"]["content"],
+            "/uploads/previous.mp4",
+        )
+        self.assertIn("队列已满", projected["metadata"]["lastError"])
+
+    def test_newer_interrupted_regeneration_is_visible_and_keeps_previous_media(self):
+        node = {
+            "id": "node-newer-interrupt",
+            "type": "image",
+            "metadata": {
+                "status": "done",
+                "content": "/uploads/previous.jpg",
+                "generatedAt": "2026-11-03T18:00:00.000Z",
+                "generationFinishedAt": "2026-11-03T18:00:00.000Z",
+                "providerTaskStatus": "completed",
+                "providerTaskPhase": "已完成",
+            },
+        }
+        interrupted_task = {
+            "id": "new-interrupted",
+            "node_id": node["id"],
+            "status": "interrupted",
+            "phase": "结果待确认",
+            "created_at": "2026-11-03T18:05:00.000Z",
+            "provider_task_id": "",
+            "local_result_url": "",
+            "error": "供应商请求可能已经发出，但本地未取得确认回执",
+        }
+
+        projected = server.project_generation_node_state(
+            node,
+            interrupted_task,
+        )
+
+        self.assertEqual(projected["metadata"]["status"], "error")
+        self.assertEqual(
+            projected["metadata"]["content"],
+            "/uploads/previous.jpg",
+        )
+        self.assertEqual(
+            projected["metadata"]["providerTaskStatus"],
+            "uncertain",
+        )
+
+    def test_legacy_error_projection_with_completed_media_repairs_to_done(self):
+        node = {
+            "id": "node-legacy-error-image",
+            "type": "image",
+            "metadata": {
+                "status": "error",
+                "content": "/uploads/durable-image.jpg",
+                "providerTaskStatus": "completed",
+                "providerTaskPhase": "已完成",
+                "lastError": "旧任务结果待确认",
+            },
+        }
+
+        projected = server.project_generation_node_state(node, None)
+
+        self.assertEqual(projected["metadata"]["status"], "done")
+        self.assertEqual(
+            projected["metadata"]["content"],
+            "/uploads/durable-image.jpg",
+        )
+        self.assertEqual(projected["metadata"]["lastError"], "")
 
     def test_provider_query_failure_keeps_task_recoverable_without_fake_progress(self):
         with tenant_context.use_context(self.context):

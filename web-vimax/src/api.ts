@@ -548,17 +548,8 @@ export type CanvasMediaNode = {
 
 export function friendlyMediaError(raw?: string): string {
   const text = String(raw || '').trim();
-  const lower = text.toLowerCase();
   if (!text) return '';
-  if (text.includes('提交结果未确认，可能已被供应商受理')) {
-    return `供应商提交结果未确认，可能已经受理。系统不会自动重提；请先核对供应商账单或任务记录，确认前不要重复提交。${text ? `详情：${text.slice(0, 260)}` : ''}`;
-  }
-  if (lower.includes('没有返回任务号') && lower.includes('server_error')) {
-    return '供应商提交结果未确认，可能已经受理。系统不会自动重提；请先核对供应商账单或任务记录，确认前不要重复提交。';
-  }
-  if (lower.includes('read operation timed out') || lower.includes('write operation timed out') || lower.includes('timed out')) {
-    return '供应商响应较慢，后台仍在继续处理。请到任务中心查看最终结果；不要连续重复提交，以免重复付费。';
-  }
+  const lower = text.toLowerCase();
   if (lower.includes('overdue') || lower.includes('insufficient') || lower.includes('balance') || lower.includes('quota') || text.includes('余额') || text.includes('欠费') || text.includes('额度')) {
     return '供应商账户余额或额度不足。请先充值或更换供应商，再重新生成。';
   }

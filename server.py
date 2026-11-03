@@ -2660,6 +2660,39 @@ def _generation_task_order_key(task):
     )
 
 
+def _task_is_newer_than_node_success(task, meta):
+    """Return whether a terminal task started after the current node result."""
+    task_created = str((task or {}).get("created_at") or "").strip()
+    node_success = str(
+        (meta or {}).get("generationFinishedAt")
+        or (meta or {}).get("generatedAt")
+        or ""
+    ).strip()
+    if not node_success:
+        return False
+    try:
+        task_dt = datetime.fromisoformat(
+            task_created.replace("Z", "+00:00")
+        )
+        success_dt = datetime.fromisoformat(
+            node_success.replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError):
+        return False
+    return task_dt > success_dt
+
+
+def _node_has_durable_media(meta):
+    """Return whether a media node has a persisted playable result."""
+    if not isinstance(meta, dict):
+        return False
+    if not str(meta.get("content") or "").strip():
+        return False
+    return str(meta.get("status") or "").strip().lower() in {
+        "done", "error", "failed",
+    }
+
+
 def _latest_generation_task_by_node(project_id, node_ids):
     """Return the newest task row per node in one bounded query."""
     wanted = {
@@ -2776,6 +2809,27 @@ def project_generation_node_state(node, latest_task):
                 return projected
 
         if task_status == "failed":
+            node_done_with_content = _node_has_durable_media(meta)
+            if (
+                node_done_with_content
+                and not str(task.get("local_result_url") or "").strip()
+                and not _task_is_newer_than_node_success(task, meta)
+            ):
+                # A stale task-row failure never overrides a newer durable
+                # media output. Task Center keeps the history; the card stays
+                # on the backend node result that was already committed.
+                meta.update({
+                    "status": "done",
+                    "lastError": "",
+                    "generationFinishedAt": (
+                        meta.get("generationFinishedAt")
+                        or meta.get("generatedAt")
+                        or now
+                    ),
+                    "providerTaskStatus": "completed",
+                    "providerTaskPhase": "已完成",
+                })
+                return projected
             current_provider_status = str(
                 meta.get("providerTaskStatus") or ""
             ).strip().lower()
@@ -2804,6 +2858,25 @@ def project_generation_node_state(node, latest_task):
 
         if task_status == "interrupted":
             task_phase = str(task.get("phase") or "").strip()
+            node_done_with_content = _node_has_durable_media(meta)
+            if (
+                node_done_with_content
+                and not _task_is_newer_than_node_success(task, meta)
+            ):
+                # An old local interruption without a provider receipt cannot
+                # replace a durable node result from a later successful task.
+                meta.update({
+                    "status": "done",
+                    "lastError": "",
+                    "generationFinishedAt": (
+                        meta.get("generationFinishedAt")
+                        or meta.get("generatedAt")
+                        or now
+                    ),
+                    "providerTaskStatus": "completed",
+                    "providerTaskPhase": "已完成",
+                })
+                return projected
             if (
                 not provider_task_id
                 and task_phase == "重复提交已忽略"
@@ -2854,7 +2927,25 @@ def project_generation_node_state(node, latest_task):
     # operation. A media URL means the durable generation did finish and must
     # remain playable; idle local imports are left untouched.
     current_status = str(meta.get("status") or "").strip().lower()
-    if current_status == "error":
+    if (
+        current_status in {"error", "failed"}
+        and str(meta.get("content") or "").strip()
+        and str(meta.get("providerTaskStatus") or "").strip().lower()
+        in {"completed", "done", "success", "succeeded"}
+    ):
+        # A terminal media URL with a completed receipt is a durable success.
+        # Do not leave a legacy error projection on top of an existing image,
+        # video or audio result.
+        meta.update({
+            "status": "done",
+            "lastError": "",
+            "generationFinishedAt": (
+                meta.get("generationFinishedAt")
+                or meta.get("generatedAt")
+                or now
+            ),
+        })
+    elif current_status == "error":
         meta["status"] = "failed"
     elif (
         current_status == "generating"

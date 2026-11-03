@@ -28,6 +28,12 @@ describe('generation error presentation', () => {
     );
   });
 
+  it('does not reinterpret historical task errors into a new card state', () => {
+    expect(source).not.toContain(
+      'if (lower.includes(\'没有返回任务号\') && lower.includes(\'server_error\'))',
+    );
+  });
+
   it('does not turn accepted-submit refresh failures into uncertain results', () => {
     expect(source).toContain('const refreshTasks = async () => {');
     expect(source).toContain('const refreshNode = async () => {');
@@ -42,6 +48,15 @@ describe('generation error presentation', () => {
     );
     expect(source).not.toMatch(
       /generationTasks\s*\.filter\(\(item\) => item\.node_id === mn\.id\)/,
+    );
+  });
+
+  it('does not write generating or cancelled states before the backend answers', () => {
+    expect(source).not.toMatch(
+      /updateMediaNode\(node\.id, \{\s*status: 'generating'/s,
+    );
+    expect(source).not.toMatch(
+      /lastError: '已取消生成排队'[\s\S]{0,160}providerTaskPhase: '已取消'/,
     );
   });
 });
