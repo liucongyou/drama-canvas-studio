@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import importlib.util
 from pathlib import Path
 
 import canvas_feed_contract
@@ -22,6 +23,30 @@ GENERATOR = SKILL_ROOT / "scripts" / "build_board_lite.py"
 
 
 class CanvasFeedGeneratorContractTests(unittest.TestCase):
+    def test_generator_rejects_slot_code_as_semantic_identity(self):
+        spec = importlib.util.spec_from_file_location(
+            "canvas_feed_generator_under_test",
+            GENERATOR,
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with self.assertRaisesRegex(ValueError, "缺稳定语义码"):
+            module.validate_export_contract({
+                "assets": [{
+                    "code": "图1",
+                    "semanticCode": "",
+                    "img": "图1",
+                    "name": "赵铁柱（角色立绘）",
+                }],
+                "asset_prompts": [{
+                    "code": "图1",
+                    "semanticCode": "",
+                    "name": "赵铁柱（角色立绘）",
+                }],
+                "voice_prompts": [],
+            })
+
     def test_tiexi_source_exports_and_imports(self):
         source = ROOT.parent / "铁西硬汉_第01集_看板源.md"
         if not source.exists():
@@ -56,9 +81,19 @@ class CanvasFeedGeneratorContractTests(unittest.TestCase):
                 ("CHR-003", "图3"),
                 ("CHR-004", "图4"),
                 ("CHR-005", "图5"),
-                ("SCN-001", "图6"),
-                ("PRP-001", "图7"),
-                ("PRP-002", "图8"),
+                ("SCN-006", "图6"),
+                ("PRP-007", "图7"),
+                ("PRP-008", "图8"),
+            ],
+        )
+        self.assertEqual(
+            [(item["semanticCode"], item["code"]) for item in feed["voice_prompts"]],
+            [
+                ("CHR-001", "图1"),
+                ("CHR-002", "图2"),
+                ("CHR-003", "图3"),
+                ("CHR-004", "图4"),
+                ("CHR-005", "图5"),
             ],
         )
         plan = prepare_import(
