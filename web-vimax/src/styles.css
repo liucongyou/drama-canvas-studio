@@ -8967,7 +8967,7 @@ html[data-theme='dark'] .dialog-actions button.primary:hover:not(:disabled) {
 .canvas-edge-chain .react-flow__edge-path,
 .canvas-edge-user .react-flow__edge-path,
 .canvas-edge-auto .react-flow__edge-path {
-  stroke: var(--edge-tone, #6b7684);
+  stroke: var(--edge-tone, #64798b);
   /* ★★ 第 31 轮：宽度改为「画布单位 = 1.7 屏幕像素 ÷ zoom」。
      --edge-line-w 由 React 按当前 zoom 注入（见 CanvasView 的 edgeFlowVars），
      与彗星三层的 --edge-flow-width 是**同一个值、同一套补偿**。
@@ -8985,7 +8985,7 @@ html[data-theme='dark'] .dialog-actions button.primary:hover:not(:disabled) {
 .react-flow__edge.canvas-edge-chain .canvas-edge-source-dot,
 .react-flow__edge.canvas-edge-user .canvas-edge-source-dot,
 .react-flow__edge.canvas-edge-auto .canvas-edge-source-dot {
-  fill: var(--edge-tone, #6b7684);
+  fill: var(--edge-tone, #64798b);
 }
 /* 模式光标与语义一致：选择=默认箭头（节点可点选/拖动，不显示抓手）、抓手=抓手、连续=十字 */
 .canvas-flow[data-mouse-mode='select'] .react-flow__node,
@@ -9126,15 +9126,15 @@ body[data-canvas-interacting='1'] .canvas-edge-spark {
 .canvas-edge-user,
 .canvas-edge-chain {
   /* 常态：灰底稿。兜底值必须与 --v-edge-tone 一致（这个值历史上在 5 个文件各写一份）。 */
-  --edge-tone: var(--v-edge-tone, #6b7684);
+  --edge-tone: var(--v-edge-tone, #64798b);
   --edge-flow: 0.26;             /* 流光也一起压淡，避免"暗线 + 亮流光"的割裂感 */
 }
 .react-flow__edge:hover {
-  --edge-tone: var(--v-edge-hover, #38bdf8);
+  --edge-tone: var(--v-edge-hover, #009efa);
   --edge-flow: 0.9;
 }
 .react-flow__edge.selected {
-  --edge-tone: var(--v-edge-selected, #56ccf2);
+  --edge-tone: var(--v-edge-selected, #0099f2);
   --edge-flow: 1;
 }
 /* xyflow 自带的 `.react-flow__edge.selected .react-flow__edge-path { stroke: #555 }`
@@ -9142,17 +9142,17 @@ body[data-canvas-interacting='1'] .canvas-edge-spark {
    （实测选中后 baseline=rgb(85,85,85)，只有流光层变蓝 —— 整条线看着还是灰的）。
    这里连类名一起提权，并让基线路径统一吃 --edge-tone。 */
 .canvas-flow .react-flow__edge .react-flow__edge-path {
-  stroke: var(--edge-tone, #6b7684);
+  stroke: var(--edge-tone, #64798b);
   transition: stroke 140ms ease-out;
 }
 .canvas-flow .react-flow__edge:hover .react-flow__edge-path {
-  stroke: var(--edge-tone, #38bdf8);
+  stroke: var(--edge-tone, #009efa);
 }
 .canvas-flow .react-flow__edge.selected .react-flow__edge-path {
-  stroke: var(--edge-tone, #56ccf2);
+  stroke: var(--edge-tone, #0099f2);
 }
-.canvas-flow .react-flow__edge.selected .canvas-edge-source-dot { fill: var(--edge-tone, #56ccf2); }
-.canvas-flow .react-flow__edge:hover .canvas-edge-source-dot { fill: var(--edge-tone, #38bdf8); }
+.canvas-flow .react-flow__edge.selected .canvas-edge-source-dot { fill: var(--edge-tone, #0099f2); }
+.canvas-flow .react-flow__edge:hover .canvas-edge-source-dot { fill: var(--edge-tone, #009efa); }
 
 /* 彗身（中段）：三层里的"可见主体"。
    ★★★ 这里修的是本轮最后一个、也是最隐蔽的 bug：
@@ -9402,7 +9402,7 @@ body[data-canvas-interacting='1'] .canvas-edge-spark {
 
 /* 生成中：使用独立的青蓝基线并提到不透明。悬停/选中仍由各自规则覆盖。 */
 .canvas-flow .react-flow__edge:has(.canvas-edge-flow.is-busy:not(.is-linked)) .react-flow__edge-path {
-  stroke: var(--v-edge-running, #22d3ee) !important;
+  stroke: var(--v-edge-running, #0091e5) !important;
   opacity: 1;
 }
 .canvas-flow .react-flow__edge .canvas-edge-flow.is-busy:not(.is-linked) {
@@ -10248,20 +10248,20 @@ body[data-canvas-interacting='1'] .canvas-edge-spark {
 .canvas-edge-delete:hover { background: #c03035; }
 /* 兜底状态规则：theme-tokens 中还有最终提权版本。 */
 .react-flow__edge.selected .react-flow__edge-path {
-  stroke: var(--v-edge-selected, #56ccf2);
+  stroke: var(--v-edge-selected, #0099f2);
   stroke-width: calc(var(--edge-line-w, 1.7) * 1.4);
 }
 .react-flow__edge:hover .react-flow__edge-path {
-  stroke: var(--v-edge-hover, #38bdf8);
+  stroke: var(--v-edge-hover, #009efa);
   stroke-width: calc(var(--edge-line-w, 1.7) * 1.4);
 }
 .react-flow__edge.selected .canvas-edge-source-dot {
-  fill: var(--v-edge-selected, #56ccf2);
+  fill: var(--v-edge-selected, #0099f2);
   stroke: var(--surface);
   stroke-width: 1.2;
 }
 .react-flow__edge:hover .canvas-edge-source-dot {
-  fill: var(--v-edge-hover, #38bdf8);
+  fill: var(--v-edge-hover, #009efa);
   stroke: var(--surface);
   stroke-width: 1.2;
 }

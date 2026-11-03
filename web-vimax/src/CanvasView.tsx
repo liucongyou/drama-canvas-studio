@@ -456,8 +456,18 @@ function CanvasEdgeFlowOverlay() {
       const worldHeight = height / zoom;
       const originX = -panX / zoom;
       const originY = -panY / zoom;
-      const backingWidth = Math.max(1, Math.round(worldWidth * dpr));
-      const backingHeight = Math.max(1, Math.round(worldHeight * dpr));
+      // The canvas lives inside React Flow's ViewportPortal, so CSS scales the
+      // whole element by `zoom`. Without putting zoom into the backing store,
+      // a 200% view is a 1x bitmap stretched to 2x: the SVG edge stays sharp
+      // while the Canvas comet becomes visibly blurry.
+      const maxBackingPx = 4096;
+      const pixelScale = Math.min(
+        maxBackingPx / Math.max(1, worldWidth),
+        maxBackingPx / Math.max(1, worldHeight),
+        dpr * zoom,
+      );
+      const backingWidth = Math.max(1, Math.round(worldWidth * pixelScale));
+      const backingHeight = Math.max(1, Math.round(worldHeight * pixelScale));
       if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
         canvas.width = backingWidth;
         canvas.height = backingHeight;
@@ -476,9 +486,16 @@ function CanvasEdgeFlowOverlay() {
         metaCache.clear();
       }
 
-      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.setTransform(pixelScale, 0, 0, pixelScale, 0, 0);
       context.clearRect(0, 0, backingWidth, backingHeight);
-      context.setTransform(dpr, 0, 0, dpr, -originX * dpr, -originY * dpr);
+      context.setTransform(
+        pixelScale,
+        0,
+        0,
+        pixelScale,
+        -originX * pixelScale,
+        -originY * pixelScale,
+      );
       context.lineCap = 'round';
       context.lineJoin = 'round';
 
@@ -567,8 +584,8 @@ function CanvasEdgeFlowOverlay() {
           context.stroke(pathEntry!.path);
         };
 
-        paintLayer('#b8e0ff', tailWidth, meta.tailDash, meta.tailPhase, hovered || selected || busy ? 0.55 : 0.42);
-        paintLayer('#e6f5ff', bodyWidth, meta.bodyDash, meta.bodyPhase, 0.82);
+        paintLayer('#71c8ff', tailWidth, meta.tailDash, meta.tailPhase, hovered || selected || busy ? 0.55 : 0.42);
+        paintLayer('#d7f1ff', bodyWidth, meta.bodyDash, meta.bodyPhase, 0.82);
         paintLayer('#ffffff', headWidth, meta.headDash, meta.headPhase, 0.95);
 
         if (sparkOn) {
@@ -577,7 +594,7 @@ function CanvasEdgeFlowOverlay() {
           if (Number.isFinite(sparkX) && Number.isFinite(sparkY)) {
             const pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(animationNow / (busy ? 150 : 185));
             context.globalAlpha = 0.25 + pulse * 0.75;
-            context.fillStyle = '#eaf6ff';
+            context.fillStyle = '#c9ecff';
             context.beginPath();
             context.arc(sparkX, sparkY, meta.width * 1.5, 0, Math.PI * 2);
             context.fill();

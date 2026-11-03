@@ -3465,15 +3465,15 @@ html[data-theme='dark'][data-variant='immersive']{
 /* 常态灰底稿；悬停、选中、执行中使用独立的冷蓝状态令牌。 */
 .canvas-edge-auto .react-flow__edge-path,
 .canvas-edge-chain .react-flow__edge-path,
-.canvas-edge-user .react-flow__edge-path{stroke:var(--edge-tone,#6b7684);stroke-width:var(--edge-line-w,1.7)}
+.canvas-edge-user .react-flow__edge-path{stroke:var(--edge-tone,#64798b);stroke-width:var(--edge-line-w,1.7)}
 .react-flow__edge.canvas-edge-auto .canvas-edge-source-dot,
 .react-flow__edge.canvas-edge-chain .canvas-edge-source-dot,
-.react-flow__edge.canvas-edge-user .canvas-edge-source-dot{fill:var(--edge-tone,#6b7684)}
-.react-flow__edge:hover .react-flow__edge-path{stroke:var(--v-edge-hover,#38bdf8);stroke-width:calc(var(--edge-line-w,1.7) * 1.18)}
-.react-flow__edge:hover .canvas-edge-source-dot{fill:var(--v-edge-hover,#38bdf8)}
-.react-flow__edge.selected .react-flow__edge-path{stroke:var(--v-edge-selected,#56ccf2);stroke-width:calc(var(--edge-line-w,1.7) * 1.4)}
-.react-flow__edge.selected .canvas-edge-source-dot{fill:var(--v-edge-selected,#56ccf2)}
-.react-flow__edge:has(.canvas-edge-flow.is-busy:not(.is-linked)) .react-flow__edge-path{stroke:var(--v-edge-running,#22d3ee)}
+.react-flow__edge.canvas-edge-user .canvas-edge-source-dot{fill:var(--edge-tone,#64798b)}
+.react-flow__edge:hover .react-flow__edge-path{stroke:var(--v-edge-hover,#009efa);stroke-width:calc(var(--edge-line-w,1.7) * 1.18)}
+.react-flow__edge:hover .canvas-edge-source-dot{fill:var(--v-edge-hover,#009efa)}
+.react-flow__edge.selected .react-flow__edge-path{stroke:var(--v-edge-selected,#0099f2);stroke-width:calc(var(--edge-line-w,1.7) * 1.4)}
+.react-flow__edge.selected .canvas-edge-source-dot{fill:var(--v-edge-selected,#0099f2)}
+.react-flow__edge:has(.canvas-edge-flow.is-busy:not(.is-linked)) .react-flow__edge-path{stroke:var(--v-edge-running,#0091e5)}
 /* html 自身底色原本是 #090a0c（窗口边缘/滚动回弹处会露出来），一并压平到 #121212 */
 html[data-theme='dark'][data-variant='immersive']{background:#121212}
 
@@ -4300,7 +4300,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 }
 .canvas-selbar-linkdrag path{
   fill:none;
-  stroke:#6b7684;
+  stroke:var(--v-edge-hover,#009efa);
   stroke-width:2;
   stroke-linecap:round;
   stroke-dasharray:5 4;
@@ -4311,7 +4311,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   stroke-dasharray:none;
 }
 .canvas-selbar-linkdrag circle{
-  fill:#6b7684;
+  fill:var(--v-edge-hover,#009efa);
   transition:fill 90ms;
 }
 .canvas-selbar-linkdrag circle.is-hot{ fill:#5d62e9; }
@@ -7665,7 +7665,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   stroke-width:calc(var(--edge-flow-width,1.7) * 1.55);
   opacity:1;
   animation-duration:1.35s;
-  filter:drop-shadow(0 0 3px rgba(127,196,255,.75));
+  filter:drop-shadow(0 0 3px rgba(0,158,250,.58));
 }
 /* ★ 第 19 轮：选中卡片时，相连线的**彗尾和终点火花一起点亮**（原口径只有亮核）。
    用户的要求「流光炫酷点」在"选中一张卡、七八条线同时亮"的场景最明显 ——

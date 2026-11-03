@@ -706,6 +706,7 @@ describe('连线流光（屏幕像素恒定：长度 + 宽度同口径）', () =
   const stylesSource = readFileSync(resolve(__dirname, 'styles.css'), 'utf8');
   const refineSource = readFileSync(resolve(__dirname, 'ui-refinements.css'), 'utf8');
   const themeSource = readFileSync(resolve(__dirname, 'theme-tokens.css'), 'utf8');
+  const immersiveSource = readFileSync(resolve(__dirname, 'immersive-theme.css'), 'utf8');
 
   it('周期 / 彗尾 / 彗身 / 彗头都是常量', () => {
     expect(canvasSource).toMatch(/const cycleScreen = 132;/);
@@ -720,6 +721,13 @@ describe('连线流光（屏幕像素恒定：长度 + 宽度同口径）', () =
     expect(canvasSource).toMatch(/const width = Math\.round\(\(EDGE_LINE_WIDTH_PX \/ z\)/);
     expect(canvasSource).toMatch(/const EDGE_LINE_WIDTH_PX = 1\.7;/);
     expect(canvasSource).toMatch(/const op = 0\.43;/);
+  });
+
+  it('★ 放大后 Canvas 流光不靠拉大低分辨率位图', () => {
+    expect(canvasSource).toMatch(/const pixelScale = Math\.min\(/);
+    expect(canvasSource).toMatch(/dpr \* zoom/);
+    expect(canvasSource).toMatch(/worldWidth \* pixelScale/);
+    expect(canvasSource).toMatch(/context\.setTransform\(\s*pixelScale,/);
   });
 
   it('长度与宽度共用同一套 ÷zoom 补偿（toCanvas 与 width 同源）', () => {
@@ -819,7 +827,7 @@ describe('连线流光（屏幕像素恒定：长度 + 宽度同口径）', () =
       /\.canvas-edge-auto \.react-flow__edge-path,[\s\S]*?\{\s*stroke: ([^;]+);/,
     );
     expect(baseBlock![1].trim()).toBe('var(--v-edge-tone) !important');
-    expect(stylesSource).toMatch(/--edge-tone: var\(--v-edge-tone, #6b7684\);/);
+    expect(stylesSource).toMatch(/--edge-tone: var\(--v-edge-tone, #64798b\);/);
 
     for (const token of ['--v-edge-hover', '--v-edge-selected', '--v-edge-running']) {
       expect(themeSource).toMatch(new RegExp(`${token}: #[0-9a-f]{6};`, 'i'));
@@ -830,6 +838,15 @@ describe('连线流光（屏幕像素恒定：长度 + 宽度同口径）', () =
     expect(refineSource).not.toMatch(/#7fc4ff/);
   });
 
+  it('★ 石墨黑默认主题的连线使用统一冷天蓝层级', () => {
+    expect(themeSource).toMatch(/--v-edge-hover: #009efa;/);
+    expect(themeSource).toMatch(/--v-edge-selected: #0099f2;/);
+    expect(themeSource).toMatch(/--v-edge-running: #0091e5;/);
+    // immersive-theme 在 theme-tokens 之前加载；这里锁住它不再把连线拉回
+    // gray/cyan 的另一套色相，最终值由 theme-tokens 的 --v-* 真源决定。
+    expect(immersiveSource).not.toMatch(/--v-edge-(hover|selected|running)/);
+  });
+
   // ★ 用户原话：「线也是这个颜色，彗星也是这个颜色，彗星效果不明显」。
   // 旧的彗尾就是线色本身 （#4d9fff）⇒ 尾整段隐形，只剩几个白点在跑。
   // 三层必须**明显亮于线色（悬停/选中那个蓝 #4d9fff）**，且保持"尾 < 身 < 头"的梯度。
@@ -838,15 +855,17 @@ describe('连线流光（屏幕像素恒定：长度 + 宽度同口径）', () =
       const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
       return 0.2126 * r + 0.7152 * g + 0.0722 * b;
     };
-    const LINE = luma('#4d9fff');    // 悬停 = 选中的线色
-    const tail = luma('#b8e0ff');
-    const body = luma('#e6f5ff');
+    const LINE = luma('#009efa');    // 悬停线色
+    const tail = luma('#71c8ff');
+    const body = luma('#d7f1ff');
     const head = luma('#ffffff');
     expect(tail).toBeGreaterThan(LINE + 50);
     expect(body).toBeGreaterThan(tail);
     expect(head).toBeGreaterThan(body);
-    // 彗尾不能再用线色本身（历史 bug：尾=线色 ⇒ 整段隐形）
-    expect(stylesSource).not.toMatch(/\.canvas-edge-flow-tail\s*\{[^}]*stroke:\s*#4d9fff/);
+    // 实际流光由 Canvas 绘制，必须锁住真正上屏的三层色值。
+    expect(canvasSource).toMatch(/paintLayer\('#71c8ff'/);
+    expect(canvasSource).toMatch(/paintLayer\('#d7f1ff'/);
+    expect(canvasSource).toMatch(/paintLayer\('#ffffff'/);
   });
 });
 

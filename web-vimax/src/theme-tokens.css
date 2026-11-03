@@ -114,13 +114,13 @@
      像连线那种沉稳的蓝，而不是电子屏幕的荧光蓝。 */
   --v-accent-mid: #6a6fee;
   --v-accent-mid-hover: #7a7ff2;
-  /* 中性蓝灰：连线常态基色，与本主题同色相（H≈213） */
-  --v-edge-tone: #6b7684;
+  /* 中性蓝灰：连线常态基色，与本主题同色相（H≈204） */
+  --v-edge-tone: #64798b;
   /* 连线交互状态色：悬停、选中、执行中各自可辨，但仍属于同一冷蓝体系。
      只改基线/端口/外发光；彗星的近白头部与浅青尾焰保持独立层次。 */
-  --v-edge-hover: #38bdf8;
-  --v-edge-selected: #56ccf2;
-  --v-edge-running: #22d3ee;
+  --v-edge-hover: #009efa;
+  --v-edge-selected: #0099f2;
+  --v-edge-running: #0091e5;
   /* 旧组件/旧主题的兼容别名，新逻辑不再直接依赖。 */
   --v-edge-highlight: var(--v-edge-selected);
 
@@ -208,9 +208,9 @@ html[data-theme='dark'][data-variant='forest'] {
   --v-accent-mid: #72a78f;
   --v-accent-mid-hover: #86bca3;
   --v-edge-tone: #73897e;
-  --v-edge-hover: #43c7d4;
-  --v-edge-selected: #5fd8df;
-  --v-edge-running: #2fc4cf;
+  --v-edge-hover: #009efa;
+  --v-edge-selected: #0099f2;
+  --v-edge-running: #0091e5;
   --v-edge-highlight: var(--v-edge-selected);
   --v-success: #7bc49d;
   --v-success-soft: rgba(123, 196, 157, 0.12);
@@ -266,9 +266,9 @@ html[data-theme='dark'][data-variant='copper'] {
   --v-accent-mid: #b38262;
   --v-accent-mid-hover: #c59674;
   --v-edge-tone: #8a7a6f;
-  --v-edge-hover: #55c5db;
-  --v-edge-selected: #74d6e5;
-  --v-edge-running: #38bbd3;
+  --v-edge-hover: #009efa;
+  --v-edge-selected: #0099f2;
+  --v-edge-running: #0091e5;
   --v-edge-highlight: var(--v-edge-selected);
   --v-success: #8bb18f;
   --v-success-soft: rgba(139, 177, 143, 0.12);
@@ -324,9 +324,9 @@ html[data-theme='dark'][data-variant='aigc'] {
   --v-accent-mid: #6d9bd1;
   --v-accent-mid-hover: #84afe2;
   --v-edge-tone: #6f8299;
-  --v-edge-hover: #38bdf8;
-  --v-edge-selected: #56ccf2;
-  --v-edge-running: #22d3ee;
+  --v-edge-hover: #009efa;
+  --v-edge-selected: #0099f2;
+  --v-edge-running: #0091e5;
   --v-edge-highlight: var(--v-edge-selected);
   --v-success: #6fd0b0;
   --v-success-soft: rgba(111, 208, 176, 0.12);
@@ -382,9 +382,9 @@ html[data-theme='light'][data-variant='light'] {
   --v-accent-mid: #4a74b6;
   --v-accent-mid-hover: #6289c6;
   --v-edge-tone: #7f8ea2;
-  --v-edge-hover: #0ea5e9;
-  --v-edge-selected: #0284c7;
-  --v-edge-running: #0891b2;
+  --v-edge-hover: #009efa;
+  --v-edge-selected: #0091e5;
+  --v-edge-running: #007fc7;
   --v-edge-highlight: var(--v-edge-selected);
   --v-success: #2f8a5c;
   --v-success-soft: rgba(47, 138, 92, 0.1);
