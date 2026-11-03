@@ -2372,25 +2372,6 @@ def resolve_model(
                  if canonical in {m.get("id"), m.get("remoteModel"), m.get("label")}),
                 None,
             )
-    if raw and model is None:
-        # Legacy inference keeps old nodes usable without mutating their payload.
-        if capability == "video" and raw.startswith("doubao-seedance"):
-            target_provider = provider_id or "ark"
-            model = next(
-                (m for m in candidates if m.get("providerId") == target_provider
-                 and m.get("remoteModel") == raw),
-                None,
-            )
-            if model is None:
-                model = next(
-                    (m for m in candidates if m.get("providerId") == target_provider),
-                    None,
-                )
-        elif capability == "image" and raw.startswith("doubao-seedream"):
-            model = next(
-                (m for m in candidates if m.get("providerId") == (provider_id or "ark")),
-                None,
-            )
     if model is None:
         if raw:
             raise RuntimeError(f"模型 {raw} 不可用、已禁用或不属于当前能力，请重新选择")

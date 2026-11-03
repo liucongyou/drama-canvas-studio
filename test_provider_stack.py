@@ -1633,6 +1633,22 @@ class ProviderCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "不可用"):
             provider_catalog.resolve_model(None, "removed-custom-model", "video")
 
+    def test_unknown_seedream_is_not_replaced_by_first_ark_image_model(self):
+        with self.assertRaisesRegex(RuntimeError, "不可用"):
+            provider_catalog.resolve_model(
+                "ark",
+                "doubao-seedream-5-0-260128",
+                "image",
+            )
+
+    def test_unknown_seedance_is_not_replaced_by_first_ark_video_model(self):
+        with self.assertRaisesRegex(RuntimeError, "不可用"):
+            provider_catalog.resolve_model(
+                "ark",
+                "doubao-seedance-9-9-unknown",
+                "video",
+            )
+
     def test_adapter_and_capability_must_match(self):
         cfg = {
             "providers": [{"id": "custom", "name": "Custom", "api_key": "x"}],

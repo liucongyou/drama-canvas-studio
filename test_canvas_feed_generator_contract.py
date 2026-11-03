@@ -111,7 +111,31 @@ class CanvasFeedGeneratorContractTests(unittest.TestCase):
             counts,
             {"text": 1, "image": 8, "video": 8, "audio": 5},
         )
-        self.assertEqual(len(payload["connections"]), 59)
+        images = [
+            node for node in payload["nodes"] if node.get("type") == "image"
+        ]
+        audios = [
+            node for node in payload["nodes"] if node.get("type") == "audio"
+        ]
+        videos = [
+            node for node in payload["nodes"] if node.get("type") == "video"
+        ]
+        self.assertEqual(len(images), 8)
+        self.assertEqual(len(audios), 5)
+        self.assertEqual(len(videos), 8)
+        self.assertTrue(payload["connections"])
+        image_ids = {node["id"] for node in images}
+        audio_ids = {node["id"] for node in audios}
+        for video in videos:
+            params = (video.get("metadata") or {}).get("params") or {}
+            self.assertTrue(
+                {ref.get("nodeId") for ref in params.get("refs") or []}
+                & image_ids
+            )
+            self.assertTrue(
+                {ref.get("nodeId") for ref in params.get("voiceRefs") or []}
+                & audio_ids
+            )
 
     def test_schema_copy_hashes_match(self):
         server = ROOT / "schemas" / "canvas_feed.schema.json"

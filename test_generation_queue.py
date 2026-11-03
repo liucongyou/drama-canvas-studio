@@ -13,6 +13,54 @@ import server
 
 
 class GenerationQueueTests(unittest.TestCase):
+    def test_generate_does_not_replace_active_lease_owner(self):
+        project_id = canvas_store.create_project("lease-owner-guard")
+        project = canvas_store.get_project(project_id)
+        node = {
+            "id": "node-lease-owner-guard",
+            "type": "image",
+            "title": "角色｜测试（图1）",
+            "metadata": {
+                "prompt": "test",
+                "params": {
+                    "provider": "ark",
+                    "model": "doubao-seedream-5-0-pro-260628",
+                },
+            },
+        }
+        task = canvas_store.create_generation_task(
+            project_id,
+            node["id"],
+            "image",
+            provider="ark",
+            model="doubao-seedream-5-0-pro-260628",
+        )
+        owner = "generation:existing-worker"
+        self.assertTrue(
+            canvas_store.claim_generation_task(task["id"], owner, 45)
+        )
+        worker = object.__new__(server.Handler)
+        responses = []
+        worker._send = lambda status, payload: responses.append(
+            (status, payload)
+        )
+
+        worker._generate(
+            project_id,
+            project,
+            node,
+            task_id=task["id"],
+            lease_owner="generation:different-worker",
+        )
+
+        self.assertEqual(responses[0][0], 409)
+        self.assertEqual(
+            responses[0][1]["code"],
+            "GENERATION_LEASE_LOST",
+        )
+        saved = canvas_store.get_generation_task(task["id"])
+        self.assertEqual(saved["lease_owner"], owner)
+
     def test_media_version_selection_syncs_provider_metadata(self):
         meta = {
             "content": "/uploads/new.png",

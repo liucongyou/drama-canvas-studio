@@ -8140,6 +8140,13 @@ class Handler(BaseHTTPRequestHandler):
                     "status": "queued",
                     "lease_owner": "",
                 }
+            if lease_owner and current_owner and current_owner != lease_owner:
+                latest_task = store.get_generation_task(task_id) or {}
+                return self._send(409, {
+                    "error": "生成任务租约已被其他执行线程持有，本次未提交供应商",
+                    "code": "GENERATION_LEASE_LOST",
+                    "taskId": task_id,
+                })
             if not lease_owner and not current_owner:
                 lease_owner = f"generation:{secrets.token_hex(12)}"
                 if current_task.get("id") == task_id and current_status not in {"queued", "submitting"}:
@@ -8156,7 +8163,17 @@ class Handler(BaseHTTPRequestHandler):
                             "lease_owner": lease_owner,
                         }
                     else:
-                        lease_owner = ""
+                        latest_task = store.get_generation_task(task_id) or {}
+                        latest_owner = str(
+                            latest_task.get("lease_owner") or ""
+                        ).strip()
+                        if latest_owner and latest_owner != lease_owner:
+                            return self._send(409, {
+                                "error": "生成任务租约已被其他执行线程持有，本次未提交供应商",
+                                "code": "GENERATION_LEASE_LOST",
+                                "taskId": task_id,
+                            })
+                        lease_owner = latest_owner
             if (
                 str(current_task.get("status") or "") not in {"queued", "submitting", "running"}
                 or (
