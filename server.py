@@ -31,6 +31,7 @@ import inspect
 import mimetypes
 import secrets
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -166,6 +167,13 @@ PROJECT_LOCKS_GUARD = canvas_repository.PROJECT_LOCKS_GUARD
 GENERATION_BUDGET_LOCK = threading.RLock()
 TASK_LEASE_SECONDS = 45
 TASK_HEARTBEAT_SECONDS = 15
+SHUTDOWN_DRAIN_SECONDS = max(
+    0.0,
+    float(os.environ.get("CANVAS_SHUTDOWN_DRAIN_SECONDS", "30")),
+)
+SERVER_STOPPING = threading.Event()
+GENERATION_WORKERS_LOCK = threading.Lock()
+GENERATION_WORKERS: set[threading.Thread] = set()
 _PROVIDER_AUTH_CACHE: dict[tuple[str, str, str], tuple[float, str]] = {}
 _PROVIDER_AUTH_CACHE_LOCK = threading.Lock()
 RESUMED_VIDEO_TASKS: set[tuple[str, ...]] = set()
@@ -9420,17 +9428,62 @@ def _run_generation_task_worker(task_id, tenant_id, tenant_slug):
 
 
 def start_generation_task_worker(task_id, tenant_id, tenant_slug):
+    if SERVER_STOPPING.is_set():
+        raise RuntimeError("服务正在停止，暂不接收新的生成任务")
     thread = threading.Thread(
         target=_run_generation_task_worker,
         args=(task_id, tenant_id, tenant_slug),
         name=f"generation-worker-{task_id}",
-        daemon=True,
+        daemon=False,
     )
+    with GENERATION_WORKERS_LOCK:
+        GENERATION_WORKERS.add(thread)
+
+    def discard():
+        with GENERATION_WORKERS_LOCK:
+            GENERATION_WORKERS.discard(thread)
+
+    original_run = thread.run
+
+    def run_and_discard():
+        try:
+            original_run()
+        finally:
+            discard()
+
+    thread.run = run_and_discard  # type: ignore[method-assign]
     thread.start()
     return thread
 
 
+def stop_generation_workers_for_shutdown():
+    SERVER_STOPPING.set()
+    deadline = time.monotonic() + SHUTDOWN_DRAIN_SECONDS
+    while time.monotonic() < deadline:
+        with GENERATION_WORKERS_LOCK:
+            workers = [
+                thread for thread in GENERATION_WORKERS
+                if thread.is_alive()
+            ]
+        if not workers:
+            return True
+        for thread in workers:
+            thread.join(timeout=min(1.0, max(0.05, deadline - time.monotonic())))
+    with GENERATION_WORKERS_LOCK:
+        return not any(thread.is_alive() for thread in GENERATION_WORKERS)
+
+
 def main():
+    received_signal = {"value": False}
+
+    def handle_stop_signal(signum, frame):
+        if received_signal["value"]:
+            return
+        received_signal["value"] = True
+        SERVER_STOPPING.set()
+
+    signal.signal(signal.SIGTERM, handle_stop_signal)
+    signal.signal(signal.SIGINT, handle_stop_signal)
     print(
         f"drama-canvas-studio server: {__file__} | "
         f"{getattr(import_feed, 'REIMPORT_IDENTITY_POLICY', 'missing')}",
@@ -9586,12 +9639,16 @@ def main():
         start_pending_video_resumers()
     except Exception as exc:
         print(f"[video-resume] 恢复进行中任务失败：{exc}", file=sys.stderr)
-    try:
-        while http_thread.is_alive():
-            http_thread.join(timeout=1)
-    except KeyboardInterrupt:
-        server.shutdown()
-        print("\n已停止")
+    while not received_signal["value"] and http_thread.is_alive():
+        http_thread.join(timeout=1)
+    SERVER_STOPPING.set()
+    server.shutdown()
+    drained = stop_generation_workers_for_shutdown()
+    print(
+        "\n已停止（生成任务已排空）"
+        if drained
+        else "\n已停止（仍有生成任务保留为待确认状态）"
+    )
 
 
 if __name__ == "__main__":

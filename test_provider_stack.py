@@ -188,6 +188,39 @@ class ProviderCatalogTests(unittest.TestCase):
         self.assertEqual(result["id"], "task-1")
         self.assertEqual(result["status"], "queued")
 
+    def test_curl_transport_failure_keeps_exit_and_http_status(self):
+        def fake_run(command, **kwargs):
+            return subprocess.CompletedProcess(
+                command,
+                28,
+                stdout=b"",
+                stderr=b"Operation timed out",
+            )
+
+        with patch.object(
+            provider_client.shutil,
+            "which",
+            return_value="curl",
+        ), patch.object(
+            provider_client.subprocess,
+            "run",
+            side_effect=fake_run,
+        ):
+            with self.assertRaises(provider_client.ProviderOutcomeUncertain) as caught:
+                provider_client._request_json(
+                    "POST",
+                    "https://ark.example/api/v3/images/generations",
+                    "test-key",
+                    {"prompt": "test"},
+                    timeout=10,
+                )
+
+        message = str(caught.exception)
+        self.assertIn("curl exit=28", message)
+        self.assertIn("http=0", message)
+        self.assertIn("Operation timed out", message)
+        self.assertNotIn("curl request failed", message)
+
     def test_aistars_image_polls_task_endpoint_and_downloads_protected_artifact(self):
         provider = {
             "id": "new-apl",

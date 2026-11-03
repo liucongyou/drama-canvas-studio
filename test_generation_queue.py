@@ -403,6 +403,37 @@ class GenerationQueueTests(unittest.TestCase):
             server.TASK_LEASE_SECONDS,
         )
 
+    def test_stopping_server_rejects_new_generation_workers(self):
+        previous = server.SERVER_STOPPING.is_set()
+        server.SERVER_STOPPING.set()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "服务正在停止"):
+                server.start_generation_task_worker(
+                    "task-stopping",
+                    None,
+                    "local",
+                )
+        finally:
+            if not previous:
+                server.SERVER_STOPPING.clear()
+
+    def test_shutdown_drain_waits_for_registered_workers(self):
+        previous = server.SERVER_STOPPING.is_set()
+        previous_drain = server.SHUTDOWN_DRAIN_SECONDS
+        worker = threading.Thread(target=lambda: None)
+        with server.GENERATION_WORKERS_LOCK:
+            server.GENERATION_WORKERS.add(worker)
+        worker.start()
+        try:
+            server.SHUTDOWN_DRAIN_SECONDS = 1.0
+            drained = server.stop_generation_workers_for_shutdown()
+        finally:
+            server.SHUTDOWN_DRAIN_SECONDS = previous_drain
+            if not previous:
+                server.SERVER_STOPPING.clear()
+        self.assertTrue(drained)
+        self.assertFalse(worker.is_alive())
+
     def test_stale_node_edit_is_detected_as_conflict(self):
         current = {
             "id": "node-1",

@@ -256,9 +256,17 @@ def _request_json(
                 except ValueError:
                     status = 0
                 if result.returncode != 0 or status == 0:
-                    detail = result.stderr.decode("utf-8", errors="replace") if isinstance(result.stderr, bytes) else str(result.stderr)
+                    stderr = (
+                        result.stderr.decode("utf-8", errors="replace")
+                        if isinstance(result.stderr, bytes)
+                        else str(result.stderr or "")
+                    ).strip()
+                    detail = (
+                        f"curl exit={result.returncode}, http={status_text or '0'}"
+                        + (f", stderr={stderr}" if stderr else "")
+                    )
                     raise ProviderOutcomeUncertain(
-                        f"供应商请求已发出，但未收到可确认结果：{detail or 'curl request failed'}"
+                        f"供应商请求已发出，但未收到可确认结果：{detail}"
                     )
                 body_bytes = b""
                 if os.path.isfile(response_path):

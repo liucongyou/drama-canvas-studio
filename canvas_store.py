@@ -5099,6 +5099,19 @@ def list_queued_generation_tasks(limit=100):
     return [dict(zip(columns, row)) for row in rows]
 
 
+def count_active_generation_tasks():
+    """Return the number of tasks whose provider outcome is not settled."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT COUNT(*) FROM generation_tasks "
+            "WHERE status IN ('queued','submitting','running')"
+        ).fetchone()
+    finally:
+        con.close()
+    return int(row[0] or 0) if row else 0
+
+
 def get_active_generation_task_for_node(project_id, node_id):
     """Return a truly active task for one node, never a terminal duplicate."""
     if not project_id or not node_id:
