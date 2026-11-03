@@ -3157,6 +3157,56 @@ def _recover_persisted_result_to_canvas(project_id, node_id, task):
     return bool(committed.get("committed"))
 
 
+def materialize_saved_image_results(limit=100):
+    """Localize already-paid image URLs without creating new generation tasks."""
+    recovered = 0
+    for task in store.list_materializing_image_tasks(limit=limit):
+        task_id = str(task.get("id") or "").strip()
+        project_id = str(task.get("project_id") or "").strip()
+        node_id = str(task.get("node_id") or "").strip()
+        provider_url = str(task.get("provider_result_url") or "").strip()
+        if not task_id or not project_id or not node_id or not provider_url:
+            continue
+        try:
+            provider, model, _ = provider_catalog.resolve_model(
+                task.get("provider"),
+                task.get("model"),
+                "image",
+            )
+        except Exception:
+            provider, model = {}, {}
+        try:
+            local_url = persist_generated_media(
+                provider_url,
+                ".png",
+                provider=provider,
+                model=model,
+            )
+        except Exception as exc:
+            store.update_generation_task(
+                task_id,
+                status="interrupted",
+                phase="结果下载中",
+                error=f"供应商图片已生成，本地下载仍失败：{exc}",
+                delivery_status="pending",
+                finished_at="",
+            )
+            continue
+        if not local_url.startswith("/uploads/"):
+            continue
+        updated = store.update_generation_task(
+            task_id,
+            local_result_url=local_url,
+            delivery_status="materializing",
+            provider_finished_at=(
+                task.get("provider_finished_at") or store._now_iso()
+            ),
+        ) or {**task, "local_result_url": local_url}
+        if _recover_persisted_result_to_canvas(project_id, node_id, updated):
+            recovered += 1
+    return recovered
+
+
 def recover_missing_generated_media(project_id, node_id):
     """Restore a missing local file from its successful provider receipt only."""
     project = store.get_project(project_id)
@@ -8751,8 +8801,25 @@ class Handler(BaseHTTPRequestHandler):
                 provider_url = str(result.get("url") or "")
                 if not provider_url:
                     raise RuntimeError("供应商未返回图片地址，本次生成没有产生新图片")
+                if task_id:
+                    # The paid result is already available. Persist its URL
+                    # before downloading so a local transfer failure can be
+                    # recovered from the same result, never by re-submitting.
+                    store.update_generation_task(
+                        task_id,
+                        _lease_owner=lease_owner,
+                        provider_result_url=provider_url,
+                        provider_finished_at=provider_ready_at,
+                        delivery_status="materializing",
+                        result_ready_at=provider_ready_at,
+                    )
                 try:
-                    local_generated_url = persist_generated_media(provider_url, ".png")
+                    local_generated_url = persist_generated_media(
+                        provider_url,
+                        ".png",
+                        provider=provider,
+                        model=model,
+                    )
                 except Exception as exc:
                     raise provider_client.ProviderOutcomeUncertain(
                         f"供应商已生成图片，但下载新图失败：{exc}"
@@ -9661,6 +9728,14 @@ def main():
             print(f"已恢复 {recovered_provider_tasks} 条供应商任务号记录")
     except Exception as exc:
         print(f"[generation-tasks] 恢复供应商任务号失败：{exc}", file=sys.stderr)
+    try:
+        materialized_images = _run_for_active_tenants(
+            materialize_saved_image_results
+        )
+        if materialized_images:
+            print(f"已恢复 {materialized_images} 个图片生成终态")
+    except Exception as exc:
+        print(f"[generation-tasks] 图片结果续传失败：{exc}", file=sys.stderr)
     try:
         reconciled = _run_for_active_tenants(reconcile_interrupted_generation_nodes)
         if reconciled:

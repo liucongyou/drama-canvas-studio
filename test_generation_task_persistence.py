@@ -1112,6 +1112,54 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(saved["phase"], "结果待确认")
         self.assertEqual(saved["provider_task_id"], "provider-task-still-live")
 
+    def test_saved_image_url_is_materialized_without_new_generation(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("saved-image-result")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "node-image-saved",
+                    "type": "image",
+                    "title": "角色｜图2",
+                    "metadata": {"status": "error"},
+                }],
+                episode_id="EP001",
+            )
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-image-saved",
+                kind="image",
+                provider="ark",
+                model="doubao-seedream-5-0-pro-260628",
+            )
+            canvas_store.finish_generation_task(
+                task["id"],
+                status="interrupted",
+                phase="结果待确认",
+                error="供应商已返回图片，本地下载中断",
+                provider_result_url="https://image.example/saved.png",
+                delivery_status="pending",
+            )
+            with patch.object(
+                server,
+                "persist_generated_media",
+                return_value="/uploads/saved.png",
+            ), patch.object(
+                server,
+                "_recover_persisted_result_to_canvas",
+                return_value=True,
+            ) as recover:
+                count = server.materialize_saved_image_results()
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertEqual(count, 1)
+        self.assertEqual(saved["local_result_url"], "/uploads/saved.png")
+        recover.assert_called_once()
+        self.assertEqual(
+            recover.call_args.args[2]["provider_result_url"],
+            "https://image.example/saved.png",
+        )
+
     def test_fenced_terminal_write_rejects_lost_lease(self):
         with tenant_context.use_context(self.context):
             task = canvas_store.create_generation_task(

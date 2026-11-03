@@ -5112,6 +5112,28 @@ def count_active_generation_tasks():
     return int(row[0] or 0) if row else 0
 
 
+def list_materializing_image_tasks(limit=100):
+    """Return image results whose paid provider URL still needs localization."""
+    con = _connect()
+    columns = [
+        item[0]
+        for item in con.execute(
+            "SELECT * FROM generation_tasks LIMIT 0"
+        ).description
+    ]
+    rows = con.execute(
+        "SELECT * FROM generation_tasks "
+        "WHERE kind='image' "
+        "AND COALESCE(provider_result_url,'')!='' "
+        "AND COALESCE(local_result_url,'')='' "
+        "AND status IN ('interrupted','running','failed','submitting') "
+        "ORDER BY created_at ASC LIMIT ?",
+        (max(1, min(int(limit or 100), 300)),),
+    ).fetchall()
+    con.close()
+    return [dict(zip(columns, row)) for row in rows]
+
+
 def get_active_generation_task_for_node(project_id, node_id):
     """Return a truly active task for one node, never a terminal duplicate."""
     if not project_id or not node_id:

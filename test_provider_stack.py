@@ -164,62 +164,29 @@ class ProviderCatalogTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["url"], "https://example.com/newapi-video.mp4")
 
-    def test_curl_post_parses_body_and_status_separately(self):
-        def fake_run(command, **kwargs):
-            output_path = command[command.index("--output") + 1]
-            with open(output_path, "wb") as handle:
-                handle.write(b'{"id":"task-1","status":"queued"}')
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=b"200",
-                stderr=b"",
-            )
-
-        with patch.object(provider_client.shutil, "which", return_value="curl"), \
-                patch.object(provider_client.subprocess, "run", side_effect=fake_run):
-            result = provider_client._request_json(
-                "POST",
-                "https://provider.example/v1/images/generations",
-                "test-key",
-                {"prompt": "test"},
-                timeout=10,
-            )
-        self.assertEqual(result["id"], "task-1")
-        self.assertEqual(result["status"], "queued")
-
-    def test_curl_transport_failure_keeps_exit_and_http_status(self):
-        def fake_run(command, **kwargs):
-            return subprocess.CompletedProcess(
-                command,
-                28,
-                stdout=b"",
-                stderr=b"Operation timed out",
-            )
+    def test_json_request_uses_single_http_transport_with_timeout(self):
+        response = unittest.mock.MagicMock()
+        response.read.return_value = b'{"id":"task-1"}'
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
 
         with patch.object(
-            provider_client.shutil,
-            "which",
-            return_value="curl",
-        ), patch.object(
-            provider_client.subprocess,
-            "run",
-            side_effect=fake_run,
-        ):
-            with self.assertRaises(provider_client.ProviderOutcomeUncertain) as caught:
-                provider_client._request_json(
-                    "POST",
-                    "https://ark.example/api/v3/images/generations",
-                    "test-key",
-                    {"prompt": "test"},
-                    timeout=10,
-                )
+            provider_client.network_security,
+            "safe_urlopen",
+            return_value=response,
+        ) as open_url:
+            result = provider_client._request_json(
+                "POST",
+                "https://ark.example/api/v3/images/generations",
+                "test-key",
+                {"prompt": "test"},
+                timeout=37,
+            )
 
-        message = str(caught.exception)
-        self.assertIn("curl exit=28", message)
-        self.assertIn("http=0", message)
-        self.assertIn("Operation timed out", message)
-        self.assertNotIn("curl request failed", message)
+        self.assertEqual(result["id"], "task-1")
+        open_url.assert_called_once()
+        self.assertEqual(open_url.call_args.kwargs["timeout"], 37)
+
 
     def test_aistars_image_polls_task_endpoint_and_downloads_protected_artifact(self):
         provider = {
