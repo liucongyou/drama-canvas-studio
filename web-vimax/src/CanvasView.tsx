@@ -124,7 +124,6 @@ import {
 } from './api';
 import {useDialogFocusTrap} from './useDialogFocusTrap';
 import {dialog} from './GDialog';
-import {reconcileSucceededNode} from './generationReconcile';
 import {taskOutcomePresentation} from './taskOutcomePresentation';
 import {qualityFailureDetails, qualityFailureSummary} from './qualityReportPresentation';
 import {
@@ -10822,7 +10821,12 @@ function CanvasViewInner({
       try {
         // 先把上传节点真正落库，再绑定引用。否则引用更新会与节点保存竞态，
         // 刷新后只有引用、没有被引用的上传节点。
-        await saveCanvasMediaNodes(session, [newNode], currentEp);
+        await saveCanvasMediaNodes(
+          session,
+          [newNode],
+          currentEp,
+          {includeMediaState: true},
+        );
         addRefById(target, newNode.id);
       } catch (error) {
         mediaNodesRef.current = previous;
@@ -10931,7 +10935,12 @@ function CanvasViewInner({
         };
         setMediaNodes((prev) => [...prev, node]);
         try {
-          const saved = await saveCanvasMediaNodes(session, [node], currentEp);
+          const saved = await saveCanvasMediaNodes(
+            session,
+            [node],
+            currentEp,
+            {includeMediaState: true},
+          );
           const savedNode = saved.updates?.find((item) => item.id === node.id);
           if (savedNode) {
             setMediaNodes((prev) => prev.map((item) => item.id === node.id
@@ -11144,6 +11153,57 @@ function CanvasViewInner({
     let reconnectTimer: number | null = null;
     let reconnectAttempts = 0;
 
+    const refreshCurrentEpisodeFacts = async () => {
+      if (!currentEp) return;
+      const [remoteNodes, tasks] = await Promise.all([
+        getCanvasMediaNodes(session, currentEp),
+        taskCenterOpen
+          ? getGenerationTasks(session, 80, currentEp).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      if (disposed) return;
+      const localById = new Map(
+        mediaNodesRef.current.map((node) => [node.id, node]),
+      );
+      setMediaNodes(remoteNodes.map((remote) => {
+        const local = localById.get(remote.id);
+        if (!local) return remote;
+        const remoteParams = remote.params || {};
+        return {
+          ...local,
+          ...remote,
+          prompt: local.prompt,
+          params: {
+            ...remoteParams,
+            ...(local.params || {}),
+            ...(remoteParams.mediaVersions
+              ? {
+                  mediaVersions: remoteParams.mediaVersions,
+                  mediaVersionIndex: remoteParams.mediaVersionIndex,
+                }
+              : {}),
+            ...(remoteParams.videoVersions
+              ? {
+                  videoVersions: remoteParams.videoVersions,
+                  videoVersionIndex: remoteParams.videoVersionIndex,
+                }
+              : {}),
+          },
+          x: local.x,
+          y: local.y,
+          positionUpdatedAt: local.positionUpdatedAt,
+          updatedAt: remote.updatedAt || local.updatedAt,
+          mediaAvailability: remote.mediaUrl === local.mediaUrl
+            ? local.mediaAvailability
+            : 'unknown',
+        };
+      }));
+      if (tasks && !disposed) {
+        taskLoadGenerationRef.current += 1;
+        setGenerationTasks(tasks);
+      }
+    };
+
     const refreshAfterTerminalEvent = () => {
       if (terminalRefreshTimer !== null) {
         window.clearTimeout(terminalRefreshTimer);
@@ -11152,8 +11212,9 @@ function CanvasViewInner({
         terminalRefreshTimer = null;
         if (disposed) return;
         // Events wake the client; persisted task/node projections remain the
-        // sole authority for both the card and Task Center.
-        void refreshWorkspaceFacts().catch(() => {});
+        // sole authority for both the card and Task Center. Re-read only the
+        // current episode's compact projections instead of the full workspace.
+        void refreshCurrentEpisodeFacts().catch(() => {});
       }, 120);
     };
 
@@ -11212,7 +11273,7 @@ function CanvasViewInner({
         reconnectTimer = window.setTimeout(() => {
           reconnectTimer = null;
           open();
-          void refreshWorkspaceFacts().catch(() => {});
+          void refreshCurrentEpisodeFacts().catch(() => {});
         }, delay);
       };
       source.addEventListener('media', (event) => applyEvent((event as MessageEvent<string>).data));
@@ -11234,7 +11295,7 @@ function CanvasViewInner({
       source?.close();
       source = null;
     };
-  }, [session, currentEp, refreshWorkspaceFacts]);
+  }, [session, currentEp, taskCenterOpen]);
 
   useEffect(() => {
     let lastRefreshAt = 0;

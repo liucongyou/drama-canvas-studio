@@ -1605,33 +1605,6 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
   };
 }
 
-/**
- * Normalize legacy persisted states at the read boundary. This function does
- * not derive generation outcomes from the task ledger; the backend already
- * performed that projection in workspace-nodes.
- */
-function projectBackendMediaState(
-  nodes: CanvasMediaNode[],
-): CanvasMediaNode[] {
-  return nodes.map((node) => {
-    if (
-      node.status === 'generating'
-      && node.mediaUrl
-      && !node.providerTaskStatus
-    ) {
-      return {...node, status: 'done'};
-    }
-    if (node.status === 'failed' && node.providerTaskStatus === 'uncertain') {
-      return {
-        ...node,
-        providerTaskPhase: node.providerTaskPhase || '结果待确认',
-        lastError: node.lastError || '供应商结果待确认，请重新生成或联系供应商核对',
-      };
-    }
-    return node;
-  });
-}
-
 // 用户显式移除过的引用（targetId::refNodeId）持久化黑名单。
 // 为什么需要：payload.connections（后端关系表）在 getCanvasMediaNodes 里会被重新合并进 params.refs，
 // 所以只在画布上剪断连线 / 在弹窗里点 ✕ 都不够 —— 刷新一次就被 connections 补回来了，
@@ -1810,13 +1783,14 @@ export async function getCanvasMediaNodes(
     ])];
     return {...mn, refIds, params};
   });
-  return projectBackendMediaState(converted);
+  return converted;
 }
 
 export async function saveCanvasMediaNodes(
   sessionId: string,
   nodes: CanvasMediaNode[],
   episodeId: string,
+  options?: {includeMediaState?: boolean},
 ) {
   const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
   if (!normalizedEpisode) {
@@ -1836,6 +1810,7 @@ export async function saveCanvasMediaNodes(
   //   且每次只覆盖位置、不覆盖其它字段，所以极难察觉）。
   //   修法：**只提交真正变过的字段**。位置没变就不带 position，
   //   后端是深合并（缺 field 即保留原值），于是"没动过的东西永远不会被写坏"。
+  const includeMediaState = options?.includeMediaState === true;
   const payload = nodes.map((n) => {
     // 用 refIds 长度等轻量信号判断不靠谱；这里直接显式标记：
     // 调用方若只改了 metadata（prompt/refs/status），会通过 patchMediaNode 走单节点路径。
@@ -1849,32 +1824,7 @@ export async function saveCanvasMediaNodes(
       // field for existing nodes; drag/undo persistence uses the dedicated
       // /nodes/positions endpoint instead.
       position: {x: n.x ?? 0, y: n.y ?? 0},
-      metadata: {
-        prompt: n.prompt,
-        status: n.status || 'idle',
-        ...(n.episodeId ? {episodeId: n.episodeId} : {}),
-        content: mediaStorageUrl(n.mediaUrl),
-        refs: n.params?.refs || [],
-        params: normalizeParamsForStorage(n.params) || {},
-        ...(n.source ? {source: n.source} : {}),
-        ...(n.storage !== undefined ? {storage: n.storage} : {}),
-        ...(n.storageError !== undefined ? {storageError: n.storageError} : {}),
-        ...(n._mediaImport === true ? {_mediaImport: true} : {}),
-        ...(n._mediaVersionSelection === true ? {_mediaVersionSelection: true} : {}),
-        ...(n.generationStartedAt ? {generationStartedAt: n.generationStartedAt} : {}),
-        ...(n.generationFinishedAt ? {generationFinishedAt: n.generationFinishedAt} : {}),
-        ...(n.providerTaskStatus ? {providerTaskStatus: n.providerTaskStatus} : {}),
-        ...(n.providerTaskPhase ? {providerTaskPhase: n.providerTaskPhase} : {}),
-        ...(n.providerTaskProgress !== undefined
-          ? {providerTaskProgress: n.providerTaskProgress}
-          : {}),
-        ...(n.actualDuration !== undefined ? {actualDuration: n.actualDuration} : {}),
-        ...(n.videoValidation ? {videoValidation: n.videoValidation} : {}),
-        // JSON.stringify drops undefined keys, so a successful retry used to
-        // leave the previous 429 message in backend metadata forever. Send an
-        // explicit null for non-failed states so the server-side merge clears it.
-        lastError: n.status === 'failed' ? (n.lastError || '生成失败') : null,
-      },
+      metadata: editableMetadataForStorage(n, includeMediaState),
     };
   });
   const result = await request<{
@@ -1891,6 +1841,99 @@ export async function saveCanvasMediaNodes(
     body: JSON.stringify({nodes: payload, episodeId: normalizedEpisode}),
   });
   return result;
+}
+
+const GENERATION_OWNED_MEDIA_PARAMS = new Set([
+  'mediaVersions',
+  'mediaVersionIndex',
+  'videoVersions',
+  'videoVersionIndex',
+  'thumbUrl',
+]);
+
+function editableParamsForStorage(
+  params: CanvasMediaParams | undefined,
+  includeMediaState: boolean,
+): CanvasMediaParams {
+  const normalized = normalizeParamsForStorage(params) || {};
+  if (includeMediaState) return normalized;
+  return Object.fromEntries(
+    Object.entries(normalized).filter(
+      ([key]) => !GENERATION_OWNED_MEDIA_PARAMS.has(key),
+    ),
+  ) as CanvasMediaParams;
+}
+
+/**
+ * Ordinary node edits only contain user-editable facts. Media bytes, storage
+ * receipts, task state and generated versions are written by the backend
+ * task pipeline. New local uploads are the one explicit exception.
+ */
+function editableMetadataForStorage(
+  node: CanvasMediaNode,
+  includeMediaState: boolean,
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {
+    prompt: node.prompt,
+    refs: node.params?.refs || [],
+    params: editableParamsForStorage(node.params, includeMediaState),
+  };
+  if (node.episodeId) metadata.episodeId = node.episodeId;
+  if (!includeMediaState) return metadata;
+  return {
+    ...metadata,
+    status: node.status || 'idle',
+    content: mediaStorageUrl(node.mediaUrl),
+    ...(node.source ? {source: node.source} : {}),
+    ...(node.storage !== undefined ? {storage: node.storage} : {}),
+    ...(node.storageError !== undefined ? {storageError: node.storageError} : {}),
+    ...(node.actualDuration !== undefined
+      ? {actualDuration: node.actualDuration}
+      : {}),
+    ...(node.videoValidation ? {videoValidation: node.videoValidation} : {}),
+  };
+}
+
+function mediaPatchMetadataForStorage(
+  node: CanvasMediaNode,
+): Record<string, unknown> {
+  const localImport = node._mediaImport === true;
+  const versionSelection = node._mediaVersionSelection === true;
+  const includeMediaState = localImport || versionSelection;
+  const metadata = editableMetadataForStorage(node, localImport);
+  if (localImport) {
+    return {
+      ...metadata,
+      _mediaImport: true,
+    };
+  }
+  if (versionSelection) {
+    const params = metadata.params as CanvasMediaParams;
+    return {
+      ...metadata,
+      _mediaVersionSelection: true,
+      content: mediaStorageUrl(node.mediaUrl),
+      status: node.status || 'idle',
+      ...(node.source ? {source: node.source} : {}),
+      ...(node.storage !== undefined ? {storage: node.storage} : {}),
+      ...(node.providerResultUrl !== undefined
+        ? {providerResultUrl: node.providerResultUrl}
+        : {}),
+      ...(node.actualDuration !== undefined
+        ? {actualDuration: node.actualDuration}
+        : {}),
+      params: {
+        ...params,
+        ...(node.params?.mediaVersionIndex !== undefined
+          ? {mediaVersionIndex: node.params.mediaVersionIndex}
+          : {}),
+        ...(node.params?.videoVersionIndex !== undefined
+          ? {videoVersionIndex: node.params.videoVersionIndex}
+          : {}),
+      },
+    };
+  }
+  return metadata;
 }
 
 export type CanvasPositionMove = {
@@ -2037,31 +2080,7 @@ export async function patchMediaNodesFields(
       title: node.title,
       baseUpdatedAt: node.updatedAt,
       // 特意不传 position：让后端保留库里的当前坐标
-      metadata: {
-        prompt: node.prompt,
-        status: node.status || 'idle',
-        content: mediaStorageUrl(node.mediaUrl),
-        refs: node.params?.refs || [],
-        params: normalizeParamsForStorage(node.params) || {},
-        ...(node.source ? {source: node.source} : {}),
-        ...(node.storage !== undefined ? {storage: node.storage} : {}),
-        ...(node.providerResultUrl !== undefined
-          ? {providerResultUrl: node.providerResultUrl}
-          : {}),
-        ...(node.storageError !== undefined ? {storageError: node.storageError} : {}),
-        ...(node._mediaImport === true ? {_mediaImport: true} : {}),
-        ...(node._mediaVersionSelection === true ? {_mediaVersionSelection: true} : {}),
-        ...(node.generationStartedAt ? {generationStartedAt: node.generationStartedAt} : {}),
-        ...(node.generationFinishedAt ? {generationFinishedAt: node.generationFinishedAt} : {}),
-        ...(node.providerTaskStatus ? {providerTaskStatus: node.providerTaskStatus} : {}),
-        ...(node.providerTaskPhase ? {providerTaskPhase: node.providerTaskPhase} : {}),
-        ...(node.providerTaskProgress !== undefined
-          ? {providerTaskProgress: node.providerTaskProgress}
-          : {}),
-        ...(node.actualDuration !== undefined ? {actualDuration: node.actualDuration} : {}),
-        ...(node.videoValidation ? {videoValidation: node.videoValidation} : {}),
-        lastError: node.status === 'failed' ? (node.lastError || '生成失败') : null,
-      },
+      metadata: mediaPatchMetadataForStorage(node),
     })),
   };
   await request(`/api/projects/${encodeURIComponent(sessionId)}/nodes`, {

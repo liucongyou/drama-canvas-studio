@@ -729,7 +729,7 @@ describe('api request recovery', () => {
     expect(body.positions[0].basePositionUpdatedAt).toBeUndefined();
   });
 
-  it('marks generic media-node position as creation-only, not a position write', async () => {
+  it('keeps ordinary node saves free of generation-owned state', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,
       nodes: 1,
@@ -746,15 +746,42 @@ describe('api request recovery', () => {
       kind: 'image',
       title: '角色｜赵铁柱（图1）',
       prompt: '角色定妆',
-      status: 'idle',
+      status: 'failed',
+      mediaUrl: '/uploads/stale.png',
+      lastError: 'stale task error',
+      generationStartedAt: '2026-10-28T13:59:00Z',
+      generationFinishedAt: '2026-10-28T14:00:00Z',
+      providerTaskStatus: 'failed',
+      providerTaskPhase: '生成失败',
+      providerTaskProgress: 50,
       x: 320,
       y: 240,
       updatedAt: '2026-10-28T14:00:00Z',
+      params: {
+        ratio: '16:9',
+        mediaVersions: [{url: '/uploads/stale.png'}],
+        mediaVersionIndex: 0,
+      },
     }], 'EP002');
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.nodes[0].position).toEqual({x: 320, y: 240});
     expect(body.nodes[0].positionWrite).toBeUndefined();
+    expect(body.nodes[0].metadata).toEqual({
+      prompt: '角色定妆',
+      refs: [],
+      params: {ratio: '16:9'},
+    });
+    expect(body.nodes[0].metadata).not.toHaveProperty('status');
+    expect(body.nodes[0].metadata).not.toHaveProperty('content');
+    expect(body.nodes[0].metadata).not.toHaveProperty('lastError');
+    expect(body.nodes[0].metadata).not.toHaveProperty('generationStartedAt');
+    expect(body.nodes[0].metadata).not.toHaveProperty('generationFinishedAt');
+    expect(body.nodes[0].metadata).not.toHaveProperty('providerTaskStatus');
+    expect(body.nodes[0].metadata).not.toHaveProperty('providerTaskPhase');
+    expect(body.nodes[0].metadata).not.toHaveProperty('providerTaskProgress');
+    expect(body.nodes[0].metadata.params).not.toHaveProperty('mediaVersions');
+    expect(body.nodes[0].metadata.params).not.toHaveProperty('mediaVersionIndex');
   });
 
   it('does not show a sequence video as a generation ref unless the prompt names it', async () => {
@@ -870,7 +897,7 @@ describe('api request recovery', () => {
     ]);
   });
 
-  it('persists the storage receipt on local media nodes', async () => {
+  it('omits storage and task receipts from ordinary metadata patches', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,
     }), {
@@ -901,8 +928,57 @@ describe('api request recovery', () => {
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.episodeId).toBe('EP010');
-    expect(body.nodes[0].metadata.storage).toEqual(storage);
-    expect(body.nodes[0].metadata.storageError).toBe('');
+    expect(body.nodes[0].metadata).toMatchObject({
+      prompt: '',
+      refs: [],
+      params: {},
+    });
+    expect(body.nodes[0].metadata).not.toHaveProperty('status');
+    expect(body.nodes[0].metadata).not.toHaveProperty('content');
+    expect(body.nodes[0].metadata).not.toHaveProperty('storage');
+    expect(body.nodes[0].metadata).not.toHaveProperty('storageError');
+  });
+
+  it('persists receipts only for an explicit local media import', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const storage = {
+      status: 'stored',
+      provider: 'aliyun_oss',
+      bucket: 'yjhuabu',
+      key: 'drama-canvas/image/hash.jpg',
+    };
+
+    await patchMediaNodesFields('project-1', [{
+      id: 'image-1',
+      kind: 'image',
+      title: '本地图片',
+      prompt: '',
+      status: 'done',
+      mediaUrl: '/uploads/hash.jpg',
+      storage,
+      storageError: '',
+      source: {type: 'local', fileName: 'hash.jpg'},
+      x: 0,
+      y: 0,
+      updatedAt: '2026-10-31T01:00:00Z',
+      _mediaImport: true,
+    }], 'EP010');
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.nodes[0].metadata).toMatchObject({
+      _mediaImport: true,
+      status: 'done',
+      content: '/uploads/hash.jpg',
+      storage,
+      storageError: '',
+      source: {type: 'local', fileName: 'hash.jpg'},
+    });
   });
 
   it('projects an active task onto the initial media snapshot atomically', async () => {
@@ -1188,13 +1264,12 @@ describe('api request recovery', () => {
     const workspace = await getCanvasWorkspace('project-1', 'EP001');
 
     expect(workspace.mediaNodes[0]).toMatchObject({
-      status: 'done',
+      status: 'generating',
       mediaUrl: '/uploads/done.jpg',
-      lastError: undefined,
     });
   });
 
-  it('projects a persisted uncertain node as a visible terminal result', async () => {
+  it('does not synthesize an uncertain node message in the frontend', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
       const body = String(url).includes('/api/generation-tasks')
         ? {tasks: []}
@@ -1227,8 +1302,8 @@ describe('api request recovery', () => {
     expect(workspace.mediaNodes[0]).toMatchObject({
       status: 'failed',
       providerTaskStatus: 'uncertain',
-      providerTaskPhase: '结果待确认',
     });
+    expect(workspace.mediaNodes[0].providerTaskPhase).toBeUndefined();
   });
 
   it('does not use another project episode when switching projects', async () => {
@@ -1641,7 +1716,7 @@ describe('api request recovery', () => {
           {url: 'https://yjapi.pduoduo.vip/uploads/generated.png'},
         ],
       },
-    }], 'EP002');
+    }], 'EP002', {includeMediaState: true});
 
     const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1].body));
     expect(requestBody.episodeId).toBe('EP002');
