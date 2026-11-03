@@ -8127,6 +8127,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def _generate(self, pid, proj, node, task_id=None, lease_owner=""):
         key = (str(pid), str(node.get("id") or ""))
+        if task_id:
+            # Resolve the model in the originating HTTP tenant before a worker is
+            # allowed to start. This turns a configuration/visibility mismatch
+            # into one immediate, actionable error instead of a queued failure.
+            metadata = node.get("metadata") or {}
+            params = metadata.get("params") or {}
+            provider_catalog.resolve_model(
+                str(params.get("provider") or metadata.get("provider") or "").strip()
+                or None,
+                str(params.get("model") or metadata.get("model") or "").strip()
+                or None,
+                str(node.get("type") or ""),
+                require_api_key=False,
+            )
         # The SQLite partial unique index already guarantees one active task
         # per node. Do not layer a process-local boolean lock on top: a worker
         # can otherwise reject its own freshly persisted task as a duplicate.
