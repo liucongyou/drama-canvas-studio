@@ -671,6 +671,8 @@ export type QualityReportDimension = {
   weight: number;
   passed: boolean;
   message: string;
+  segment_number?: number;
+  detail?: string;
 };
 export type QualityReport = {
   available: boolean;
@@ -2480,9 +2482,37 @@ export async function saveCanvasShot(sessionId: string, shotIdx: number, patch: 
 }
 
 // ---------- quality report（挂接机检 → QualityReport） ----------
-async function gateCheck(sessionId: string, epId?: string | null): Promise<{passed: boolean; results: {ok: boolean; title: string}[]}> {
+type GateCheckResult = {
+  ok: boolean;
+  title: string;
+  imageOk?: boolean;
+  audioOk?: boolean;
+  script?: string[];
+  linked?: string[];
+  voiceScript?: string[];
+  voiceRefs?: string[];
+  voiceLinked?: string[];
+};
+
+async function gateCheck(sessionId: string, epId?: string | null): Promise<{passed: boolean; results: GateCheckResult[]}> {
   const suffix = epId ? `?episodeId=${encodeURIComponent(epId)}` : '';
   return request(`/api/projects/${encodeURIComponent(sessionId)}/gate-check${suffix}`, {method: 'POST', body: '{}'});
+}
+
+function gateCheckMismatchDetail(result: GateCheckResult): string {
+  const reasons: string[] = [];
+  if (result.imageOk === false) {
+    const script = (result.script || []).join('、') || '无';
+    const linked = (result.linked || []).join('、') || '无';
+    reasons.push(`画面引用不一致（稿面 ${script}；实挂 ${linked}）`);
+  }
+  if (result.audioOk === false) {
+    const script = (result.voiceScript || []).join('、') || '无';
+    const refs = (result.voiceRefs || []).join('、') || '无';
+    const linked = (result.voiceLinked || []).join('、') || '无';
+    reasons.push(`音色挂接不一致（稿面 ${script}；音色引用 ${refs}；实挂 ${linked}）`);
+  }
+  return reasons.join('；');
 }
 
 export async function getQualityReport(sessionId: string, epId?: string | null): Promise<QualityReport> {
@@ -2495,8 +2525,18 @@ export async function getQualityReport(sessionId: string, epId?: string | null):
   const fails = (g.results || []).filter(r => !r.ok);
   const passCount = Math.max(0, segs - fails.length);
   const dimensions: Record<string, QualityReportDimension> = {};
+  const failureDetails = new Map<string, string>();
   (g.results || []).forEach((r, i) => {
-    dimensions[`段${i + 1}·挂接`] = {score: r.ok ? 100 : 0, weight: 1, passed: r.ok, message: r.title};
+    const detail = r.ok ? '' : gateCheckMismatchDetail(r);
+    if (detail) failureDetails.set(r.title, detail);
+    dimensions[`段${i + 1}·挂接`] = {
+      score: r.ok ? 100 : 0,
+      weight: 1,
+      passed: r.ok,
+      message: r.title,
+      segment_number: i + 1,
+      detail,
+    };
   });
   return {
     available: true,
@@ -2509,7 +2549,11 @@ export async function getQualityReport(sessionId: string, epId?: string | null):
     levels: {fail: fails.length, warn: 0, info: 0},
     dimensions,
     summary: g.passed ? '挂接机检全部 PASS，可以生成' : '存在段级挂接不一致，建议核对后再生成',
-    top_issues: fails.map(f => f.title),
+    top_issues: fails.map(f => (
+      failureDetails.get(f.title)
+        ? `${f.title}：${failureDetails.get(f.title)}`
+        : f.title
+    )),
     revision_suggestions: fails.length ? ['回到投喂稿修正 @//图 引用，重新导入后机检'] : [],
   };
 }

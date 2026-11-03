@@ -126,6 +126,7 @@ import {useDialogFocusTrap} from './useDialogFocusTrap';
 import {dialog} from './GDialog';
 import {reconcileSucceededNode} from './generationReconcile';
 import {taskOutcomePresentation} from './taskOutcomePresentation';
+import {qualityFailureDetails, qualityFailureSummary} from './qualityReportPresentation';
 import {
   generationDurationLabel,
   generationPhaseLabel,
@@ -2757,19 +2758,19 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   // 右下角拖拽缩放：过程中先用本地尺寸（避免每帧写库 + 整树重算），松手才提交
   const [dragSize, setDragSize] = useState<{w: number; h: number} | null>(null);
   const resizeRef = useRef<{sx: number; sy: number; w: number; h: number; zoom: number; cur: {w: number; h: number}} | null>(null);  // 单击延迟打开弹窗：留一个双击窗口，双击进入编辑就取消（否则双击会先弹窗）
-  // 单击延迟打开弹窗：留一个双击窗口，双击进入编辑就取消（否则双击会先弹窗）
+  // 图片/视频单击立即打开。文本节点仍保留双击进入行内编辑的窗口。
   const clickTimer = useRef<number | null>(null);
   // （编组双击判定已移除：组内卡片单击即单卡 + 弹窗，批量选择改由组框承担）
   useEffect(() => () => {
     if (clickTimer.current) window.clearTimeout(clickTimer.current);
   }, []);
-  const scheduleOpen = () => {
+  const scheduleOpen = (delayMs = 240) => {
     if (isNodeOpenSuppressed()) return;
     if (clickTimer.current) window.clearTimeout(clickTimer.current);
     clickTimer.current = window.setTimeout(() => {
       clickTimer.current = null;
       if (!isNodeOpenSuppressed()) onEdit(node);
-    }, 240);
+    }, delayMs);
   };
   const cancelOpen = () => {
     if (clickTimer.current) { window.clearTimeout(clickTimer.current); clickTimer.current = null; }
@@ -3437,8 +3438,16 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           if (groupMembers && groupMembers.length >= 2 && onSelectGroup) {
             onSelectGroup([node.id]);
           }
-          if (isText || node.kind === 'image' || node.kind === 'video') {
-            if (!editingText) scheduleOpen();
+          if (isText) {
+            if (!editingText) scheduleOpen(240);
+            return;
+          }
+          if (node.kind === 'image' || node.kind === 'video') {
+            // A second click to open a different card was often swallowed while
+            // the previous modal waited for its 170ms exit animation. There is
+            // no double-click action for media cards that needs a click delay,
+            // so open immediately and keep the state transition single-source.
+            if (!editingText) onEdit(node);
             return;
           }
           onEdit(node);
@@ -4158,6 +4167,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   // 弹窗贴卡片下方还是上方：由渲染后的实际高度决定（下方放不下就翻上去）
   // 弹窗相对卡片的定位形态：below（卡片下方，默认）/ above（翻到上方）/ center（夹在视口中央）
   const [popupMode, setPopupMode] = useState<'below' | 'above' | 'center'>('below');
+  const popupModeKeyRef = useRef('');
   const barRef = useRef<HTMLDivElement>(null);
   useDialogFocusTrap(barRef);
   const promptAreaRef = useRef<HTMLDivElement>(null);
@@ -4212,8 +4222,22 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const canvasPickRef = useRef(canvasPickOpen); canvasPickRef.current = canvasPickOpen;
   const requestClose = useCallback((reason: 'preserve' | 'clear' = 'preserve') => {
     if (closing) return;
+    // Let the canvas accept the next click immediately. The DOM is removed on
+    // animation end for the visual fade, but it no longer owns an interaction
+    // lock during that 120ms.
     setClosing(true);
-    closeTimerRef.current = window.setTimeout(() => onClose(reason), 170);
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+    const el = barRef.current;
+    const finish = () => {
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = null;
+      }
+      onClose(reason);
+    };
+    if (el) el.addEventListener('animationend', finish, {once: true});
+    // Unlock the canvas immediately; only the visual exit is deferred.
+    closeTimerRef.current = window.setTimeout(finish, 120);
   }, [closing, onClose]);
   useEffect(() => () => {
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
@@ -4374,12 +4398,27 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
     if (!node || !anchor || taExpanded) { setPopupMode('below'); return; }
     const el = barRef.current;
     if (!el) return;
-    const need = el.scrollHeight;                       // 内容真实需要的高度
-    const spaceBelow = window.innerHeight - (anchor.y + anchor.h) - 12 - 8;
-    if (spaceBelow >= need) { setPopupMode('below'); return; }
-    const spaceAbove = anchor.y - 12 - 8;
-    // 上方也放不下（差 24px 以上）→ 居中夹紧，别硬翻上去顶出屏幕
-    setPopupMode(spaceAbove >= need ? 'above' : (spaceAbove > spaceBelow ? 'center' : 'center'));
+    const modeKey = [
+      node.id,
+      taExpanded ? 'expanded' : 'normal',
+      Math.round(anchor.y),
+      Math.round(anchor.h),
+      refCount,
+      window.innerHeight,
+    ].join(':');
+    if (popupModeKeyRef.current === modeKey) return;
+    popupModeKeyRef.current = modeKey;
+    // One synchronous read per meaningful popup-size change. Previously this
+    // ran for every unrelated `node` identity change and could force several
+    // layouts during the click-to-open frame.
+    requestAnimationFrame(() => {
+      if (!barRef.current) return;
+      const need = barRef.current.scrollHeight;
+      const viewportHeight = window.innerHeight;
+      const spaceBelow = viewportHeight - (anchor.y + anchor.h) - 20;
+      if (spaceBelow >= need) setPopupMode('below');
+      else setPopupMode(anchor.y - 20 >= need ? 'above' : 'center');
+    });
   }, [node, anchor, taExpanded, refCount]);
 
   const nodeKind = node?.kind ?? 'image';
@@ -10374,7 +10413,12 @@ function CanvasViewInner({
       const rep = await recomputeQualityReport(session, currentEp);
       setQualityReport(rep);
       const failCount = Number(rep.levels?.fail || 0);
-      setToast(rep.passed ? '挂接机检已通过' : `挂接机检：${failCount} 段未通过`);
+      const failures = qualityFailureDetails(rep);
+      setToast(
+        rep.passed
+          ? '挂接机检已通过'
+          : `挂接机检：${failCount} 段未通过 · ${qualityFailureSummary(failures)}`,
+      );
     } catch {
       setToast('质量自评重算失败');
     } finally {
@@ -14847,6 +14891,17 @@ function CanvasViewInner({
 
   // 打开弹窗时：把画布上连到它的资产图/音色预填进 params.refs / voiceRef
   const openMediaModal = useCallback((node: CanvasMediaNode) => {
+    // Open first. Reference reconciliation and DOM measurement are secondary
+    // work; doing them before setEditNodeId delayed every click by hundreds
+    // of milliseconds and made a second click look necessary.
+    const cardEl = document.querySelector(`[data-id="${CSS.escape(`media-${node.id}`)}"] .canvas-media-card`) as HTMLElement | null;
+    if (cardEl) {
+      const r = cardEl.getBoundingClientRect();
+      setModalAnchor({x: r.left, y: r.top, w: r.width, h: r.height});
+    } else {
+      setModalAnchor(null);
+    }
+    setEditNodeId(node.id);
     // ★ 打开弹窗时必须把该节点置为选中（用户反馈"单击节点弹出输入框了却没有流光"）。
     //   根因：卡片的 onClick 里做了 e.stopPropagation()，React Flow 收不到这次点击，
     //   node.selected 永远是 false；而连线流光（is-linked）是靠端点 selected 驱动的
@@ -14875,7 +14930,10 @@ function CanvasViewInner({
       });
       return changed ? next : prev;
     });
-    // 文本节点也接入：AI 生成的上下文可以来自相连的其它文本/资产节点
+    // 文本节点也接入：AI 生成的上下文可以来自相连的其它文本/资产节点。
+    // Defer the potentially expensive edge scan to the next frame; opening the
+    // modal must not wait for it.
+    window.requestAnimationFrame(() => {
     if (node.kind === 'video' || node.kind === 'audio' || node.kind === 'text') {
       const refs = [...(node.params?.refs || [])];
       const nodeFlowId = `media-${node.id}`;
@@ -14939,14 +14997,14 @@ function CanvasViewInner({
         updateMediaNode(node.id, {params: merged});
       }
     }
-    // 弹窗贴卡片下方：读卡片实际渲染位置（滚动后 getBoundingClientRect 是最新的）
-    const cardEl = document.querySelector(`[data-id="${CSS.escape(`media-${node.id}`)}"] .canvas-media-card`) as HTMLElement | null;
-    setModalAnchor(cardEl ? (() => {
-      const r = cardEl.getBoundingClientRect();
-      return {x: r.left, y: r.top, w: r.width, h: r.height};
-    })() : null);
-    setEditNodeId(node.id);
+    });
   }, [allEdges, mediaNodes, modelCatalog, updateMediaNode, setNodes, groupMembersOf]);
+  const modalCandidates = useMemo(
+    () => editNodeId
+      ? mediaNodes.filter((node) => node.id !== editNodeId)
+      : mediaNodes,
+    [mediaNodes, editNodeId],
+  );
 
   const onGenerateMediaNode = useCallback((node: CanvasMediaNode) => {
     if (!currentEp) {
@@ -16351,6 +16409,10 @@ function CanvasViewInner({
       ? '挂接通过'
       : `挂接 ${Number(qualityReport.levels?.fail || 0)} 段未通过`
     : '未检查挂接';
+  const qualityFailures = useMemo(
+    () => qualityFailureDetails(qualityReport),
+    [qualityReport],
+  );
 
   const canvasHeaderBody = (
     <div className="workspace-title-row">
@@ -16381,6 +16443,43 @@ function CanvasViewInner({
                 <div className="canvas-status-row"><span>生产统计</span><strong>{canvas && canvas.shots.length > 0 ? `${effectiveSegments.length} 段 · ${canvas.shots.length} 镜头 · ${canvas.shots.filter((s) => s.clip_url).length} 已出片` : '暂无分镜'}</strong></div>
                 <div className="canvas-status-row"><span>完成率</span><strong>{completionPercent}%</strong></div>
                 <div className="canvas-status-row"><span>关键帧</span><strong>{canvas ? canvas.shots.filter((s) => s.keyframe_url).length : 0}</strong></div>
+                {qualityFailures.length > 0 && (
+                  <div className="canvas-status-failures">
+                    <div className="canvas-status-failures-head">未通过段</div>
+                    {qualityFailures.map((failure) => {
+                      const video = mediaNodes.find((node) => (
+                        node.kind === 'video'
+                        && (
+                          node.title === failure.title
+                          || node.title === failure.segmentLabel
+                          || (failure.segmentNumber !== null
+                            && node.title.includes(`段${failure.segmentNumber} `))
+                        )
+                      ));
+                      return (
+                        <button
+                          type="button"
+                          className="canvas-status-failure"
+                          key={failure.dimension}
+                          onClick={() => {
+                            if (!video) return;
+                            setOpenMenu(null);
+                            locateHit({
+                              kind: '段',
+                              label: failure.segmentLabel,
+                              nodeId: `media-${video.id}`,
+                            });
+                          }}
+                          disabled={!video}
+                          title={failure.detail || failure.segmentLabel}
+                        >
+                          <span>{failure.segmentLabel}</span>
+                          {failure.detail && <small>{failure.detail}</small>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
                 <button
                   type="button"
                   className="canvas-status-check"
@@ -18234,7 +18333,7 @@ function CanvasViewInner({
       {/* 媒体节点编辑弹窗（Portal 到 body，浮层于画布之上） */}
       <MediaNodeModal
         node={editNode}
-        assets={mediaNodes.filter(a => a.id !== editNode?.id)}
+        assets={modalCandidates}
         edges={allEdges}
         catalog={modelCatalog}
         onChange={updateMediaNode}
