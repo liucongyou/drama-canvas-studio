@@ -2689,6 +2689,56 @@ html[data-theme='dark'][data-variant='immersive']{
   object-position:center;
   background:#090b0f;
 }
+.canvas-video-cover-frame{
+  position:absolute;
+  inset:0;
+  z-index:1;
+  display:block;
+  border-radius:11px;
+  overflow:hidden;
+  background:var(--v-surface-sunken);
+}
+.canvas-video-cover-frame > .canvas-video-lazy-poster{
+  opacity:0;
+  transition:opacity 180ms ease;
+}
+.canvas-video-cover-frame > .canvas-video-lazy-poster.is-media-loaded,
+.canvas-video-cover-frame.is-loaded > .canvas-video-lazy-poster{
+  opacity:1;
+}
+.canvas-video-cover-frame > .canvas-image-loading{
+  position:absolute;
+  inset:0;
+  z-index:1;
+  border-radius:11px;
+}
+.canvas-video-cover-pending{
+  position:absolute;
+  inset:0;
+  z-index:1;
+  display:block;
+  border-radius:11px;
+  overflow:hidden;
+  background:var(--v-surface-sunken);
+}
+.canvas-video-cover-pending > .canvas-image-loading{
+  position:absolute;
+  inset:0;
+  border-radius:11px;
+}
+.canvas-video-cover-fallback{
+  position:absolute;
+  inset:0;
+  z-index:1;
+  display:grid;
+  place-items:center;
+  border-radius:11px;
+  color:var(--v-text-4);
+  background:
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--v-accent) 10%, transparent), transparent 48%),
+    var(--v-surface-sunken);
+  pointer-events:none;
+}
 .canvas-video-shell.is-source-deferred .canvas-video-controls{
   display:none;
 }

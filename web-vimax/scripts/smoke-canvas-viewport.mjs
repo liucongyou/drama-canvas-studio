@@ -193,6 +193,23 @@ try {
     };
   }
   const result = {before, afterDrag, afterReload, switchRoundTrip, errors};
+  const videoCoverLoading = await page.evaluate(() => ({
+    pending: document.querySelectorAll('.canvas-video-cover-pending').length,
+    spinner: document.querySelectorAll(
+      '.canvas-video-cover-pending .canvas-image-loading',
+    ).length,
+    fallback: document.querySelectorAll('.canvas-video-cover-fallback').length,
+    play: document.querySelectorAll('.canvas-video-center-play').length,
+  }));
+  if (
+    videoCoverLoading.pending > 0
+    && videoCoverLoading.spinner !== videoCoverLoading.pending
+  ) {
+    throw new Error(
+      `video cover loading state missing: ${JSON.stringify(videoCoverLoading)}`,
+    );
+  }
+  result.videoCoverLoading = videoCoverLoading;
   console.log(JSON.stringify(result, null, 2));
   if (!afterDrag || afterDrag === before.zoom) {
     throw new Error('canvas viewport did not move');

@@ -944,6 +944,40 @@ function LazyCanvasImage({
   );
 }
 
+function VideoCoverImage({
+  src,
+  onFailure,
+}: {
+  src: string;
+  onFailure: () => void;
+}) {
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setLoaded(false);
+    setFailed(false);
+  }, [src]);
+  if (!src || failed) return null;
+  return (
+    <span className={`canvas-video-cover-frame${loaded ? ' is-loaded' : ' is-loading'}`}>
+      {!loaded && <span className="canvas-image-loading" aria-hidden="true" />}
+      <img
+        className="canvas-video-lazy-poster is-cover"
+        src={src}
+        alt=""
+        draggable={false}
+        decoding="async"
+        onLoad={() => setLoaded(true)}
+        onError={() => {
+          setLoaded(false);
+          setFailed(true);
+          onFailure();
+        }}
+      />
+    </span>
+  );
+}
+
 function AssetThumb({url, name, onZoom}: {url: string; name: string; onZoom: () => void}) {
   if (/\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(url)) {
     return <video className="canvas-thumb is-video nodrag nowheel" src={url} controls preload="metadata" aria-label={name} />;
@@ -2625,6 +2659,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const [mediaLoaded, setMediaLoaded] = useState(false);
   const [videoSourceReady, setVideoSourceReady] = useState(false);
   const [videoCoverUrl, setVideoCoverUrl] = useState('');
+  const [videoCoverPending, setVideoCoverPending] = useState(false);
   const meta = MEDIA_KIND_META[node.kind];
   const isText = node.kind === 'text';
   const localAccept = node.kind === 'image'
@@ -2755,6 +2790,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     setMediaLoaded(false);
     setVideoSourceReady(false);
     setVideoCoverUrl('');
+    setVideoCoverPending(false);
   }, [node.mediaUrl]);
   useEffect(() => {
     if (node.kind !== 'video') return;
@@ -2772,11 +2808,13 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
       return;
     }
     let cancelled = false;
+    setVideoCoverPending(true);
     const video = document.createElement('video');
     let settled = false;
     const settle = () => {
       if (settled) return;
       settled = true;
+      if (!cancelled) setVideoCoverPending(false);
       video.onloadeddata = null;
       video.onerror = null;
       video.removeAttribute('src');
@@ -2811,6 +2849,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     video.load();
     return () => {
       cancelled = true;
+      setVideoCoverPending(false);
       window.clearTimeout(fallbackTimer);
       video.onloadeddata = null;
       video.onerror = null;
@@ -3497,7 +3536,20 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                   }}
                 >
                   {!videoSourceReady && videoCoverUrl && (
-                    <img className="canvas-video-lazy-poster is-cover" src={videoCoverUrl} alt="" draggable={false} />
+                    <VideoCoverImage
+                      src={videoCoverUrl}
+                      onFailure={() => setVideoCoverUrl('')}
+                    />
+                  )}
+                  {!videoSourceReady && !videoCoverUrl && videoCoverPending && (
+                    <span className="canvas-video-cover-pending" aria-label="视频封面加载中">
+                      <span className="canvas-image-loading" aria-hidden="true" />
+                    </span>
+                  )}
+                  {!videoSourceReady && !videoCoverUrl && !videoCoverPending && (
+                    <span className="canvas-video-cover-fallback" aria-hidden="true">
+                      <Video size={18} strokeWidth={1.7} />
+                    </span>
                   )}
                   <video
                     ref={videoRef}
