@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import canvas_store
+import provider_client
 import server
 
 
@@ -433,6 +434,36 @@ class GenerationQueueTests(unittest.TestCase):
                 server.SERVER_STOPPING.clear()
         self.assertTrue(drained)
         self.assertFalse(worker.is_alive())
+
+    def test_uncertain_submission_records_audit_evidence_without_secret(self):
+        task = {
+            "id": "task-evidence",
+            "request_json": '{"kind":"image","provider":"ark","model":"m","params":{},"createdAt":"now"}',
+            "client_operation_id": "operation-evidence",
+            "provider": "ark",
+            "model": "m",
+            "created_at": "now",
+            "status": "running",
+        }
+        append = unittest.mock.Mock()
+        commit = unittest.mock.Mock(return_value={"committed": True})
+        exc = provider_client.ProviderOutcomeUncertain(
+            "curl exit=28",
+            response={"requestId": "req-evidence"},
+        )
+        with patch.object(server.store, "get_generation_task", return_value=task), \
+                patch.object(server.store, "append_event", append), \
+                patch.object(server, "commit_generation_terminal", commit):
+            server._mark_generation_outcome_uncertain(
+                "task-evidence",
+                "project-evidence",
+                "node-evidence",
+                exc,
+            )
+        payload = append.call_args.args[3]
+        self.assertEqual(payload["evidence"]["operationId"], "operation-evidence")
+        self.assertEqual(payload["evidence"]["providerRequestId"], "req-evidence")
+        self.assertNotIn("api_key", str(payload).lower())
 
     def test_stale_node_edit_is_detected_as_conflict(self):
         current = {

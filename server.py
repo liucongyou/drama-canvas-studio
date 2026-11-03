@@ -2119,6 +2119,53 @@ def _mark_generation_outcome_uncertain(task_id, project_id, node_id, exc, provid
     """Keep an accepted paid task recoverable instead of calling it a failure."""
     provider_task_id = str(provider_task_id or _submitted_provider_task_id(task_id)).strip()
     message = str(exc)
+    evidence = {}
+    if task_id:
+        current_task = store.get_generation_task(task_id) or {}
+        if current_task.get("request_json"):
+            try:
+                snapshot = json.loads(current_task["request_json"])
+                evidence = {
+                    "operationId": str(current_task.get("client_operation_id") or ""),
+                    "provider": str(current_task.get("provider") or ""),
+                    "model": str(current_task.get("model") or ""),
+                    "createdAt": str(current_task.get("created_at") or ""),
+                    "requestSnapshot": {
+                        key: snapshot.get(key)
+                        for key in ("kind", "provider", "model", "params", "createdAt")
+                    },
+                }
+            except (TypeError, ValueError):
+                evidence = {}
+    response = getattr(exc, "response", None)
+    request_id = ""
+    if isinstance(response, dict):
+        request_id = str(
+            response.get("requestId")
+            or response.get("request_id")
+            or response.get("RequestId")
+            or ""
+        ).strip()
+    evidence.update({
+        "providerRequestId": request_id,
+        "transportError": message[:2000],
+    })
+    audit_payload = {
+        "event": "generation_submit_uncertain",
+        "taskId": task_id or "",
+        "projectId": project_id,
+        "nodeId": node_id,
+        "evidence": evidence,
+    }
+    try:
+        store.append_event(
+            project_id,
+            "generation.submit_uncertain",
+            node_id,
+            audit_payload,
+        )
+    except Exception:
+        pass
     updates = {
         "status": "error",
         "lastError": message,
