@@ -10291,7 +10291,24 @@ function CanvasViewInner({
         if ('empty' in workspace.canvas) {
           setCanvas(null);
         } else {
-          setCanvas(workspace.canvas);
+          const loadedCanvas = workspace.canvas;
+          // The specialized episode loader intentionally reads only one
+          // episode's graph. Its Canvas.meta.episodes therefore contains just
+          // that episode; replacing the project-level metadata would make all
+          // sibling episodes disappear from the canvas list. Merge only the
+          // target episode's graph while retaining the complete project list.
+          setCanvas((previous) => previous
+            ? {
+                ...loadedCanvas,
+                meta: {
+                  ...loadedCanvas.meta,
+                  episodes: previous.meta.episodes,
+                  current_ep: loadedEpisode,
+                  session_id: previous.meta.session_id,
+                  overview: false,
+                },
+              }
+            : loadedCanvas);
         }
         startTransition(() => {
           setNotes(workspace.notes);

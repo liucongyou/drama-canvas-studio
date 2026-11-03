@@ -252,6 +252,23 @@ describe('canvas viewport persistence threshold', () => {
     )).not.toContain('setCanvas(null);');
     expect(block).toContain('}, [session, currentEp]);');
   });
+
+  it('keeps the complete project episode list when loading one target episode', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    const block = source.slice(
+      source.indexOf("if ('empty' in workspace.canvas)"),
+      source.indexOf('startTransition(', source.indexOf("if ('empty' in workspace.canvas)")),
+    );
+    expect(block).toContain('episodes: previous.meta.episodes');
+    expect(block).toContain('current_ep: loadedEpisode');
+  });
+
+  it('preserves every project episode across a single-episode switch', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    expect(source).toMatch(
+      /const loadedCanvas = workspace\.canvas;[\s\S]*setCanvas\(\(previous\) => previous[\s\S]*episodes: previous\.meta\.episodes/s,
+    );
+  });
 });
 
 describe('episode viewport map', () => {
