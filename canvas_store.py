@@ -3200,6 +3200,14 @@ def create_generation_task(
         "ORDER BY created_at DESC, rowid DESC LIMIT 1",
         (project_id, node_id),
     ).fetchone()
+    if not active:
+        active = con.execute(
+            "SELECT * FROM generation_tasks WHERE project_id=? AND node_id=? "
+            "AND status='interrupted' "
+            "AND COALESCE(phase,'') IN ('结果待确认','等待恢复') "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (project_id, node_id),
+        ).fetchone()
     if active:
         columns = [item[0] for item in con.execute("SELECT * FROM generation_tasks LIMIT 0").description]
         active_task = dict(zip(columns, active))
