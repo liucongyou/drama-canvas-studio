@@ -2202,7 +2202,7 @@ class ProviderPayloadTests(unittest.TestCase):
             "capabilities": "video",
             "adapter": "ark_video",
             "params": {
-                "duration": {"min": 4, "max": 30},
+                "duration": {"min": 4, "max": 30, "allowSmart": True},
                 "ratio": {"options": ["9:16"]},
                 "resolution": {"options": ["480P", "720P"]},
             },
@@ -2238,6 +2238,129 @@ class ProviderPayloadTests(unittest.TestCase):
         self.assertIn("image_url", kinds)
         self.assertIn("audio_url", kinds)
         self.assertEqual(calls[1][1], "https://ark.example/api/v3/contents/generations/tasks/task-1")
+
+    def test_ark_video_rejects_below_four_seconds_and_maps_expired_error(self):
+        provider = {
+            "id": "ark",
+            "name": "火山方舟",
+            "base_url": "https://ark.example/api/v3",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "seedance",
+            "remoteModel": "doubao-seedance-2-5-260628",
+            "adapter": "ark_video",
+            "params": {
+                "duration": {"min": 4, "max": 30},
+                "ratio": {"options": ["9:16"]},
+                "resolution": {"options": ["720P"]},
+            },
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, timeout=120):
+            calls.append((method, url, body))
+            if method == "POST":
+                return {"id": "task-expired"}
+            return {
+                "id": "task-expired",
+                "status": "expired",
+                "error": {
+                    "code": "TaskExpired",
+                    "message": "任务超过执行期限",
+                },
+            }
+
+        with (
+            patch.object(provider_client, "_request_json", side_effect=fake_request),
+            patch.object(provider_client.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "TaskExpired.*任务超过执行期限",
+            ):
+                provider_client.generate_video(
+                    provider,
+                    model,
+                    "test",
+                    {"duration": 1, "ratio": "9:16", "resolution": "720P"},
+                    [],
+                    [],
+                )
+
+        self.assertEqual(calls[0][2]["duration"], 4)
+        self.assertEqual(calls[0][2]["resolution"], "720p")
+        self.assertEqual(calls[0][2]["ratio"], "9:16")
+        self.assertEqual(calls[0][2]["generate_audio"], True)
+
+    def test_ark_video_payload_uses_official_seedance_fields(self):
+        provider = {
+            "id": "ark",
+            "name": "火山方舟",
+            "base_url": "https://ark.example/api/v3",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "seedance",
+            "remoteModel": "doubao-seedance-2-5-260628",
+            "adapter": "ark_video",
+            "params": {
+                "duration": {"min": 4, "max": 30},
+                "ratio": {"options": ["16:9", "9:16", "adaptive"]},
+                "resolution": {"options": ["480P", "720P", "1080P"]},
+            },
+        }
+        calls = []
+
+        def fake_request(method, url, key, body=None, timeout=120):
+            calls.append((method, url, body))
+            if method == "POST":
+                return {"id": "cgt-test"}
+            return {
+                "id": "cgt-test",
+                "status": "succeeded",
+                "content": {
+                    "video_url": "https://video.example/result.mp4",
+                },
+                "duration": 4,
+                "ratio": "16:9",
+                "resolution": "720p",
+                "generate_audio": True,
+            }
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request):
+            result = provider_client.generate_video(
+                provider,
+                model,
+                "镜头运动",
+                {
+                    "duration": 4,
+                    "ratio": "16:9",
+                    "resolution": "720P",
+                    "generateAudio": True,
+                    "watermark": False,
+                },
+                [],
+                [],
+            )
+
+        body = calls[0][2]
+        self.assertEqual(
+            calls[0][1],
+            "https://ark.example/api/v3/contents/generations/tasks",
+        )
+        self.assertEqual(
+            calls[1][1],
+            "https://ark.example/api/v3/contents/generations/tasks/cgt-test",
+        )
+        self.assertEqual(body["model"], "doubao-seedance-2-5-260628")
+        self.assertEqual(body["duration"], 4)
+        self.assertEqual(body["ratio"], "16:9")
+        self.assertEqual(body["resolution"], "720p")
+        self.assertIs(body["generate_audio"], True)
+        self.assertIs(body["watermark"], False)
+        self.assertEqual(body["content"][0]["type"], "text")
+        self.assertEqual(result["url"], "https://video.example/result.mp4")
 
     def test_local_upload_is_inlined_for_provider(self):
         with tempfile.TemporaryDirectory() as root:

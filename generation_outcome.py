@@ -65,6 +65,7 @@ def _provider_submission_may_be_live(task: dict[str, Any]) -> bool:
         marker in error
         for marker in (
             "结果待确认",
+            "等待供应商回执",
             "没有返回任务号",
             "没有解析出任务号",
             "未取得可确认结果",

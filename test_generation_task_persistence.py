@@ -1062,7 +1062,7 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertFalse(recovered)
         commit_meta.assert_not_called()
 
-    def test_expired_lease_without_provider_task_releases_node(self):
+    def test_expired_lease_without_provider_task_stays_uncertain(self):
         with tenant_context.use_context(self.context):
             task = canvas_store.create_generation_task(
                 "project-expired",
@@ -1082,11 +1082,13 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
 
         self.assertTrue(claimed)
         self.assertEqual([item["id"] for item in expired_rows], [task["id"]])
-        self.assertEqual(saved["status"], "failed")
-        self.assertEqual(saved["phase"], "执行失联")
+        self.assertEqual(saved["status"], "interrupted")
+        self.assertEqual(saved["phase"], "结果待确认")
+        self.assertIn("无法确认是否已受理", saved["error"])
+        self.assertNotIn("安全重新生成", saved["error"])
         self.assertEqual(saved["lease_owner"], "")
-        self.assertTrue(replacement["created_new"])
-        self.assertNotEqual(replacement["id"], task["id"])
+        self.assertFalse(replacement["created_new"])
+        self.assertEqual(replacement["id"], task["id"])
 
     def test_expired_lease_with_provider_task_stays_recoverable(self):
         with tenant_context.use_context(self.context):

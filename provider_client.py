@@ -179,6 +179,14 @@ NEWAPI_VIDEO_SUBMIT_TIMEOUT_SECONDS = 180
 NEWAPI_VIDEO_MAX_BODY_BYTES = 8 * 1024 * 1024
 
 
+def _safe_int(value: Any, fallback: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    return max(minimum, min(maximum, parsed))
+
+
 def _safe_seedream_size(size: Any, ratio: Any) -> str:
     raw = str(size or "").strip()
     tier = raw.upper().replace(" ", "")
@@ -3164,14 +3172,27 @@ def _ark_video(
         url = _ark_reference_url(voice)
         content.append({"type": "audio_url", "audio_url": {"url": url}, "role": "reference_audio"})
 
-    duration_default = 5
     duration_spec = (model.get("params") or {}).get("duration") or {}
-    duration = _safe_int(
-        params.get("duration"),
-        _safe_int(duration_spec.get("default"), duration_default, 4, 30),
-        _safe_int(duration_spec.get("min"), 4, 1, 60),
-        _safe_int(duration_spec.get("max"), 30, 1, 60),
+    duration_min = _safe_int(duration_spec.get("min"), 4, 1, 60)
+    duration_max = _safe_int(duration_spec.get("max"), 30, 1, 60)
+    duration_default = _safe_int(
+        duration_spec.get("default"),
+        5,
+        duration_min,
+        duration_max,
     )
+    raw_duration = params.get("duration")
+    if raw_duration in (None, ""):
+        duration = duration_default
+    else:
+        try:
+            requested_duration = int(raw_duration)
+        except (TypeError, ValueError):
+            requested_duration = duration_default
+        duration = max(
+            duration_min,
+            min(duration_max, requested_duration),
+        )
     resolution_spec = (model.get("params") or {}).get("resolution") or {}
     resolutions = resolution_spec.get("options") or ["480P", "720P", "1080P"]
     resolution = str(params.get("resolution") or resolutions[0]).upper()
@@ -3229,8 +3250,23 @@ def _ark_video(
             if not url:
                 raise RuntimeError(f"视频任务完成但没有视频地址：{json.dumps(task, ensure_ascii=False)[:500]}")
             return {"url": url, "raw": task, "taskId": task_id}
-        if status in {"failed", "error", "cancelled", "canceled"}:
-            raise RuntimeError(f"视频生成失败：{json.dumps(task, ensure_ascii=False)[:600]}")
+        if status in {"failed", "error", "cancelled", "canceled", "expired"}:
+            error = task.get("error")
+            if isinstance(error, dict):
+                detail = "：".join(
+                    str(value).strip()
+                    for value in (
+                        error.get("code"),
+                        error.get("message"),
+                    )
+                    if str(value or "").strip()
+                )
+            else:
+                detail = str(error or "").strip()
+            raise RuntimeError(
+                f"视频生成失败{('：' + detail) if detail else ''}"
+                f"（status={status}）：{json.dumps(task, ensure_ascii=False)[:600]}"
+            )
         time.sleep(poll_delay(time.time() - poll_started))
     raise RuntimeError(f"视频任务超时（900s，任务 {task_id}）")
 
@@ -3605,7 +3641,7 @@ def check_video_task(
             origin = _newapi_api_origin(provider["base_url"])
             url = origin + str(url)
         state = "completed"
-    elif raw_status in failure_statuses:
+    elif raw_status in failure_statuses or raw_status == "expired":
         state = "failed"
     elif raw_status in {"queued", "pending", "created", "submitted", "running", "processing", "retrying", "in_progress"}:
         state = "running"
@@ -3615,7 +3651,15 @@ def check_video_task(
         state = "running"
         raw_status = raw_status or "unknown"
     error = task.get("error")
-    detail = error.get("message") if isinstance(error, dict) else error
+    detail = (
+        "：".join(
+            str(value).strip()
+            for value in (error.get("code"), error.get("message"))
+            if str(value or "").strip()
+        )
+        if isinstance(error, dict)
+        else error
+    )
     return {
         "taskId": task_id,
         "status": state,

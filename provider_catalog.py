@@ -274,7 +274,7 @@ DEFAULT_MODELS = [
         "ark_video",
         "标准视频生成，最高 1080P / 15 秒",
         badge="2.0",
-        default_params={"ratio": "9:16", "resolution": "480P", "duration": 5, "guidance": "中等"},
+        default_params={"ratio": "9:16", "resolution": "720P", "duration": 4, "guidance": "中等"},
         params={
             "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"]),
             "resolution": _select(["480P", "720P", "1080P"]),
@@ -302,7 +302,7 @@ DEFAULT_MODELS = [
         "ark_video",
         "轻量快速，最高 720P / 15 秒",
         badge="mini",
-        default_params={"ratio": "9:16", "resolution": "480P", "duration": 5, "guidance": "中等"},
+        default_params={"ratio": "9:16", "resolution": "720P", "duration": 4, "guidance": "中等"},
         params={
             "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"]),
             "resolution": _select(["480P", "720P"]),
@@ -320,7 +320,7 @@ DEFAULT_MODELS = [
         "ark_video",
         "极速出片，最高 720P / 15 秒",
         badge="fast",
-        default_params={"ratio": "9:16", "resolution": "480P", "duration": 5, "guidance": "中等"},
+        default_params={"ratio": "9:16", "resolution": "720P", "duration": 4, "guidance": "中等"},
         params={
             "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"]),
             "resolution": _select(["480P", "720P"]),
@@ -348,7 +348,7 @@ DEFAULT_MODELS = [
         "ark_video",
         "新一代视频模型，最高 1080P / 30 秒",
         badge="2.5",
-        default_params={"ratio": "9:16", "resolution": "480P", "duration": 5, "guidance": "中等"},
+        default_params={"ratio": "9:16", "resolution": "720P", "duration": 4, "guidance": "中等"},
         params={
             "ratio": _select(["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"]),
             "resolution": _select(["480P", "720P", "1080P"]),

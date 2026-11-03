@@ -395,6 +395,14 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(server._provider_task_phase("running", 100), "生成中")
         self.assertEqual(server._provider_task_phase("running", None), "生成中")
 
+    def test_generation_worker_has_a_lease_heartbeat_function(self):
+        self.assertTrue(callable(server._start_generation_task_heartbeat))
+        self.assertTrue(callable(server._finish_generation_task_lease))
+        self.assertLess(
+            server.TASK_HEARTBEAT_SECONDS,
+            server.TASK_LEASE_SECONDS,
+        )
+
     def test_stale_node_edit_is_detected_as_conflict(self):
         current = {
             "id": "node-1",

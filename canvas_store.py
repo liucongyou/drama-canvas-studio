@@ -4745,12 +4745,16 @@ def expire_stale_generation_tasks(now=None):
                         (provider_task_id, now_iso, task_id),
                     )
             has_provider_task = bool(str(provider_task_id or "").strip())
-            next_status = "interrupted" if has_provider_task else "failed"
-            next_phase = "结果待确认" if has_provider_task else "执行失联"
+            # A missing provider id after a submit was attempted is not proof
+            # that the supplier ignored the request. The response may have been
+            # lost, or the worker may still be inside the submit HTTP call.
+            # Keep it uncertain so callers never invite an automatic re-submit.
+            next_status = "interrupted"
+            next_phase = "结果待确认"
             detail = (
                 "执行租约已过期，但已有供应商任务号；系统会继续查询原任务，不会自动重新提交。"
                 if has_provider_task
-                else "执行线程已失联且没有供应商任务号；本次可安全重新生成。"
+                else "执行线程在等待供应商回执时失联；无法确认是否已受理，系统不会自动重提，请先核对供应商账单或任务记录。"
             )
             con.execute(
                 "UPDATE generation_tasks SET status=?,phase=?,error=?,"

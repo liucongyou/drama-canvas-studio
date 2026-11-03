@@ -1980,6 +1980,52 @@ def is_client_disconnect_error(exc):
     return errno in {32, 104, 10053, 10054}
 
 
+def _start_generation_task_heartbeat(task_id, lease_owner):
+    if not task_id or not lease_owner:
+        return (None, None)
+    stop_event = threading.Event()
+
+    def run():
+        while not stop_event.wait(TASK_HEARTBEAT_SECONDS):
+            try:
+                renewed = store.renew_generation_task_lease(
+                    task_id,
+                    lease_owner,
+                    TASK_LEASE_SECONDS,
+                )
+                if not renewed:
+                    return
+            except Exception as exc:
+                print(
+                    f"[generation] heartbeat failed: task={task_id} error={exc}",
+                    file=sys.stderr,
+                )
+
+    thread = threading.Thread(
+        target=run,
+        name=f"generation-heartbeat-{task_id}",
+        daemon=True,
+    )
+    thread.start()
+    return (stop_event, thread)
+
+
+def _finish_generation_task_lease(task_id, lease_owner, heartbeat):
+    stop_event, thread = heartbeat if heartbeat else (None, None)
+    if stop_event:
+        stop_event.set()
+    if thread and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=1)
+    if task_id and lease_owner:
+        try:
+            store.release_generation_task_lease(task_id, lease_owner)
+        except Exception as exc:
+            print(
+                f"[generation] release lease failed: task={task_id} error={exc}",
+                file=sys.stderr,
+            )
+
+
 def preserve_generation_outcome(task_id, exc):
     """A dropped browser response must never rewrite a paid generation result."""
     if is_client_disconnect_error(exc):

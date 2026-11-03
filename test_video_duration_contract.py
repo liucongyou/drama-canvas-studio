@@ -15,6 +15,7 @@ class VideoDurationContractTests(unittest.TestCase):
             "max": 15,
             "step": 1,
         })
+        self.assertEqual(model["defaultParams"]["duration"], 4)
 
     def test_documented_150_second_model_accepts_each_integer(self):
         contract = provider_catalog._documented_video_contract(
