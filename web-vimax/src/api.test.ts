@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
 
 describe('project event cursor', () => {
   it('reconnects SSE from the last rendered events for this project', () => {
@@ -1009,6 +1009,47 @@ describe('api request recovery', () => {
     expect(workspace.activeEpisodeId).toBe('EP001');
     expect(fetchMock.mock.calls.filter(
       ([url]) => String(url).includes('/workspace-index'),
+    )).toHaveLength(1);
+  });
+
+  it('loads a target episode without fetching the full workspace index', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const target = String(url);
+      const body = target.includes('/workspace-nodes')
+        ? {
+            episodeId: 'EP003',
+            episode: {id: 'EP003', title: '第03集'},
+            nodes: [{
+              id: 'image-3',
+              type: 'image',
+              title: '第三集图片',
+              metadata: {
+                status: 'done',
+                content: '/uploads/ep3.jpg',
+                episodeId: 'EP003',
+              },
+            }],
+            connections: [],
+            layouts: {},
+            notes: [],
+          }
+        : {tasks: []};
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const workspace = await getCanvasEpisodeWorkspace('project-1', 'EP003');
+
+    expect(workspace.activeEpisodeId).toBe('EP003');
+    expect(workspace.mediaNodes.map((node) => node.id)).toEqual(['image-3']);
+    expect(fetchMock.mock.calls.some(
+      ([url]) => String(url).includes('/workspace-index'),
+    )).toBe(false);
+    expect(fetchMock.mock.calls.filter(
+      ([url]) => String(url).includes('/workspace-nodes?episodeId=EP003'),
     )).toHaveLength(1);
   });
 

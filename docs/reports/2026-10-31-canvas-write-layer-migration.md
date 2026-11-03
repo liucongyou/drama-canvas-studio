@@ -208,6 +208,23 @@ as complete until repeated runs consistently meet the gate. Moving to an
 independent write queue, or splitting revision/stat updates out of the interactive
 transaction with a durable outbox, is the next engineering step.
 
+## 2026-11-03 Status Correction
+
+Viewport persistence has moved off `canvas_projects.payload_json`.
+
+- `update_project_viewport()` updates
+  `canvas_projection_episodes.viewport_json` for an episode, or
+  `canvas_project_meta.meta_json` for project scope.
+- It no longer serializes or rewrites nodes, edges, or layout into the project
+  payload.
+- It still increments `canvas_projects.revision` and `updated_at` in the same
+  small transaction for cache/version coherence.
+
+The remaining full-payload write bottlenecks are outside the viewport path:
+node upsert/metadata fallback paths, connection bulk replacement, and generation
+terminal commit. Episode switching now uses a dedicated target-episode read and
+does not fetch `workspace-index` again.
+
 ## Seedance TOS Reference Follow-up
 
 The Seedream-to-Seedance guard originally used the globally active object-storage

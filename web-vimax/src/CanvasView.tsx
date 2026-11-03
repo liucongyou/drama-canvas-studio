@@ -108,7 +108,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceShell, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -10275,23 +10275,18 @@ function CanvasViewInner({
     const epoch = workspaceLoadEpochRef.current + 1;
     workspaceLoadEpochRef.current = epoch;
     const abort = new AbortController();
+    // Keep the current graph painted while the target episode loads. Clearing
+    // it created the large skeleton frame seen on every episode switch.
     setLoading(true);
-    setDataReady(false);
     workspaceReadyAtRef.current = 0;
-    setCanvas(null);
-    setMediaNodes([]);
-    setNotes([]);
-    setGenerationTasks([]);
-    setGenerationBusyIds(new Set());
     taskLoadGenerationRef.current += 1;
-    getCanvasWorkspace(session, target, abort.signal)
+    getCanvasEpisodeWorkspace(session, target, abort.signal)
       .then((workspace) => {
         if (epoch !== workspaceLoadEpochRef.current) return;
         const loadedEpisode = String(
           workspace.activeEpisodeId || target,
         ).trim().toUpperCase();
         activeWorkspaceEpisodeRef.current = loadedEpisode;
-        serverEpisodeViewportsRef.current = workspace.episodeViewports || {};
         projectConnectionsRef.current = workspace.connections;
         if ('empty' in workspace.canvas) {
           setCanvas(null);
@@ -10303,6 +10298,7 @@ function CanvasViewInner({
           setMediaNodes(workspace.mediaNodes);
           setGenerationTasks(workspace.tasks);
         });
+        setGenerationBusyIds(new Set());
         if (loadedEpisode && loadedEpisode !== target) {
           setCurrentEp(loadedEpisode);
         }
@@ -10318,7 +10314,10 @@ function CanvasViewInner({
             ? '画布加载超时，项目数据未丢失。请重新加载或稍后再试。'
             : error instanceof Error ? error.message : String(error),
         );
-        setDataReady(false);
+        // The old episode is still painted. Restore the selector scope so
+        // retrying the failed target does not write into the wrong episode.
+        activeWorkspaceEpisodeRef.current = active;
+        setCurrentEp(active);
         setLoading(false);
       });
     return () => abort.abort();

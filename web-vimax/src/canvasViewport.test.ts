@@ -242,7 +242,14 @@ describe('canvas viewport persistence threshold', () => {
     expect(block).toContain(
       'if (!target || !active || target === active) return;',
     );
-    expect(block).toContain('getCanvasWorkspace(session, target, abort.signal)');
+    expect(block).toContain(
+      'getCanvasEpisodeWorkspace(session, target, abort.signal)',
+    );
+    expect(block).not.toContain('getCanvasWorkspace(session, target');
+    expect(block.slice(
+      0,
+      block.indexOf('getCanvasEpisodeWorkspace(session, target, abort.signal)'),
+    )).not.toContain('setCanvas(null);');
     expect(block).toContain('}, [session, currentEp]);');
   });
 });

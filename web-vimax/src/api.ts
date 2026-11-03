@@ -2274,6 +2274,7 @@ export async function getCanvasWorkspace(
   }>;
   tasks: GenerationTask[];
 }> {
+
   try {
     return await getProjectionCanvasWorkspace(
       sessionId,
@@ -2349,6 +2350,82 @@ export async function getCanvasWorkspace(
     connections: Array.isArray(project?.payload?.connections)
       ? project.payload.connections
       : [],
+  };
+}
+
+export async function getCanvasEpisodeWorkspace(
+  sessionId: string,
+  episodeId: string,
+  signal?: AbortSignal,
+): Promise<{
+  canvas: Canvas | {empty: true};
+  notes: CanvasNote[];
+  mediaNodes: CanvasMediaNode[];
+  activeEpisodeId: string;
+  connections: Array<{
+    id?: string;
+    fromNodeId: string;
+    toNodeId: string;
+    source?: string;
+  }>;
+  tasks: GenerationTask[];
+}> {
+  const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
+  if (!normalizedEpisode) throw new Error('切换画布必须指定集号');
+  const nodesPayload = await getWorkspaceNodes(
+    sessionId,
+    normalizedEpisode,
+    signal,
+  );
+  if (
+    !Array.isArray(nodesPayload.nodes)
+    || !Array.isArray(nodesPayload.connections)
+  ) {
+    throw withRequestStatus(
+      new Error('workspace nodes contract unavailable'),
+      501,
+    );
+  }
+  const pseudoProject: ProjectResponse = {
+    id: sessionId,
+    title: String(nodesPayload.episode?.title || normalizedEpisode),
+    payload: {
+      id: sessionId,
+      title: String(nodesPayload.episode?.title || normalizedEpisode),
+      nodes: nodesPayload.nodes,
+      connections: nodesPayload.connections,
+      episodeImports: [
+        {
+          ...nodesPayload.episode,
+          id: normalizedEpisode,
+          title: String(
+            nodesPayload.episode?.title || normalizedEpisode,
+          ),
+          nodeIds: nodesPayload.nodes
+            .map((node) => String(node.id || ''))
+            .filter(Boolean),
+          videoNodeIds: nodesPayload.nodes
+            .filter((node) => node.type === 'video')
+            .map((node) => String(node.id || ''))
+            .filter(Boolean),
+        },
+      ],
+      episodeLayouts: {[normalizedEpisode]: nodesPayload.layouts || {}},
+      extras: {},
+    } as Payload,
+  };
+  const [canvas, mediaNodes, tasks] = await Promise.all([
+    getCanvas(sessionId, normalizedEpisode, pseudoProject),
+    getCanvasMediaNodes(sessionId, normalizedEpisode, pseudoProject),
+    getGenerationTasks(sessionId, 80, normalizedEpisode).catch(() => []),
+  ]);
+  return {
+    canvas,
+    notes: Array.isArray(nodesPayload.notes) ? nodesPayload.notes : [],
+    mediaNodes,
+    activeEpisodeId: normalizedEpisode,
+    connections: nodesPayload.connections,
+    tasks,
   };
 }
 
