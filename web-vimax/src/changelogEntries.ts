@@ -3,6 +3,16 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.03.16',
+    date: '2026-11-03',
+    title: '进一步收窄彗星流光',
+    releasedAt: '2026-11-03 16:18:00 +08:00',
+    changes: [
+      '尾焰、亮核和彗头再收窄一档，基础状态尾焰约为连线宽度的 1.2 倍。',
+      '悬停、选中、执行中同步收窄，保留原有亮度层次与动画长度。',
+    ],
+  },
+  {
     version: '2026.11.03.15',
     date: '2026-11-03',
     title: '收窄连线彗星流光',
