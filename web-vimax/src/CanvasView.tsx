@@ -132,7 +132,7 @@ import {
   generationPhaseLabel,
   generationProgressLabel,
   hasTrustedProviderProgress,
-  isGenerationTaskActive,
+  isSettledMediaCard,
   liveGenerationCount,
   mediaGenerationVisualState,
   projectGenerationState,
@@ -2825,9 +2825,19 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const generationFailed = generationVisualState.failed;
   const mediaMissing = !isText && !!node.mediaUrl && mediaLoadFailed;
   const done = node.status === 'done' && !liveProviderGeneration && !mediaMissing && !generationFailed;
+  // The node row is the card's terminal authority. Once a new image/video has
+  // been persisted and the node is done, an older uncertain task row for the
+  // same node must stay visible only in Task Center. Otherwise a false
+  // "supplier receipt missing" notice appears before this successful image.
+  const settledMediaResult = isSettledMediaCard({
+    status: node.status,
+    mediaUrl: node.mediaUrl,
+    mediaMissing,
+    providerLive: liveProviderGeneration,
+  });
   // A failed regeneration on a card that already has an older video must still
   // report failure; the previous video stays playable.
-  const failed = generationFailed;
+  const failed = generationFailed && !settledMediaResult;
   const taskOutcome = taskOutcomePresentation({
     status: node.status === 'generating'
       ? 'running'
@@ -3306,6 +3316,16 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
               ? <div
                   ref={videoShellRef}
                   className={`canvas-video-shell ${videoPlaying ? 'is-playing' : 'is-paused'}${videoSourceReady ? ' is-source-ready' : ' is-source-deferred'}`}
+                  onPointerEnter={() => {
+                    // Cover-first loading must not make hover controls
+                    // unreachable. Entering the card is the explicit intent to
+                    // inspect/play, so activate the real video source before the
+                    // :hover control rules are evaluated.
+                    if (!videoSourceReady) setVideoSourceReady(true);
+                  }}
+                  onFocusCapture={() => {
+                    if (!videoSourceReady) setVideoSourceReady(true);
+                  }}
                   onDoubleClick={(event) => {
                     event.stopPropagation();
                     cancelOpen();
@@ -4348,7 +4368,17 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   }
   if (node.promptStale) nodeNotices.push(node.promptStaleReason || '源提示词已更新，当前素材仍是旧版本');
   if (modelParamIssues.length) nodeNotices.push(modelParamIssues[0].message);
-  if (node.status === 'failed' && node.lastError) nodeNotices.push(friendlyTaskError(node.lastError));
+  if (
+    node.status === 'failed'
+    && node.lastError
+    && !isSettledMediaCard({
+      status: node.status,
+      mediaUrl: node.mediaUrl,
+      providerLive: false,
+    })
+  ) {
+    nodeNotices.push(friendlyTaskError(node.lastError));
+  }
   const schema = curModelSpec?.params || {};
   const builtInParamKeys = new Set<string>(isTxt
     ? ['maxTokens', 'temperature', 'system']
@@ -8209,7 +8239,9 @@ function CanvasViewInner({
   const [taskCenterOpen, setTaskCenterOpen] = useState(false);
   const [generationTasks, setGenerationTasks] = useState<GenerationTask[]>([]);
   const taskLoadGenerationRef = useRef(0);
-  const activeGenerationTaskCount = liveGenerationCount(generationTasks);
+  const activeGenerationTaskCount = taskCenterOpen
+    ? liveGenerationCount(generationTasks)
+    : 0;
   const [textReader, setTextReader] = useState<CanvasMediaNode | null>(null);
   // 顶部栏下拉菜单（状态 / 工具）与全局搜索聚焦态
   const [openMenu, setOpenMenu] = useState<'status' | 'tools' | null>(null);
@@ -9201,7 +9233,9 @@ function CanvasViewInner({
         mediaNodesRef.current.map((node) => [node.id, node]),
       );
       taskLoadGenerationRef.current += 1;
-      setGenerationTasks(workspace.tasks);
+      setGenerationTasks((prev) => (
+        taskCenterOpen ? workspace.tasks : prev
+      ));
       if (!('empty' in workspace.canvas)) setCanvas(workspace.canvas);
       setMediaNodes(workspace.mediaNodes.map((remote) => {
         const local = localById.get(remote.id);
@@ -9214,26 +9248,10 @@ function CanvasViewInner({
         const availability = remote.mediaUrl === local.mediaUrl
           ? local.mediaAvailability
           : 'unknown';
-        // While a local submission is still in flight, a workspace snapshot
-        // may predate the new task row and still describe the old result.
-        // Keep the card in its submitting state unless the snapshot shows a
-        // genuinely newer outcome.
-        // Only the *old success* snapshot may be ignored while a submission is
-        // in flight. A terminal failure (or a new version) is authoritative and
-        // must reach the card immediately, otherwise the failure stays hidden
-        // behind a stale "生成中".
-        const localSubmitting = local.status === 'generating';
-        const staleSuccessSnapshot = (
-          localSubmitting
-          && remote.status === 'done'
-          && mediaVersionList(remote).length <= mediaVersionList(local).length
-        );
-        if (staleSuccessSnapshot) {
-          return {
-            ...local,
-            mediaAvailability: availability,
-          };
-        }
+        // workspace-nodes is the card's sole state authority. Local state may
+        // preserve an unsaved prompt/params draft and screen position, but it
+        // must never override the backend status, media URL or generation
+        // result. This removes the old "不确定提示先出现、图片后到" race.
         return {
           ...local,
           ...remote,
@@ -9646,12 +9664,8 @@ function CanvasViewInner({
   useEffect(() => {
     let alive = true;
     const loadGeneration = taskLoadGenerationRef.current;
-    // The projection workspace already returned the task snapshot. Do not
-    // issue a second task read on mount; only a subsequent interval or explicit
-    // task-center refresh needs a new snapshot.
-    let pollingStarted = false;
     const refreshTasks = () => {
-      if (!pollingStarted) return;
+      if (!taskCenterOpen) return;
       void getGenerationTasks(session, 80, currentEp)
         .then((tasks) => {
           if (
@@ -9663,24 +9677,15 @@ function CanvasViewInner({
         })
         .catch(() => {});
     };
-    // The first interval is the first allowed task refresh. It preserves the
-    // low-frequency safety net without racing the workspace task snapshot.
-    const startTimer = window.setTimeout(() => {
-      pollingStarted = true;
-    }, 900);
-    // Only poll quickly while there is active work. Closed task center with no
-    // active work still gets a low-frequency reconciliation, not 1.2s churn.
-    const interval = taskCenterOpen && activeGenerationTaskCount > 0
-      ? 1200
-      : activeGenerationTaskCount > 0
-        ? 2500
-        : 6000;
+    // Task Center owns task-ledger reads. Card rendering uses workspace-nodes
+    // only; a closed Task Center never polls the task ledger.
+    refreshTasks();
+    const interval = activeGenerationTaskCount > 0 ? 1200 : 6000;
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') refreshTasks();
     }, interval);
     return () => {
       alive = false;
-      window.clearTimeout(startTimer);
       window.clearInterval(timer);
     };
   }, [activeGenerationTaskCount, currentEp, session, taskCenterOpen]);
@@ -11016,74 +11021,10 @@ function CanvasViewInner({
     const unsub = subscribeToEvents((event) => {
       if (event.type !== 'done' && event.type !== 'error') return;
       if (event.sessionId && event.sessionId !== session) return;
-      const nodeId = event.nodeId as string | undefined;
-      if (nodeId) {
-        setGenerationBusyIds((prev) => {
-          if (!prev.has(nodeId)) return prev;
-          const next = new Set(prev);
-          next.delete(nodeId);
-          return next;
-        });
-      }
-      // 只翻转事件指名的节点：多节点同时生成时互不串号（旧逻辑会把所有 generating 一起翻）
-      setMediaNodes((prev) => {
-        const idx = prev.findIndex((n) => n.id === nodeId);
-        if (idx < 0) return prev;
-        const n = prev[idx];
-        const next = [...prev];
-        // 文本节点：生成结果是正文，要覆盖 prompt；媒体节点才写 mediaUrl。
-        // 以前只写 mediaUrl，文本卡生成完正文不变 —— 看起来"白跑一趟"。
-        const genText = event.text as string | undefined;
-        const generatedParams = event.params && typeof event.params === 'object'
-          ? event.params as Partial<CanvasMediaParams>
-          : null;
-        const finishedAt = new Date().toISOString();
-        next[idx] = {
-          ...n,
-          status: (event.type === 'error' ? 'failed' : 'done') as CanvasMediaNode['status'],
-          prompt: event.type === 'done' && n.kind === 'text' && genText ? genText : n.prompt,
-          mediaUrl: event.type === 'done' ? ((event.url as string | undefined) || n.mediaUrl) : n.mediaUrl,
-          params: event.type === 'done' && generatedParams
-            ? {...n.params, ...generatedParams}
-            : n.params,
-          lastError: event.type === 'error'
-            ? String(event.message || '生成失败')
-            : undefined,
-          generationFinishedAt: finishedAt,
-          finalizePending: event.type === 'done' ? false : n.finalizePending,
-          source: event.type === 'done' && event.source && typeof event.source === 'object'
-            ? event.source as CanvasMediaNode['source']
-            : n.source,
-          providerResultUrl: event.type === 'done' && typeof event.providerResultUrl === 'string'
-            ? event.providerResultUrl
-            : n.providerResultUrl,
-          providerTaskStatus: event.type === 'error' ? 'failed' : 'completed',
-          providerTaskPhase: event.type === 'error' ? '生成失败' : '已完成',
-          providerTaskProgress: event.type === 'error' ? n.providerTaskProgress : 100,
-          storage: event.type === 'done' && event.storage && typeof event.storage === 'object'
-            ? event.storage as CanvasMediaNode['storage']
-            : n.storage,
-          storageError: event.type === 'done' && typeof event.storageError === 'string'
-            ? event.storageError
-            : n.storageError,
-          promptStale: event.type === 'done' && (n.kind === 'image' || n.kind === 'audio') ? false : n.promptStale,
-          promptStaleReason: event.type === 'done' && (n.kind === 'image' || n.kind === 'audio') ? '' : n.promptStaleReason,
-          updatedAt: new Date().toISOString(),
-        };
-        return next;
-      });
-      if (event.type === 'error') {
-        setToast(`生成失败：${event.message || '未知错误'}`);
-      }
-      // 刷新画布：agent 新生成的资产/片段自动出现在托盘与画布上
-      // Canvas graph refresh is optional here: the projection workspace read
-      // already loads the current episode. Avoid a duplicate full-project
-      // request on initial entry; only refresh if the canvas is still missing.
-      if (!canvas) {
-        void getCanvas(session, currentEp)
-          .then((d) => { if (!('empty' in d)) setCanvas(d); })
-          .catch(() => {});
-      }
+      // Event fields are advisory wake-up signals, not task state. Re-read the
+      // backend task and workspace projections so only server rows decide the
+      // card outcome and no frontend-produced terminal state can flash first.
+      void refreshWorkspaceFactsRef.current().catch(() => {});
     }, () => {});
     return unsub;
   }, [session, currentEp, setToast]);
@@ -11263,12 +11204,9 @@ function CanvasViewInner({
       terminalRefreshTimer = window.setTimeout(() => {
         terminalRefreshTimer = null;
         if (disposed) return;
-        // `media` events already carry the node's terminal status, media URL,
-        // versions and storage result; applyEvent has updated the card above.
-        // A full workspace read on every terminal event races the initial
-        // workspace paint and duplicates index/nodes/tasks for no new data.
-        // Polling and visibility/network recovery remain the consistency net
-        // for older servers that omit fields from the event.
+        // Events wake the client; persisted task/node projections remain the
+        // sole authority for both the card and Task Center.
+        void refreshWorkspaceFacts().catch(() => {});
       }, 120);
     };
 
@@ -11291,141 +11229,10 @@ function CanvasViewInner({
       }
       const nodeId = typeof data.nodeId === 'string' ? data.nodeId : '';
       if (!nodeId) return;
-      const rawStatus = data.status;
-      const nextStatus: CanvasMediaNode['status'] = rawStatus === 'failed'
-        ? 'failed'
-        : rawStatus === 'done' ? 'done' : undefined;
-      const url = typeof data.url === 'string' && data.url ? mediaSourceUrl(data.url) : '';
-      setMediaNodes((prev) => {
-        const index = prev.findIndex((node) => node.id === nodeId);
-        if (index < 0) return prev;
-        const node = prev[index];
-        const phase = typeof data.providerTaskPhase === 'string' ? data.providerTaskPhase : node.providerTaskPhase;
-        const progress = typeof data.providerTaskProgress === 'number'
-          ? data.providerTaskProgress
-          : node.providerTaskProgress;
-        const mediaVersions = Array.isArray(data.mediaVersions)
-          ? data.mediaVersions as NonNullable<CanvasMediaParams['mediaVersions']>
-          : undefined;
-        const mediaVersionIndex = typeof data.mediaVersionIndex === 'number'
-          ? data.mediaVersionIndex
-          : undefined;
-        if (
-          !nextStatus
-          && phase === node.providerTaskPhase
-          && progress === node.providerTaskProgress
-          && !mediaVersions
-        ) {
-          return prev;
-        }
-        const updated: CanvasMediaNode = {
-          ...node,
-          ...(nextStatus ? { status: nextStatus } : {}),
-          ...(url ? { mediaUrl: url } : {}),
-          ...(typeof data.finalizePending === 'boolean' ? { finalizePending: data.finalizePending } : {}),
-          ...(typeof data.providerTaskStatus === 'string' ? { providerTaskStatus: data.providerTaskStatus } : {}),
-          ...(typeof data.taskPhase === 'string' ? { providerTaskPhase: data.taskPhase } : {}),
-          ...(typeof data.taskStatus === 'string' ? { providerTaskStatusRaw: data.taskStatus } : {}),
-          providerTaskPhase: phase,
-          providerTaskProgress: progress,
-          ...(mediaVersions
-            ? {
-                params: {
-                  ...(node.params || {}),
-                  mediaVersions,
-                  ...(mediaVersionIndex !== undefined ? {mediaVersionIndex} : {}),
-                  ...(node.kind === 'video'
-                    ? {
-                        videoVersions: mediaVersions,
-                        ...(mediaVersionIndex !== undefined
-                          ? {videoVersionIndex: mediaVersionIndex}
-                          : {}),
-                      }
-                    : {}),
-                },
-              }
-            : {}),
-          ...(typeof data.generationFinishedAt === 'string' && data.generationFinishedAt
-            ? { generationFinishedAt: data.generationFinishedAt }
-            : {}),
-          ...(node.kind === 'text' && typeof data.text === 'string' ? { prompt: data.text } : {}),
-          lastError: nextStatus === 'failed'
-            ? String(data.error || node.lastError || '生成失败')
-            : (nextStatus === 'done' ? undefined : node.lastError),
-          updatedAt: new Date().toISOString(),
-        };
-        if (
-          url
-          && node.kind !== 'text'
-          && !updated.params?.mediaVersions?.some((version) => version.url === url)
-        ) {
-          const versions = [
-            ...(updated.params?.mediaVersions || []),
-            {
-              url,
-              sourceType: 'generated' as const,
-              generatedAt:
-                typeof data.generationFinishedAt === 'string'
-                  ? data.generationFinishedAt
-                  : undefined,
-              providerResultUrl:
-                typeof data.providerResultUrl === 'string'
-                  ? data.providerResultUrl
-                  : undefined,
-              storage:
-                data.storage && typeof data.storage === 'object'
-                  ? data.storage as CanvasMediaNode['storage']
-                  : undefined,
-            },
-          ];
-          updated.params = {
-            ...(updated.params || {}),
-            mediaVersions: versions,
-            mediaVersionIndex: versions.length - 1,
-            ...(node.kind === 'video'
-              ? {
-                  videoVersions: versions,
-                  videoVersionIndex: versions.length - 1,
-                }
-              : {}),
-          };
-        }
-        const copy = prev.slice();
-        copy[index] = updated;
-        return copy;
-      });
-      if (nodeId && typeof data.providerTaskStatus === 'string' && data.providerTaskStatus === 'retrying') {
-        setGenerationTasks((prev) => prev.map((task) => (
-          task.node_id === nodeId && ['queued', 'submitting', 'running'].includes(task.status)
-            ? {
-                ...task,
-                phase: '查询重试中',
-                error: typeof data.error === 'string' ? data.error : task.error,
-              }
-            : task
-        )));
-      }
-      if (nextStatus === 'failed' || nextStatus === 'done') {
-        setGenerationTasks((prev) => prev.map((task) => (
-          task.node_id === nodeId
-          && ['queued', 'submitting', 'running'].includes(task.status)
-            ? {
-                ...task,
-                status: nextStatus === 'done' ? 'succeeded' : 'failed',
-                phase: typeof data.providerTaskPhase === 'string'
-                  ? data.providerTaskPhase
-                  : task.phase,
-                error: nextStatus === 'failed'
-                  ? String(data.error || task.error || '生成失败')
-                  : '',
-                finished_at: typeof data.generationFinishedAt === 'string'
-                  ? data.generationFinishedAt
-                  : task.finished_at,
-              }
-            : task
-        )));
-        refreshAfterTerminalEvent();
-      }
+      // SSE is only a notification that the backend state changed. Routing its
+      // payload into card/task state would make the event stream a second
+      // frontend-side state machine. Re-read both projections instead.
+      refreshAfterTerminalEvent();
     };
 
     const open = () => {
@@ -14898,11 +14705,21 @@ function CanvasViewInner({
           episodeId: currentEp,
         });
         const result = await generationPromise;
-        void getGenerationTasks(session, 80, currentEp)
-          .then((tasks) => setGenerationTasks(tasks))
-          .catch(() => {});
-        void getCanvasMediaNodes(session, currentEp)
-          .then((remoteNodes) => {
+        // The POST has already been accepted at this point. Auxiliary refresh
+        // failures must never fall through to the uncertain-submission catch:
+        // that previously painted "结果待确认" over a task the server had
+        // accepted, then removed it when the image event arrived.
+        const refreshTasks = async () => {
+          try {
+            const tasks = await getGenerationTasks(session, 80, currentEp);
+            setGenerationTasks(tasks);
+          } catch {
+            // Polling/SSE remains the consistency path.
+          }
+        };
+        const refreshNode = async () => {
+          try {
+            const remoteNodes = await getCanvasMediaNodes(session, currentEp);
             const remote = remoteNodes.find((item) => item.id === node.id);
             if (!remote) return;
             // Reading the canvas immediately after submission can still return
@@ -14917,8 +14734,11 @@ function CanvasViewInner({
             );
             if (!backendOwnsState) return;
             updateMediaNode(node.id, remote, {persist: false});
-          })
-          .catch(() => {});
+          } catch {
+            // Polling/SSE remains the consistency path.
+          }
+        };
+        await Promise.all([refreshTasks(), refreshNode()]);
         if (result.deferred) {
           setToast(result.accepted
             ? `${kindLabel[node.kind]}已提交，后台生成中，任务中心会实时更新`
@@ -14953,17 +14773,10 @@ function CanvasViewInner({
           return next;
         });
         optimisticGenerationStartsRef.current.delete(node.id);
-        updateMediaNode(node.id, {
-          status: 'failed',
-          lastError: definitiveFailure
-            ? message
-            : `${message}；提交结果未确认，可能已被供应商受理。系统不会自动重提，请先核对任务或账单。`,
-          generationFinishedAt: definitiveFailure
-            ? new Date().toISOString()
-            : undefined,
-          providerTaskStatus: definitiveFailure ? 'failed' : 'uncertain',
-          providerTaskPhase: definitiveFailure ? '生成失败' : '结果待确认',
-        }, {persist: false});
+        // The task row is the only outcome authority. A POST/response failure
+        // may still have persisted a task, so the browser must not manufacture
+        // a terminal or uncertain node state here. Stop local waiting and let
+        // the next backend task/node snapshot decide what the card shows.
         setToast(`生成请求发送失败：${message}`);
       } finally {
         // 请求返回即释放：后续重复点击由节点自身的 generating 状态拦截。
@@ -17665,10 +17478,7 @@ function CanvasViewInner({
                     {mn && (() => {
                       const busy = mn.status === 'generating'
                         || isLiveProviderGeneration(mn)
-                        || generationBusyIds.has(mn.id)
-                        || generationTasks
-                          .filter((item) => item.node_id === mn.id)
-                          .some(isGenerationTaskActive);
+                        || generationBusyIds.has(mn.id);
                       return (
                         <button
                           type="button"
@@ -17760,7 +17570,9 @@ function CanvasViewInner({
               pool={mediaNodes}
               edges={allEdges}
               catalog={modelCatalog}
-              tasks={generationTasks}
+              // Batch generation reads cards, not the task ledger. Node
+              // status is already projected by the backend workspace.
+              tasks={[]}
               busyNodeIds={generationBusyIds}
               onClose={() => setBatchGenerateTargets(null)}
               onGenerate={onGenerateMediaNode}

@@ -3085,6 +3085,12 @@ def _merge_generation_task_update(task: dict | None, updates: dict) -> dict:
         and current != "queued"
     ):
         allowed = False
+    elif current == "running" and requested == "submitting":
+        # A duplicate worker may enter the queue-acquisition path after this
+        # task has already claimed its execution lease. Never regress a running
+        # task to submitting: submitting is claimable again and would let the
+        # duplicate worker overwrite the live lease before paid provider I/O.
+        allowed = False
     if (
         allowed
         and current in _ACTIVE_TASK_STATUSES
@@ -3205,6 +3211,7 @@ def create_generation_task(
             "SELECT * FROM generation_tasks WHERE project_id=? AND node_id=? "
             "AND status='interrupted' "
             "AND COALESCE(phase,'') IN ('结果待确认','等待恢复') "
+            "AND COALESCE(provider_task_id,'')!='' "
             "ORDER BY created_at DESC, rowid DESC LIMIT 1",
             (project_id, node_id),
         ).fetchone()
@@ -4192,6 +4199,7 @@ def commit_generation_terminal(
     event_payload=None,
     lease_owner=None,
     snapshot_mode="auto",
+    accept_durable_late_result=False,
 ):
     """Commit node result, task terminal state and outbox event atomically."""
     result = {
@@ -4204,6 +4212,7 @@ def commit_generation_terminal(
     }
 
     def write(con):
+        effective_lease_owner = lease_owner
         node_written_at = _now_iso()
         effective_task_updates = dict(task_updates or {})
         if "node_written_at" in effective_task_updates:
@@ -4239,14 +4248,37 @@ def commit_generation_terminal(
                 "succeeded", "failed", "interrupted", "cancelled",
             }:
                 effective_task_updates["next_poll_at"] = ""
-            if lease_owner is not None:
-                owner = str(lease_owner or "")
+            if effective_lease_owner is not None:
+                owner = str(effective_lease_owner or "")
                 if (
                     str(task.get("lease_owner") or "") != owner
                     or str(task.get("status") or "") != "running"
                 ):
-                    result["reason"] = "lease_lost"
-                    return
+                    durable_local = str(
+                        effective_task_updates.get("local_result_url")
+                        or task.get("local_result_url")
+                        or ""
+                    ).strip()
+                    durable_provider = str(
+                        effective_task_updates.get("provider_result_url")
+                        or task.get("provider_result_url")
+                        or ""
+                    ).strip()
+                    if not (
+                        accept_durable_late_result
+                        and str(effective_task_updates.get("status") or "")
+                        == "succeeded"
+                        and (
+                            durable_local.startswith("/uploads/")
+                            or durable_provider.startswith("https://")
+                        )
+                    ):
+                        result["reason"] = "lease_lost"
+                        return
+                    # The provider result is already durable. Do not make a
+                    # completed paid image disappear because the heartbeat lost
+                    # the local lease a moment before this terminal transaction.
+                    effective_lease_owner = None
             fields = {
                 key: value
                 for key, value in effective_task_updates.items()
@@ -4260,7 +4292,7 @@ def commit_generation_terminal(
                     + ",".join(f"{key}=?" for key in merged)
                     + (
                         " WHERE id=? AND lease_owner=? AND status='running'"
-                        if lease_owner is not None
+                        if effective_lease_owner is not None
                         else " WHERE id=?"
                     ),
                     (
@@ -4268,7 +4300,7 @@ def commit_generation_terminal(
                         task_id,
                         *(
                             [str(lease_owner or "")]
-                            if lease_owner is not None
+                            if effective_lease_owner is not None
                             else []
                         ),
                     ),
@@ -4393,6 +4425,7 @@ def finish_generation_task(
     delivery_status=None,
     result_ready_at=None,
     lease_owner=None,
+    late_result=False,
 ):
     """Write a terminal state and release the active slot in one transaction."""
     updates = {
@@ -4428,11 +4461,35 @@ def finish_generation_task(
             ).description
         ]
         current = dict(zip(columns, row)) if row else None
+        if late_result:
+            local_result = str(
+                (
+                    updates.get("local_result_url")
+                    or (current or {}).get("local_result_url")
+                    or ""
+                )
+            ).strip()
+            provider_result = str(
+                (
+                    updates.get("provider_result_url")
+                    or (current or {}).get("provider_result_url")
+                    or ""
+                )
+            ).strip()
+            has_durable_result = bool(
+                local_result.startswith("/uploads/")
+                or provider_result.startswith("https://")
+            )
+            if not has_durable_result:
+                return
+            effective_lease_owner = None
+        else:
+            effective_lease_owner = lease_owner
         merged = _merge_generation_task_update(current, updates)
         if not merged:
             return
-        if lease_owner is not None:
-            owner = str(lease_owner or "")
+        if effective_lease_owner is not None:
+            owner = str(effective_lease_owner or "")
             merged["lease_owner"] = ""
             merged["lease_expires_at"] = None
             result = con.execute(
@@ -4506,6 +4563,31 @@ def claim_generation_task(task_id, owner, lease_seconds=45, allow_recover=False)
     claimed = {"value": False}
 
     def write(con):
+        if not allow_recover:
+            # Claiming is a compare-and-set on the queued state. A second
+            # dispatcher may have read this row while it was still queued; if
+            # the first dispatcher has since claimed it, this update must fail
+            # even if an unrelated writer changed the status to submitting.
+            result = con.execute(
+                "UPDATE generation_tasks SET status='running', phase='已领取执行租约',"
+                "lease_owner=?,lease_expires_at=?,heartbeat_at=?,updated_at=?,"
+                "started_at=CASE WHEN started_at IS NULL OR started_at='' "
+                "THEN ? ELSE started_at END,error='',finished_at='' "
+                "WHERE id=? AND status='queued' "
+                "AND (lease_owner IS NULL OR lease_owner='') "
+                "AND COALESCE(provider_task_id,'')=''",
+                (
+                    owner,
+                    lease_expires_at,
+                    now.isoformat(),
+                    now.isoformat(),
+                    now.isoformat(),
+                    task_id,
+                ),
+            )
+            if result.rowcount == 1:
+                claimed["value"] = True
+                return
         row = con.execute(
             "SELECT status,lease_owner,lease_expires_at,provider_task_id "
             "FROM generation_tasks WHERE id=?",
@@ -4532,6 +4614,11 @@ def claim_generation_task(task_id, owner, lease_seconds=45, allow_recover=False)
             if (
                 existing_lease_expires_at
                 and existing_lease_expires_at > now.isoformat()
+            ):
+                return
+            if (
+                not allow_recover
+                and str(current_provider_task_id or "").strip()
             ):
                 return
         if (
@@ -4571,7 +4658,12 @@ def claim_generation_task(task_id, owner, lease_seconds=45, allow_recover=False)
             )
             status_params = (now.isoformat(),)
         else:
-            status_clause = "status IN ('queued','submitting')"
+            # A normal executor may claim a legacy submitting row only while it
+            # is ownerless. An owned submitting row is already past dispatch.
+            status_clause = (
+                "(status='queued' OR (status='submitting' "
+                "AND (lease_owner IS NULL OR lease_owner='')))"
+            )
             status_params = ()
         result = con.execute(
             "UPDATE generation_tasks SET status='running', phase='已领取执行租约',"

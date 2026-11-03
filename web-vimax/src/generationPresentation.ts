@@ -227,3 +227,17 @@ export function mediaGenerationVisualState(input: {
     failed,
   };
 }
+
+export function isSettledMediaCard(input: {
+  status?: string;
+  mediaUrl?: string;
+  mediaMissing?: boolean;
+  providerLive?: boolean;
+}): boolean {
+  return (
+    input.status === 'done'
+    && Boolean(input.mediaUrl)
+    && input.mediaMissing !== true
+    && input.providerLive !== true
+  );
+}

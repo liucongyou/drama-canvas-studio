@@ -10,19 +10,38 @@ const source = readFileSync(
 
 
 describe('generation error presentation', () => {
-  it('does not mark timeouts or transport failures as a definitive failure', () => {
+  it('keeps operation-key policy without deriving card task state', () => {
     expect(source).toContain(
       'const definitiveFailure = shouldReleaseOperationIdAfterError(error);',
     );
-    expect(source).toMatch(
+    expect(source).not.toMatch(
       /providerTaskStatus: definitiveFailure \? 'failed' : 'uncertain'/,
     );
-    expect(source).toMatch(
+    expect(source).not.toMatch(
       /providerTaskPhase: definitiveFailure \? '生成失败' : '结果待确认'/,
     );
   });
 
-  it('keeps the warning text visible on the card for uncertain submissions', () => {
-    expect(source).toContain('提交结果未确认，可能已被供应商受理');
+  it('does not let a failed submit request override the backend card state', () => {
+    expect(source).not.toContain(
+      '提交结果未确认，可能已被供应商受理。系统不会自动重提，请先核对任务或账单。',
+    );
+  });
+
+  it('does not turn accepted-submit refresh failures into uncertain results', () => {
+    expect(source).toContain('const refreshTasks = async () => {');
+    expect(source).toContain('const refreshNode = async () => {');
+    expect(source).toMatch(
+      /await Promise\.all\(\[refreshTasks\(\), refreshNode\(\)\]\);/,
+    );
+  });
+
+  it('keeps the workspace node row as the sole card status authority', () => {
+    expect(source).toContain(
+      'workspace-nodes is the card\'s sole state authority.',
+    );
+    expect(source).not.toMatch(
+      /generationTasks\s*\.filter\(\(item\) => item\.node_id === mn\.id\)/,
+    );
   });
 });

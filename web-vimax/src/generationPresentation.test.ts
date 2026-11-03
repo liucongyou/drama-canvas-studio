@@ -6,6 +6,7 @@ import {
   generationProgressLabel,
   hasTrustedProviderProgress,
   isGenerationTaskActive,
+  isSettledMediaCard,
   latestTaskByNode,
   liveGenerationCount,
   mediaGenerationVisualState,
@@ -173,6 +174,35 @@ describe('generation presentation', () => {
       Date.parse('2026-10-31T00:00:05.000Z'),
     );
     expect([...retained.keys()]).toEqual(['node-a']);
+  });
+
+  it('treats a persisted media node as the terminal card authority', () => {
+    const staleUncertainTask: GenerationTask = {
+      id: 'stale-uncertain',
+      project_id: 'project',
+      node_id: 'node-a',
+      title: '角色图',
+      status: 'interrupted',
+      phase: '结果待确认',
+      error: '供应商请求可能已经发出，但本地未取得确认回执',
+      created_at: '2026-11-03T15:00:00.000Z',
+      updated_at: '2026-11-03T15:05:00.000Z',
+    };
+    const settledNode = {
+      status: 'done',
+      mediaUrl: '/uploads/generated-final.jpg',
+      finalizePending: false,
+      providerLive: false,
+      generationBusy: false,
+    };
+
+    expect(isGenerationTaskActive(staleUncertainTask)).toBe(false);
+    expect(mediaGenerationVisualState(settledNode)).toMatchObject({
+      hasRenderableMedia: true,
+      busy: false,
+      failed: false,
+    });
+    expect(isSettledMediaCard(settledNode)).toBe(true);
   });
 
   it('does not let an older terminal task hide a new submission', () => {

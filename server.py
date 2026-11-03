@@ -1988,50 +1988,28 @@ def is_client_disconnect_error(exc):
     return errno in {32, 104, 10053, 10054}
 
 
-def _start_generation_task_heartbeat(task_id, lease_owner):
-    if not task_id or not lease_owner:
-        return (None, None)
-    stop_event = threading.Event()
-
-    def run():
-        while not stop_event.wait(TASK_HEARTBEAT_SECONDS):
-            try:
-                renewed = store.renew_generation_task_lease(
-                    task_id,
-                    lease_owner,
-                    TASK_LEASE_SECONDS,
-                )
-                if not renewed:
-                    return
-            except Exception as exc:
-                print(
-                    f"[generation] heartbeat failed: task={task_id} error={exc}",
-                    file=sys.stderr,
-                )
-
-    thread = threading.Thread(
-        target=run,
-        name=f"generation-heartbeat-{task_id}",
-        daemon=True,
-    )
-    thread.start()
-    return (stop_event, thread)
-
-
-def _finish_generation_task_lease(task_id, lease_owner, heartbeat):
-    stop_event, thread = heartbeat if heartbeat else (None, None)
-    if stop_event:
-        stop_event.set()
-    if thread and thread.is_alive() and thread is not threading.current_thread():
-        thread.join(timeout=1)
-    if task_id and lease_owner:
+def _generation_tenant_from_task(task_id):
+    """Resolve the task owner even when this thread has no request context."""
+    context = tenant_context.current()
+    if context is not None:
+        task = store.get_generation_task(task_id) or {}
+        if task:
+            return context
+    for tenant in _active_tenants():
+        tenant_id = tenant.get("id") if tenant else None
+        tenant_slug = str((tenant or {}).get("slug") or "local")
         try:
-            store.release_generation_task_lease(task_id, lease_owner)
-        except Exception as exc:
-            print(
-                f"[generation] release lease failed: task={task_id} error={exc}",
-                file=sys.stderr,
+            scope = (
+                tenant_context.use_tenant(tenant_id, tenant_slug)
+                if tenant
+                else tenant_context.use_context(None)
             )
+            with scope:
+                if store.get_generation_task(task_id):
+                    return tenant_context.current()
+        except Exception:
+            continue
+    return context
 
 
 def preserve_generation_outcome(task_id, exc):
@@ -2070,26 +2048,46 @@ def _latest_provider_result_url(project_id, node_id):
 def _start_generation_task_heartbeat(task_id, lease_owner):
     if not task_id or not lease_owner:
         return None, None
+    heartbeat_tenant = _generation_tenant_from_task(task_id)
     stop_event = threading.Event()
 
     def run():
-        while not stop_event.wait(TASK_HEARTBEAT_SECONDS):
-            try:
-                if not store.renew_generation_task_lease(
-                    task_id,
-                    lease_owner,
-                    TASK_LEASE_SECONDS,
-                ):
+        scope = (
+            tenant_context.use_context(heartbeat_tenant)
+            if heartbeat_tenant is not None
+            else tenant_context.use_context(None)
+        )
+        with scope:
+            while not stop_event.wait(TASK_HEARTBEAT_SECONDS):
+                try:
+                    if not store.renew_generation_task_lease(
+                        task_id,
+                        lease_owner,
+                        TASK_LEASE_SECONDS,
+                    ):
+                        latest = store.get_generation_task(task_id) or {}
+                        if latest.get("status") not in {
+                            "queued", "submitting", "running",
+                        }:
+                            return
+                        print(
+                            "[generation] task lease lost: "
+                            f"task={task_id} "
+                            f"tenant={tenant_context.current_tenant_id()} "
+                            f"status={latest.get('status') or '-'} "
+                            f"owner={latest.get('lease_owner') or '-'} "
+                            f"expires={latest.get('lease_expires_at') or '-'}",
+                            file=sys.stderr,
+                        )
+                        return
+                except Exception as exc:
                     print(
-                        f"[generation] task lease lost: task={task_id}",
+                        "[generation] heartbeat failed: "
+                        f"task={task_id} "
+                        f"tenant={tenant_context.current_tenant_id()} "
+                        f"error={exc}",
                         file=sys.stderr,
                     )
-                    return
-            except Exception as exc:
-                print(
-                    f"[generation] heartbeat failed: task={task_id} error={exc}",
-                    file=sys.stderr,
-                )
 
     thread = threading.Thread(
         target=run,
@@ -9296,6 +9294,14 @@ class Handler(BaseHTTPRequestHandler):
                 else None
             ),
             lease_owner=lease_owner if task_id else None,
+            accept_durable_late_result=bool(
+                task_id
+                and ntype == "image"
+                and (
+                    str(meta.get("content") or "").startswith("/uploads/")
+                    or str(meta.get("providerResultUrl") or "").startswith("https://")
+                )
+            ),
         )
         if not terminal_result.get("committed"):
             reason = str(terminal_result.get("reason") or "")

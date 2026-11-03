@@ -1062,7 +1062,7 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertFalse(recovered)
         commit_meta.assert_not_called()
 
-    def test_expired_lease_without_provider_task_stays_uncertain(self):
+    def test_expired_lease_without_provider_task_keeps_audit_and_allows_new_task(self):
         with tenant_context.use_context(self.context):
             task = canvas_store.create_generation_task(
                 "project-expired",
@@ -1087,8 +1087,9 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertIn("无法确认是否已受理", saved["error"])
         self.assertNotIn("安全重新生成", saved["error"])
         self.assertEqual(saved["lease_owner"], "")
-        self.assertFalse(replacement["created_new"])
-        self.assertEqual(replacement["id"], task["id"])
+        self.assertTrue(replacement["created_new"])
+        self.assertNotEqual(replacement["id"], task["id"])
+        self.assertEqual(replacement["status"], "queued")
 
     def test_expired_lease_with_provider_task_stays_recoverable(self):
         with tenant_context.use_context(self.context):
@@ -1203,6 +1204,148 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(saved["status"], "succeeded")
         self.assertEqual(saved["lease_owner"], "")
         self.assertIsNone(saved["lease_expires_at"])
+
+    def test_late_result_without_durable_evidence_cannot_finish_task(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-late-no-evidence",
+                "node-late-no-evidence",
+                kind="image",
+            )
+            owner = "worker:late-no-evidence"
+            self.assertTrue(canvas_store.claim_generation_task(task["id"], owner, 45))
+            saved = canvas_store.finish_generation_task(
+                task["id"],
+                status="succeeded",
+                phase="已完成",
+                lease_owner=owner,
+                late_result=True,
+            )
+            current = canvas_store.get_generation_task(task["id"])
+
+        self.assertIsNone(saved)
+        self.assertEqual(current["status"], "running")
+        self.assertEqual(current["lease_owner"], owner)
+
+    def test_late_result_with_durable_local_file_can_finish_after_lease_loss(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-late-local",
+                "node-late-local",
+                kind="image",
+            )
+            owner = "worker:late-local"
+            self.assertTrue(canvas_store.claim_generation_task(task["id"], owner, 45))
+            canvas_store.release_generation_task_lease(task["id"], owner)
+            saved = canvas_store.finish_generation_task(
+                task["id"],
+                status="succeeded",
+                phase="已完成",
+                local_result_url="/uploads/late-local.png",
+                delivery_status="ready",
+                lease_owner=owner,
+                late_result=True,
+            )
+
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved["status"], "succeeded")
+        self.assertEqual(saved["local_result_url"], "/uploads/late-local.png")
+
+    def test_late_result_with_durable_provider_file_can_finish_after_lease_loss(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-late-provider",
+                "node-late-provider",
+                kind="image",
+            )
+            owner = "worker:late-provider"
+            self.assertTrue(canvas_store.claim_generation_task(task["id"], owner, 45))
+            canvas_store.release_generation_task_lease(task["id"], owner)
+            saved = canvas_store.finish_generation_task(
+                task["id"],
+                status="succeeded",
+                phase="已完成",
+                provider_result_url="https://provider.example/late.png",
+                delivery_status="pending",
+                lease_owner=owner,
+                late_result=True,
+            )
+
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved["status"], "succeeded")
+        self.assertEqual(
+            saved["provider_result_url"],
+            "https://provider.example/late.png",
+        )
+
+    def test_terminal_commit_accepts_only_durable_late_image_result(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("late-terminal-image")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "node-late-terminal",
+                    "type": "image",
+                    "title": "角色图",
+                    "metadata": {"status": "generating"},
+                }],
+                episode_id="EP001",
+            )
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-late-terminal",
+                kind="image",
+            )
+            owner = "worker:late-terminal"
+            self.assertTrue(canvas_store.claim_generation_task(task["id"], owner, 45))
+            canvas_store.release_generation_task_lease(task["id"], owner)
+
+            without_result = canvas_store.commit_generation_terminal(
+                project_id,
+                "node-late-terminal",
+                {"status": "done", "content": ""},
+                task_id=task["id"],
+                task_updates={
+                    "status": "succeeded",
+                    "phase": "已完成",
+                    "delivery_status": "ready",
+                },
+                lease_owner=owner,
+                accept_durable_late_result=True,
+            )
+            with_result = canvas_store.commit_generation_terminal(
+                project_id,
+                "node-late-terminal",
+                {
+                    "status": "done",
+                    "content": "/uploads/late-terminal.png",
+                },
+                task_id=task["id"],
+                task_updates={
+                    "status": "succeeded",
+                    "phase": "已完成",
+                    "local_result_url": "/uploads/late-terminal.png",
+                    "delivery_status": "ready",
+                },
+                lease_owner=owner,
+                accept_durable_late_result=True,
+            )
+            saved = canvas_store.get_generation_task(task["id"])
+            node = canvas_store.get_projection_node(
+                project_id,
+                "node-late-terminal",
+            )
+
+        self.assertFalse(without_result["committed"])
+        self.assertEqual(without_result["reason"], "lease_lost")
+        self.assertTrue(with_result["committed"])
+        self.assertEqual(saved["status"], "succeeded")
+        self.assertEqual(saved["local_result_url"], "/uploads/late-terminal.png")
+        self.assertEqual(node["metadata"]["status"], "done")
+        self.assertEqual(
+            node["metadata"]["content"],
+            "/uploads/late-terminal.png",
+        )
 
     def test_resumer_claims_lease_and_heartbeats_same_task(self):
         with tenant_context.use_context(self.context):
@@ -1592,6 +1735,65 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(len({item["id"] for item in results}), 1)
         self.assertEqual(sum(1 for item in results if item.get("created_new")), 1)
 
+    def test_uncertain_task_without_provider_id_does_not_block_new_generation(self):
+        with tenant_context.use_context(self.context):
+            first = canvas_store.create_generation_task(
+                "project-uncertain-no-provider",
+                "node-uncertain-no-provider",
+                kind="image",
+            )
+            canvas_store.update_generation_task(
+                first["id"],
+                status="interrupted",
+                phase="结果待确认",
+                error="供应商请求可能已发出，但没有任务号",
+                finished_at=canvas_store._now_iso(),
+            )
+
+            second = canvas_store.create_generation_task(
+                "project-uncertain-no-provider",
+                "node-uncertain-no-provider",
+                kind="image",
+            )
+            old = canvas_store.get_generation_task(first["id"])
+            new = canvas_store.get_generation_task(second["id"])
+
+        self.assertTrue(second.get("created_new"))
+        self.assertNotEqual(second["id"], first["id"])
+        self.assertEqual(old["status"], "interrupted")
+        self.assertEqual(old["phase"], "结果待确认")
+        self.assertEqual(new["status"], "queued")
+
+    def test_uncertain_task_with_provider_id_still_blocks_new_generation(self):
+        with tenant_context.use_context(self.context):
+            first = canvas_store.create_generation_task(
+                "project-uncertain-provider",
+                "node-uncertain-provider",
+                kind="image",
+            )
+            canvas_store.update_generation_task(
+                first["id"],
+                status="interrupted",
+                phase="结果待确认",
+                provider_task_id="provider-unresolved-image",
+                finished_at=canvas_store._now_iso(),
+            )
+
+            replay = canvas_store.create_generation_task(
+                "project-uncertain-provider",
+                "node-uncertain-provider",
+                kind="image",
+            )
+            tasks = canvas_store.list_generation_tasks(
+                "project-uncertain-provider",
+                20,
+            )
+
+        self.assertFalse(replay.get("created_new"))
+        self.assertEqual(replay["id"], first["id"])
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["provider_task_id"], "provider-unresolved-image")
+
     def test_mixed_episode_task_stress_preserves_isolation_and_single_claim(self):
         projects = 6
         nodes_per_episode = 20
@@ -1690,6 +1892,94 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(saved["lease_owner"], "race-worker-" + str(
             next(index for index, item in enumerate(outcomes) if item)
         ))
+
+    def test_duplicate_dispatch_cannot_regress_live_running_lease(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-running-no-regress",
+                "node-running-no-regress",
+                kind="image",
+            )
+            first_owner = "worker:first"
+            self.assertTrue(
+                canvas_store.claim_generation_task(
+                    task["id"],
+                    first_owner,
+                    45,
+                )
+            )
+
+            canvas_store.update_generation_task(
+                task["id"],
+                status="submitting",
+                phase="重复调度试图重新排队",
+            )
+            duplicate_claim = canvas_store.claim_generation_task(
+                task["id"],
+                "worker:duplicate",
+                45,
+            )
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertFalse(duplicate_claim)
+        self.assertEqual(saved["status"], "running")
+        self.assertEqual(saved["lease_owner"], first_owner)
+        self.assertNotEqual(saved["phase"], "重复调度试图重新排队")
+
+    def test_duplicate_claim_loses_even_if_status_temporarily_submitting(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-submitting-lease-race",
+                "node-submitting-lease-race",
+                kind="image",
+            )
+            first_owner = "worker:first-atomic"
+            duplicate_owner = "worker:duplicate-atomic"
+            barrier = __import__("threading").Barrier(2)
+
+            def claim(owner):
+                with tenant_context.use_context(self.context):
+                    barrier.wait(timeout=5)
+                    return canvas_store.claim_generation_task(
+                        task["id"],
+                        owner,
+                        45,
+                    )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                first_result = pool.submit(claim, first_owner)
+                second_result = pool.submit(claim, duplicate_owner)
+                outcomes = [first_result.result(), second_result.result()]
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertEqual(sum(1 for item in outcomes if item), 1)
+        self.assertEqual(saved["status"], "running")
+        self.assertIn(saved["lease_owner"], {first_owner, duplicate_owner})
+
+    def test_owned_submitting_row_is_not_reclaimed_by_normal_executor(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-owned-submitting",
+                "node-owned-submitting",
+                kind="image",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="submitting",
+                phase="提交供应商",
+                lease_owner="worker:owner",
+                lease_expires_at="2999-01-01T00:00:00.000Z",
+            )
+            claimed = canvas_store.claim_generation_task(
+                task["id"],
+                "worker:other",
+                45,
+            )
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertFalse(claimed)
+        self.assertEqual(saved["status"], "submitting")
+        self.assertEqual(saved["lease_owner"], "worker:owner")
 
     def test_expired_lease_stress_keeps_terminal_state_monotonic(self):
         with tenant_context.use_context(self.context):

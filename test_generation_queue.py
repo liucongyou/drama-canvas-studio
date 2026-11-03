@@ -11,6 +11,7 @@ from unittest.mock import patch
 import canvas_store
 import provider_client
 import server
+import tenant_context
 
 
 class GenerationQueueTests(unittest.TestCase):
@@ -403,6 +404,60 @@ class GenerationQueueTests(unittest.TestCase):
             server.TASK_HEARTBEAT_SECONDS,
             server.TASK_LEASE_SECONDS,
         )
+
+    def test_heartbeat_binds_generation_task_tenant(self):
+        tenant = tenant_context.make_context("heartbeat-tenant", "heartbeat-tenant")
+        tenant_context.ensure_context_dirs(tenant)
+        task_id = "task-heartbeat-tenant"
+
+        def get_task(candidate):
+            if (
+                candidate == task_id
+                and tenant_context.current_tenant_id() == tenant.tenant_id
+            ):
+                return {
+                    "id": task_id,
+                    "status": "running",
+                    "lease_owner": "generation:heartbeat-tenant",
+                }
+            return None
+
+        renewed = []
+
+        def renew(candidate, owner, lease_seconds):
+            renewed.append((
+                candidate,
+                owner,
+                lease_seconds,
+                tenant_context.current_tenant_id(),
+            ))
+            return False
+
+        with (
+            patch.object(server, "_active_tenants", return_value=[
+                {"id": tenant.tenant_id, "slug": tenant.slug},
+            ]),
+            patch.object(server.store, "get_generation_task", side_effect=get_task),
+            patch.object(
+                server.store,
+                "renew_generation_task_lease",
+                side_effect=renew,
+            ),
+            patch.object(server, "TASK_HEARTBEAT_SECONDS", 0.01),
+        ):
+            stop_event, thread = server._start_generation_task_heartbeat(
+                task_id,
+                "generation:heartbeat-tenant",
+            )
+            deadline = __import__("time").monotonic() + 2
+            while not renewed and __import__("time").monotonic() < deadline:
+                __import__("time").sleep(0.01)
+            stop_event.set()
+            thread.join(timeout=1)
+
+        self.assertTrue(renewed)
+        self.assertEqual(renewed[0][0], task_id)
+        self.assertEqual(renewed[0][3], tenant.tenant_id)
 
     def test_stopping_server_rejects_new_generation_workers(self):
         previous = server.SERVER_STOPPING.is_set()
