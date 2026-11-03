@@ -746,11 +746,11 @@ describe('连线流光（屏幕像素恒定：长度 + 宽度同口径）', () =
   // 彗尾是三层里最粗的一层。倍数上限锁在 2.6（选中态带 blur 才允许最宽）——
   // 这是"明显能看出是颗彗星"和"又变成粗光带"之间的分界：
   // 收到 1.4 时用户反馈"效果不明显"，放到 2.6 以上就会重演"比连线大很多"。
-  it('★ 彗星最粗处不超过连线的 2.8 倍（是彗星，不是粗光带）', () => {
+  it('★ 彗星最粗处不超过连线的 2.1 倍（是彗星，不是粗光带）', () => {
     const all = stylesSource + refineSource;
     const factors = [...all.matchAll(/calc\(var\(--edge-flow-width[^)]*\) \* ([\d.]+)\)/g)].map((m) => +m[1]);
     expect(factors.length).toBeGreaterThan(6);
-    expect(Math.max(...factors)).toBeLessThanOrEqual(2.8);
+    expect(Math.max(...factors)).toBeLessThanOrEqual(2.1);
   });
 
   // ★ 第 31 轮定稿：连线**只有一种颜色**（用户原话「你连线都用单个卡片选中连线颜色不就行了」），

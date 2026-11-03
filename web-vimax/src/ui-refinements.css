@@ -7662,7 +7662,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 /* ★ 第 31 轮定稿：**这里不再改颜色**（连线已统一成一个蓝，彗星三层是一套固定亮色）。
    只留"选中卡片时相连线跑得更快一点（1.35s）+ 彗尾/彗头/火花一起点亮 + 略微加粗"。 */
 .canvas-flow .react-flow__edge .canvas-edge-flow.is-linked{
-  stroke-width:calc(var(--edge-flow-width,1.7) * 1.55);
+  stroke-width:calc(var(--edge-flow-width,1.7) * 1.25);
   opacity:1;
   animation-duration:1.35s;
   filter:drop-shadow(0 0 3px rgba(0,158,250,.58));
@@ -7675,13 +7675,13 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
      几十秒后亮核会跑到彗尾的间隙里 → 看起来像"光断成一截一截"。
      （相位只能靠 duration 相等来锁，CSS 做不到"同相位不同速度"。） */
 .canvas-flow .react-flow__edge .canvas-edge-flow-tail.is-linked{
-  stroke-width:calc(var(--edge-flow-width,1.7) * 2.5);
+  stroke-width:calc(var(--edge-flow-width,1.7) * 1.85);
   opacity:.55;
   animation-duration:1.35s;
 }
 /* 选中卡片 → 相连线的彗头也点亮，且**必须同步 1.35s**（相位锁） */
 .canvas-flow .react-flow__edge .canvas-edge-flow-head.is-linked{
-  stroke-width:calc(var(--edge-flow-width,1.7) * 1.7);
+  stroke-width:calc(var(--edge-flow-width,1.7) * 1.35);
   opacity:1;
   animation-duration:1.35s;
 }
