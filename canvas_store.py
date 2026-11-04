@@ -2433,6 +2433,7 @@ def get_project_workspace_nodes(project_id, episode_id=None):
                 nodes,
             )
         )
+    sanitized = repair_workspace_dangling_references(nodes)
     node_ids = {str(node.get("id")) for node in nodes if node.get("id")}
     edge_rows = con.execute(
         "SELECT edge_json FROM canvas_projection_edges WHERE project_id=? ORDER BY rowid",
@@ -2457,6 +2458,9 @@ def get_project_workspace_nodes(project_id, episode_id=None):
         "nodes": nodes,
         "connections": edges,
         "layouts": layout if isinstance(layout, dict) else {},
+        "referenceCleanup": {
+            "removed": sanitized,
+        },
         "notes": (
             get_episode_notes(project_id, normalized_episode)
             if normalized_episode
@@ -2520,6 +2524,63 @@ def _workspace_referenced_shared_nodes(con, project_id, episode_id, nodes):
         metadata["sharedAcrossEpisodes"] = True
         shared.append(node)
     return shared
+
+
+def repair_workspace_dangling_references(nodes):
+    """Remove references whose source node no longer exists.
+
+    A read only repairs the returned projection; it never rewrites project data.
+    Existing shared assets are already added above. What remains unresolved is
+    a deleted historical node, which must not block a video forever.
+    """
+    items = [node for node in nodes or [] if isinstance(node, dict)]
+    known_ids = {
+        str(node.get("id"))
+        for node in items
+        if node.get("id")
+    }
+    removed = 0
+    for node in items:
+        if str(node.get("type") or "") not in {"image", "audio", "text", "video"}:
+            continue
+        metadata = node.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            node["metadata"] = metadata
+        params = metadata.get("params")
+        if not isinstance(params, dict):
+            params = {}
+            metadata["params"] = params
+        for key in ("refs", "voiceRefs"):
+            current = params.get(key)
+            if current is None:
+                current = metadata.get(key)
+            if not isinstance(current, list):
+                continue
+            kept = [
+                item
+                for item in current
+                if not (
+                    isinstance(item, dict)
+                    and item.get("nodeId")
+                    and str(item.get("nodeId")) not in known_ids
+                )
+            ]
+            dropped = len(current) - len(kept)
+            if dropped:
+                removed += dropped
+                params[key] = kept
+                metadata[key] = kept
+        voice_ref = params.get("voiceRef") or metadata.get("voiceRef")
+        if (
+            isinstance(voice_ref, dict)
+            and voice_ref.get("nodeId")
+            and str(voice_ref.get("nodeId")) not in known_ids
+        ):
+            params["voiceRef"] = None
+            metadata["voiceRef"] = None
+            removed += 1
+    return removed
 
 
 def repair_episode_node_ownership(project_id):

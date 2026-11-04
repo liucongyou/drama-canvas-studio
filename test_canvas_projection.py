@@ -165,6 +165,48 @@ class CanvasProjectionTests(unittest.TestCase):
             {"image-1", "video-1", "image-2"},
         )
 
+    def test_episode_read_removes_references_to_deleted_nodes(self):
+        payload = self._payload()
+        payload["nodes"][1]["metadata"]["params"] = {
+            "refs": [
+                {"nodeId": "image-1", "label": "角色｜甲"},
+                {"nodeId": "deleted-asset", "label": "资产图"},
+            ],
+            "voiceRefs": [],
+        }
+        project_id = canvas_store.create_project(
+            "projection-dangling-refs",
+            payload,
+        )
+
+        workspace = canvas_store.get_project_workspace_nodes(
+            project_id,
+            "EP001",
+        )
+        video = next(
+            node for node in workspace["nodes"]
+            if node["id"] == "video-1"
+        )
+        refs = video["metadata"]["params"]["refs"]
+
+        self.assertEqual(
+            [ref["nodeId"] for ref in refs],
+            ["image-1"],
+        )
+        self.assertEqual(
+            workspace["referenceCleanup"]["removed"],
+            1,
+        )
+        stored = canvas_store.get_project(project_id)
+        stored_video = next(
+            node for node in stored["payload"]["nodes"]
+            if node["id"] == "video-1"
+        )
+        self.assertEqual(
+            len(stored_video["metadata"]["params"]["refs"]),
+            2,
+        )
+
     def test_notes_are_isolated_by_project_and_episode(self):
         first = canvas_store.create_project("notes-a", self._payload())
         second = canvas_store.create_project("notes-b", self._payload())
