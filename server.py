@@ -2808,6 +2808,23 @@ def project_generation_node_state(node, latest_task):
                     "providerTaskPhase": "已完成",
                     "providerTaskProgress": 100,
                 })
+                source_prompt_updated_at = str(
+                    meta.get("sourcePromptUpdatedAt") or ""
+                ).strip()
+                if (
+                    meta.get("promptStale") is True
+                    and source_prompt_updated_at
+                    and _task_is_newer_than_node_success(
+                        task,
+                        {"generationFinishedAt": source_prompt_updated_at},
+                    )
+                ):
+                    # A successful regeneration that started after the prompt
+                    # changed is the current version. Clear only the stale
+                    # marker; keep content and every historical media version.
+                    meta["promptStale"] = False
+                    meta["promptStaleReason"] = ""
+                    meta.pop("sourcePromptUpdatedAt", None)
                 return projected
 
         if task_status == "failed":
@@ -9346,6 +9363,7 @@ class Handler(BaseHTTPRequestHandler):
                 "providerTaskPhase", "providerTaskProgress",
                 "videoValidation", "actualDuration", "storage", "storageError",
                 "source", "providerUrl", "providerResultUrl", "finalizePending",
+                "promptStale", "promptStaleReason", "sourcePromptUpdatedAt",
             )
         }
         if ntype == "text":

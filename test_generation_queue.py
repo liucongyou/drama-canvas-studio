@@ -1798,6 +1798,125 @@ class GenerationQueueTests(unittest.TestCase):
             for event in events
         ))
 
+    def test_image_regeneration_clears_stale_marker_without_deleting_history(self):
+        project_id = canvas_store.create_project("image-stale-refresh")
+        old_url = "/uploads/generated-old.png"
+        node = {
+            "id": "image-stale-refresh",
+            "type": "image",
+            "title": "角色｜工人甲（图5）",
+            "metadata": {
+                "prompt": "updated prompt",
+                "status": "generating",
+                "content": old_url,
+                "promptStale": True,
+                "promptStaleReason": "源提示词已更新，当前复用图片仍是旧版本",
+                "sourcePromptUpdatedAt": "2026-11-03T00:00:00Z",
+                "params": {
+                    "provider": "ark",
+                    "model": "seedream",
+                    "mediaVersions": [{"url": old_url}],
+                    "mediaVersionIndex": 0,
+                },
+            },
+        }
+        project = {"id": project_id, "payload": {"nodes": [node]}}
+        canvas_store.update_project(project_id, payload=project["payload"])
+        provider = {
+            "id": "ark",
+            "api_key": "test-key",
+            "base_url": "https://ark.example/api/v3",
+        }
+        model = {
+            "id": "seedream",
+            "remoteModel": "doubao-seedream-5-0-pro-260628",
+            "defaultParams": {},
+            "limits": {},
+        }
+        task = canvas_store.create_generation_task(
+            project_id,
+            node["id"],
+            kind="image",
+            provider="ark",
+            model="seedream",
+        )
+        owner = "worker:image-stale-refresh"
+        self.assertTrue(
+            canvas_store.claim_generation_task(task["id"], owner, 45)
+        )
+        handler = object.__new__(server.Handler)
+        handler._send = lambda status, payload: payload
+
+        with (
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(provider, model, {}),
+            ),
+            patch.object(server, "ensure_provider_auth"),
+            patch.object(
+                server.provider_client,
+                "generate_image",
+                return_value={"url": "https://provider/result-new.png"},
+            ),
+            patch.object(
+                server,
+                "persist_generated_media",
+                return_value="/uploads/generated-new.png",
+            ),
+            patch.object(server, "queue_generated_image_tos_archive"),
+        ):
+            handler._generate_once(
+                project_id,
+                project,
+                node,
+                task_id=task["id"],
+                lease_owner=owner,
+            )
+
+        saved = canvas_store.get_projection_node(project_id, node["id"])
+        metadata = saved["metadata"]
+        version_urls = [
+            item.get("url")
+            for item in (metadata.get("params") or {}).get("mediaVersions") or []
+        ]
+        self.assertEqual(metadata["status"], "done")
+        self.assertEqual(metadata["content"], "/uploads/generated-new.png")
+        self.assertFalse(metadata.get("promptStale"))
+        self.assertEqual(metadata.get("promptStaleReason"), "")
+        self.assertNotIn("sourcePromptUpdatedAt", metadata)
+        self.assertIn(old_url, version_urls)
+        self.assertIn("/uploads/generated-new.png", version_urls)
+
+    def test_projection_self_heals_stale_marker_from_durable_success(self):
+        node = {
+            "id": "image-projection-stale",
+            "type": "image",
+            "metadata": {
+                "status": "done",
+                "content": "/uploads/current.png",
+                "promptStale": True,
+                "promptStaleReason": "源提示词已更新，当前复用图片仍是旧版本",
+                "sourcePromptUpdatedAt": "2026-11-03T00:00:00Z",
+            },
+        }
+        task = {
+            "status": "succeeded",
+            "created_at": "2026-11-04T00:00:00Z",
+            "finished_at": "2026-11-04T00:01:00Z",
+            "local_result_url": "/uploads/current.png",
+        }
+
+        projected = server.project_generation_node_state(node, task)
+
+        self.assertFalse(projected["metadata"].get("promptStale"))
+        self.assertEqual(projected["metadata"].get("promptStaleReason"), "")
+        self.assertNotIn("sourcePromptUpdatedAt", projected["metadata"])
+        self.assertEqual(
+            projected["metadata"].get("content"),
+            "/uploads/current.png",
+        )
+
     def test_image_archive_starts_only_after_terminal_commit(self):
         project_id = canvas_store.create_project("image-archive-order")
         node = {
