@@ -1012,6 +1012,7 @@ def commit_generation_terminal(
     task_id="",
     task_updates=None,
     lease_owner=None,
+    accept_durable_late_result=False,
 ):
     """Atomically persist the node, task and event, then wake SSE readers."""
     task_updates = dict(task_updates or {})
@@ -1038,6 +1039,7 @@ def commit_generation_terminal(
         event_kind=kind,
         event_payload=payload,
         lease_owner=lease_owner,
+        accept_durable_late_result=accept_durable_late_result,
     )
     if result.get("committed"):
         persisted_task = result.get("task") or {}

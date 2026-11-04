@@ -287,6 +287,55 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(events[-1]["payload"]["url"], "/uploads/atomic.mp4")
         self.assertEqual(events[-1]["payload"]["taskStatus"], "succeeded")
 
+    def test_server_terminal_commit_forwards_durable_late_result_contract(self):
+        project_id = canvas_store.create_project(
+            "server-durable-late-contract",
+            payload={
+                "nodes": [{
+                    "id": "server-durable-node",
+                    "type": "image",
+                    "title": "晚到图片",
+                    "metadata": {"status": "generating"},
+                }],
+                "connections": [],
+            },
+        )
+        task = canvas_store.create_generation_task(
+            project_id,
+            "server-durable-node",
+            kind="image",
+            provider="ark",
+            model="seedream",
+        )
+        owner = "server-durable-owner"
+        self.assertTrue(
+            canvas_store.claim_generation_task(task["id"], owner, 45)
+        )
+        canvas_store.release_generation_task_lease(task["id"], owner)
+
+        result = server.commit_generation_terminal(
+            project_id,
+            "server-durable-node",
+            {
+                "status": "done",
+                "content": "/uploads/server-durable.png",
+            },
+            task_id=task["id"],
+            task_updates={
+                "status": "succeeded",
+                "phase": "已完成",
+                "local_result_url": "/uploads/server-durable.png",
+                "delivery_status": "ready",
+            },
+            lease_owner=owner,
+            accept_durable_late_result=True,
+        )
+
+        self.assertTrue(result["committed"])
+        saved = canvas_store.get_generation_task(task["id"])
+        self.assertEqual(saved["status"], "succeeded")
+        self.assertEqual(saved["local_result_url"], "/uploads/server-durable.png")
+
     def test_failed_node_accepts_new_model_operation_but_replays_same_operation(self):
         first = canvas_store.create_generation_task(
             "project-model-switch",
@@ -1668,6 +1717,86 @@ class GenerationQueueTests(unittest.TestCase):
             committed[-1][0][2]["providerResultUrl"],
             "https://provider/result.png",
         )
+
+    def test_image_success_path_commits_done_without_intermediate_uncertain_state(self):
+        project_id = canvas_store.create_project("image-success-no-uncertain")
+        node = {
+            "id": "image-success",
+            "type": "image",
+            "title": "角色｜工人甲（图5）",
+            "metadata": {
+                "prompt": "test image",
+                "status": "generating",
+                "params": {"provider": "ark", "model": "seedream"},
+            },
+        }
+        project = {"id": project_id, "payload": {"nodes": [node]}}
+        canvas_store.update_project(project_id, payload=project["payload"])
+        provider = {
+            "id": "ark",
+            "api_key": "test-key",
+            "base_url": "https://ark.example/api/v3",
+        }
+        model = {
+            "id": "seedream",
+            "remoteModel": "doubao-seedream-5-0-pro-260628",
+            "defaultParams": {},
+            "limits": {},
+        }
+        task = canvas_store.create_generation_task(
+            project_id,
+            node["id"],
+            kind="image",
+            provider="ark",
+            model="seedream",
+        )
+        owner = "worker:image-success"
+        self.assertTrue(
+            canvas_store.claim_generation_task(task["id"], owner, 45)
+        )
+        sent = []
+        handler = object.__new__(server.Handler)
+        handler._send = lambda status, payload: sent.append((status, payload)) or payload
+
+        with (
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(provider, model, {}),
+            ),
+            patch.object(server, "ensure_provider_auth"),
+            patch.object(
+                server.provider_client,
+                "generate_image",
+                return_value={"url": "https://provider/result.png"},
+            ),
+            patch.object(
+                server,
+                "persist_generated_media",
+                return_value="/uploads/generated.png",
+            ),
+            patch.object(server, "queue_generated_image_tos_archive"),
+        ):
+            handler._generate_once(
+                project_id,
+                project,
+                node,
+                task_id=task["id"],
+                lease_owner=owner,
+            )
+
+        saved_task = canvas_store.get_generation_task(task["id"])
+        saved_node = canvas_store.get_projection_node(project_id, node["id"])
+        events = canvas_store.list_events(project_id, 0, 50)
+        self.assertEqual(sent[-1][0], 200)
+        self.assertEqual(saved_task["status"], "succeeded")
+        self.assertEqual(saved_node["metadata"]["status"], "done")
+        self.assertEqual(saved_node["metadata"]["content"], "/uploads/generated.png")
+        self.assertFalse(any(
+            event.get("kind") == "generation.submit_uncertain"
+            or "结果待确认" in str(event.get("payload") or "")
+            for event in events
+        ))
 
     def test_image_archive_starts_only_after_terminal_commit(self):
         project_id = canvas_store.create_project("image-archive-order")
