@@ -2307,9 +2307,12 @@ def _normalize_media_versions(meta, kind):
         ),
         -1,
     )
-    if active_match >= 0 and not (
-        len(matching_indexes) > 1
-        and active_match < matching_indexes[-1]
+    if (
+        active_match >= 0
+        and (
+            not matching_indexes
+            or active_match == matching_indexes[-1]
+        )
     ):
         return params
     # A legacy list can repeat the same URL after regeneration. The latest
