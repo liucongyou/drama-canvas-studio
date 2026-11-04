@@ -4,6 +4,11 @@
 
 import {latestTaskByNode} from './generationPresentation';
 import {withRequestStatus} from './requestRetry';
+import {
+  buildAuditQuery,
+  type AuditEventPage,
+  type AuditEventQuery,
+} from './auditQuery';
 
 declare global {
   interface Window {
@@ -94,6 +99,34 @@ export type AgentEvent = {
   sessionId?: string;
   [k: string]: unknown;
 };
+
+export type ProjectShareState = {
+  id: string;
+  projectId: string;
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt: string;
+  active: boolean;
+};
+
+export async function getProjectShares(projectId: string): Promise<{
+  shares: ProjectShareState[];
+}> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/shares`);
+}
+
+export async function getSharedProject(token: string): Promise<{
+  share: {projectId: string; expiresAt: string; readOnly: true};
+  project: {
+    id: string;
+    title: string;
+    payload: Payload;
+    revision: number;
+  };
+}> {
+  return request(`/api/share/${encodeURIComponent(token)}/project`);
+}
 
 export type CanvasAssetItem = {
   idx?: number;
@@ -973,6 +1006,54 @@ export async function getManagedAccounts(): Promise<ManagedAccountsSnapshot> {
       .map((item) => ({id: item.id, username: item.username, lastSeenAt: item.lastSeenAt})),
     generatedAt: payload.generatedAt || new Date().toISOString(),
   };
+}
+
+export async function getManagedTenantAudit(
+  tenantId: string,
+  query: AuditEventQuery = {},
+): Promise<AuditEventPage> {
+  const normalized = String(tenantId || '').trim();
+  if (!normalized) throw new Error('查看审计必须指定租户');
+  const suffix = buildAuditQuery(query);
+  return request(
+    `/api/admin/tenants/${encodeURIComponent(normalized)}/audit${suffix ? `?${suffix}` : ''}`,
+  );
+}
+
+export async function createProjectShare(projectId: string): Promise<{
+  id: string;
+  projectId: string;
+  url: string;
+  token: string;
+  expiresAt: string;
+  readOnly: true;
+}> {
+  return request(
+    `/api/projects/${encodeURIComponent(projectId)}/shares`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ttlDays: 7}),
+    },
+  );
+}
+
+export async function revokeProjectShare(
+  projectId: string,
+  shareId: string,
+): Promise<{ok: boolean; shareId: string}> {
+  return request(
+    `/api/projects/${encodeURIComponent(projectId)}/shares/${encodeURIComponent(shareId)}`,
+    {method: 'DELETE'},
+  );
+}
+
+export async function getAuditHealth(): Promise<{
+  auditBytes: number;
+  databaseBytes: number;
+  freeBytes: number;
+  lastAuditAt: string;
+}> {
+  return request('/api/admin/audit/health');
 }
 
 export async function createManagedAccount(username: string, password: string): Promise<{
@@ -2552,6 +2633,36 @@ export async function saveCanvasNotes(
   return {ok: true};
 }
 
+export async function getSharedCanvasWorkspace(
+  token: string,
+  episodeId = '',
+): Promise<{
+  canvas: Canvas | {empty: true};
+  notes: CanvasNote[];
+  mediaNodes: CanvasMediaNode[];
+  connections: Array<{id?: string; fromNodeId: string; toNodeId: string}>;
+}> {
+  const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
+  const payload = await request<{
+      share: {projectId: string; expiresAt: string; readOnly: true};
+      project: {id: string; title: string; payload: Payload; revision: number};
+    }>(`/api/share/${encodeURIComponent(token)}/project`);
+  const pseudoProject = {
+    ...payload.project,
+    revision: Number(payload.project.revision || 1),
+    title: payload.project.title,
+    payload: payload.project.payload,
+  } as ProjectResponse;
+  const canvas = await getCanvas(token, normalizedEpisode, pseudoProject);
+  const mediaNodes = await getCanvasMediaNodes(token, normalizedEpisode, pseudoProject);
+  return {
+    canvas,
+    notes: [],
+    mediaNodes,
+    connections: [],
+  };
+}
+
 // ---------- shot patch（段/镜头编辑 → 存回节点 metadata.shotPatch） ----------
 export async function saveCanvasShot(sessionId: string, shotIdx: number, patch: Record<string, unknown>, epId: string) {
   const normalizedEpisode = String(epId || '').trim().toUpperCase();
@@ -2676,6 +2787,8 @@ export async function generateCanvasNodeNow(
     params?: CanvasMediaParams;
     clientOperationId?: string;
     episodeId?: string;
+    entry?: string;
+    batchId?: string;
   },
 ) {
   const normalizedEpisode = String(payload?.episodeId || '').trim().toUpperCase();

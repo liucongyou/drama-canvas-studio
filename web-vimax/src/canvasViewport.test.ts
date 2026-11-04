@@ -187,6 +187,15 @@ describe('canvas viewport persistence threshold', () => {
     expect(broadcastBlock).not.toContain('getCanvasWorkspace(');
   });
 
+  it('always releases canvas interaction state after pointer or window blur', () => {
+    const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+    expect(source).toContain('resetCanvasInteraction');
+    expect(source).toContain("window.addEventListener('pointerup', release, true)");
+    expect(source).toContain("window.addEventListener('pointercancel', release, true)");
+    expect(source).toContain("window.addEventListener('blur', release)");
+    expect(source).toContain('resetCanvasInteraction();');
+  });
+
   it('reconciles visibility and network recovery, not the initial focus', () => {
     const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
     const start = source.indexOf('const visibilityRef = {hidden:');

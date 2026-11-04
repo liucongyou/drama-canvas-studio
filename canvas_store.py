@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """canvas_store.py — 画布项目存取（SQLite · payload 整包模式，对齐 BeefTV schema）"""
 import json
+import hashlib
 import os
 import secrets
 import sqlite3
 import string
 import time
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 
 import tenant_context
@@ -40,6 +43,25 @@ _WAL_SOFT_LIMIT_BYTES = 16 * 1024 * 1024
 _WAL_LAST_MAINTENANCE: dict[str, float] = {}
 _WAL_MAINTENANCE_INTERVAL_SECONDS = 30.0
 _UNASSIGNED_EPISODE_ID = "__UNASSIGNED__"
+_AUDIT_REQUEST_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+    "canvas_audit_request",
+    default=None,
+)
+
+
+@contextmanager
+def use_audit_request(request_id="", method="", path="", ip="", user_agent=""):
+    token = _AUDIT_REQUEST_CONTEXT.set({
+        "requestId": str(request_id or "")[:64],
+        "method": str(method or "")[:16],
+        "requestPath": str(path or "")[:500],
+        "ip": str(ip or "")[:128],
+        "userAgent": str(user_agent or "")[:500],
+    })
+    try:
+        yield
+    finally:
+        _AUDIT_REQUEST_CONTEXT.reset(token)
 
 
 class RevisionConflictError(RuntimeError):
@@ -112,6 +134,21 @@ def _connect():
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )"""
+            )
+            con.execute(
+            """CREATE TABLE IF NOT EXISTS project_shares(
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_by TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT DEFAULT ''
+            )"""
+            )
+            con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_shares_project "
+            "ON project_shares(project_id, revoked_at, expires_at)"
             )
             con.execute(
             """CREATE TABLE IF NOT EXISTS canvas_project_meta(
@@ -5407,6 +5444,21 @@ def record_audit_event(
 ):
     event_id = _rid(22)
     con = None
+    request_context = dict(_AUDIT_REQUEST_CONTEXT.get() or {})
+    if "details" in request_context:
+        request_context.pop("details", None)
+    merged_details = dict(details or {})
+    for key, value in request_context.items():
+        if value and not merged_details.get(key):
+            merged_details[key] = value
+    if request_context:
+        merged_details["auditContext"] = {
+            **request_context,
+            "requestId": request_context.get("requestId") or merged_details.get("requestId", ""),
+            "requestPath": request_context.get("requestPath") or merged_details.get("requestPath", ""),
+        }
+    if request_context.get("requestId"):
+        merged_details["requestId"] = request_context["requestId"]
     try:
         con = _connect()
         con.execute(
@@ -5421,7 +5473,7 @@ def record_audit_event(
                 str(target_type or "")[:80],
                 str(target_id or "")[:180],
                 str(status or "")[:32],
-                json.dumps(_redact_audit_value(details or {}), ensure_ascii=False)[:12000],
+                json.dumps(_redact_audit_value(merged_details), ensure_ascii=False)[:12000],
                 _now_iso(),
             ),
         )
@@ -5434,14 +5486,86 @@ def record_audit_event(
             con.close()
 
 
-def list_audit_events(limit=200):
-    con = _connect()
-    rows = con.execute(
-        "SELECT id,tenant_id,actor,action,target_type,target_id,status,details_json,created_at "
-        "FROM audit_events ORDER BY created_at DESC, rowid DESC LIMIT ?",
-        (max(1, min(int(limit or 200), 1000)),),
-    ).fetchall()
-    con.close()
+_AUDIT_RETENTION_DAYS = 180
+_AUDIT_RETENTION_MAX_ROWS = 50_000
+
+
+def list_audit_events(
+    limit=200,
+    *,
+    project_id="",
+    action="",
+    actor="",
+    status="",
+    since="",
+    until="",
+    before_id="",
+    request_id="",
+    tenant_id="",
+    tenant_slug="",
+):
+    target_tenant = str(tenant_id or "").strip() or tenant_context.current_tenant_id()
+    request_context = (
+        tenant_context.use_tenant(target_tenant, tenant_slug or target_tenant)
+        if tenant_slug and target_tenant != tenant_context.current_tenant_id()
+        else nullcontext()
+    )
+    with request_context:
+        con = _connect()
+        clauses = ["tenant_id=?"]
+        params: list[Any] = [target_tenant]
+        if str(project_id or "").strip():
+            clauses.append(
+                "(json_extract(details_json, '$.projectId')=?"
+                " OR (target_type='project' AND target_id=?))"
+            )
+            normalized_project = str(project_id).strip()
+            params.extend([normalized_project, normalized_project])
+        if str(action or "").strip():
+            clauses.append("action LIKE ?")
+            params.append(f"%{str(action).strip()}%")
+        if str(actor or "").strip():
+            clauses.append("actor=?")
+            params.append(str(actor).strip())
+        if str(status or "").strip():
+            clauses.append("status=?")
+            params.append(str(status).strip().lower())
+        if str(since or "").strip():
+            clauses.append("created_at>=?")
+            params.append(str(since).strip())
+        if str(until or "").strip():
+            clauses.append("created_at<=?")
+            params.append(str(until).strip())
+        if str(before_id or "").strip():
+            cursor = con.execute(
+                "SELECT created_at,rowid FROM audit_events WHERE id=? AND tenant_id=?",
+                (str(before_id).strip(), target_tenant),
+            ).fetchone()
+            if cursor:
+                clauses.append(
+                    "(created_at<? OR (created_at=? AND rowid<?))"
+                )
+                params.extend([cursor[0], cursor[0], cursor[1]])
+        if str(request_id or "").strip():
+            clauses.append(
+                "(json_extract(details_json, '$.requestId')=? OR "
+                "json_extract(details_json, '$.auditContext.requestId')=?)"
+            )
+            params.extend([str(request_id).strip(), str(request_id).strip()])
+        try:
+            page_size = max(1, min(int(limit or 200), 500))
+        except (TypeError, ValueError):
+            page_size = 200
+        sql = (
+            "SELECT id,tenant_id,actor,action,target_type,target_id,status,"
+            "details_json,created_at FROM audit_events WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY created_at DESC, rowid DESC LIMIT ?"
+        )
+        rows = con.execute(sql, (*params, page_size + 1)).fetchall()
+        con.close()
+    has_more = len(rows) > page_size
+    rows = rows[:page_size]
     events = []
     for row in rows:
         try:
@@ -5459,7 +5583,169 @@ def list_audit_events(limit=200):
             "details": details,
             "createdAt": row[8],
         })
-    return events
+    return {
+        "events": events,
+        "nextBeforeId": events[-1]["id"] if has_more and events else "",
+        "hasMore": has_more,
+        "tenantId": target_tenant,
+        "retention": {
+            "maxRows": _AUDIT_RETENTION_MAX_ROWS,
+            "ttlDays": _AUDIT_RETENTION_DAYS,
+        },
+    }
+
+
+def audit_storage_health():
+    """Cheap counters for the administrator audit screen."""
+    con = _connect()
+    audit_bytes = int(con.execute(
+        "SELECT COALESCE(SUM(LENGTH(details_json)),0) FROM audit_events"
+    ).fetchone()[0] or 0)
+    last_audit_at = con.execute(
+        "SELECT MAX(created_at) FROM audit_events"
+    ).fetchone()[0] or ""
+    con.close()
+    stats = storage_stats()
+    return {
+        "auditBytes": audit_bytes,
+        "databaseBytes": stats["file_bytes"],
+        "freeBytes": stats["free_bytes"],
+        "lastAuditAt": last_audit_at,
+    }
+
+
+def create_project_share(project_id, *, created_by="", ttl_days=7):
+    if not project_exists(project_id):
+        raise ValueError("项目不存在")
+    token = secrets.token_urlsafe(32)
+    share_id = _rid(22)
+    created_at = _now_iso()
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(days=max(1, min(30, int(ttl_days))))
+    ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    def write(con):
+        con.execute(
+            "INSERT INTO project_shares("
+            "id,project_id,token_hash,created_by,created_at,expires_at,revoked_at"
+            ") VALUES(?,?,?,?,?,?,?)",
+            (
+                share_id,
+                project_id,
+                hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                str(created_by or ""),
+                created_at,
+                expires_at,
+                "",
+            ),
+        )
+
+    _run_write_transaction(write)
+    return {
+        "id": share_id,
+        "projectId": project_id,
+        "token": token,
+        "tenantId": tenant_context.current_tenant_id(),
+        "createdAt": created_at,
+        "expiresAt": expires_at,
+    }
+
+
+def resolve_project_share(token):
+    digest = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+    con = _connect()
+    row = con.execute(
+        "SELECT project_id,expires_at,created_at FROM project_shares "
+        "WHERE token_hash=? AND revoked_at='' AND expires_at>? LIMIT 1",
+        (digest, _now_iso()),
+    ).fetchone()
+    con.close()
+    if not row:
+        return None
+    return {
+        "projectId": row[0],
+        "expiresAt": row[1],
+        "createdAt": row[2],
+    }
+
+
+def list_project_shares(project_id):
+    con = _connect()
+    rows = con.execute(
+        "SELECT id,project_id,created_by,created_at,expires_at,revoked_at "
+        "FROM project_shares WHERE project_id=? "
+        "ORDER BY created_at DESC LIMIT 100",
+        (str(project_id or ""),),
+    ).fetchall()
+    con.close()
+    return [
+        {
+            "id": row[0],
+            "projectId": row[1],
+            "createdBy": row[2],
+            "createdAt": row[3],
+            "expiresAt": row[4],
+            "revokedAt": row[5],
+            "active": not row[5] and row[4] > _now_iso(),
+        }
+        for row in rows
+    ]
+
+
+def revoke_project_share(project_id, share_id):
+    def write(con):
+        return int(
+            con.execute(
+                "UPDATE project_shares SET revoked_at=? "
+                "WHERE id=? AND project_id=? AND revoked_at=''",
+                (_now_iso(), str(share_id or ""), str(project_id or "")),
+            ).rowcount or 0
+        )
+
+    return _run_write_transaction(write)
+
+
+def rotate_audit_events(
+    *,
+    max_rows: int = _AUDIT_RETENTION_MAX_ROWS,
+    ttl_days: int = _AUDIT_RETENTION_DAYS,
+) -> int:
+    """Bound audit history per tenant without touching the hot generation path."""
+    tenant_id = tenant_context.current_tenant_id()
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=max(1, int(ttl_days)))
+    ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    deleted = 0
+
+    def write(con):
+        nonlocal deleted
+        deleted += int(
+            con.execute(
+                "DELETE FROM audit_events WHERE tenant_id=? AND created_at<?",
+                (tenant_id, cutoff),
+            ).rowcount or 0
+        )
+        overflow_ids = [
+            row[0]
+            for row in con.execute(
+                "SELECT id FROM audit_events WHERE tenant_id=? "
+                "ORDER BY created_at DESC,rowid DESC LIMIT -1 OFFSET ?",
+                (tenant_id, max(1, int(max_rows))),
+            ).fetchall()
+        ]
+        for offset in range(0, len(overflow_ids), 500):
+            batch = overflow_ids[offset:offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            deleted += int(
+                con.execute(
+                    f"DELETE FROM audit_events WHERE id IN ({placeholders})",
+                    tuple(batch),
+                ).rowcount or 0
+            )
+        return deleted
+
+    _run_write_transaction(write)
+    return deleted
 
 
 def runtime_metrics():

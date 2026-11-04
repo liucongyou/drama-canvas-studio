@@ -17,6 +17,7 @@ import {
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
 import {DialogHost, dialog} from './GDialog';
 import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, getAuthSession, getManagedAccounts, getModelCatalog, getStorageConfig, loginAccount, logoutAccount, resetManagedAccountPassword, saveTenantPreferences, setManagedAccountStatus, type ManagedAccount, type ManagedAccountsSnapshot, type ModelCatalog, type StorageSpec} from './api';
+import {TenantAdminView} from './TenantAdminView';
 import {APP_VERSION, RELEASE_SEEN_KEY} from './changelog';
 // 更新记录弹窗连带 55KB 发布文本一起异步加载，首屏不再背这个包袱。
 const loadChangelogDialog = () => import('./ChangelogDialog');
@@ -157,6 +158,7 @@ function Shell({
   const [accountsSnapshot, setAccountsSnapshot] = useState<ManagedAccountsSnapshot | null>(null);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [adminAccountsOpen, setAdminAccountsOpen] = useState(false);
+  const [adminConsoleOpen, setAdminConsoleOpen] = useState(false);
   const [changelogOpen, setChangelogOpen] = useState(false);
   const [releaseSeen, setReleaseSeen] = useState(() => {
     try {
@@ -942,6 +944,18 @@ function Shell({
                   <button
                     type="button"
                     className="shell-tools-menu-item"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSettingsOpen(false);
+                      window.setTimeout(() => setAdminConsoleOpen(true), 0);
+                    }}
+                  >
+                    <History size={13} strokeWidth={1.9} aria-hidden="true" />
+                    <span>租户数据与审计</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="shell-tools-menu-item"
                     onClick={() => void openSettings('accounts')}
                   >
                     <Plus size={13} strokeWidth={1.9} aria-hidden="true" />
@@ -1106,6 +1120,15 @@ function Shell({
             initialSnapshot={accountsSnapshot ?? undefined}
             onSnapshotChange={setAccountsSnapshot}
             onClose={() => setAdminAccountsOpen(false)}
+          />
+        </ErrorBoundary>
+      )}
+      {isAdmin && adminConsoleOpen && (
+        <ErrorBoundary scope="dialog" label="租户数据与审计" onDismiss={() => setAdminConsoleOpen(false)}>
+          <TenantAdminView
+            accounts={accountsSnapshot?.accounts || []}
+            initialRequestId={new URLSearchParams(window.location.search).get('requestId') || ''}
+            onClose={() => setAdminConsoleOpen(false)}
           />
         </ErrorBoundary>
       )}

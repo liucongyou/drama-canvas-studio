@@ -162,8 +162,6 @@ def _node_source_ready(node):
     meta = node.get("metadata") or {}
     if str(node.get("type") or "") == "text":
         return bool(str(meta.get("prompt") or meta.get("content") or "").strip())
-    if str(node.get("type") or "") in {"image", "audio"} and meta.get("promptStale"):
-        return False
     return bool(str(meta.get("content") or "").strip())
 
 

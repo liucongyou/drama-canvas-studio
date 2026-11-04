@@ -163,7 +163,6 @@ export function evaluateReferenceLimits(
 
 function mediaOutputReady(node: CanvasMediaNode): boolean {
   if (node.kind === 'text') return Boolean(node.prompt.trim());
-  if ((node.kind === 'image' || node.kind === 'audio') && node.promptStale) return false;
   if (node.mediaAvailability === 'missing') return false;
   return Boolean(String(node.mediaUrl || '').trim());
 }
@@ -184,7 +183,7 @@ function dependencyBlockers(node: CanvasMediaNode, pool: CanvasMediaNode[]) {
       continue;
     }
     if (mediaOutputReady(source)) continue;
-    blockers.push(`${source.title || source.kind}（${source.promptStale ? '提示词已更新，需重新生成' : '尚未生成'}）`);
+    blockers.push(`${source.title || source.kind}（尚未生成）`);
   }
   return blockers;
 }

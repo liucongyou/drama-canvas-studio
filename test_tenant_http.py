@@ -141,6 +141,13 @@ class TenantHttpTests(unittest.TestCase):
             and event["targetId"] == project_id
             for event in events
         ))
+        self.assertTrue(all(
+            event["tenantId"] == tenant["id"] for event in events
+        ))
+        self.assertEqual(
+            json.loads(body)["retention"],
+            {"maxRows": 50000, "ttlDays": 180},
+        )
 
         status, _, body = self.request(
             "GET",

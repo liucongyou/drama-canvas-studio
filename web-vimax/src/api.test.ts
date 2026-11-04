@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getManagedTenantAudit, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
 
 describe('project event cursor', () => {
   it('reconnects SSE from the last rendered events for this project', () => {
@@ -1663,6 +1663,74 @@ describe('api request recovery', () => {
       accepted: true,
       taskId: 'local-task-1',
     });
+  });
+
+  it('forwards generation source metadata to the backend audit', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      accepted: true,
+      taskId: 'task-source-audit',
+      status: 'pending',
+    }), {
+      status: 202,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await generateCanvasNodeNow('project-1', 'node-1', {
+      episodeId: 'EP001',
+      entry: 'batch',
+      batchId: 'batch-test-1',
+    });
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(requestBody.entry).toBe('batch');
+    expect(requestBody.batchId).toBe('batch-test-1');
+  });
+
+  it('queries tenant audit through the administrator-scoped endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      events: [],
+      nextBeforeId: '',
+      hasMore: false,
+      tenantId: 'tenant-alpha',
+      retention: {maxRows: 50000, ttlDays: 180},
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getManagedTenantAudit('tenant-alpha', {
+      action: 'generation',
+      limit: 100,
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/admin/tenants/tenant-alpha/audit?action=generation&limit=100',
+    );
+  });
+
+  it('queries one HTTP request across the current tenant audit log', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      events: [],
+      nextBeforeId: '',
+      hasMore: false,
+      tenantId: 'owner',
+      retention: {maxRows: 50000, ttlDays: 180},
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getManagedTenantAudit('owner', {
+      requestId: 'req-123',
+      limit: 100,
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/admin/tenants/owner/audit?requestId=req-123&limit=100',
+    );
   });
 
   it('sends the current prompt and params with the generation request', async () => {

@@ -476,6 +476,66 @@ def _collect_for_active_tenants(func):
     return collected
 
 
+def _admin_tenant_audit_context(tenant_id):
+    if not tenant_context.multi_tenant_enabled():
+        return nullcontext()
+    tenant = tenant_registry.get_tenant_by_id(tenant_id)
+    if not tenant:
+        raise ValueError("租户不存在")
+    return tenant_context.use_tenant(tenant["id"], tenant["slug"])
+
+
+def _resolve_share_scope(token):
+    if not tenant_context.multi_tenant_enabled():
+        share = store.resolve_project_share(token)
+        if not share:
+            return None
+        return nullcontext(), share
+    for tenant in _active_tenants():
+        with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+            share = store.resolve_project_share(token)
+        if share:
+            return tenant_context.use_tenant(tenant["id"], tenant["slug"]), share
+    return None
+
+
+def _public_share_payload(share, project):
+    if not share or not project:
+        return None
+    return {
+        "share": {
+            "projectId": share["projectId"],
+            "expiresAt": share["expiresAt"],
+            "readOnly": True,
+        },
+        "project": project,
+    }
+
+
+def _audit_query_from_url(parsed):
+    query = urllib.parse.parse_qs(parsed.query)
+
+    def value(name, max_len=200):
+        raw = (query.get(name) or [""])[0]
+        return str(raw or "").strip()[:max_len]
+
+    try:
+        limit = max(1, min(int(value("limit", 8) or "100"), 500))
+    except (TypeError, ValueError):
+        raise ValueError("limit 必须是整数")
+    return {
+        "limit": limit,
+        "project_id": value("projectId", 180),
+        "action": value("action", 120),
+        "actor": value("actor", 120),
+        "status": value("status", 32),
+        "since": value("since", 64),
+        "until": value("until", 64),
+        "before_id": value("beforeId", 180),
+        "request_id": value("requestId", 64),
+    }
+
+
 def _resume_expired_provider_tasks(expired):
     """Resume persisted provider tasks that are still waiting for an outcome."""
     started = 0
@@ -1834,6 +1894,22 @@ def _active_media_version(meta):
         ):
             return item
     return {}
+
+
+def _active_reference_url(source_meta, raw=None):
+    """Resolve a reference URL from the active version, never from a stale snapshot."""
+    if not isinstance(source_meta, dict):
+        return ""
+    active = _active_media_version(source_meta)
+    for candidate in (
+        active.get("url") if isinstance(active, dict) else "",
+        source_meta.get("content"),
+        (raw or {}).get("url") if isinstance(raw, dict) else "",
+    ):
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _editable_node_view(node, include_position=False):
@@ -4484,6 +4560,26 @@ def start_storage_maintenance():
     threading.Thread(target=run, name="storage-maintenance", daemon=True).start()
 
 
+def start_audit_maintenance():
+    """Rotate tenant audit history outside request and generation paths."""
+
+    def run():
+        time.sleep(120)
+        while True:
+            try:
+                deleted = _run_for_active_tenants(store.rotate_audit_events)
+                if deleted:
+                    print(
+                        f"[audit] 轮转清理 {deleted} 条过期审计记录",
+                        file=sys.stderr,
+                    )
+            except Exception as exc:
+                print(f"[audit] 审计轮转失败：{exc}", file=sys.stderr)
+            time.sleep(6 * 60 * 60)
+
+    threading.Thread(target=run, name="audit-maintenance", daemon=True).start()
+
+
 def start_wal_maintenance():
     """Checkpoint WAL away from paid generation commits.
 
@@ -5349,10 +5445,45 @@ def repair_episode_node_ownership():
 
 
 class Handler(BaseHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._audit_request_scope = None
+
     def log_message(self, fmt, *args):
         sys.stdout.write("[%s] %s\n" % (self.server.server_address, fmt % args))
 
     # ---------- helpers ----------
+    def parse_request(self):
+        parsed = super().parse_request()
+        if parsed:
+            self._request_id = secrets.token_hex(8)
+            self._audit_request_scope = store.use_audit_request(
+                request_id=self._request_id,
+                method=self.command,
+                path=self.path,
+                ip=self.client_address[0] if self.client_address else "",
+                user_agent=self.headers.get("User-Agent", ""),
+            )
+            self._audit_request_scope.__enter__()
+        return parsed
+
+    def finish(self):
+        try:
+            super().finish()
+        finally:
+            scope = self._audit_request_scope
+            self._audit_request_scope = None
+            if scope is not None:
+                scope.__exit__(None, None, None)
+
+    def end_headers(self):
+        if not getattr(self, "_request_id", ""):
+            self._request_id = secrets.token_hex(8)
+        if not getattr(self, "_request_id_sent", False):
+            self._request_id_sent = True
+            self.send_header("X-Request-ID", self._request_id)
+        super().end_headers()
+
     def _cors_headers(self):
         origin = str(self.headers.get("Origin", "")).strip().rstrip("/")
         allowed = _frontend_origins()
@@ -5369,8 +5500,8 @@ class Handler(BaseHTTPRequestHandler):
             "Access-Control-Allow-Origin": origin,
             "Access-Control-Allow-Credentials": "true",
             "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type,Authorization,X-File-Name,X-File-Type",
-            "Access-Control-Expose-Headers": "Accept-Ranges,Content-Length,Content-Range,ETag,Last-Modified",
+            "Access-Control-Allow-Headers": "Content-Type,Authorization,X-File-Name,X-File-Type,X-Request-ID",
+            "Access-Control-Expose-Headers": "Accept-Ranges,Content-Length,Content-Range,ETag,Last-Modified,X-Request-ID",
             "Access-Control-Max-Age": "600",
             "Vary": "Origin",
         }
@@ -5938,6 +6069,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {"error": "跨站请求已拒绝", "code": "ORIGIN_REJECTED"})
             return None
         path = urlparse(self.path).path
+        if path.startswith("/share/") or path.startswith("/api/share/"):
+            return nullcontext()
         if _auth_mode() == "accounts":
             host = _normalized_host(self.headers.get("Host", ""))
             api_host = _api_host()
@@ -5972,6 +6105,13 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "ACCOUNT_AUTH_REQUIRED",
                 })
                 return None
+            if session.get("account_role") != "admin":
+                if path.startswith("/api/admin/"):
+                    self._send(403, {
+                        "error": "只有管理员可以查看该数据",
+                        "code": "ADMIN_REQUIRED",
+                    })
+                    return None
             return tenant_context.use_tenant(session["tenant_id"], session["tenant_slug"])
         if not tenant_context.multi_tenant_enabled():
             return nullcontext()
@@ -6485,8 +6625,79 @@ class Handler(BaseHTTPRequestHandler):
     def _do_get(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        share_read = re.match(
+            r"^/api/share/([^/]+)/(project|workspace-index|workspace-nodes|notes|tasks|events)$",
+            path,
+        )
+        if share_read:
+            token = unquote(share_read.group(1))
+            resource = share_read.group(2)
+            resolved = _resolve_share_scope(token)
+            if not resolved:
+                return self._send(
+                    410,
+                    {"error": "分享链接已撤销或过期", "code": "SHARE_INVALID"},
+                )
+            share_scope, share = resolved
+            with share_scope:
+                if resource == "project":
+                    project = canvas_repository.repository.get_project(
+                        share["projectId"]
+                    )
+                    payload = _public_share_payload(share, project)
+                    if not payload:
+                        return self._send(404, {"error": "项目不存在"})
+                    return self._send(200, payload)
+                if resource == "workspace-index":
+                    workspace = store.get_project_workspace_index(
+                        share["projectId"]
+                    )
+                    if not workspace:
+                        return self._send(404, {"error": "项目不存在"})
+                    return self._send(200, workspace)
+                if resource == "workspace-nodes":
+                    query = urllib.parse.parse_qs(parsed.query)
+                    episode_id = str(
+                        (query.get("episodeId") or [""])[0]
+                    ).strip().upper()
+                    workspace = store.get_project_workspace_nodes(
+                        share["projectId"],
+                        episode_id or None,
+                    )
+                    if not workspace:
+                        return self._send(404, {"error": "项目不存在"})
+                    return self._send(200, workspace)
+                if resource == "notes":
+                    query = urllib.parse.parse_qs(parsed.query)
+                    episode_id = str(
+                        (query.get("episodeId") or [""])[0]
+                    ).strip().upper()
+                    if not episode_id:
+                        return self._send(400, {"error": "读取备注必须指定集号"})
+                    notes = canvas_repository.repository.get_notes(
+                        share["projectId"],
+                        episode_id,
+                    )
+                    return self._send(
+                        200,
+                        {"episodeId": episode_id, "notes": notes},
+                    )
+                if resource == "tasks":
+                    tasks = store.list_generation_tasks(
+                        share["projectId"],
+                        120,
+                    )
+                    return self._send(200, {"tasks": tasks})
+                if resource == "events":
+                    return self._handle_project_events(
+                        share["projectId"],
+                        parsed,
+                    )
         if path == "/api/auth/session":
             return self._handle_auth_session()
+        share_match = re.match(r"^/share/([^/]+)$", path)
+        if share_match and self._serve_webapp("/index.html"):
+            return
         if path.startswith("/api/projects/") and path.endswith("/events"):
             project_id = path[len("/api/projects/"):-len("/events")].strip("/")
             if project_id and "/" not in project_id:
@@ -6638,12 +6849,46 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/config":
             return self._send(200, provider_catalog.config_status())
         if path == "/api/audit":
-            query = urllib.parse.parse_qs(parsed.query)
             try:
-                limit = int((query.get("limit") or ["200"])[0])
-            except (TypeError, ValueError):
-                return self._send(400, {"error": "limit 必须是整数"})
-            return self._send(200, {"events": store.list_audit_events(limit)})
+                filters = _audit_query_from_url(parsed)
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
+            return self._send(200, store.list_audit_events(**filters))
+        if path == "/api/admin/audit":
+            if self._admin_session() is None:
+                return
+            try:
+                filters = _audit_query_from_url(parsed)
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
+            current = tenant_context.current()
+            target = current.tenant_id if current else "legacy"
+            try:
+                with _admin_tenant_audit_context(target):
+                    return self._send(
+                        200,
+                        store.list_audit_events(**filters),
+                    )
+            except ValueError as exc:
+                return self._send(404, {"error": str(exc)})
+        if path == "/api/admin/audit/health":
+            if self._admin_session() is None:
+                return
+            return self._send(200, store.audit_storage_health())
+        m = re.match(r"^/api/admin/tenants/([^/]+)/audit$", path)
+        if m:
+            if self._admin_session() is None:
+                return
+            tenant_id = unquote(m.group(1))
+            try:
+                filters = _audit_query_from_url(parsed)
+                with _admin_tenant_audit_context(tenant_id):
+                    return self._send(
+                        200,
+                        store.list_audit_events(**filters),
+                    )
+            except ValueError as exc:
+                return self._send(404, {"error": str(exc)})
         if path == "/api/metrics":
             tenant_key = tenant_context.current_tenant_id()
             return self._send(200, {
@@ -6803,6 +7048,17 @@ class Handler(BaseHTTPRequestHandler):
                 elif n.get("type") == "video":
                     catalog["videos"].append(item)
             return self._send(200, catalog)
+        m = re.match(r"^/api/projects/([^/]+)/shares$", path)
+        if m:
+            current = self._current_session()
+            if not current:
+                return self._send(401, {"error": "请先登录"})
+            project_id = unquote(m.group(1))
+            if not store.project_exists(project_id):
+                return self._send(404, {"error": "项目不存在"})
+            return self._send(200, {
+                "shares": store.list_project_shares(project_id),
+            })
         m = re.match(r"^/api/projects/([^/]+)$", path)
         if m:
             pid = unquote(m.group(1))
@@ -6838,6 +7094,35 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/upload/stream":
             return self._handle_stream_upload()
         body = self._read_json()
+        m = re.match(r"^/api/projects/([^/]+)/shares$", path)
+        if m:
+            current = self._current_session()
+            if not current:
+                return self._send(401, {"error": "请先登录"})
+            project_id = unquote(m.group(1))
+            try:
+                share = store.create_project_share(
+                    project_id,
+                    created_by=str(current.get("account_username") or ""),
+                    ttl_days=int(body.get("ttlDays") or 7),
+                )
+            except (TypeError, ValueError) as exc:
+                return self._send(400, {"error": str(exc)})
+            store.record_audit_event(
+                "project.share_create",
+                actor=str(current.get("account_username") or ""),
+                target_type="project",
+                target_id=project_id,
+                details={
+                    "shareId": share["id"],
+                    "expiresAt": share["expiresAt"],
+                },
+            )
+            return self._send(200, {
+                **share,
+                "url": f"/share/{share['token']}",
+                "readOnly": True,
+            })
         if path == "/api/auth/login":
             return self._handle_auth_login(body)
         if path == "/api/admin/accounts":
@@ -7444,6 +7729,8 @@ class Handler(BaseHTTPRequestHandler):
                     })
                 reconcile_active_generation_task_for_node(pid, node["id"], node)
                 requested_operation_id = str(body.get("clientOperationId") or "").strip()
+                request_entry = str(body.get("entry") or "single").strip()[:80]
+                request_batch_id = str(body.get("batchId") or "").strip()[:120]
                 if requested_operation_id:
                     existing_operation = next(
                         (
@@ -7573,6 +7860,20 @@ class Handler(BaseHTTPRequestHandler):
                         "model": task.get("model"),
                         "estimatedCost": task.get("estimated_cost"),
                         "currency": task.get("cost_currency"),
+                        "entry": request_entry,
+                        "batchId": request_batch_id,
+                        "operationId": requested_operation_id,
+                        "sessionId": str(
+                            (self._current_session() or {}).get("id") or ""
+                        ),
+                        "userAgent": str(
+                            self.headers.get("User-Agent", "")
+                        )[:500],
+                        "ip": str(
+                            self.client_address[0]
+                            if self.client_address
+                            else ""
+                        )[:128],
                     },
                 )
             try:
@@ -8280,6 +8581,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_delete_locked(self):
         path = urlparse(self.path).path
+        m = re.match(r"^/api/projects/([^/]+)/shares/([^/]+)$", path)
+        if m:
+            current = self._current_session()
+            if not current:
+                return self._send(401, {"error": "请先登录"})
+            pid, share_id = unquote(m.group(1)), unquote(m.group(2))
+            revoked = store.revoke_project_share(pid, share_id)
+            if not revoked:
+                return self._send(404, {"error": "分享记录不存在或已撤销"})
+            store.record_audit_event(
+                "project.share_revoke",
+                actor=str(current.get("account_username") or ""),
+                target_type="project",
+                target_id=pid,
+                details={"shareId": share_id},
+            )
+            return self._send(200, {"ok": True, "shareId": share_id})
         m = re.match(r"^/api/projects/([^/]+)/episodes/([^/]+)$", path)
         if m:
             pid, episode_id = unquote(m.group(1)), unquote(m.group(2))
@@ -8842,7 +9160,7 @@ class Handler(BaseHTTPRequestHandler):
                 # The source node is authoritative. params.refs[].url is only a
                 # snapshot from the moment the reference was created and can be
                 # stale after the asset was regenerated or replaced.
-                url = str(source_meta.get("content") or raw.get("url") or "").strip()
+                url = _active_reference_url(source_meta, raw)
                 if not url:
                     missing.append({"nodeId": ref_id, "label": label, "reason": "源节点尚未生成"})
                     continue
@@ -10083,6 +10401,7 @@ def main():
         print(f"[generation-tasks] 对账任务记录失败：{exc}", file=sys.stderr)
     start_generation_task_reconciler()
     start_storage_maintenance()
+    start_audit_maintenance()
     start_wal_maintenance()
     try:
         start_pending_video_resumers()

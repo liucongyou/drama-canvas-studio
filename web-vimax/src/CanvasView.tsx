@@ -1,4 +1,5 @@
 import {mediaNodeDataEqual} from './canvasNodeMemo';
+import {shareTokenInPath} from './projectShare';
 import {claimGenerationOperationId, generationIntentSignature, releaseGenerationOperationId, shouldReleaseOperationIdAfterError, type OperationIdRecord} from './generationOperationId';
 import {memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode, type RefObject, type SyntheticEvent} from 'react';
 import * as ReactDOM from 'react-dom';
@@ -106,9 +107,10 @@ import {
   Wand2,
   Image as ImageGlyph,
   AudioLines,
+  Share2,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, createProjectShare, revokeProjectShare, getProjectShares, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -197,6 +199,19 @@ type Props = {
   onCreate?: () => void;
   initialBackgroundMode?: CanvasBackgroundMode;
   onBackgroundModeChange?: (mode: CanvasBackgroundMode) => Promise<void> | void;
+  readOnly?: boolean;
+  sharedProject?: {
+    id: string;
+    title: string;
+    payload: unknown;
+    revision: number;
+  } | null;
+  sharedConnections?: Array<{
+    id?: string;
+    fromNodeId: string;
+    toNodeId: string;
+    source?: string;
+  }>;
 };
 
 const COL_X = 330;
@@ -1681,7 +1696,10 @@ type MediaNodeData = {
     patch: Partial<CanvasMediaNode>,
     options?: {mediaVersionSelection?: boolean},
   ) => void;
-  onGenerate: (node: CanvasMediaNode) => boolean;
+  onGenerate: (
+    node: CanvasMediaNode,
+    source?: {entry?: string; batchId?: string},
+  ) => boolean;
   onDelete: (id: string) => void;
   onZoom: (url: string) => void;
   onReadText: (node: CanvasMediaNode) => void;
@@ -1894,7 +1912,9 @@ function friendlyTaskError(raw?: string): string {
 function mediaOutputReady(node?: CanvasMediaNode | null): boolean {
   if (!node) return false;
   if (node.kind === 'text') return Boolean(node.prompt.trim());
-  if ((node.kind === 'image' || node.kind === 'audio') && node.promptStale) return false;
+  // A historical version with a source prompt that changed is still valid,
+  // renderable media. The stale marker is informational and must not poison
+  // every downstream node. Only absence of output blocks generation.
   if (node.mediaAvailability === 'missing') return false;
   return Boolean(String(node.mediaUrl || '').trim());
 }
@@ -3205,11 +3225,9 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
             cancelOpen();
             return;
           }
-          if (node.kind === 'image' && node.mediaUrl && e.detail >= 2) {
-            cancelOpen();
-            onZoom(node.mediaUrl);
-            return;
-          }
+          // Native click detail=2 still fires for the second click of a
+          // double-click. Opening the modal here is the single-click contract;
+          // the following dblclick handler replaces it with the lightbox.
           // ★★ 第 15 轮第 5 次修正：组内卡片**恢复单卡行为** —— 单击只选自己 + 打开自己的弹窗。
           //   用户原话：「单击节点就还是选中单个不影响单击弹窗」。
           //
@@ -3242,11 +3260,6 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           if (node.kind === 'image' && node.mediaUrl) {
             cancelOpen();
             onZoom(node.mediaUrl);
-            return;
-          }
-          if (node.kind === 'video' && node.mediaUrl) {
-            cancelOpen();
-            toggleVideoFullscreen();
             return;
           }
           // 第 15 轮第 5 次修正后：组内卡片和普通卡片行为完全一致 ——
@@ -8036,7 +8049,10 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
   tasks: GenerationTask[];
   busyNodeIds: Set<string>;
   onClose: () => void;
-  onGenerate: (node: CanvasMediaNode) => boolean;
+  onGenerate: (
+    node: CanvasMediaNode,
+    source?: {entry?: string; batchId?: string},
+  ) => boolean;
   onSubmitted: (started: number, selected: number) => void;
 }) {
   const dialogRef = useDialogFocusTrap();
@@ -8183,8 +8199,9 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
               disabled={selected.length === 0}
               onClick={() => {
                 let started = 0;
+                const batchId = `batch-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
                 for (const candidate of selected) {
-                  if (onGenerate(candidate.node)) started += 1;
+                  if (onGenerate(candidate.node, {entry: 'batch', batchId})) started += 1;
                 }
                 onSubmitted(started, selected.length);
                 onClose();
@@ -8206,6 +8223,8 @@ function CanvasViewInner({
   onCreate,
   initialBackgroundMode,
   onBackgroundModeChange,
+  readOnly = false,
+  sharedProject = null,
 }: Props) {
   const [committedBackgroundMode, setCommittedBackgroundMode] =
     useState<CanvasBackgroundMode>(
@@ -8880,6 +8899,7 @@ function CanvasViewInner({
       groups?: CanvasGroup[];
     },
   ) => {
+    if (readOnly) return;
     try {
       // 资产卡子节点位置跟随分组框整体拖动，不单独持久化（索引可能因资产增删变化）；
       // 媒体卡片位置由载荷 node.position 管理（拖动同步回 mn 并写回后端），也不再进 localStorage——
@@ -8902,8 +8922,13 @@ function CanvasViewInner({
     } catch {
       /* localStorage 不可用时静默 */
     }
-  }, [layoutKey, loadPersistedLayout]);
+  }, [layoutKey, loadPersistedLayout, readOnly]);
   const rememberViewport = useCallback((viewport: {x: number; y: number; zoom: number}) => {
+    if (readOnly) {
+      viewportRef.current = viewport;
+      setCanvasViewport(viewport);
+      return;
+    }
     viewportRef.current = viewport;
     setCanvasViewport(viewport);
     const viewportEpisode = activeWorkspaceEpisodeRef.current || currentEp;
@@ -8931,9 +8956,10 @@ function CanvasViewInner({
     } catch {
       // Local cache is optional; the server viewport remains the fallback.
     }
-  }, [currentEp, layoutKey, session]);
+  }, [currentEp, layoutKey, readOnly, session]);
 
   const flushViewportNow = useCallback(() => {
+    if (readOnly) return;
     if (viewportSaveTimer.current) {
       clearTimeout(viewportSaveTimer.current);
       viewportSaveTimer.current = null;
@@ -9106,6 +9132,22 @@ function CanvasViewInner({
       document.body.removeAttribute('data-canvas-interacting');
     }
   }, []);
+  const resetCanvasInteraction = useCallback(() => {
+    interactionDepthRef.current = 0;
+    document.body.removeAttribute('data-canvas-interacting');
+  }, []);
+  useEffect(() => {
+    const release = () => resetCanvasInteraction();
+    window.addEventListener('pointerup', release, true);
+    window.addEventListener('pointercancel', release, true);
+    window.addEventListener('blur', release);
+    return () => {
+      window.removeEventListener('pointerup', release, true);
+      window.removeEventListener('pointercancel', release, true);
+      window.removeEventListener('blur', release);
+      resetCanvasInteraction();
+    };
+  }, [resetCanvasInteraction]);
 
   // 撤销/重做（作用于用户连线、备注节点与自动边删除状态）
   const pastRef = useRef<HistorySnapshot[]>([]);
@@ -13408,6 +13450,7 @@ function CanvasViewInner({
   const onNodeDragStop = useCallback((_: unknown, node: FlowNode) => {
     setDraggingNode(false);
     draggingRef.current = false;
+    resetCanvasInteraction();
     // 拖动结束：实时位置表作废，之后一律读 store（store 此时已经是最新值）
     livePosRef.current.clear();
     // 拖动结束：参考线不立刻清 —— 先驻留 120ms 再淡出（见 releaseAlignGuides），
@@ -13495,7 +13538,7 @@ function CanvasViewInner({
     //      保证框和卡片像素级贴合（实测只有①时仍差 11px）。
     syncGroupFrames();
     requestAnimationFrame(() => syncGroupFrames());
-  }, [beginCanvasInteraction, commitNotePositions, endCanvasInteraction, persistLayout, releaseAlignGuides, setNodes, updateMediaNode, syncSelBar, syncGroupFrames]);
+  }, [beginCanvasInteraction, commitNotePositions, endCanvasInteraction, persistLayout, releaseAlignGuides, resetCanvasInteraction, setNodes, updateMediaNode, syncSelBar, syncGroupFrames]);
 
   const clearStuckDrag = useCallback(() => {
     // Run after React Flow's own pointer handlers. A normal drag has already
@@ -13740,6 +13783,16 @@ function CanvasViewInner({
     document.addEventListener('pointerdown', onDown, true);
     return () => document.removeEventListener('pointerdown', onDown, true);
   }, [contextMenu, segMenu]);
+
+  useEffect(() => {
+    const suppressNativeMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+    document.addEventListener('contextmenu', suppressNativeMenu, true);
+    return () => {
+      document.removeEventListener('contextmenu', suppressNativeMenu, true);
+    };
+  }, []);
 
   const onPaneClick = useCallback(() => {
     if (locateSelectTimerRef.current) {
@@ -14655,7 +14708,10 @@ function CanvasViewInner({
     [mediaNodes, editNodeId],
   );
 
-  const onGenerateMediaNode = useCallback((node: CanvasMediaNode) => {
+  const onGenerateMediaNode = useCallback((
+    node: CanvasMediaNode,
+    source?: {entry?: string; batchId?: string},
+  ) => {
     if (!currentEp) {
       setToast('画布尚未绑定集数，请稍后再生成');
       return false;
@@ -14762,6 +14818,8 @@ function CanvasViewInner({
           params,
           clientOperationId,
           episodeId: currentEp,
+          entry: source?.entry || 'single',
+          batchId: source?.batchId,
         });
         const result = await generationPromise;
         // The POST has already been accepted at this point. Auxiliary refresh
