@@ -1,9 +1,11 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getManagedTenantAudit, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getManagedTenantAudit, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, shareEventsUrl, subscribeToEvents} from './api';
 
 describe('project event cursor', () => {
   it('reconnects SSE from the last rendered events for this project', () => {
     expect(projectEventsUrl('project-1', 42)).toContain('/events?since=42');
+    expect(shareEventsUrl('share-token', 42))
+      .toContain('/api/share/share-token/events?since=42');
     expect(projectCursorStorageKey('project-1'))
       .toBe('vimax.canvas.event-cursor.project-1');
   });
@@ -691,6 +693,61 @@ describe('api request recovery', () => {
     }
     expect(workspace.notes).toEqual([]);
     expect(workspace.mediaNodes).toEqual([]);
+  });
+
+  it('reads read-only shares through the same backend node projection', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const target = String(url);
+      const body = target.includes('/api/share/share-token/workspace-index')
+        ? {
+            id: 'project-shared',
+            title: '共享项目',
+            revision: 3,
+            updatedAt: '2026-11-04T00:00:00Z',
+            projectMeta: {title: '共享项目'},
+            episodes: [{
+              id: 'EP001',
+              title: '第一集',
+              nodeIds: ['image-1'],
+              videoNodeIds: [],
+            }],
+            episodeViewports: {},
+          }
+        : target.includes('/api/share/share-token/workspace-nodes')
+          ? {
+              episodeId: 'EP001',
+              episode: {id: 'EP001', title: '第一集'},
+              nodes: [{
+                id: 'image-1',
+                type: 'image',
+                title: '角色｜甲（图1）',
+                metadata: {
+                  status: 'done',
+                  content: '/uploads/shared.png',
+                },
+              }],
+              connections: [],
+              layouts: {},
+              notes: [],
+            }
+          : null;
+      if (!body) throw new Error(`unexpected share URL: ${target}`);
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const workspace = await getCanvasWorkspace('share:share-token', 'EP001');
+
+    expect(workspace.mediaNodes).toHaveLength(1);
+    expect(workspace.mediaNodes[0].mediaUrl).toBe('/uploads/shared.png');
+    expect(workspace.tasks).toEqual([]);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      '/api/share/share-token/workspace-index',
+      '/api/share/share-token/workspace-nodes?episodeId=EP001',
+    ]);
   });
 
   it('sends position-only moves without conflict preconditions', async () => {

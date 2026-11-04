@@ -1,7 +1,7 @@
 import {lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent} from 'react';
 import {createRoot} from 'react-dom/client';
 import {createPortal} from 'react-dom';
-import {Check, ChevronDown, CloudUpload, Copy, Download, ExternalLink, FolderOpen, FolderPlus, History, KeyRound, LogOut, MoreHorizontal, Palette, Pencil, Plus, Settings, ShieldCheck, Trash2, Upload, X} from 'lucide-react';
+import {Check, ChevronDown, CloudUpload, Copy, Download, ExternalLink, FolderOpen, FolderPlus, History, KeyRound, LogOut, MoreHorizontal, Palette, Pencil, Plus, Settings, Share2, ShieldCheck, Trash2, Upload, X} from 'lucide-react';
 import {CanvasView} from './CanvasView';
 import {ModelSettingsDialog} from './ModelSettings';
 import {TosSettingsDialog} from './TosSettings';
@@ -16,8 +16,9 @@ import {
 // ★ 全局对话框：替换原生 prompt/confirm/alert（2026-10-25）
 //   原生框由浏览器进程外绘制，CSS 无法触及 —— 用户截图里的白底蓝钮弹窗就是它。
 import {DialogHost, dialog} from './GDialog';
-import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, getAuthSession, getManagedAccounts, getModelCatalog, getStorageConfig, loginAccount, logoutAccount, resetManagedAccountPassword, saveTenantPreferences, setManagedAccountStatus, type ManagedAccount, type ManagedAccountsSnapshot, type ModelCatalog, type StorageSpec} from './api';
+import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, createProjectShare, getAuthSession, getManagedAccounts, getModelCatalog, getProjectShares, getSharedProject, getStorageConfig, loginAccount, logoutAccount, resetManagedAccountPassword, revokeProjectShare, saveTenantPreferences, setManagedAccountStatus, type ManagedAccount, type ManagedAccountsSnapshot, type ModelCatalog, type StorageSpec} from './api';
 import {TenantAdminView} from './TenantAdminView';
+import {shareTokenInPath} from './projectShare';
 import {APP_VERSION, RELEASE_SEEN_KEY} from './changelog';
 // 更新记录弹窗连带 55KB 发布文本一起异步加载，首屏不再背这个包袱。
 const loadChangelogDialog = () => import('./ChangelogDialog');
@@ -964,6 +965,101 @@ function Shell({
                 </div>
               )}
 
+              {!localMode && (
+                <div className="shell-settings-section">
+                  <div className="shell-tools-menu-head">项目协作</div>
+                  <button
+                    type="button"
+                    className="shell-tools-menu-item"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (!pid) {
+                        void dialog.alert({
+                          title: '还未打开项目',
+                          message: '先在左上角选择或创建一个项目。',
+                        });
+                        return;
+                      }
+                      void dialog.prompt({
+                        title: '分享项目画布',
+                        icon: Share2,
+                        message: '生成只读链接。访客可实时查看当前项目，不能编辑、上传或生成；有效期最长 30 天。',
+                        placeholder: '分享有效期（1-30 天）',
+                        defaultValue: '7',
+                        confirmText: '生成分享链接',
+                      }).then(async (rawDays) => {
+                        if (rawDays === null) return;
+                        const days = Math.max(
+                          1,
+                          Math.min(30, Number(rawDays) || 7),
+                        );
+                        try {
+                          const share = await createProjectShare(pid, days);
+                          const url = `${window.location.origin}${share.url}`;
+                          await navigator.clipboard?.writeText(url);
+                          await dialog.alert({
+                            title: '分享链接已生成',
+                            message: `${url}\n\n有效期至 ${new Date(share.expiresAt).toLocaleString()}。链接已复制。`,
+                            tone: 'success',
+                          });
+                        } catch (reason) {
+                          await dialog.alert({
+                            title: '生成分享链接失败',
+                            message: reason instanceof Error ? reason.message : String(reason),
+                            tone: 'danger',
+                          });
+                        }
+                      });
+                    }}
+                  >
+                    <Share2 size={13} strokeWidth={1.9} aria-hidden="true" />
+                    <span>分享项目画布</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="shell-tools-menu-item"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (!pid) return;
+                      void getProjectShares(pid)
+                        .then((result) => {
+                          const active = result.shares.filter((share) => share.active);
+                          if (active.length === 0) {
+                            return dialog.alert({
+                              title: '分享链接',
+                              message: '当前项目没有有效的只读分享链接。',
+                            });
+                          }
+                          const selected = active[0];
+                          return dialog.confirm({
+                            title: '撤销当前分享？',
+                            message: `撤销后，已拿到链接的人会立即失去访问权限。有效期原为 ${new Date(selected.expiresAt).toLocaleString()}。`,
+                            tone: 'danger',
+                            confirmText: '撤销分享',
+                          }).then((confirmed) => {
+                            if (!confirmed) return;
+                            return revokeProjectShare(pid, selected.id).then(() => {
+                              return dialog.alert({
+                                title: '分享已撤销',
+                                message: '线上的只读链接现在已失效。',
+                                tone: 'success',
+                              });
+                            });
+                          });
+                        })
+                        .catch((reason) => dialog.alert({
+                          title: '读取分享失败',
+                          message: reason instanceof Error ? reason.message : String(reason),
+                          tone: 'danger',
+                        }));
+                    }}
+                  >
+                    <X size={13} strokeWidth={1.9} aria-hidden="true" />
+                    <span>撤销项目分享</span>
+                  </button>
+                </div>
+              )}
+
               <div className="shell-settings-section">
                 <div className="shell-tools-menu-head">导入投喂载荷</div>
                 <div className="shell-tools-field">
@@ -1453,8 +1549,32 @@ function AuthGate() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const sharedToken = shareTokenInPath(window.location.pathname);
+  const [sharedProject, setSharedProject] = useState<Awaited<ReturnType<typeof getSharedProject>>['project'] | null>(null);
+  const [sharedError, setSharedError] = useState('');
 
   useEffect(() => {
+    if (!sharedToken) return;
+    let cancelled = false;
+    setState('checking');
+    void getSharedProject(sharedToken)
+      .then((result) => {
+        if (cancelled) return;
+        setSharedProject(result.project);
+        setState('authenticated');
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setSharedError(reason instanceof Error ? reason.message : '分享链接无效');
+        setState('anonymous');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sharedToken]);
+
+  useEffect(() => {
+    if (sharedToken) return;
     let cancelled = false;
     void getAuthSession()
       .then((session) => {
@@ -1481,7 +1601,7 @@ function AuthGate() {
       window.clearInterval(heartbeat);
       window.removeEventListener(AUTH_REQUIRED_EVENT, onRequired);
     };
-  }, []);
+  }, [sharedToken]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -1512,6 +1632,9 @@ function AuthGate() {
   };
 
   if (state === 'checking') {
+    if (sharedToken) {
+      return <div className="canvas-skeleton"><div className="canvas-skeleton-status">正在打开只读分享…</div></div>;
+    }
     return (
       <div className="auth-gate">
         <div className="auth-gate-loading"><ShieldCheck size={18} />正在验证登录状态…</div>
@@ -1520,6 +1643,17 @@ function AuthGate() {
   }
 
   if (state === 'anonymous') {
+    if (sharedToken) {
+      return (
+        <div className="auth-gate">
+          <div className="auth-gate-card">
+            <div className="auth-gate-mark"><ShieldCheck size={22} strokeWidth={1.7} /></div>
+            <h1>分享不可用</h1>
+            <p>{sharedError || '分享链接已撤销或过期。'}</p>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="auth-gate">
         <form className="auth-gate-card" onSubmit={submit}>
@@ -1552,6 +1686,18 @@ function AuthGate() {
           </button>
         </form>
       </div>
+    );
+  }
+
+  if (sharedToken && sharedProject) {
+    return (
+      <CanvasView
+        session={sharedToken}
+        readOnly
+        sharedProject={sharedProject}
+        initialBackgroundMode="blank"
+        onBackgroundModeChange={() => undefined}
+      />
     );
   }
 

@@ -6070,6 +6070,18 @@ class Handler(BaseHTTPRequestHandler):
             return None
         path = urlparse(self.path).path
         if path.startswith("/share/") or path.startswith("/api/share/"):
+            if (
+                path.startswith("/api/share/")
+                and self.command not in {"GET", "HEAD"}
+            ):
+                self._send(
+                    405,
+                    {
+                        "error": "分享链接是只读的，只接受 GET",
+                        "code": "SHARE_READ_ONLY",
+                    },
+                )
+                return None
             return nullcontext()
         if _auth_mode() == "accounts":
             host = _normalized_host(self.headers.get("Host", ""))
@@ -6698,6 +6710,11 @@ class Handler(BaseHTTPRequestHandler):
         share_match = re.match(r"^/share/([^/]+)$", path)
         if share_match and self._serve_webapp("/index.html"):
             return
+        if share_match:
+            return self._send(
+                404,
+                {"error": "前端产物不存在，请先构建 web-vimax/dist"},
+            )
         if path.startswith("/api/projects/") and path.endswith("/events"):
             project_id = path[len("/api/projects/"):-len("/events")].strip("/")
             if project_id and "/" not in project_id:

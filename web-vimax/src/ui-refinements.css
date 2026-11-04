@@ -1890,7 +1890,20 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 }
 .canvas-media-background-chip .canvas-media-spin{width:7px;height:7px;border-width:1.5px;margin-right:3px}
 /* 图上快捷菜单（hover 显现） */
-.canvas-media-card-menu{position:absolute;top:9px;right:9px;display:flex;gap:4px;opacity:0;transition:opacity .15s;z-index:6}
+.canvas-media-card-menu{
+  position:absolute;
+  top:9px;
+  right:9px;
+  display:flex;
+  gap:4px;
+  /* React Flow scales the whole card. Without counter-scaling, a 22px button is
+     only a few real pixels at the project's usual 10-20% canvas zoom. */
+  transform:scale(var(--card-ui-scale,1));
+  transform-origin:top right;
+  opacity:0;
+  transition:opacity .15s;
+  z-index:6;
+}
 .canvas-media-card:hover .canvas-media-card-menu,.canvas-media-node.is-active .canvas-media-card-menu{opacity:1}
 .canvas-media-card-menu button{width:22px;height:22px;border-radius:6px;background:rgba(13,16,22,.82);border:1px solid rgba(255,255,255,.14);color:#c6d2e4;font-size:11px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:background .15s,color .15s;padding:0}
 .canvas-media-card-menu button:hover{background:rgba(93,98,233,.34);border-color:#5d62e9;color:#fff}
@@ -2274,6 +2287,35 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 .canvas-stats-inline{font-size:11.5px;color:#8fa3c0;background:#161b24;border:1px solid #262f3d;border-radius:16px;padding:3px 12px;white-space:nowrap;font-variant-numeric:tabular-nums}
 .canvas-stats-inline .is-progress{color:var(--v-success);font-weight:600}
 .canvas-header-tools button{border-radius:9px}
+.canvas-view.is-readonly-share .canvas-toolbar,
+.canvas-view.is-readonly-share .canvas-selbar,
+.canvas-view.is-readonly-share .canvas-task-center-trigger,
+.canvas-view.is-readonly-share .canvas-context-menu,
+.canvas-view.is-readonly-share .canvas-media-card .canvas-card-actions,
+.canvas-view.is-readonly-share .canvas-media-foot-more {
+  display:none!important;
+}
+.canvas-share-banner{
+  position:fixed;
+  top:54px;
+  left:50%;
+  z-index:950;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:7px 10px;
+  transform:translateX(-50%);
+  border:1px solid var(--v-border);
+  border-radius:7px;
+  background:var(--v-surface);
+  box-shadow:var(--v-shadow-overlay);
+  color:var(--v-text-2);
+  font-size:10.5px;
+  pointer-events:none;
+}
+.canvas-share-banner span{
+  color:var(--v-text-5);
+}
 .canvas-view .workspace-title-copy{
   flex:none;
   flex-direction:row;

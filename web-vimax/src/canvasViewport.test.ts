@@ -238,7 +238,9 @@ describe('canvas viewport persistence threshold', () => {
       source.indexOf('void completedWorkspace;'),
       source.indexOf('// 拉取创作质量自评报告', source.indexOf('void completedWorkspace;')),
     );
-    expect(loaderEnd).toContain('}, [session, pidRetry]);');
+    expect(loaderEnd).toContain(
+      '}, [session, pidRetry, readOnly, sharedProject]);',
+    );
     expect(loaderEnd).not.toContain('}, [session, currentEp, pidRetry]);');
   });
 

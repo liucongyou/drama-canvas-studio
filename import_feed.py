@@ -180,7 +180,8 @@ def _node_source_ready(node):
     except (TypeError, ValueError):
         index = -1
     if 0 <= index < len(versions) and isinstance(versions[index], dict):
-        return bool(str(versions[index].get("url") or "").strip())
+        if str(versions[index].get("url") or "").strip():
+            return True
     return any(
         isinstance(item, dict) and str(item.get("url") or "").strip()
         for item in reversed(versions)
@@ -365,7 +366,11 @@ def episode_readiness(payload, episode_id=None):
             "title": str((source or {}).get("title") or node_id),
             "kind": str((source or {}).get("type") or "missing"),
             "status": str(meta.get("status") or ("missing" if not source else "idle")),
-            "reason": "引用节点不存在" if not source else "尚未生成",
+            "reason": (
+                "引用节点不存在"
+                if not source
+                else "尚未生成"
+            ),
         })
     ready = len(videos) - len(video_blockers)
     return {
@@ -1893,14 +1898,44 @@ def _prompt_speaking_roles(prompt, role_names):
         if role in known
     }
     for line in str(prompt or "").splitlines():
-        if "台词" not in line or not re.search(r"\bOS\b|内心独白", line, re.IGNORECASE):
+        # ① 显式「画外·角色名」标注对 OS 与 VO 都生效——作者已写死发声人，直接采信。
+        #    形如：声音：OS："…"（画外·赵铁柱） / 声音：画外·赵铁柱内心独白（OS）："…"
+        #    分隔符允许「·」「・」「•」与空白。
+        annotated = None
+        for anno in re.finditer(r"画外\s*[·・•]\s*([^\s·・•（）()，,。;；:：\"“”]+)", line):
+            token = anno.group(1).strip()
+            if token in known:
+                annotated = token
+                break
+        if annotated is None:
+            for role in known:
+                if re.search(rf"画外\s*[·・•]\s*{re.escape(role)}", line):
+                    annotated = role
+                    break
+        if annotated:
+            speaking.add(annotated)
             continue
-        before_dialogue = line.split("台词", 1)[0]
+        # ② 无标注时的推断**只对 OS / 内心独白**生效。
+        #    VO（旁白 / 广播 / 系统音）不是场内某个角色的内心，根本不适用
+        #    「从画面挑角色」这套推断——加进来会把画内站着的人误挂成本段音色
+        #    （第01集段8 画外广播 VO 曾被误判出工人甲，即此坑）。
+        if not re.search(r"\bOS\b|内心独白", line, re.IGNORECASE):
+            continue
+        # ③ 推断时只看「画面段」找发声人——绝不允许把【声音：】之后的
+        #    OS 台词正文纳入搜名范围。台词里提到别的角色名（如"我背陈大强…"）
+        #    不代表那个角色在说话；旧实现切到「台词：」，把整段 OS 引号正文都搜了
+        #    进来，再按 rfind 取最靠后者，导致「被提到的人」被判成「说话的人」。
+        stop = len(line)
+        for marker in ("声音：", "声音:", "台词：", "台词:"):
+            pos = line.find(marker)
+            if 0 <= pos < stop:
+                stop = pos
+        search_region = line[:stop]
         ranked = sorted(
             (
-                (before_dialogue.rfind(role), role)
+                (search_region.rfind(role), role)
                 for role in known
-                if role in before_dialogue
+                if role in search_region
             ),
             reverse=True,
         )

@@ -1,6 +1,7 @@
 import {mediaNodeDataEqual} from './canvasNodeMemo';
 import {shareTokenInPath} from './projectShare';
 import {claimGenerationOperationId, generationIntentSignature, releaseGenerationOperationId, shouldReleaseOperationIdAfterError, type OperationIdRecord} from './generationOperationId';
+import {newCanvasEntityId} from './canvasEntityId';
 import {memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode, type RefObject, type SyntheticEvent} from 'react';
 import * as ReactDOM from 'react-dom';
 import {createPortal} from 'react-dom';
@@ -110,7 +111,7 @@ import {
   Share2,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, createProjectShare, revokeProjectShare, getProjectShares, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -1704,6 +1705,7 @@ type MediaNodeData = {
   onZoom: (url: string) => void;
   onReadText: (node: CanvasMediaNode) => void;
   onCopyText: (node: CanvasMediaNode) => void;
+  readOnly?: boolean;
   /** 点击卡片 → 弹窗编辑 */
   onEdit: (node: CanvasMediaNode) => void;
   /** 可引用资产候选（image/audio 节点），@资产 选择器用 */
@@ -2415,7 +2417,7 @@ function mediaNodePropsEqual(
 }
 
 const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
-  const {node, renderMode = 'full', contentVisible = true, onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, assetsById, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed, onMediaAvailability, onRecoverMedia} = data;
+  const {node, renderMode = 'full', contentVisible = true, onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, assetsById, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed, onMediaAvailability, onRecoverMedia, readOnly = false} = data;
   const [menu, setMenu] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoShellRef = useRef<HTMLDivElement>(null);
@@ -2504,6 +2506,18 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     ...(node.params?.refs || []).map((item) => item.nodeId),
     ...voiceRefList(node.params).map((item) => item.nodeId),
   ])].filter(Boolean);
+  const mediaViewerAction = node.mediaUrl && !isText
+    ? () => {
+        if (node.kind === 'image') {
+          onZoom(node.mediaUrl!);
+          return;
+        }
+        if (node.kind === 'video') {
+          setVideoSourceReady(true);
+          toggleVideoFullscreen();
+        }
+      }
+    : null;
   // 只解析本卡真正引用的那几个节点，不再对全量池做线性查找。
   // assetsById 是外层一次构建的稳定 Map；没有时退回 assets 数组（兼容旧调用方/测试）。
   const dependencySources = dependencyIds
@@ -3221,13 +3235,14 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
         onClick={(e) => {
           if (e.shiftKey || e.ctrlKey || e.metaKey) return;
           e.stopPropagation();
+          // Native click detail=2 means the second click of a double-click.
+          // Let onDoubleClick own that gesture so the modal does not flash
+          // open before the image/video viewer.
+          if (e.detail >= 2) return;
           if (isNodeOpenSuppressed()) {
             cancelOpen();
             return;
           }
-          // Native click detail=2 still fires for the second click of a
-          // double-click. Opening the modal here is the single-click contract;
-          // the following dblclick handler replaces it with the lightbox.
           // ★★ 第 15 轮第 5 次修正：组内卡片**恢复单卡行为** —— 单击只选自己 + 打开自己的弹窗。
           //   用户原话：「单击节点就还是选中单个不影响单击弹窗」。
           //
@@ -3244,10 +3259,6 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
             return;
           }
           if (node.kind === 'image' || node.kind === 'video') {
-            // A second click to open a different card was often swallowed while
-            // the previous modal waited for its 170ms exit animation. There is
-            // no double-click action for media cards that needs a click delay,
-            // so open immediately and keep the state transition single-source.
             if (!editingText) onEdit(node);
             return;
           }
@@ -3257,9 +3268,10 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           // 双击进入文本编辑；Shift/Ctrl 双击是"多选"，不抢
           if (e.shiftKey || e.ctrlKey || e.metaKey) return;
           e.stopPropagation();
-          if (node.kind === 'image' && node.mediaUrl) {
+          if ((node.kind === 'image' || node.kind === 'video') && node.mediaUrl) {
             cancelOpen();
-            onZoom(node.mediaUrl);
+            if (node.kind === 'image') onZoom(node.mediaUrl);
+            else toggleVideoFullscreen();
             return;
           }
           // 第 15 轮第 5 次修正后：组内卡片和普通卡片行为完全一致 ——
@@ -3691,7 +3703,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           </div>
         )}
         <div className="canvas-media-card-menu">
-          {isText && (
+          {isText ? (
             <>
               <button type="button" className="nodrag" title="展开全文" onClick={(e) => { e.stopPropagation(); onReadText(node); }}>
                 <Maximize2 size={13} strokeWidth={1.9} aria-hidden="true" />
@@ -3700,7 +3712,22 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                 <Copy size={13} strokeWidth={1.9} aria-hidden="true" />
               </button>
             </>
-          )}
+          ) : mediaViewerAction && !mediaMissing ? (
+            <button
+              type="button"
+              className="nodrag"
+              title={node.kind === 'image' ? '查看原图' : node.kind === 'video' ? '全屏查看' : '查看素材'}
+              aria-label={node.kind === 'image' ? '查看原图' : node.kind === 'video' ? '全屏查看' : '查看素材'}
+              onClick={(e) => {
+                e.stopPropagation();
+                mediaViewerAction();
+              }}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <Maximize2 size={13} strokeWidth={1.9} aria-hidden="true" />
+            </button>
+          ) : null}
           {!isText && (
             <button type="button" className="nodrag" title="编辑" onClick={(e) => { e.stopPropagation(); onEdit(node); }}>
               <Pencil size={13} strokeWidth={1.9} aria-hidden="true" />
@@ -3711,6 +3738,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           <button
             type="button"
             className="nodrag"
+            hidden={readOnly}
             title={
               generationVisualState.submitLocked
                 ? '生成中，不能重复提交'
@@ -3723,7 +3751,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           >
             <RotateCw size={13} strokeWidth={1.9} aria-hidden="true" />
           </button>
-          <button type="button" className="nodrag is-del" title="删除节点" onClick={(e) => { e.stopPropagation(); onDelete(node.id); }}>
+          <button type="button" className="nodrag is-del" hidden={readOnly} title="删除节点" onClick={(e) => { e.stopPropagation(); onDelete(node.id); }}>
             <X size={13} strokeWidth={2.1} aria-hidden="true" />
           </button>
         </div>
@@ -3796,25 +3824,29 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           </button>
           {menu && (
             <div className="canvas-media-foot-pop">
-              {!isText && (
+              {!readOnly && !isText && (
                 <button type="button" className="nodrag" onClick={(e) => { e.stopPropagation(); setMenu(false); openLocalPicker(); }}>
                   {node.mediaUrl && !mediaMissing ? '从本地添加版本' : '导入本地文件'}
                 </button>
               )}
-              <button type="button" className="nodrag" onClick={(e) => { e.stopPropagation(); setMenu(false); onEdit(node); }}>编辑提示词</button>
-              <button
-                type="button"
-                className="nodrag"
-                disabled={busy}
-                title={busy ? '供应商任务尚未结束，不能重复提交' : undefined}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (busy) return;
-                  setMenu(false);
-                  onGenerate(node);
-                }}
-              >{busy ? '生成中' : isText ? 'AI 生成/改写' : '重新生成'}</button>
-              <button type="button" className="nodrag is-del" onClick={(e) => { e.stopPropagation(); setMenu(false); onDelete(node.id); }}>删除节点</button>
+              <button type="button" className="nodrag" onClick={(e) => { e.stopPropagation(); setMenu(false); onEdit(node); }}>{readOnly ? '查看提示词' : '编辑提示词'}</button>
+              {!readOnly && (
+                <>
+                  <button
+                    type="button"
+                    className="nodrag"
+                    disabled={busy}
+                    title={busy ? '供应商任务尚未结束，不能重复提交' : undefined}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (busy) return;
+                      setMenu(false);
+                      onGenerate(node);
+                    }}
+                  >{busy ? '生成中' : isText ? 'AI 生成/改写' : '重新生成'}</button>
+                  <button type="button" className="nodrag is-del" onClick={(e) => { e.stopPropagation(); setMenu(false); onDelete(node.id); }}>删除节点</button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -8604,6 +8636,7 @@ function CanvasViewInner({
 
   const submitEpisodeCreate = useCallback(async (event: FormEvent) => {
     event.preventDefault();
+    if (readOnly) return;
     if (episodeCreating) return;
     const episodeId = episodeDraftId.trim();
     if (!/^(?:EP)?0*[1-9]\d{0,3}$/i.test(episodeId)) {
@@ -8626,9 +8659,10 @@ function CanvasViewInner({
     } finally {
       setEpisodeCreating(false);
     }
-  }, [episodeCreating, episodeDraftId, episodeDraftTitle, fmtEp, session, setToast]);
+  }, [episodeCreating, episodeDraftId, episodeDraftTitle, fmtEp, readOnly, session, setToast]);
 
   const removeEpisode = useCallback(async (episodeId: string, episodeTitle: string) => {
+    if (readOnly) return;
     if (episodeDeleting) return;
     const confirmed = await dialog.confirm({
       title: `删除「${episodeTitle}」？`,
@@ -8668,6 +8702,7 @@ function CanvasViewInner({
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
   useEffect(() => {
+    if (readOnly) return;
     const timer = window.setTimeout(() => {
       void getBudgetStatus()
         .then((status) => {
@@ -8685,7 +8720,7 @@ function CanvasViewInner({
         .catch(() => undefined);
     }, 2600);
     return () => window.clearTimeout(timer);
-  }, [session]);
+  }, [readOnly, session]);
   const toolsTriggerRef = useRef<HTMLButtonElement>(null);
   const [userEdges, setUserEdges] = useState<Edge[]>([]);
   const projectConnectionsRef = useRef<Array<{
@@ -9050,7 +9085,7 @@ function CanvasViewInner({
         .map((g) => ({...g, members: g.members.filter((m) => !set.has(m))}))
         .filter((g) => g.members.length >= 2);
       const name = `组 ${cleaned.length + 1}`;
-      const next = [...cleaned, {id: `grp-${Date.now().toString(36)}`, name, members}];
+      const next = [...cleaned, {id: newCanvasEntityId('grp'), name, members}];
       groupsRef.current = next;
       return next;
     });
@@ -9460,6 +9495,7 @@ function CanvasViewInner({
     if (mediaBatchSaveInFlightRef.current) return;
     const snapshots = [...pendingMediaNodeSavesRef.current.values()];
     pendingMediaNodeSavesRef.current.clear();
+    if (readOnly) return;
     if (snapshots.length === 0) return;
     if (!currentEp) {
       for (const snapshot of snapshots) {
@@ -9504,9 +9540,10 @@ function CanvasViewInner({
         }
       });
     mediaBatchSaveInFlightRef.current = task;
-  }, [beginSave, broadcastMediaChange, currentEp, finishSave, session, setToast]);
+  }, [beginSave, broadcastMediaChange, currentEp, finishSave, readOnly, session, setToast]);
 
   const deleteMediaNodePersistently = useCallback(async (id: string) => {
+    if (readOnly) return;
     pendingMediaNodeSavesRef.current.delete(id);
     if (mediaBatchSaveTimer.current) {
       clearTimeout(mediaBatchSaveTimer.current);
@@ -9519,7 +9556,7 @@ function CanvasViewInner({
     if (inFlight) await inFlight.catch(() => undefined);
     pendingMediaNodeSavesRef.current.delete(id);
     await deleteCanvasMediaNode(session, id);
-  }, [flushMediaNodeSaves, session]);
+  }, [flushMediaNodeSaves, readOnly, session]);
 
   const cancelPendingMediaDeletes = useCallback(() => {
     if (pendingMediaDeleteTimerRef.current) {
@@ -9705,7 +9742,7 @@ function CanvasViewInner({
       channel.close();
       if (syncChannelRef.current === channel) syncChannelRef.current = null;
     };
-  }, [currentEp, session, setToast]);
+  }, [currentEp, readOnly, session, setToast]);
 
   useEffect(() => {
     let alive = true;
@@ -9844,6 +9881,10 @@ function CanvasViewInner({
 
   // 删除任意一条连线（手动线直接移除；自动线记入 deletedAutoEdgeIds 不再重建）
   const deleteEdgeById = useCallback((id: string) => {
+    if (readOnly) {
+      setToast('只读分享不能修改连线');
+      return;
+    }
     pushHistory(userEdgesRef.current, notesRef.current);
     // ★ 连线与「引用参数」是同一个关系的两面，必须一起删：
     //   onConnect 会把源节点写进目标节点的 params.refs（linkRef），openMediaModal 又会按连线把缺失的 refs 补回来。
@@ -9866,7 +9907,7 @@ function CanvasViewInner({
         return next;
       });
     }
-  }, [pushHistory, dropRefsForPairs]);
+  }, [dropRefsForPairs, pushHistory, readOnly, setToast]);
 
   // ★★★ 第 20 轮：把 deleteEdgeById 登记到模块级注册表。
   //   边组件的删除回调不能只靠 `edge.data.onDelete` —— 那是函数，写 localStorage 时
@@ -9883,6 +9924,7 @@ function CanvasViewInner({
   // 从弹窗里移除一条引用：必须把画布上对应连线一起删掉。
   // 否则 openMediaModal 每次打开都会按残留连线把 refs 重新预填回来 → 用户感觉"删不掉"。
   const removeRefAndEdge = useCallback((targetNodeId: string, refNodeId: string) => {
+    if (readOnly) return;
     // 记入"已移除"黑名单 + 清 params.refs（两者都在 dropRefsForPairs 里）
     dropRefsForPairs([{src: refNodeId, tgt: targetNodeId}]);
     // 手动线：source=ref → target=当前节点（也可能反向，两种方向都清）
@@ -9896,7 +9938,7 @@ function CanvasViewInner({
     }
     // 自动线（refIds 派生那类）也一并标记删除，避免它重建后再把引用带回来
     setDeletedAutoEdgeIds((prev) => new Set(prev).add(`e-media-${targetNodeId}-${refNodeId}`));
-  }, [dropRefsForPairs]);
+  }, [dropRefsForPairs, readOnly]);
 
   const persistNotes = useCallback((next: CanvasNote[], episodeId = currentEp) => {
     if (noteSaveTimer.current) clearTimeout(noteSaveTimer.current);
@@ -9969,6 +10011,50 @@ function CanvasViewInner({
     workspaceRefreshInFlightRef.current = null;
     savedLayoutScopeRef.current = '';
     didInitialLayoutRef.current = false; // 切集后允许重新恢复该集自己的布局
+    if (readOnly && sharedProject) {
+      void getSharedCanvasWorkspace(session, currentEp || '')
+        .then(({
+          canvas: data,
+          notes: noteList,
+          mediaNodes: mediaList,
+          connections: projectConnections,
+        }) => {
+          if (loadEpoch !== workspaceLoadEpochRef.current) return;
+          if ('empty' in data) {
+            setCanvas(null);
+            setLoading(false);
+            setDataReady(false);
+            return;
+          }
+          const activeEpisode = resolveLoadedEpisodeId({
+            activeEpisodeId: currentEp,
+            episodes: data.meta.episodes,
+            preferredEpisodeId: currentEp,
+            fallbackEpisodeId: pickDefaultEpisode(data.meta.episodes),
+          });
+          activeWorkspaceEpisodeRef.current = activeEpisode;
+          if (activeEpisode !== currentEp) setCurrentEp(activeEpisode);
+          projectConnectionsRef.current = projectConnections;
+          setCanvas(data);
+          setNotes(noteList);
+          setMediaNodes(mediaList);
+          setGenerationTasks([]);
+          setDataReady(true);
+          setLoading(false);
+          workspaceReadyAtRef.current = performance.now();
+        })
+        .catch((loadError: unknown) => {
+          if (loadEpoch !== workspaceLoadEpochRef.current) return;
+          setError(loadError instanceof Error ? loadError.message : String(loadError));
+          setLoading(false);
+          setDataReady(false);
+        });
+      return () => {
+        if (loadEpoch === workspaceLoadEpochRef.current) {
+          workspaceLoadEpochRef.current += 1;
+        }
+      };
+    }
     const workspaceAbort = new AbortController();
     const workspaceTimeout = window.setTimeout(() => {
       workspaceAbort.abort();
@@ -10126,7 +10212,7 @@ function CanvasViewInner({
   // memory to the server episode. Depending on currentEp here would abort that
   // very request and immediately reload the identical workspace. Episode
   // switches after mount are handled explicitly by switchEpisode/pidRetry.
-  }, [session, pidRetry]);
+  }, [session, pidRetry, readOnly, sharedProject]);
 
   // Explicit episode switches after the initial workspace paint. The initial
   // loader already installs the server-corrected episode and records it in
@@ -10349,6 +10435,10 @@ function CanvasViewInner({
   // 通用内容节点（文本/图片/音频/视频空节点，复刻 BeefTV 画布）
   // ★ mediaNodes state 与 persistMediaNodes 已上移到 deleteEdgeById 之前（那里需要用它清 refs）
   const addMediaNode = useCallback((kind: CanvasMediaNodeKind, x: number, y: number) => {
+    if (readOnly) {
+      setToast('只读分享不能添加节点');
+      return;
+    }
     if (!currentEp) {
       setToast('画布尚未绑定集数，请稍后再添加节点');
       return;
@@ -10374,12 +10464,13 @@ function CanvasViewInner({
     };
     pushHistory(userEdgesRef.current, notesRef.current, {removeAddedMedia: true});
     setMediaNodes((prev) => { const next = [...prev, node]; persistMediaNodes(next, [node]); return next; });
-  }, [currentEp, modelCatalog, persistMediaNodes, pushHistory, setToast]);
+  }, [currentEp, modelCatalog, persistMediaNodes, pushHistory, readOnly, setToast]);
   const updateMediaNode = useCallback((
     id: string,
     patch: Partial<CanvasMediaNode>,
     options?: {persist?: boolean; mediaVersionSelection?: boolean},
   ) => {
+    if (readOnly && options?.persist !== false) return;
     const previousNode = mediaNodesRef.current.find((node) => node.id === id);
     const onlyMetadata = !('x' in patch) && !('y' in patch);
     if (previousNode && !onlyMetadata) {
@@ -10561,6 +10652,7 @@ function CanvasViewInner({
       onProgress?: (percent: number) => void;
     },
   ) => {
+    if (readOnly) throw new Error('只读分享不能导入素材');
     if (!currentEp) throw new Error('画布尚未绑定集数，暂不能导入素材');
     const fileKind = localFileKind(file);
     if (!fileKind || fileKind !== target.kind) {
@@ -10898,6 +10990,10 @@ function CanvasViewInner({
     files: File[],
     origin?: {x: number; y: number},
   ) => {
+    if (readOnly) {
+      setToast('只读分享不能上传素材');
+      return;
+    }
     if (!currentEp) {
       setToast('画布尚未绑定集数，请稍后再上传素材');
       return;
@@ -11022,17 +11118,27 @@ function CanvasViewInner({
     } else if (failed.length > 0) {
       setToast(`上传失败：${failed.slice(0, 3).join('、')}${failed.length > 3 ? '…' : ''}`);
     }
-  }, [broadcastMediaChange, currentEp, rf, session, setToast]);
+  }, [broadcastMediaChange, currentEp, readOnly, rf, session, setToast]);
 
   const handleCanvasDrop = useCallback((event: React.DragEvent) => {
+    if (readOnly) {
+      event.preventDefault();
+      setDropArmed(false);
+      setToast('只读分享不能上传素材');
+      return;
+    }
     event.preventDefault();
     setDropArmed(false);
     const files = Array.from(event.dataTransfer.files || []);
     if (files.length === 0) return;
     const origin = rf.screenToFlowPosition({x: event.clientX, y: event.clientY});
     void uploadFilesToCanvas(files, origin);
-  }, [rf, uploadFilesToCanvas]);
+  }, [readOnly, rf, setToast, uploadFilesToCanvas]);
   const deleteMediaNode = useCallback((id: string) => {
+    if (readOnly) {
+      setToast('只读分享不能删除节点');
+      return;
+    }
     pushHistory(userEdgesRef.current, notesRef.current);
     // A node can be referenced through params even when there is no visible edge
     // (@ insertion and uploaded references both support that path). Clean every
@@ -11066,11 +11172,15 @@ function CanvasViewInner({
     setUserEdges((prev) => prev.filter((edge) => edge.source !== mediaFlowId && edge.target !== mediaFlowId));
     // 删除是可撤销操作，明确告诉用户，避免误删后以为找不回来
     setToast('已删除节点，Ctrl+Z 可撤销');
-  }, [deleteMediaNodePersistently, dropRefsForPairs, pushHistory, setToast]);
+  }, [deleteMediaNodePersistently, dropRefsForPairs, pushHistory, readOnly, setToast]);
   // 卡片上的删除入口（✕ / ⋯菜单）同样先弹确认框，与 Del 键行为一致
   const requestDeleteMediaNode = useCallback((id: string) => {
+    if (readOnly) {
+      setToast('只读分享不能删除节点');
+      return;
+    }
     setDeleteTargets([{id: `${MEDIA_PREFIX}${id}`, type: 'media'}]);
-  }, []);
+  }, [readOnly, setToast]);
   // 节点上生成：状态置生成中 → 走与对话框同一入口 sendMessage，agent 生成对应媒体
   // 活动任务面板：agent 回合结束（done/error）→ 生成中的节点标记完成并刷新画布资产
   useEffect(() => {
@@ -11083,7 +11193,7 @@ function CanvasViewInner({
       void refreshWorkspaceFactsRef.current().catch(() => {});
     }, () => {});
     return unsub;
-  }, [session, currentEp, setToast]);
+  }, [session, currentEp, readOnly, setToast]);
 
   // A video POST may stay open for several minutes while the provider queues and
   // renders it. If this tab reloads, another tab owns the request, or the done
@@ -11111,6 +11221,7 @@ function CanvasViewInner({
     ? (eventsConnected ? 4_000 : 1_500)
     : eventsConnected ? 7_000 : 15_000;
   useEffect(() => {
+    if (readOnly) return;
     // Nothing is generating in this episode. Initial workspace-load already
     // reconciled terminal node rows, so an immediate project-JSON poll only
     // duplicates the first screen and competes with workspace-nodes. Resume
@@ -11208,6 +11319,15 @@ function CanvasViewInner({
 
     const refreshCurrentEpisodeFacts = async () => {
       if (!currentEp) return;
+      if (readOnly) {
+        const workspace = await getSharedCanvasWorkspace(session, currentEp);
+        if (disposed) return;
+        if (!('empty' in workspace.canvas)) setCanvas(workspace.canvas);
+        setNotes(workspace.notes);
+        setMediaNodes(workspace.mediaNodes);
+        projectConnectionsRef.current = workspace.connections;
+        return;
+      }
       const [remoteNodes, tasks] = await Promise.all([
         getCanvasMediaNodes(session, currentEp),
         taskCenterOpen
@@ -11306,7 +11426,11 @@ function CanvasViewInner({
       } catch {
         since = 0;
       }
-      source = new EventSource(projectEventsUrl(session, since));
+      source = new EventSource(
+        readOnly
+          ? shareEventsUrl(session, since)
+          : projectEventsUrl(session, since),
+      );
       source.onopen = () => {
         if (disposed) return;
         reconnectAttempts = 0;
@@ -11348,7 +11472,7 @@ function CanvasViewInner({
       source?.close();
       source = null;
     };
-  }, [session, currentEp, taskCenterOpen]);
+  }, [session, currentEp, readOnly, taskCenterOpen]);
 
   useEffect(() => {
     let lastRefreshAt = 0;
@@ -11440,6 +11564,10 @@ function CanvasViewInner({
   }, [persistMediaNodes]);
 
   const onConnect = useCallback((connection: Connection) => {
+    if (readOnly) {
+      setToast('只读分享不能修改连线');
+      return;
+    }
     if (!connection.source || !connection.target) return;
     // 自环没有意义，连到自己会被立即拒绝（isValidConnection 已视觉阻止，这里兜底）
     if (connection.source === connection.target) { setToast('不能连到自己'); return; }
@@ -11461,7 +11589,7 @@ function CanvasViewInner({
       clearRefRemoved(session, tgt.id, src.id);
       linkRef(tgt.id, src);
     }
-  }, [pushHistory, deleteEdgeById, linkRef, session, setToast]);
+  }, [deleteEdgeById, linkRef, pushHistory, readOnly, session, setToast]);
 
   // 改写连线：把已有连线的端点拖到另一个节点上（不必删掉重连）。
   // 只处理手动线（e-user-）：自动线是由素材引用关系派生出来的，改接它没意义且下次重建会被覆盖。
@@ -11502,6 +11630,10 @@ function CanvasViewInner({
 
   // 批量删除选中：一次入栈，媒体节点逐个走落库删除（避免刷新后复活）
   const deleteSelectedNodes = useCallback(() => {
+    if (readOnly) {
+      setToast('只读分享不能删除节点');
+      return 0;
+    }
     const sel = rf.getNodes().filter((n) => n.selected);
     const noteIds = sel.filter((n) => n.id.startsWith(NOTE_PREFIX)).map((n) => n.id.slice(NOTE_PREFIX.length));
     const mediaIds = sel.filter((n) => n.id.startsWith(MEDIA_PREFIX)).map((n) => n.id.slice(MEDIA_PREFIX.length));
@@ -11532,16 +11664,20 @@ function CanvasViewInner({
       (edge) => !deletedFlowIds.has(edge.source) && !deletedFlowIds.has(edge.target),
     ));
     return total;
-  }, [deleteMediaNodePersistently, rf, pushHistory, persistCurrentNotes, persistMediaNodes]);
+  }, [deleteMediaNodePersistently, persistCurrentNotes, pushHistory, readOnly, rf, setToast]);
 
   const addNote = useCallback((x: number, y: number, text = '') => {
+    if (readOnly) {
+      setToast('只读分享不能添加备注');
+      return;
+    }
     const episodeId = String(currentEp || '').trim().toUpperCase();
     if (!episodeId) {
       setToast('画布尚未绑定集数，请稍后再添加备注');
       return;
     }
     const note: CanvasNote = {
-      id: `n-${Date.now()}`,
+      id: newCanvasEntityId('n'),
       episodeId,
       text,
       x,
@@ -11555,7 +11691,7 @@ function CanvasViewInner({
       return next;
     });
     setContextMenu(null);
-  }, [currentEp, persistCurrentNotes, pushHistory, setToast]);
+  }, [currentEp, persistCurrentNotes, pushHistory, readOnly, setToast]);
 
   const userEdgesRef = useRef<Edge[]>([]);
   useEffect(() => {
@@ -11567,13 +11703,18 @@ function CanvasViewInner({
 
   // 用户连线 / 删除的自动连线变化 → 写入持久化布局（首次布局恢复完成前禁止写回，避免空状态覆盖历史布局）
   useEffect(() => {
+    if (readOnly) return;
     if (!didInitialLayoutRef.current) return;
     if (loading) return;
     if (savedLayoutScopeRef.current !== `${session}:${currentEp ?? 'all'}`) return;
     persistLayout(positionRef.current, userEdges, deletedAutoEdgeIds);
-  }, [userEdges, deletedAutoEdgeIds, persistLayout, loading, session, currentEp]);
+  }, [userEdges, deletedAutoEdgeIds, persistLayout, loading, readOnly, session, currentEp]);
 
   const flushConnectionSave = useCallback(() => {
+    if (readOnly) {
+      pendingConnectionsRef.current = null;
+      return;
+    }
     if (connectionSaveInFlightRef.current) return;
     const connections = pendingConnectionsRef.current;
     if (!connections) return;
@@ -11613,9 +11754,10 @@ function CanvasViewInner({
           connectionSaveTimerRef.current = setTimeout(flushConnectionSave, 80);
         }
       });
-  }, [beginSave, currentEp, finishSave, persistLayout, session, setToast]);
+  }, [beginSave, currentEp, finishSave, persistLayout, readOnly, session, setToast]);
 
   useEffect(() => {
+    if (readOnly) return;
     if (!didInitialLayoutRef.current) return;
     if (loading) return;
     if (savedLayoutScopeRef.current !== `${session}:${currentEp ?? 'all'}`) return;
@@ -11638,12 +11780,13 @@ function CanvasViewInner({
     return () => {
       if (connectionSaveTimerRef.current) clearTimeout(connectionSaveTimerRef.current);
     };
-  }, [flushConnectionSave, mediaNodes, userEdges, loading, session, currentEp]);
+  }, [flushConnectionSave, mediaNodes, userEdges, loading, readOnly, session, currentEp]);
 
   const updateNoteText = useCallback((id: string, text: string) => {
+    if (readOnly) return;
     setNotes((prev) => prev.map((note) => (note.id === id ? {...note, text, updatedAt: new Date().toISOString()} : note)));
     persistNotes(notesRef.current.map((note) => (note.id === id ? {...note, text} : note)), currentEp);
-  }, [currentEp, persistNotes]);
+  }, [currentEp, persistNotes, readOnly]);
 
   const duplicateNote = useCallback((note: CanvasNote) => {
     addNote(note.x + 36, note.y + 36, note.text);
@@ -11723,18 +11866,17 @@ function CanvasViewInner({
     const count = media.length + noteList.length;
     if (count === 0) return 0;
     pushHistory(userEdgesRef.current, notesRef.current, {removeAddedMedia: true});
-    const stamp = Date.now();
     // 原始 id → 新 id 的映射（媒体 id 与备注 id 用 kind 区分，避免同 id 冲突）
     const idMap = new Map<string, string>();
     const kindMap = new Map<string, 'media' | 'note'>();
     const newMedia = media.map((mn, i) => {
-      const newId = `m-copy-${stamp}-${i}`;
+      const newId = newCanvasEntityId('m-copy');
       idMap.set(mn.id, newId);
       kindMap.set(mn.id, 'media');
       return {...mn, id: newId, x: mn.x + dx, y: mn.y + dy, updatedAt: new Date().toISOString()};
     });
     const newNotes = noteList.map((nn, i) => {
-      const newId = `n-copy-${stamp}-${i}`;
+      const newId = newCanvasEntityId('n-copy');
       idMap.set(nn.id, newId);
       kindMap.set(nn.id, 'note');
       return {...nn, id: newId, x: nn.x + dx, y: nn.y + dy, updatedAt: new Date().toISOString()};
@@ -13451,6 +13593,16 @@ function CanvasViewInner({
     setDraggingNode(false);
     draggingRef.current = false;
     resetCanvasInteraction();
+    if (readOnly) {
+      if (node.id.startsWith(MEDIA_PREFIX)) {
+        const mediaId = node.id.slice(MEDIA_PREFIX.length);
+        updateMediaNode(mediaId, {x: node.position.x, y: node.position.y}, {persist: false});
+      }
+      releaseAlignGuides();
+      syncSelBar();
+      syncGroupFrames();
+      return;
+    }
     // 拖动结束：实时位置表作废，之后一律读 store（store 此时已经是最新值）
     livePosRef.current.clear();
     // 拖动结束：参考线不立刻清 —— 先驻留 120ms 再淡出（见 releaseAlignGuides），
@@ -13529,7 +13681,9 @@ function CanvasViewInner({
       }
     }
     snappedPosRef.current.clear();
-    persistLayout(positionRef.current, userEdgesRef.current, deletedAutoRef.current);
+    if (!readOnly) {
+      persistLayout(positionRef.current, userEdgesRef.current, deletedAutoRef.current);
+    }
     if (pendingFlowSyncRef.current) setFlowSyncTick((tick) => tick + 1);
     // ★ 编组外框落点同步（放在位置写回之后，两拍：
     //   ① 同步一次：此时 updateMediaNode/commitNotePositions 已调（React 还没提交 DOM，
@@ -13538,7 +13692,7 @@ function CanvasViewInner({
     //      保证框和卡片像素级贴合（实测只有①时仍差 11px）。
     syncGroupFrames();
     requestAnimationFrame(() => syncGroupFrames());
-  }, [beginCanvasInteraction, commitNotePositions, endCanvasInteraction, persistLayout, releaseAlignGuides, resetCanvasInteraction, setNodes, updateMediaNode, syncSelBar, syncGroupFrames]);
+  }, [beginCanvasInteraction, commitNotePositions, endCanvasInteraction, persistLayout, readOnly, releaseAlignGuides, resetCanvasInteraction, setNodes, updateMediaNode, syncSelBar, syncGroupFrames]);
 
   const clearStuckDrag = useCallback(() => {
     // Run after React Flow's own pointer handlers. A normal drag has already
@@ -13598,6 +13752,10 @@ function CanvasViewInner({
   const onNodeClick = useCallback((_: unknown, node: FlowNode) => {
     setSelectedId(node.id);
     setOpenMenu(null);
+    // The media card's own click handler opens the parameter modal. React Flow
+    // also emits onNodeClick for the same gesture; do not run media-card logic
+    // twice from a second event pipeline.
+    if (node.type === 'media') return;
     // 点击资产节点 → 弹出资产详情面板（即梦式：类型/名称/描述词/大图/音频）
     if (node.type && ['char', 'scene', 'prop', 'voice'].includes(node.type)) {
       const data = node.data as {item?: CanvasAssetItem; kind?: string};
@@ -13833,6 +13991,7 @@ function CanvasViewInner({
 
 
   const onPaneContextMenu = useCallback((event: MouseEvent | React.MouseEvent) => {    event.preventDefault();
+    if (readOnly) return;
     const pos = rf.screenToFlowPosition({x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY});
     void pos;
     // ★ 有多个节点被选中时，在空白处右键也要弹**批量菜单**。
@@ -13850,11 +14009,12 @@ function CanvasViewInner({
       return;
     }
     setContextMenu({x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY, nodeId: null, nodeType: null});
-  }, [rf]);
+  }, [readOnly, rf]);
 
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: FlowNode) => {
     event.preventDefault();
     event.stopPropagation();
+    if (readOnly) return;
     // 段卡右键：只走 segMenu（段专用菜单），不再同时弹通用 contextMenu
     if (node.type === 'segment') {
       setSegMenu({nodeId: node.id, x: event.clientX, y: event.clientY});
@@ -13884,7 +14044,7 @@ function CanvasViewInner({
       setNodes((prev) => prev.map((n) => (n.id === node.id ? {...n, selected: true} : (n.selected ? {...n, selected: false} : n))));
     }
     setContextMenu({x: event.clientX, y: event.clientY, nodeId: node.id, nodeType: node.type ?? null});
-  }, [rf, setNodes]);
+  }, [readOnly, rf, setNodes]);
 
   // ★★★ 2026-10-25：**移除**「双击空白新建备注」功能（用户明确要求）。
   //   用户原话：「文本备注不能双击添加，经常很容易双击空白就添加了越加越多」。
@@ -13907,6 +14067,7 @@ function CanvasViewInner({
   //   ★ 保守起见同时保留 React Flow 的原生双击缩放，什么都不拦。
 
   const onBeforeDelete = useCallback(async ({nodes: delNodes, edges: delEdges}: {nodes: FlowNode[]; edges: Edge[]}) => {
+    if (readOnly) return false;
     const keepNodes = delNodes.filter((node) => node.type === 'note' || node.type === 'media');
     if (delEdges.length > 0) {
       pushHistory(userEdgesRef.current, notesRef.current);
@@ -13939,7 +14100,7 @@ function CanvasViewInner({
       setDeleteTargets(keepNodes.map((node) => ({id: node.id, type: node.type ?? 'media'})));
     }
     return {nodes: [], edges: []};
-  }, [pushHistory, dropRefsForPairs]);
+  }, [dropRefsForPairs, pushHistory, readOnly]);
 
   // 撤销 / 重做只恢复「连线 + 备注 + 被删的自动线」，**不回滚媒体节点位置**。
   //
@@ -14590,7 +14751,7 @@ function CanvasViewInner({
     // projection before evaluating image/audio/video/text readiness so every
     // modal uses the same current node state as the cards. Historical media
     // versions are merged, never removed.
-    if (currentEp) {
+    if (currentEp && !readOnly) {
       void getWorkspaceMediaNodes(session, currentEp)
         .then((remoteNodes) => {
           if (remoteNodes.length === 0) return;
@@ -14696,11 +14857,11 @@ function CanvasViewInner({
       }
       if (dirty) {
         const merged = withVoiceRefs({...node.params, refs}, voiceList);
-        updateMediaNode(node.id, {params: merged});
+        if (!readOnly) updateMediaNode(node.id, {params: merged});
       }
     }
     });
-  }, [allEdges, currentEp, groupMembersOf, mediaNodes, modelCatalog, session, setNodes, updateMediaNode]);
+  }, [allEdges, currentEp, groupMembersOf, mediaNodes, modelCatalog, readOnly, session, setNodes, updateMediaNode]);
   const modalCandidates = useMemo(
     () => editNodeId
       ? mediaNodes.filter((node) => node.id !== editNodeId)
@@ -14712,6 +14873,10 @@ function CanvasViewInner({
     node: CanvasMediaNode,
     source?: {entry?: string; batchId?: string},
   ) => {
+    if (readOnly) {
+      setToast('只读分享不能提交生成任务');
+      return false;
+    }
     if (!currentEp) {
       setToast('画布尚未绑定集数，请稍后再生成');
       return false;
@@ -14901,7 +15066,7 @@ function CanvasViewInner({
       }
     })();
     return true;
-  }, [session, currentEp, updateMediaNode, allEdges, mediaNodes, modelCatalog, setToast, claimOperationId]);
+  }, [session, currentEp, updateMediaNode, allEdges, mediaNodes, modelCatalog, setToast, claimOperationId, readOnly]);
 
   // 段级绑定资产（段内镜头绑定的并集）——直接由 shots 索引构建，供段卡 chips
   const segBoundAssets = useMemo(() => {
@@ -15228,6 +15393,7 @@ function CanvasViewInner({
               .then(() => setToast('已复制全文'))
               .catch(() => setToast('复制失败，请展开后手动复制'));
           },
+          readOnly,
           assetsById: mediaById,
           active: editNode?.id === mn.id,
           generationBusy: generationBusyIds.has(mn.id),
@@ -15255,7 +15421,7 @@ function CanvasViewInner({
       return saved ? {...node, position: saved} : node;
     });
     return placed;
-  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, mediaById, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasVisibleBounds, largeCanvasOverview, editNode?.id, recoverMissingMedia]);
+  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, mediaById, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasVisibleBounds, largeCanvasOverview, editNode?.id, recoverMissingMedia, readOnly]);
   const renderedEdges = useMemo(() => {
     if (largeCanvasOverview) return [];
     const ids = new Set(flowNodes.map((node) => node.id));
@@ -16255,16 +16421,20 @@ function CanvasViewInner({
               )}
             </div>
             <div ref={toolsMenuRef} className="canvas-menu-wrap">
-              <button ref={toolsTriggerRef} type="button" className={openMenu === 'tools' ? 'is-open' : ''} onClick={() => setOpenMenu(openMenu === 'tools' ? null : 'tools')} title="导出、布局与帮助">
+              <button ref={toolsTriggerRef} type="button" className={openMenu === 'tools' ? 'is-open' : ''} onClick={() => setOpenMenu(openMenu === 'tools' ? null : 'tools')} title={readOnly ? '查看布局信息' : '导出、布局与帮助'}>
                 <SlidersHorizontal size={13} strokeWidth={1.9} aria-hidden="true" />
                 工具<ChevronDown size={13} strokeWidth={2} aria-hidden="true" />
               </button>
               {openMenu === 'tools' && (
                 <div className="canvas-header-menu canvas-tools-menu">
-                  <div className="canvas-tools-section">素材</div>
+                  {!readOnly && (
+                    <>
+                      <div className="canvas-tools-section">素材</div>
                   <button type="button" onClick={() => { setOpenMenu(null); openMaterialPicker(); }}>
-                    <Upload size={13} strokeWidth={1.9} aria-hidden="true" />上传素材
-                  </button>
+                        <Upload size={13} strokeWidth={1.9} aria-hidden="true" />上传素材
+                      </button>
+                    </>
+                  )}
                   <div className="canvas-tools-section">导出</div>
                   <button type="button" disabled={exporting} onClick={() => { setOpenMenu(null); void exportCanvasPng(); }}>{exporting ? '导出中…' : '导出画布 PNG'}</button>
                   <button type="button" onClick={() => { setOpenMenu(null); exportStoryboardMd(); }}>导出分镜 Markdown</button>
@@ -16283,17 +16453,23 @@ function CanvasViewInner({
                   <button type="button" onClick={() => { setOpenMenu(null); resetLayout(); }}>恢复默认布局</button>
                   <button type="button" title="仅恢复节点位置和连线；技能生成的投喂载荷请用顶部「项目设置 → 导入投喂载荷」" onClick={() => { setOpenMenu(null); layoutFileRef.current?.click(); }}>导入布局 JSON</button>
                   <button type="button" onClick={() => { setOpenMenu(null); exportLayoutJson(); }}>导出布局 JSON</button>
-                  <div className="canvas-tools-section">版本</div>
-                  <button type="button" onClick={() => { toolsTriggerRef.current?.focus(); setOpenMenu(null); setVersionsOpen(true); }}>
-                    <History size={13} strokeWidth={1.9} aria-hidden="true" />
-                    项目版本历史
-                  </button>
-                  <button type="button" onClick={() => { toolsTriggerRef.current?.focus(); setOpenMenu(null); setBudgetOpen(true); }}>
-                    <Wallet size={13} strokeWidth={1.9} aria-hidden="true" />
-                    生成预算保护
-                  </button>
+                  {!readOnly && (
+                    <>
+                      <div className="canvas-tools-section">版本</div>
+                      <button type="button" onClick={() => { toolsTriggerRef.current?.focus(); setOpenMenu(null); setVersionsOpen(true); }}>
+                        <History size={13} strokeWidth={1.9} aria-hidden="true" />
+                        项目版本历史
+                      </button>
+                      <button type="button" onClick={() => { toolsTriggerRef.current?.focus(); setOpenMenu(null); setBudgetOpen(true); }}>
+                        <Wallet size={13} strokeWidth={1.9} aria-hidden="true" />
+                        生成预算保护
+                      </button>
+                    </>
+                  )}
                   <div className="canvas-tools-section">帮助</div>
-                  <button type="button" onClick={() => { setOpenMenu(null); setHelpOpen(true); }}>快捷键与操作说明</button>
+                  {!readOnly && (
+                    <button type="button" onClick={() => { setOpenMenu(null); setHelpOpen(true); }}>快捷键与操作说明</button>
+                  )}
                 </div>
               )}
             </div>
@@ -16336,24 +16512,33 @@ function CanvasViewInner({
                 if (file) void uploadNodeLocalFromMenu(file);
               }}
             />
-            <button
-              type="button"
-              className={`canvas-task-center-trigger ${taskCenterOpen ? 'is-open' : ''}`}
-              onClick={() => setTaskCenterOpen((value) => !value)}
-              title="生成任务中心"
-            >
-              <ListChecks size={13} strokeWidth={1.9} aria-hidden="true" />
-              任务
-              {activeGenerationTaskCount > 0 && (
-                <i>{activeGenerationTaskCount}</i>
+              {!readOnly && (
+                <button
+                  type="button"
+                  className={`canvas-task-center-trigger ${taskCenterOpen ? 'is-open' : ''}`}
+                  onClick={() => setTaskCenterOpen((value) => !value)}
+                  title="生成任务中心"
+                >
+                  <ListChecks size={13} strokeWidth={1.9} aria-hidden="true" />
+                  任务
+                  {activeGenerationTaskCount > 0 && (
+                    <i>{activeGenerationTaskCount}</i>
+                  )}
+                </button>
               )}
-            </button>
           </div>
     </div>
   );
 
   return (
-    <div className="canvas-view">
+    <div className={`canvas-view${readOnly ? ' is-readonly-share' : ''}`}>
+      {readOnly && (
+        <div className="canvas-share-banner" role="status">
+          <Share2 size={13} strokeWidth={1.9} aria-hidden="true" />
+          只读分享 · 实时查看
+          <span>不可编辑、上传或生成</span>
+        </div>
+      )}
       {topbarSlot
         ? ReactDOM.createPortal(<div className="canvas-inline-topbar">{canvasHeaderBody}</div>, topbarSlot)
         : <header className="workspace-header">{canvasHeaderBody}</header>}
@@ -16796,6 +16981,16 @@ function CanvasViewInner({
             onPaneClick={onPaneClick}
             onNodeContextMenu={onNodeContextMenu}
             onPaneContextMenu={onPaneContextMenu}
+            onNodeDoubleClick={(_event, node) => {
+              if (!readOnly || node.type !== 'media') return;
+              const mediaId = node.id.startsWith(MEDIA_PREFIX)
+                ? node.id.slice(MEDIA_PREFIX.length)
+                : '';
+              const media = mediaNodes.find((item) => item.id === mediaId);
+              if (media?.kind === 'image' && media.mediaUrl) {
+                setZoomTarget(media.mediaUrl);
+              }
+            }}
             onBeforeDelete={onBeforeDelete}
             onNodeDragStart={onNodeDragStart}
             onNodeDrag={onNodeDrag}
@@ -16849,6 +17044,7 @@ function CanvasViewInner({
               //       61%  → 22*0.85=18.7px（够点）
               //       100%+→ 22px 封顶
               '--port-shrink': String(Math.min(1, Math.max(0.5, Math.pow(Math.max(12, zoomPct) / 100, 0.35)))),
+              '--card-ui-scale': String(Math.min(4, Math.max(1, 100 / Math.max(25, zoomPct)))),
               // At overview zoom, icon buttons shrink below usable hit size.
               // Hide detail-only controls instead of showing 2-4px specks; the
               // card itself remains clickable to open the full prompt panel.
@@ -16920,7 +17116,7 @@ function CanvasViewInner({
                 ★ 提示词弹窗打开时必须隐藏：两者都贴在卡片附近，操作栏（z 22）会被
                   弹窗遮住一半、操作栏自己的下拉（z 30）又会盖到弹窗内容上 ——
                   用户截图反馈"弹窗被挡住了，操作体验一点都不好"。 */}
-            {selBar && !editNode && (
+            {!readOnly && selBar && !editNode && (
               <div
                 className={`canvas-selbar${selBar.menuDown ? ' menu-down' : ''}`}
                 style={{left: selBar.x, top: selBar.barTop}}
@@ -17065,7 +17261,7 @@ function CanvasViewInner({
 
             {/* 选区批量连线抓手（对标即梦）：贴在选区右缘垂直居中，按住拖到目标卡片，
                 选中的所有卡片一次性连过去。≥2 张媒体卡才出现——单张直接拖端口就行。 */}
-            {selBar && selBar.mediaCount >= 2 && !editNode && (
+            {!readOnly && selBar && selBar.mediaCount >= 2 && !editNode && (
               <div
                 className={`canvas-selbar-linkwrap ${selLinkDrag ? 'is-dragging' : ''}`}
                 style={{left: selBar.rightX, top: selBar.midY}}

@@ -70,6 +70,7 @@ class SegmentExpectation:
 class DeclaredExpectations:
     segments: tuple[SegmentExpectation, ...]
     warnings: tuple[ValidationIssue, ...]
+    has_incoming_assets: bool = False
 
 
 @dataclass(frozen=True)
@@ -1284,7 +1285,48 @@ def validate_final_payload(
                 node_code=missing_audio_codes[0],
             ))
         ref_ids = _voice_ref_ids(video)
-        if ref_ids != expected_audio_ids:
+        # Loaded/legacy projects may contain several voice rows for the same
+        # declared role after a figure-code change. The import contract is the
+        # role reference, so identity is the referenced audio node's role; an
+        # extra historical row is not a contract error as long as every
+        # referenced row maps to a declared speaker and all declared speakers
+        # are represented. New imports still start from the exact expected ids;
+        # this acceptance path only applies when the extra rows already exist.
+        expected_audio_roles = {
+            TITLE_ROLE_RE.match(str(audio_by_code[code].get("title") or ""))
+            for code in expectation.audio_codes
+            if code in audio_by_code
+            and TITLE_ROLE_RE.match(str(audio_by_code[code].get("title") or ""))
+        }
+        expected_audio_roles = {
+            match.group(1).strip() for match in expected_audio_roles if match
+        }
+        has_incoming_assets = bool(
+            getattr(expectations, "has_incoming_assets", False)
+        )
+        actual_audio_roles = {
+            role
+            for node_id in ref_ids
+            for role in [
+                (
+                    TITLE_ROLE_RE.match(
+                        str((node_by_id.get(node_id) or {}).get("title") or "")
+                    ).group(1).strip()
+                    if TITLE_ROLE_RE.match(
+                        str((node_by_id.get(node_id) or {}).get("title") or "")
+                    )
+                    else ""
+                )
+            ]
+            if role
+        }
+        role_equivalent = (
+            has_incoming_assets
+            and expected_audio_roles
+            and actual_audio_roles == expected_audio_roles
+            and ref_ids != expected_audio_ids
+        )
+        if ref_ids != expected_audio_ids and not role_equivalent:
             issues.append(_issue(
                 ErrorCode.VOICE_REF_MISMATCH,
                 f"voiceRefs 不一致：期望 {sorted(expected_audio_ids)}，实际 {sorted(ref_ids)}",
@@ -1294,7 +1336,28 @@ def validate_final_payload(
             source for source in incoming.get(str(video.get("id") or ""), [])
             if any(audio.get("id") == source for audio in audio_nodes)
         }
-        if audio_edge_ids != expected_audio_ids:
+        role_equivalent_edges = (
+            has_incoming_assets
+            and expected_audio_roles
+            and audio_edge_ids != expected_audio_ids
+            and {
+                role
+                for node_id in audio_edge_ids
+                for role in [
+                    (
+                        TITLE_ROLE_RE.match(
+                            str((node_by_id.get(node_id) or {}).get("title") or "")
+                        ).group(1).strip()
+                        if TITLE_ROLE_RE.match(
+                            str((node_by_id.get(node_id) or {}).get("title") or "")
+                        )
+                        else ""
+                    )
+                ]
+                if role
+            } == expected_audio_roles
+        )
+        if audio_edge_ids != expected_audio_ids and not role_equivalent_edges:
             issues.append(_issue(
                 ErrorCode.VOICE_EDGE_MISMATCH,
                 f"音频连线不一致：期望 {sorted(expected_audio_ids)}，实际 {sorted(audio_edge_ids)}",
@@ -1513,6 +1576,7 @@ def _expectations_with_incoming_assets(
     return DeclaredExpectations(
         segments=tuple(segments),
         warnings=expectations.warnings,
+        has_incoming_assets=True,
     )
 
 

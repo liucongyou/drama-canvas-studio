@@ -14,6 +14,7 @@ from canvas_feed_contract import (
     commit_import,
     issue_dict,
     prepare_import,
+    _expectations_with_incoming_assets,
     validate_declared_feed,
     validate_final_payload,
 )
@@ -294,6 +295,47 @@ class CanvasFeedNegativeContractTests(unittest.TestCase):
         ]
         issues = validate_final_payload(merged, gate.expectations, plan.episode_id)
         self.assertIn(ErrorCode.VOICE_EDGE_MISMATCH, {issue.code for issue in issues})
+
+    def test_final_gate_accepts_same_role_historical_audio_rows(self):
+        feed = json.loads((VALID_FIXTURES / "generic.json").read_text(encoding="utf-8"))
+        plan = prepare_import(
+            {"nodes": [], "connections": [], "episodeImports": []},
+            feed,
+            "project-1",
+            1,
+        )
+        self.assertTrue(plan.ok, [issue_dict(item) for item in plan.errors])
+        merged = copy.deepcopy(plan.merged_payload)
+        video = next(node for node in merged["nodes"] if node.get("type") == "video")
+        audio = next(node for node in merged["nodes"] if node.get("type") == "audio")
+        historical = copy.deepcopy(audio)
+        historical["id"] = "audio-historical"
+        merged["nodes"].append(historical)
+        video["metadata"]["params"]["voiceRefs"] = [
+            {"nodeId": audio["id"], "label": audio["title"]},
+            {"nodeId": historical["id"], "label": historical["title"]},
+        ]
+        merged["connections"].append({
+            "id": "edge-historical-audio",
+            "fromNodeId": historical["id"],
+            "toNodeId": video["id"],
+        })
+
+        gate1 = analyze_declared_feed(feed)
+        expectations = _expectations_with_incoming_assets(
+            gate1.expectations,
+            merged,
+        )
+        issues = validate_final_payload(merged, expectations, plan.episode_id)
+
+        self.assertNotIn(
+            ErrorCode.VOICE_REF_MISMATCH,
+            {issue.code for issue in issues},
+        )
+        self.assertNotIn(
+            ErrorCode.VOICE_EDGE_MISMATCH,
+            {issue.code for issue in issues},
+        )
 
     def test_final_gate_allows_repaired_bare_asset_mention(self):
         feed = json.loads((VALID_FIXTURES / "generic.json").read_text(encoding="utf-8"))

@@ -1876,6 +1876,46 @@ class ImportFeedContractTests(unittest.TestCase):
         self.assertEqual(readiness["dependencyPending"], 1)
         self.assertFalse(readiness["readyToGenerate"])
 
+    def test_prompt_stale_media_remains_usable_for_generation(self):
+        payload = {
+            "nodes": [
+                {
+                    "id": "image-stale",
+                    "type": "image",
+                    "title": "角色｜甲（图1）",
+                    "metadata": {
+                        "status": "done",
+                        "content": "/uploads/old.png",
+                        "promptStale": True,
+                        "promptStaleReason": "源提示词已更新",
+                    },
+                },
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段1",
+                    "metadata": {
+                        "prompt": "参考 @角色｜甲（图1）",
+                        "params": {
+                            "refs": [
+                                {"nodeId": "image-stale", "label": "角色｜甲（图1）"},
+                            ],
+                        },
+                    },
+                },
+            ],
+            "episodeImports": [{
+                "id": "EP001",
+                "nodeIds": ["image-stale", "video-1"],
+                "videoNodeIds": ["video-1"],
+            }],
+        }
+
+        readiness = import_feed.episode_readiness(payload, "EP001")
+
+        self.assertEqual(readiness["dependencyPending"], 0)
+        self.assertTrue(readiness["readyToGenerate"])
+
     def test_prompt_mention_without_binding_is_not_considered_ready(self):
         payload = {
             "nodes": [
@@ -2058,8 +2098,8 @@ class ImportFeedContractTests(unittest.TestCase):
             merged,
             (merged.get("episodeImports") or [{}])[0].get("id"),
         )
-        self.assertEqual(readiness["dependencyPending"], 1)
-        self.assertFalse(readiness["readyToGenerate"])
+        self.assertEqual(readiness["dependencyPending"], 0)
+        self.assertTrue(readiness["readyToGenerate"])
 
         merged_again = import_feed.merge_payload_by_episode(
             merged,

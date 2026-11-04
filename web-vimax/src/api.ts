@@ -37,6 +37,11 @@ export function projectEventsUrl(sessionId: string, since?: number): string {
   return apiUrl(`/api/projects/${encodeURIComponent(sessionId)}/events${suffix}`);
 }
 
+export function shareEventsUrl(token: string, since?: number): string {
+  const suffix = typeof since === 'number' && since > 0 ? `?since=${since}` : '';
+  return apiUrl(`/api/share/${encodeURIComponent(token)}/events${suffix}`);
+}
+
 export function projectCursorStorageKey(sessionId: string): string {
   return `vimax.canvas.event-cursor.${sessionId}`;
 }
@@ -121,7 +126,7 @@ export async function getSharedProject(token: string): Promise<{
   project: {
     id: string;
     title: string;
-    payload: Payload;
+    payload: unknown;
     revision: number;
   };
 }> {
@@ -881,12 +886,19 @@ async function request<T>(
     // canvas login session expired. Only the server's auth guards may logout.
     if (
       response.status === 401
+      && !url.startsWith('/api/share/')
       && typeof window !== 'undefined'
       && ['ACCOUNT_AUTH_REQUIRED', 'TENANT_AUTH_REQUIRED'].includes(code)
     ) {
       window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
     }
     const raw = (payload as {error?: string}).error || `请求失败，HTTP ${response.status}`;
+    if (raw === 'not found') {
+      throw withRequestStatus(
+        new Error(`接口不存在（HTTP 404）：${url.split('?', 1)[0]}`),
+        response.status,
+      );
+    }
     const preserveServerMessage = (
       code.startsWith('AUTH_')
       || code.startsWith('ACCOUNT_')
@@ -1020,7 +1032,10 @@ export async function getManagedTenantAudit(
   );
 }
 
-export async function createProjectShare(projectId: string): Promise<{
+export async function createProjectShare(
+  projectId: string,
+  ttlDays = 7,
+): Promise<{
   id: string;
   projectId: string;
   url: string;
@@ -1032,7 +1047,7 @@ export async function createProjectShare(projectId: string): Promise<{
     `/api/projects/${encodeURIComponent(projectId)}/shares`,
     {
       method: 'POST',
-      body: JSON.stringify({ttlDays: 7}),
+      body: JSON.stringify({ttlDays}),
     },
   );
 }
@@ -1298,7 +1313,8 @@ export async function saveBudgetConfig(budget: BudgetConfig): Promise<{ok: boole
 
 type Payload = {
   nodes?: PayloadNode[];
-  connections?: {fromNodeId: string; toNodeId: string}[];
+  connections?: {id?: string; fromNodeId: string; toNodeId: string}[];
+  notes?: CanvasNote[];
   episodeViewports?: Record<string, unknown>;
   title?: string;
   extras?: Record<string, unknown>;
@@ -1383,10 +1399,17 @@ export async function getWorkspaceIndex(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<WorkspaceIndex> {
+  const route = sessionId.startsWith('share:')
+    ? `/api/share/${encodeURIComponent(sessionId.slice(6))}/workspace-index`
+    : `/api/projects/${encodeURIComponent(sessionId)}/workspace-index`;
   return request<WorkspaceIndex>(
-    `/api/projects/${encodeURIComponent(sessionId)}/workspace-index`,
+    route,
     {signal},
   ).then(normalizeProjectMediaUrls);
+}
+
+function workspaceReadSessionId(sessionId: string): string {
+  return sessionId.startsWith('share:') ? sessionId.slice(6) : sessionId;
 }
 
 export async function getWorkspaceNodes(
@@ -1397,8 +1420,11 @@ export async function getWorkspaceNodes(
   const suffix = episodeId
     ? `?episodeId=${encodeURIComponent(episodeId)}`
     : '';
+  const route = sessionId.startsWith('share:')
+    ? `/api/share/${encodeURIComponent(workspaceReadSessionId(sessionId))}/workspace-nodes${suffix}`
+    : `/api/projects/${encodeURIComponent(sessionId)}/workspace-nodes${suffix}`;
   return request<WorkspaceNodes>(
-    `/api/projects/${encodeURIComponent(sessionId)}/workspace-nodes${suffix}`,
+    route,
     {signal},
   ).then(normalizeProjectMediaUrls);
 }
@@ -2404,7 +2430,11 @@ async function getProjectionCanvasWorkspace(
   );
   const notes = Array.isArray(nodesPayload.notes)
     ? nodesPayload.notes
-    : await getCanvasNotes(sessionId, currentEpisode);
+    : sessionId.startsWith('share:')
+      ? await request<{notes: CanvasNote[]}>(
+          `/api/share/${encodeURIComponent(workspaceReadSessionId(sessionId))}/notes?episodeId=${encodeURIComponent(currentEpisode)}`,
+        ).then((result) => result.notes || [])
+      : await getCanvasNotes(sessionId, currentEpisode);
   // The projection response already contains this episode's payload nodes.
   // Reusing pseudoProject avoids issuing /api/projects/{id} again solely to
   // reproject nodes that are already in memory. Fallback mode above still
@@ -2415,10 +2445,12 @@ async function getProjectionCanvasWorkspace(
     pseudoProject,
   );
   let tasks: GenerationTask[] = [];
-  try {
-    tasks = await getGenerationTasks(sessionId, 80, currentEpisode);
-  } catch {
-    // An auxiliary task-panel read must never block the interactive canvas.
+  if (!sessionId.startsWith('share:')) {
+    try {
+      tasks = await getGenerationTasks(sessionId, 80, currentEpisode);
+    } catch {
+      // An auxiliary task-panel read must never block the interactive canvas.
+    }
   }
   return {
     canvas,
@@ -2452,6 +2484,16 @@ export async function getCanvasWorkspace(
   }>;
   tasks: GenerationTask[];
 }> {
+  if (sessionId.startsWith('share:')) {
+    return getProjectionCanvasWorkspace(
+      sessionId,
+      epId,
+      signal,
+      workspaceIndexPromise,
+      episodeKnownFromUrl,
+      prevalidatedNodesPromise,
+    );
+  }
 
   try {
     return await getProjectionCanvasWorkspace(
@@ -2550,6 +2592,21 @@ export async function getCanvasEpisodeWorkspace(
 }> {
   const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
   if (!normalizedEpisode) throw new Error('切换画布必须指定集号');
+  if (sessionId.startsWith('share:')) {
+    const workspace = await getCanvasWorkspace(
+      sessionId,
+      normalizedEpisode,
+      signal,
+    );
+    return {
+      canvas: workspace.canvas,
+      notes: workspace.notes,
+      mediaNodes: workspace.mediaNodes,
+      activeEpisodeId: workspace.activeEpisodeId || normalizedEpisode,
+      connections: workspace.connections,
+      tasks: [],
+    };
+  }
   const nodesPayload = await getWorkspaceNodes(
     sessionId,
     normalizedEpisode,
@@ -2642,24 +2699,15 @@ export async function getSharedCanvasWorkspace(
   mediaNodes: CanvasMediaNode[];
   connections: Array<{id?: string; fromNodeId: string; toNodeId: string}>;
 }> {
-  const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
-  const payload = await request<{
-      share: {projectId: string; expiresAt: string; readOnly: true};
-      project: {id: string; title: string; payload: Payload; revision: number};
-    }>(`/api/share/${encodeURIComponent(token)}/project`);
-  const pseudoProject = {
-    ...payload.project,
-    revision: Number(payload.project.revision || 1),
-    title: payload.project.title,
-    payload: payload.project.payload,
-  } as ProjectResponse;
-  const canvas = await getCanvas(token, normalizedEpisode, pseudoProject);
-  const mediaNodes = await getCanvasMediaNodes(token, normalizedEpisode, pseudoProject);
+  const workspace = await getCanvasWorkspace(
+    `share:${token}`,
+    episodeId,
+  );
   return {
-    canvas,
-    notes: [],
-    mediaNodes,
-    connections: [],
+    canvas: workspace.canvas,
+    notes: workspace.notes,
+    mediaNodes: workspace.mediaNodes,
+    connections: workspace.connections,
   };
 }
 
