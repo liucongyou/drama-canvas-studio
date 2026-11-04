@@ -2263,17 +2263,31 @@ def _normalize_media_versions(meta, kind):
     if not source and kind == "video":
         source = params.get("videoVersions")
     versions = []
+    seen_ids = {
+        str(item.get("versionId") or "")
+        for item in (source or [])
+        if isinstance(item, dict) and str(item.get("versionId") or "")
+    }
     for offset, item in enumerate(source or []):
         if not isinstance(item, dict):
             continue
         version = dict(item)
         if not str(version.get("versionId") or "").strip():
-            version["versionId"] = _media_version_id(
+            version_id = _media_version_id(
                 str(version.get("kind") or kind),
                 version.get("taskId"),
                 version.get("generatedAt") or version.get("generated_at"),
                 offset,
             )
+            if not version_id:
+                base = f"legacy:{kind}:{version.get('url') or ''}:{offset}"
+                version_id = base
+                suffix = 1
+                while version_id in seen_ids:
+                    suffix += 1
+                    version_id = f"{base}:{suffix}"
+            version["versionId"] = version_id
+            seen_ids.add(version_id)
         versions.append(version)
     params["mediaVersions"] = versions
     if kind == "video":
@@ -4979,6 +4993,69 @@ def backfill_episode_shared_asset_links():
         added = import_feed.bind_shared_assets_for_all_episodes(payload)
         if added:
             store.update_project(project["id"], payload=payload)
+            updated += 1
+    return updated
+
+
+def backfill_media_version_ids():
+    """Give historical media versions stable ids and active pointers.
+
+    This is a compatibility migration for projects created before version ids
+    existed. It preserves the version order and URL history. Repeated starts
+    are harmless because already-migrated rows are left untouched.
+    """
+    updated = 0
+    for project_row in store.list_projects():
+        project_id = str(project_row.get("id") or "")
+        project = store.get_project(project_id)
+        if not project:
+            continue
+        payload = project["payload"]
+        changed = 0
+        for node in payload.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            kind = str(node.get("type") or "")
+            if kind not in {"image", "audio", "video"}:
+                continue
+            meta = node.get("metadata")
+            if not isinstance(meta, dict):
+                continue
+            params = meta.get("params")
+            if not isinstance(params, dict):
+                continue
+            source = params.get("mediaVersions")
+            if not source and kind == "video":
+                source = params.get("videoVersions")
+            if not isinstance(source, list) or not source:
+                continue
+            before = json.dumps(
+                {
+                    "mediaVersions": params.get("mediaVersions"),
+                    "activeVersionId": params.get("activeVersionId"),
+                    "videoVersions": params.get("videoVersions"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            _normalize_media_versions(meta, kind)
+            after = json.dumps(
+                {
+                    "mediaVersions": params.get("mediaVersions"),
+                    "activeVersionId": params.get("activeVersionId"),
+                    "videoVersions": params.get("videoVersions"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            if before != after:
+                changed += 1
+        if changed:
+            store.update_project(
+                project_id,
+                payload=payload,
+                snapshot_mode="none",
+            )
             updated += 1
     return updated
 
@@ -9885,6 +9962,16 @@ def main():
             print(f"已恢复 {recovered} 个项目的媒体版本历史")
     except Exception as exc:
         print(f"[media-history] 回填失败：{exc}", file=sys.stderr)
+    try:
+        versioned_projects = _run_for_active_tenants(
+            backfill_media_version_ids
+        )
+        if versioned_projects:
+            print(
+                f"已为 {versioned_projects} 个项目补齐媒体版本唯一 ID"
+            )
+    except Exception as exc:
+        print(f"[media-version-ids] 回填失败：{exc}", file=sys.stderr)
     try:
         recovered_episodes = _run_for_active_tenants(backfill_multi_episode_payloads)
         if recovered_episodes:

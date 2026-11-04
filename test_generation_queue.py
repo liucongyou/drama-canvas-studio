@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import time
@@ -165,6 +166,43 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(
             [item["url"] for item in meta["params"]["mediaVersions"]],
             ["/uploads/old.png", "/uploads/same-url.png"],
+        )
+
+    def test_legacy_media_versions_receive_deterministic_ids(self):
+        meta = {
+            "status": "done",
+            "content": "/uploads/second.png",
+            "params": {
+                "mediaVersions": [
+                    {"url": "/uploads/first.png"},
+                    {"url": "/uploads/second.png"},
+                ],
+                "mediaVersionIndex": 1,
+            },
+        }
+        server._normalize_media_versions(meta, "image")
+        ids = [
+            item["versionId"]
+            for item in meta["params"]["mediaVersions"]
+        ]
+        self.assertEqual(len(ids), 2)
+        self.assertTrue(all(ids))
+        self.assertEqual(
+            ids,
+            [
+                "legacy:image:/uploads/first.png:0",
+                "legacy:image:/uploads/second.png:1",
+            ],
+        )
+        self.assertEqual(
+            meta["params"]["activeVersionId"],
+            ids[1],
+        )
+        before = json.dumps(meta, ensure_ascii=False, sort_keys=True)
+        server._normalize_media_versions(meta, "image")
+        self.assertEqual(
+            before,
+            json.dumps(meta, ensure_ascii=False, sort_keys=True),
         )
 
     def setUp(self):
