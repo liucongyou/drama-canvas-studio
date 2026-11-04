@@ -2295,6 +2295,25 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 .canvas-view.is-readonly-share .canvas-media-foot-more {
   display:none!important;
 }
+
+/* ShareView is mounted directly under #root, not inside .app-shell. Without
+   an explicit block size the flex column can only grow to its 46px header,
+   leaving the canvas stage at zero height and clipping all mounted nodes. */
+.share-canvas-host{
+  width:100%;
+  height:100vh;
+  height:100dvh;
+  min-height:100vh;
+  min-height:100dvh;
+  display:flex;
+  overflow:hidden;
+}
+.share-canvas-host > .canvas-view.is-readonly-share{
+  width:100%;
+  height:100%;
+  min-height:0;
+  flex:1 1 auto;
+}
 .canvas-share-banner{
   position:fixed;
   top:54px;

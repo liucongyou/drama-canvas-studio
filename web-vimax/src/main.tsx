@@ -1691,13 +1691,15 @@ function AuthGate() {
 
   if (sharedToken && sharedProject) {
     return (
-      <CanvasView
-        session={sharedToken}
-        readOnly
-        sharedProject={sharedProject}
-        initialBackgroundMode="blank"
-        onBackgroundModeChange={() => undefined}
-      />
+      <div className="share-canvas-host">
+        <CanvasView
+          session={sharedToken}
+          readOnly
+          sharedProject={sharedProject}
+          initialBackgroundMode="blank"
+          onBackgroundModeChange={() => undefined}
+        />
+      </div>
     );
   }
 
