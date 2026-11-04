@@ -162,7 +162,29 @@ def _node_source_ready(node):
     meta = node.get("metadata") or {}
     if str(node.get("type") or "") == "text":
         return bool(str(meta.get("prompt") or meta.get("content") or "").strip())
-    return bool(str(meta.get("content") or "").strip())
+    if str(meta.get("content") or "").strip():
+        return True
+    params = meta.get("params") if isinstance(meta.get("params"), dict) else {}
+    versions = params.get("mediaVersions")
+    if not isinstance(versions, list) or not versions:
+        versions = params.get("videoVersions")
+    if not isinstance(versions, list):
+        return False
+    try:
+        index = int(
+            params.get("mediaVersionIndex")
+            if isinstance(params.get("mediaVersions"), list)
+            and params.get("mediaVersions")
+            else params.get("videoVersionIndex")
+        )
+    except (TypeError, ValueError):
+        index = -1
+    if 0 <= index < len(versions) and isinstance(versions[index], dict):
+        return bool(str(versions[index].get("url") or "").strip())
+    return any(
+        isinstance(item, dict) and str(item.get("url") or "").strip()
+        for item in reversed(versions)
+    )
 
 
 def node_dependency_blockers(payload, node):
