@@ -205,6 +205,28 @@ class GenerationQueueTests(unittest.TestCase):
             json.dumps(meta, ensure_ascii=False, sort_keys=True),
         )
 
+    def test_legacy_duplicate_url_selects_latest_matching_version(self):
+        meta = {
+            "status": "done",
+            "content": "/uploads/shared.png",
+            "params": {
+                "mediaVersions": [
+                    {"url": "/uploads/shared.png"},
+                    {"url": "/uploads/shared.png"},
+                ],
+                "mediaVersionIndex": 0,
+            },
+        }
+        server._normalize_media_versions(meta, "image")
+        ids = [
+            item["versionId"]
+            for item in meta["params"]["mediaVersions"]
+        ]
+        self.assertEqual(
+            meta["params"]["activeVersionId"],
+            ids[-1],
+        )
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.old_db_path = canvas_store.DB_PATH
