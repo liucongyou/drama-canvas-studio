@@ -108,7 +108,7 @@ import {
   AudioLines,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -14521,6 +14521,53 @@ function CanvasViewInner({
       });
       return changed ? next : prev;
     });
+    // A card modal can be opened in a long-lived tab that has not received any
+    // task event since a dependency finished. Re-read the compact backend
+    // projection before evaluating image/audio/video/text readiness so every
+    // modal uses the same current node state as the cards. Historical media
+    // versions are merged, never removed.
+    if (currentEp) {
+      void getWorkspaceMediaNodes(session, currentEp)
+        .then((remoteNodes) => {
+          if (remoteNodes.length === 0) return;
+          const remoteById = new Map(remoteNodes.map((item) => [item.id, item]));
+          setMediaNodes((prev) => prev.map((local) => {
+            const remote = remoteById.get(local.id);
+            if (!remote) return local;
+            const remoteParams = remote.params || {};
+            const localParams = local.params || {};
+            return {
+              ...local,
+              ...remote,
+              prompt: local.prompt,
+              params: {
+                ...remoteParams,
+                ...localParams,
+                ...(remoteParams.mediaVersions
+                  ? {
+                      mediaVersions: remoteParams.mediaVersions,
+                      mediaVersionIndex: remoteParams.mediaVersionIndex,
+                    }
+                  : {}),
+                ...(remoteParams.videoVersions
+                  ? {
+                      videoVersions: remoteParams.videoVersions,
+                      videoVersionIndex: remoteParams.videoVersionIndex,
+                    }
+                  : {}),
+              },
+              x: local.x,
+              y: local.y,
+              updatedAt: remote.updatedAt || local.updatedAt,
+              positionUpdatedAt: local.positionUpdatedAt,
+            };
+          }));
+        })
+        .catch(() => {
+          // The modal stays usable with the card snapshot; regular polling or
+          // SSE will reconcile again when the backend is reachable.
+        });
+    }
     // 文本节点也接入：AI 生成的上下文可以来自相连的其它文本/资产节点。
     // Defer the potentially expensive edge scan to the next frame; opening the
     // modal must not wait for it.
@@ -14589,7 +14636,7 @@ function CanvasViewInner({
       }
     }
     });
-  }, [allEdges, mediaNodes, modelCatalog, updateMediaNode, setNodes, groupMembersOf]);
+  }, [allEdges, currentEp, groupMembersOf, mediaNodes, modelCatalog, session, setNodes, updateMediaNode]);
   const modalCandidates = useMemo(
     () => editNodeId
       ? mediaNodes.filter((node) => node.id !== editNodeId)

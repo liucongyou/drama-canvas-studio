@@ -59,4 +59,12 @@ describe('generation error presentation', () => {
       /lastError: '已取消生成排队'[\s\S]{0,160}providerTaskPhase: '已取消'/,
     );
   });
+
+  it('reconciles dependency readiness on modal open from the backend projection', () => {
+    expect(source).toContain('getWorkspaceMediaNodes(session, currentEp)');
+    expect(source).toContain(
+      'modal uses the same current node state as the cards',
+    );
+    expect(source).toContain('mediaVersions: remoteParams.mediaVersions');
+  });
 });

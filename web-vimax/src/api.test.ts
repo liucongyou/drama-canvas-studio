@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, subscribeToEvents} from './api';
 
 describe('project event cursor', () => {
   it('reconnects SSE from the last rendered events for this project', () => {
@@ -1173,6 +1173,57 @@ describe('api request recovery', () => {
     });
     expect(workspace.tasks).toHaveLength(1);
     expect(workspace.tasks[0].status).toBe('failed');
+  });
+
+  it('reads a compact backend projection for modal dependency reconciliation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      episodeId: 'EP010',
+      episode: {id: 'EP010', title: '第10集'},
+      nodes: [{
+        id: 'image-10',
+        type: 'image',
+        title: '道具｜大喇叭（图8）',
+        metadata: {
+          status: 'done',
+          content: '/uploads/generated-new.jpg',
+          promptStale: false,
+          promptStaleReason: '',
+          params: {
+            ratio: '16:9',
+            mediaVersions: [
+              {url: '/uploads/generated-old.jpg'},
+              {url: '/uploads/generated-new.jpg'},
+            ],
+            mediaVersionIndex: 1,
+          },
+        },
+      }],
+      connections: [],
+      layouts: {},
+      notes: [],
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const nodes = await getWorkspaceMediaNodes('project-1', 'ep010');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/workspace-nodes?episodeId=EP010',
+    );
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({
+      id: 'image-10',
+      status: 'done',
+      mediaUrl: '/uploads/generated-new.jpg',
+      promptStale: false,
+    });
+    expect(nodes[0].params?.mediaVersions).toEqual([
+      {url: '/uploads/generated-old.jpg'},
+      {url: '/uploads/generated-new.jpg'},
+    ]);
   });
 
   it('returns task progress without changing the backend node row', async () => {

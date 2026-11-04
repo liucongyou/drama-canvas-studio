@@ -1302,6 +1302,68 @@ export async function getWorkspaceNodes(
   ).then(normalizeProjectMediaUrls);
 }
 
+/**
+ * Read the current episode's card projection without loading the full project
+ * document. Modal opens use this so dependency readiness (image/audio/video/
+ * text references) is checked against the same backend snapshot the cards use.
+ */
+export async function getWorkspaceMediaNodes(
+  sessionId: string,
+  episodeId: string,
+  signal?: AbortSignal,
+): Promise<CanvasMediaNode[]> {
+  const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
+  if (!normalizedEpisode) throw new Error('读取画布节点必须指定集号');
+  const nodesPayload = await getWorkspaceNodes(
+    sessionId,
+    normalizedEpisode,
+    signal,
+  );
+  if (
+    !Array.isArray(nodesPayload.nodes)
+    || !Array.isArray(nodesPayload.connections)
+  ) {
+    throw withRequestStatus(
+      new Error('workspace nodes contract unavailable'),
+      501,
+    );
+  }
+  const episodeTitle = String(
+    nodesPayload.episode?.title || normalizedEpisode,
+  );
+  const pseudoProject: ProjectResponse = {
+    id: sessionId,
+    title: episodeTitle,
+    payload: {
+      id: sessionId,
+      title: episodeTitle,
+      nodes: nodesPayload.nodes,
+      connections: nodesPayload.connections,
+      episodeImports: [{
+        ...nodesPayload.episode,
+        id: normalizedEpisode,
+        title: episodeTitle,
+        nodeIds: nodesPayload.nodes
+          .map((node) => String(node.id || ''))
+          .filter(Boolean),
+        videoNodeIds: nodesPayload.nodes
+          .filter((node) => node.type === 'video')
+          .map((node) => String(node.id || ''))
+          .filter(Boolean),
+      }],
+      episodeLayouts: {
+        [normalizedEpisode]: nodesPayload.layouts || {},
+      },
+      extras: {},
+    } as Payload,
+  };
+  return getCanvasMediaNodes(
+    sessionId,
+    normalizedEpisode,
+    pseudoProject,
+  );
+}
+
 function workspaceProjectSnapshot(
   index: WorkspaceProjectMeta,
   episodeId: string,
