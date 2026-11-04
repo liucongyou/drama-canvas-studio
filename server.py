@@ -2292,22 +2292,30 @@ def _normalize_media_versions(meta, kind):
     params["mediaVersions"] = versions
     if kind == "video":
         params["videoVersions"] = [dict(item) for item in versions]
-    active_id = str(params.get("activeVersionId") or "").strip()
-    if active_id and any(
-        str(item.get("versionId") or "") == active_id
-        for item in versions
-    ):
-        return params
     active_url = str(meta.get("content") or "").strip()
-    # A legacy list can repeat the same URL after regeneration. The latest
-    # matching entry is the active one because _record_media_version appends
-    # chronologically. Falling back to the first match would point the current
-    # card at an older task that produced the same URL.
     matching_indexes = [
         index
         for index, item in enumerate(versions)
         if active_url and str(item.get("url") or "") == active_url
     ]
+    active_id = str(params.get("activeVersionId") or "").strip()
+    active_match = next(
+        (
+            index
+            for index, item in enumerate(versions)
+            if active_id and str(item.get("versionId") or "") == active_id
+        ),
+        -1,
+    )
+    if active_match >= 0 and not (
+        len(matching_indexes) > 1
+        and active_match < matching_indexes[-1]
+    ):
+        return params
+    # A legacy list can repeat the same URL after regeneration. The latest
+    # matching entry is the active one because _record_media_version appends
+    # chronologically. Falling back to the first match would point the current
+    # card at an older task that produced the same URL.
     selected_index = matching_indexes[-1] if matching_indexes else -1
     if selected_index < 0:
         try:
