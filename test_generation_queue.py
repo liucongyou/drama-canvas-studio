@@ -113,6 +113,60 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(meta["model"], "doubao-seedream-5-0-pro")
         self.assertEqual(meta["generatedAt"], "2026-10-30T00:00:00Z")
 
+    def test_media_versions_use_stable_ids_and_active_pointer(self):
+        meta = {
+            "status": "done",
+            "content": "/uploads/old.png",
+            "params": {
+                "mediaVersions": [
+                    {
+                        "url": "/uploads/old.png",
+                        "taskId": "task-old",
+                        "generatedAt": "2026-11-01T00:00:00Z",
+                    },
+                ],
+                "mediaVersionIndex": 0,
+            },
+        }
+        versions = server._record_media_version(
+            meta,
+            "image",
+            "/uploads/same-url.png",
+            "task-new",
+            "2026-11-02T00:00:00Z",
+        )
+        self.assertEqual(
+            [item["versionId"] for item in versions],
+            ["image:task-old", "image:task-new"],
+        )
+        self.assertEqual(
+            meta["params"]["activeVersionId"],
+            "image:task-new",
+        )
+        self.assertEqual(
+            meta["params"]["mediaVersionIndex"],
+            1,
+        )
+
+        server.merge_node_metadata(
+            meta,
+            {
+                "content": "/uploads/old.png",
+                "source": {"type": "generated"},
+                "_mediaVersionSelection": True,
+                "params": {"activeVersionId": "image:task-old"},
+            },
+        )
+        self.assertEqual(meta["content"], "/uploads/old.png")
+        self.assertEqual(
+            meta["params"]["activeVersionId"],
+            "image:task-old",
+        )
+        self.assertEqual(
+            [item["url"] for item in meta["params"]["mediaVersions"]],
+            ["/uploads/old.png", "/uploads/same-url.png"],
+        )
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.old_db_path = canvas_store.DB_PATH

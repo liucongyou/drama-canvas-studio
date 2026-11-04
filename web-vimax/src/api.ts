@@ -203,6 +203,8 @@ export type CanvasMediaNodeKind = 'text' | 'image' | 'audio' | 'video';
 export type CanvasAssetRef = {nodeId: string; label: string; url?: string};
 export type CanvasVideoVersion = {
   url: string;
+  /** Stable identity for this generated/imported media version. */
+  versionId?: string;
   taskId?: string;
   generatedAt?: string;
   provider?: string;
@@ -262,6 +264,8 @@ export type CanvasMediaParams = {
   seed?: number;
   mediaVersions?: CanvasVideoVersion[];
   mediaVersionIndex?: number;
+  /** Current media version pointer. Legacy projects fall back to index. */
+  activeVersionId?: string;
   videoVersions?: CanvasVideoVersion[];
   videoVersionIndex?: number;
   // 文本节点自定义尺寸（右下角拖拽缩放后写回；缺省用 200×120）
@@ -643,17 +647,33 @@ export function mediaVersionList(node: CanvasMediaNode): CanvasVideoVersion[] {
     || (node.kind === 'video' ? node.params?.videoVersions : [])
     || [];
   const seen = new Set<string>();
-  const versions = source.map((version) => ({
+  const versions = source.map((version, index) => ({
     ...version,
+    versionId: version?.versionId
+      || `${version?.taskId || version?.generatedAt || 'legacy'}:${version?.url || index}`,
     url: mediaSourceUrl(version?.url),
   })).filter((version) => {
     const url = version.url.trim();
-    if (!url || seen.has(url)) return false;
-    seen.add(url);
+    const versionId = String(version.versionId || '');
+    if (!url || seen.has(versionId)) return false;
+    seen.add(versionId);
     return true;
   });
   const currentUrl = mediaSourceUrl(node.mediaUrl);
-  if (currentUrl && !seen.has(currentUrl)) versions.push({url: currentUrl});
+  const currentVersionId = String(node.params?.activeVersionId || '').trim();
+  if (
+    currentUrl
+    && !versions.some((version) => (
+      currentVersionId
+        ? version.versionId === currentVersionId
+        : version.url === currentUrl
+    ))
+  ) {
+    versions.push({
+      versionId: currentVersionId || `current:${currentUrl}`,
+      url: currentUrl,
+    });
+  }
   return versions;
 }
 
@@ -1986,6 +2006,9 @@ function mediaPatchMetadataForStorage(
         : {}),
       params: {
         ...params,
+        ...(node.params?.activeVersionId
+          ? {activeVersionId: node.params.activeVersionId}
+          : {}),
         ...(node.params?.mediaVersionIndex !== undefined
           ? {mediaVersionIndex: node.params.mediaVersionIndex}
           : {}),

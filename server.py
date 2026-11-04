@@ -1763,6 +1763,7 @@ GENERATION_OWNED_METADATA_FIELDS = {
 GENERATION_OWNED_PARAM_FIELDS = {
     "mediaVersions",
     "mediaVersionIndex",
+    "activeVersionId",
     "videoVersions",
     "videoVersionIndex",
     "thumbUrl",
@@ -1924,6 +1925,18 @@ def merge_node_metadata(meta, incoming, generation_active=False):
                 if local_media_import or media_version_selection
                 else None
             )
+            requested_version_id = str(
+                value.get("activeVersionId") or ""
+            ).strip()
+            if media_version_selection and requested_version_id and versions:
+                requested_index = next(
+                    (
+                        index
+                        for index, item in enumerate(versions)
+                        if str(item.get("versionId") or "") == requested_version_id
+                    ),
+                    requested_index,
+                )
             try:
                 requested_index = int(requested_index)
             except (TypeError, ValueError):
@@ -1933,6 +1946,9 @@ def merge_node_metadata(meta, incoming, generation_active=False):
                 if params.get("videoVersions"):
                     params["videoVersionIndex"] = requested_index
                 selected = versions[requested_index]
+                params["activeVersionId"] = str(
+                    selected.get("versionId") or ""
+                )
                 meta["content"] = str(selected.get("url") or "")
                 meta["generatedAt"] = str(selected.get("generatedAt") or "")
                 if selected.get("provider"):
@@ -2225,6 +2241,82 @@ def _mark_generation_outcome_uncertain(task_id, project_id, node_id, exc, provid
 MAX_MEDIA_VERSIONS = 20
 
 
+def _media_version_id(kind, task_id, generated_at, version_index):
+    normalized_task_id = str(task_id or "").strip()
+    if normalized_task_id:
+        return f"{kind}:{normalized_task_id}"
+    stamp = str(generated_at or "").strip()
+    if stamp:
+        return f"{kind}:{stamp}:{int(version_index)}"
+    return ""
+
+
+def _normalize_media_versions(meta, kind):
+    """Backfill stable version ids and the current-version pointer.
+
+    Existing projects are index-based. This compatibility pass gives each
+    version a durable id without deleting or reordering history, and records
+    the active id so callers never need to guess from a URL.
+    """
+    params = meta.setdefault("params", {})
+    source = params.get("mediaVersions")
+    if not source and kind == "video":
+        source = params.get("videoVersions")
+    versions = []
+    for offset, item in enumerate(source or []):
+        if not isinstance(item, dict):
+            continue
+        version = dict(item)
+        if not str(version.get("versionId") or "").strip():
+            version["versionId"] = _media_version_id(
+                str(version.get("kind") or kind),
+                version.get("taskId"),
+                version.get("generatedAt") or version.get("generated_at"),
+                offset,
+            )
+        versions.append(version)
+    params["mediaVersions"] = versions
+    if kind == "video":
+        params["videoVersions"] = [dict(item) for item in versions]
+    active_id = str(params.get("activeVersionId") or "").strip()
+    if active_id and any(
+        str(item.get("versionId") or "") == active_id
+        for item in versions
+    ):
+        return params
+    active_url = str(meta.get("content") or "").strip()
+    selected_index = next(
+        (
+            index
+            for index, item in enumerate(versions)
+            if active_url and str(item.get("url") or "") == active_url
+        ),
+        -1,
+    )
+    if selected_index < 0:
+        try:
+            selected_index = int(
+                params.get(
+                    "videoVersionIndex"
+                    if kind == "video"
+                    else "mediaVersionIndex"
+                )
+            )
+        except (TypeError, ValueError):
+            selected_index = len(versions) - 1
+    selected_index = max(0, min(selected_index, len(versions) - 1))
+    if versions:
+        params["activeVersionId"] = str(
+            versions[selected_index].get("versionId") or ""
+        )
+        params["mediaVersionIndex"] = selected_index
+        if kind == "video":
+            params["videoVersionIndex"] = selected_index
+    else:
+        params.pop("activeVersionId", None)
+    return params
+
+
 def _record_media_version(
     meta,
     kind,
@@ -2235,6 +2327,7 @@ def _record_media_version(
     provider_result_url="",
 ):
     media_params = meta.setdefault("params", {})
+    _normalize_media_versions(meta, kind)
     source_versions = media_params.get("mediaVersions")
     if not source_versions and kind == "video":
         source_versions = media_params.get("videoVersions")
@@ -2275,6 +2368,12 @@ def _record_media_version(
     ]
     production = meta.get("production") or {}
     current_version = {
+        "versionId": _media_version_id(
+            kind,
+            task_id,
+            generated_at,
+            len(versions),
+        ),
         "url": generated_url,
         "taskId": str(task_id or ""),
         "generatedAt": generated_at,
@@ -2287,8 +2386,19 @@ def _record_media_version(
     if isinstance(storage, dict):
         current_version["storage"] = storage
     versions.append(current_version)
+    for offset, item in enumerate(versions):
+        if not str(item.get("versionId") or "").strip():
+            item["versionId"] = _media_version_id(
+                str(item.get("kind") or kind),
+                item.get("taskId"),
+                item.get("generatedAt"),
+                offset,
+            )
     versions = versions[-MAX_MEDIA_VERSIONS:]
     media_params["mediaVersions"] = versions
+    media_params["activeVersionId"] = str(
+        current_version.get("versionId") or ""
+    )
     media_params["mediaVersionIndex"] = len(versions) - 1
     if kind == "video":
         media_params["videoVersions"] = [dict(item) for item in versions]

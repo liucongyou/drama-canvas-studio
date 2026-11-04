@@ -2877,9 +2877,17 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   );
   const p = node.params || {};
   const mediaVersions = mediaVersionList(node);
-  const matchedMediaVersionIndex = node.mediaUrl
-    ? mediaVersions.findIndex((version) => version.url === node.mediaUrl)
+  const activeVersionId = String(p.activeVersionId || '').trim();
+  const activeVersionIndex = activeVersionId
+    ? mediaVersions.findIndex(
+        (version) => String(version.versionId || '') === activeVersionId,
+      )
     : -1;
+  const matchedMediaVersionIndex = activeVersionIndex >= 0
+    ? activeVersionIndex
+    : node.mediaUrl
+      ? mediaVersions.findIndex((version) => version.url === node.mediaUrl)
+      : -1;
   const currentMediaVersionIndex = matchedMediaVersionIndex >= 0
     ? matchedMediaVersionIndex
     : Math.min(
@@ -2918,6 +2926,9 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
             : node.source,
         params: {
           ...p,
+          ...(version.versionId
+            ? {activeVersionId: version.versionId}
+            : {}),
           mediaVersionIndex: normalized,
           ...(node.kind === 'video' ? {videoVersionIndex: normalized} : {}),
         },

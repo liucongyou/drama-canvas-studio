@@ -3160,7 +3160,14 @@ def merge_payload_by_episode(existing, incoming):
                 **new_meta["params"],
                 **{
                     key: value for key, value in old_meta["params"].items()
-                    if key in {"videoVersions", "videoVersionIndex", "thumbUrl"}
+                    if key in {
+                        "mediaVersions",
+                        "mediaVersionIndex",
+                        "activeVersionId",
+                        "videoVersions",
+                        "videoVersionIndex",
+                        "thumbUrl",
+                    }
                 },
             }
         merged_by_id[node_id] = {

@@ -1774,4 +1774,39 @@ describe('api request recovery', () => {
     expect(requestBody.nodes[0].metadata.content).toBe('/uploads/generated.png');
     expect(requestBody.nodes[0].metadata.params.mediaVersions[0].url).toBe('/uploads/generated.png');
   });
+
+  it('keeps distinct versions that share the same URL', () => {
+    const versions = mediaVersionList({
+      id: 'image-1',
+      kind: 'image',
+      title: '图片',
+      prompt: '',
+      mediaUrl: '/uploads/shared.png',
+      status: 'done',
+      x: 0,
+      y: 0,
+      updatedAt: '2026-11-04T00:00:00Z',
+      params: {
+        activeVersionId: 'image:task-b',
+        mediaVersions: [
+          {
+            versionId: 'image:task-a',
+            taskId: 'task-a',
+            url: '/uploads/shared.png',
+          },
+          {
+            versionId: 'image:task-b',
+            taskId: 'task-b',
+            url: '/uploads/shared.png',
+          },
+        ],
+      },
+    });
+
+    expect(versions).toHaveLength(2);
+    expect(versions.map((version) => version.versionId)).toEqual([
+      'image:task-a',
+      'image:task-b',
+    ]);
+  });
 });
