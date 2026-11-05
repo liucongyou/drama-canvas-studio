@@ -206,6 +206,10 @@ GENERATION_QUEUE_KIND_DEFAULT_LIMITS = {
     "text": 8,
 }
 CANVAS_SESSION_COOKIE = os.environ.get("CANVAS_SESSION_COOKIE", "canvas_session")
+CANVAS_SHARE_COOKIE = os.environ.get(
+    "CANVAS_SHARE_COOKIE",
+    "canvas_share_session",
+)
 CANVAS_SESSION_TTL = max(
     300, int(os.environ.get("CANVAS_SESSION_TTL_SECONDS", str(30 * 24 * 3600)))
 )
@@ -502,11 +506,16 @@ def _resolve_share_scope(token):
 def _public_share_payload(share, project):
     if not share or not project:
         return None
+    role = str(share.get("role") or "viewer")
+    can_write = role == "editor"
     return {
         "share": {
             "projectId": share["projectId"],
             "expiresAt": share["expiresAt"],
-            "readOnly": True,
+            "role": role,
+            "label": str(share.get("label") or ""),
+            "canWrite": can_write,
+            "readOnly": not can_write,
         },
         "project": project,
     }
@@ -5555,6 +5564,7 @@ class Handler(BaseHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._audit_request_scope = None
+        self._share_access = None
 
     def log_message(self, fmt, *args):
         sys.stdout.write("[%s] %s\n" % (self.server.server_address, fmt % args))
@@ -5722,7 +5732,9 @@ class Handler(BaseHTTPRequestHandler):
         size = stat.st_size
         etag = f'"{size:x}-{stat.st_mtime_ns:x}"'
         last_modified = formatdate(stat.st_mtime, usegmt=True)
-        share_path = urlparse(self.path).path.startswith("/api/share/")
+        share_path = urlparse(
+            str(getattr(self, "path", "") or "")
+        ).path.startswith("/api/share/")
         cors_headers = (
             {
                 "Access-Control-Allow-Origin": "*",
@@ -6203,11 +6215,74 @@ class Handler(BaseHTTPRequestHandler):
                 return True
         return bool(origin_host and origin_host == request_host)
 
+    def _share_cookie_header(self, token, expires_at):
+        max_age = max(60, int(CANVAS_SESSION_TTL))
+        try:
+            expires = datetime.fromisoformat(
+                str(expires_at or "").replace("Z", "+00:00")
+            )
+            max_age = max(
+                1,
+                min(
+                    int((expires - datetime.now(timezone.utc)).total_seconds()),
+                    int(CANVAS_SESSION_TTL),
+                ),
+            )
+        except (TypeError, ValueError):
+            pass
+        cookie = (
+            f"{CANVAS_SHARE_COOKIE}={token}; Path=/; "
+            f"Max-Age={max_age}; HttpOnly; SameSite=Lax"
+        )
+        if _cookie_secure():
+            cookie += "; Secure"
+        return cookie
+
+    def _clear_share_cookie_header(self):
+        cookie = (
+            f"{CANVAS_SHARE_COOKIE}=; Path=/; Max-Age=0; "
+            "HttpOnly; SameSite=Lax"
+        )
+        if _cookie_secure():
+            cookie += "; Secure"
+        return cookie
+
+    def _share_cookie_token(self):
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except Exception:
+            return ""
+        morsel = cookie.get(CANVAS_SHARE_COOKIE)
+        return morsel.value if morsel is not None else ""
+
+    def _share_request_target(self, path, parsed):
+        project_match = re.match(r"^/api/projects/([^/]+)(?:/|$)", path)
+        if project_match:
+            project_id = unquote(project_match.group(1))
+            if re.match(
+                r"^/api/projects/[^/]+/shares(?:/|$)",
+                path,
+            ):
+                return project_id, "share_manage"
+            return project_id, "project"
+        if path == "/api/generation-tasks":
+            query = urllib.parse.parse_qs(parsed.query)
+            project_id = str((query.get("projectId") or [""])[0]).strip()
+            return project_id, "project"
+        if path == "/api/model-catalog":
+            return "", "tenant_read"
+        if path == "/api/upload/stream":
+            return "", "upload"
+        return "", "unsupported"
+
     def _request_tenant_scope(self):
+        self._share_access = None
         if self.command not in {"GET", "HEAD"} and not self._origin_allowed():
             self._send(403, {"error": "跨站请求已拒绝", "code": "ORIGIN_REJECTED"})
             return None
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path.startswith("/share/") or path.startswith("/api/share/"):
             if (
                 path.startswith("/api/share/")
@@ -6222,6 +6297,58 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return None
             return nullcontext()
+        share_token = self._share_cookie_token()
+        if share_token:
+            resolved_share = _resolve_share_scope(share_token)
+            if resolved_share:
+                share_scope, share = resolved_share
+                target_project, target_kind = self._share_request_target(
+                    path,
+                    parsed,
+                )
+                share_project = str(share.get("projectId") or "")
+                if (
+                    target_kind == "project"
+                    and target_project == share_project
+                ) or target_kind == "tenant_read":
+                    if target_kind == "tenant_read" and not share.get("canWrite"):
+                        self._send(403, {
+                            "error": "只读分享不能读取协作接口",
+                            "code": "SHARE_READ_ONLY",
+                        })
+                        return None
+                    if target_kind == "tenant_read" and self.command not in {
+                        "GET",
+                        "HEAD",
+                    }:
+                        self._send(405, {
+                            "error": "该分享只允许读取",
+                            "code": "SHARE_READ_ONLY",
+                        })
+                        return None
+                    if (
+                        self.command not in {"GET", "HEAD"}
+                        and not share.get("canWrite")
+                    ):
+                        self._send(403, {
+                            "error": "该分享链接为只读，不能修改画布",
+                            "code": "SHARE_READ_ONLY",
+                        })
+                        return None
+                    self._share_access = share
+                    return share_scope
+                if (
+                    target_kind == "share_manage"
+                    and target_project == share_project
+                ):
+                    self._send(403, {
+                        "error": "协作分享不能创建或撤销分享链接",
+                        "code": "SHARE_MANAGEMENT_FORBIDDEN",
+                    })
+                    return None
+                if target_kind == "upload" and share.get("canWrite"):
+                    self._share_access = share
+                    return share_scope
         if _auth_mode() == "accounts":
             host = _normalized_host(self.headers.get("Host", ""))
             api_host = _api_host()
@@ -6251,6 +6378,18 @@ class Handler(BaseHTTPRequestHandler):
             raw_session = morsel.value if morsel is not None else ""
             session = tenant_registry.get_session(raw_session) if raw_session else None
             if not session:
+                if share_token:
+                    self._send(
+                        410,
+                        {
+                            "error": "协作分享已撤销或过期，请重新打开分享链接",
+                            "code": "SHARE_INVALID",
+                        },
+                        headers={
+                            "Set-Cookie": self._clear_share_cookie_header()
+                        },
+                    )
+                    return None
                 self._send(401, {
                     "error": "请先登录。",
                     "code": "ACCOUNT_AUTH_REQUIRED",
@@ -6823,7 +6962,16 @@ class Handler(BaseHTTPRequestHandler):
                     payload = _public_share_payload(share, project)
                     if not payload:
                         return self._send(404, {"error": "项目不存在"})
-                    return self._send(200, payload)
+                    return self._send(
+                        200,
+                        payload,
+                        headers={
+                            "Set-Cookie": self._share_cookie_header(
+                                token,
+                                share["expiresAt"],
+                            )
+                        },
+                    )
                 if resource == "workspace-index":
                     workspace = store.get_project_workspace_index(
                         share["projectId"]
@@ -7012,6 +7160,11 @@ class Handler(BaseHTTPRequestHandler):
             name = unquote(path[len("/uploads/"):])
             if not name or "/" in name or "\\" in name or name.startswith("."):
                 return self._send(400, {"error": "非法文件名"})
+            if self._share_access and not store.project_references_upload(
+                self._share_access["projectId"],
+                name,
+            ):
+                return self._send(404, {"error": "文件不存在"})
             fpath = os.path.join(_upload_dir(), name)
             if not os.path.isfile(fpath):
                 return self._send(404, {"error": "文件不存在"})
@@ -7286,6 +7439,8 @@ class Handler(BaseHTTPRequestHandler):
                     project_id,
                     created_by=str(current.get("account_username") or ""),
                     ttl_days=int(body.get("ttlDays") or 7),
+                    role=str(body.get("role") or "viewer"),
+                    label=str(body.get("label") or ""),
                 )
             except (TypeError, ValueError) as exc:
                 return self._send(400, {"error": str(exc)})
@@ -7297,12 +7452,14 @@ class Handler(BaseHTTPRequestHandler):
                 details={
                     "shareId": share["id"],
                     "expiresAt": share["expiresAt"],
+                    "role": share["role"],
+                    "label": share["label"],
                 },
             )
             return self._send(200, {
                 **share,
                 "url": f"/share/{share['token']}",
-                "readOnly": True,
+                "readOnly": share["role"] != "editor",
             })
         if path == "/api/auth/login":
             return self._handle_auth_login(body)

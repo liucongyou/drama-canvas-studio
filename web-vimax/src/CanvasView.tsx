@@ -202,6 +202,7 @@ type Props = {
   initialBackgroundMode?: CanvasBackgroundMode;
   onBackgroundModeChange?: (mode: CanvasBackgroundMode) => Promise<void> | void;
   readOnly?: boolean;
+  collaborationRole?: 'viewer' | 'editor';
   sharedProject?: {
     id: string;
     title: string;
@@ -8270,6 +8271,7 @@ function CanvasViewInner({
   initialBackgroundMode,
   onBackgroundModeChange,
   readOnly = false,
+  collaborationRole,
   sharedProject = null,
 }: Props) {
   const [committedBackgroundMode, setCommittedBackgroundMode] =
@@ -16552,12 +16554,19 @@ function CanvasViewInner({
   );
 
   return (
-    <div className={`canvas-view${readOnly ? ' is-readonly-share' : ''}`}>
+    <div className={`canvas-view${readOnly ? ' is-readonly-share' : ''}${collaborationRole === 'editor' ? ' is-collaboration-share' : ''}`}>
       {readOnly && (
         <div className="canvas-share-banner" role="status">
           <Share2 size={13} strokeWidth={1.9} aria-hidden="true" />
           只读分享 · 实时查看
           <span>不可编辑、上传或生成</span>
+        </div>
+      )}
+      {collaborationRole === 'editor' && (
+        <div className="canvas-share-banner" role="status">
+          <Pencil size={13} strokeWidth={1.9} aria-hidden="true" />
+          协作编辑 · 实时保存
+          <span>可以修改和生成，不能管理分享</span>
         </div>
       )}
       {topbarSlot

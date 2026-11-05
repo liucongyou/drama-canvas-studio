@@ -93,17 +93,25 @@ class ProjectShareTests(unittest.TestCase):
         self.assertEqual(status, 200)
         return headers.get("Set-Cookie", "").split(";", 1)[0]
 
-    def create_share(self):
+    def create_share(self, role="viewer"):
         cookie = self.login()
         status, _, body = self.request(
             "POST",
             f"/api/projects/{self.project_id}/shares",
-            "{}",
+            json.dumps({"role": role}),
             cookie=cookie,
             extra_headers={"Origin": "https://yj.pduoduo.vip"},
         )
         self.assertEqual(status, 200, body.decode("utf-8"))
         return json.loads(body)
+
+    def open_share(self, share):
+        status, headers, body = self.request(
+            "GET",
+            f"/api/share/{share['token']}/project",
+        )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+        return headers.get("Set-Cookie", "").split(";", 1)[0]
 
     def create_referenced_upload(self):
         with tenant_context.use_tenant(
@@ -200,6 +208,107 @@ class ProjectShareTests(unittest.TestCase):
         )
         self.assertEqual(status, 410)
         self.assertEqual(json.loads(body)["code"], "SHARE_INVALID")
+
+    def test_viewer_cookie_cannot_write(self):
+        share = self.create_share("viewer")
+        share_cookie = self.open_share(share)
+        status, _, body = self.request(
+            "PUT",
+            f"/api/projects/{self.project_id}/nodes",
+            json.dumps({
+                "episodeId": "EP001",
+                "nodes": [{
+                    "id": "viewer-write",
+                    "type": "text",
+                    "title": "只读不能写",
+                }],
+            }),
+            cookie=share_cookie,
+            extra_headers={"Origin": "https://yj.pduoduo.vip"},
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(body)["code"], "SHARE_READ_ONLY")
+
+    def test_editor_cookie_can_write_but_cannot_manage_shares(self):
+        share = self.create_share("editor")
+        self.assertTrue(share["canWrite"])
+        share_cookie = self.open_share(share)
+        node = {
+            "id": "editor-write",
+            "type": "text",
+            "title": "协作可写",
+            "position": {"x": 10, "y": 20},
+            "metadata": {"prompt": "协作编辑"},
+        }
+        status, _, body = self.request(
+            "PUT",
+            f"/api/projects/{self.project_id}/nodes",
+            json.dumps({"episodeId": "EP001", "nodes": [node]}),
+            cookie=share_cookie,
+            extra_headers={"Origin": "https://yj.pduoduo.vip"},
+        )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+
+        status, _, body = self.request(
+            "GET",
+            f"/api/projects/{self.project_id}",
+            cookie=share_cookie,
+        )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+        self.assertTrue(any(
+            item.get("id") == "editor-write"
+            for item in json.loads(body)["payload"]["nodes"]
+        ))
+
+        status, _, body = self.request(
+            "DELETE",
+            f"/api/projects/{self.project_id}/shares/{share['id']}",
+            cookie=share_cookie,
+            extra_headers={"Origin": "https://yj.pduoduo.vip"},
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(
+            json.loads(body)["code"],
+            "SHARE_MANAGEMENT_FORBIDDEN",
+        )
+
+    def test_editor_cookie_is_project_scoped(self):
+        share = self.create_share("editor")
+        share_cookie = self.open_share(share)
+        with tenant_context.use_tenant(self.alpha["id"], self.alpha["slug"]):
+            other_project_id = canvas_store.create_project("Other project")
+        status, _, body = self.request(
+            "GET",
+            f"/api/projects/{other_project_id}",
+            cookie=share_cookie,
+        )
+        self.assertEqual(status, 410)
+        self.assertEqual(json.loads(body)["code"], "SHARE_INVALID")
+
+    def test_revoked_share_invalidates_cookie_and_new_share_works(self):
+        first = self.create_share("editor")
+        share_cookie = self.open_share(first)
+        owner_cookie = self.login()
+        status, _, _ = self.request(
+            "DELETE",
+            f"/api/projects/{self.project_id}/shares/{first['id']}",
+            cookie=owner_cookie,
+            extra_headers={"Origin": "https://yj.pduoduo.vip"},
+        )
+        self.assertEqual(status, 200)
+
+        status, headers, body = self.request(
+            "GET",
+            f"/api/projects/{self.project_id}",
+            cookie=share_cookie,
+        )
+        self.assertEqual(status, 410)
+        self.assertEqual(json.loads(body)["code"], "SHARE_INVALID")
+        self.assertIn(f"{server.CANVAS_SHARE_COOKIE}=;", headers.get("Set-Cookie", ""))
+
+        second = self.create_share("viewer")
+        self.assertNotEqual(first["token"], second["token"])
+        self.assertEqual(self.open_share(second).split("=", 1)[0], server.CANVAS_SHARE_COOKIE)
 
     def test_anonymous_share_reads_only_project_media(self):
         filename = self.create_referenced_upload()

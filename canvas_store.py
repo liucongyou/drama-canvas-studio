@@ -147,9 +147,25 @@ def _connect():
                 created_by TEXT DEFAULT '',
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
-                revoked_at TEXT DEFAULT ''
+                revoked_at TEXT DEFAULT '',
+                role TEXT NOT NULL DEFAULT 'viewer',
+                label TEXT DEFAULT ''
             )"""
             )
+            share_columns = {
+                row[1]
+                for row in con.execute("PRAGMA table_info(project_shares)")
+            }
+            if "role" not in share_columns:
+                con.execute(
+                    "ALTER TABLE project_shares "
+                    "ADD COLUMN role TEXT NOT NULL DEFAULT 'viewer'"
+                )
+            if "label" not in share_columns:
+                con.execute(
+                    "ALTER TABLE project_shares "
+                    "ADD COLUMN label TEXT DEFAULT ''"
+                )
             con.execute(
             "CREATE INDEX IF NOT EXISTS idx_project_shares_project "
             "ON project_shares(project_id, revoked_at, expires_at)"
@@ -5779,9 +5795,19 @@ def audit_storage_health():
     }
 
 
-def create_project_share(project_id, *, created_by="", ttl_days=7):
+def create_project_share(
+    project_id,
+    *,
+    created_by="",
+    ttl_days=7,
+    role="viewer",
+    label="",
+):
     if not project_exists(project_id):
         raise ValueError("项目不存在")
+    normalized_role = str(role or "viewer").strip().lower()
+    if normalized_role not in {"viewer", "editor"}:
+        raise ValueError("分享角色必须是 viewer 或 editor")
     token = secrets.token_urlsafe(32)
     share_id = _rid(22)
     created_at = _now_iso()
@@ -5792,8 +5818,9 @@ def create_project_share(project_id, *, created_by="", ttl_days=7):
     def write(con):
         con.execute(
             "INSERT INTO project_shares("
-            "id,project_id,token_hash,created_by,created_at,expires_at,revoked_at"
-            ") VALUES(?,?,?,?,?,?,?)",
+            "id,project_id,token_hash,created_by,created_at,expires_at,"
+            "revoked_at,role,label"
+            ") VALUES(?,?,?,?,?,?,?,?,?)",
             (
                 share_id,
                 project_id,
@@ -5802,6 +5829,8 @@ def create_project_share(project_id, *, created_by="", ttl_days=7):
                 created_at,
                 expires_at,
                 "",
+                normalized_role,
+                str(label or "").strip()[:80],
             ),
         )
 
@@ -5813,6 +5842,9 @@ def create_project_share(project_id, *, created_by="", ttl_days=7):
         "tenantId": tenant_context.current_tenant_id(),
         "createdAt": created_at,
         "expiresAt": expires_at,
+        "role": normalized_role,
+        "label": str(label or "").strip()[:80],
+        "canWrite": normalized_role == "editor",
     }
 
 
@@ -5820,7 +5852,8 @@ def resolve_project_share(token):
     digest = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
     con = _connect()
     row = con.execute(
-        "SELECT project_id,expires_at,created_at FROM project_shares "
+        "SELECT project_id,expires_at,created_at,role,label "
+        "FROM project_shares "
         "WHERE token_hash=? AND revoked_at='' AND expires_at>? LIMIT 1",
         (digest, _now_iso()),
     ).fetchone()
@@ -5831,13 +5864,17 @@ def resolve_project_share(token):
         "projectId": row[0],
         "expiresAt": row[1],
         "createdAt": row[2],
+        "role": str(row[3] or "viewer"),
+        "label": str(row[4] or ""),
+        "canWrite": str(row[3] or "viewer") == "editor",
     }
 
 
 def list_project_shares(project_id):
     con = _connect()
     rows = con.execute(
-        "SELECT id,project_id,created_by,created_at,expires_at,revoked_at "
+        "SELECT id,project_id,created_by,created_at,expires_at,revoked_at,"
+        "role,label "
         "FROM project_shares WHERE project_id=? "
         "ORDER BY created_at DESC LIMIT 100",
         (str(project_id or ""),),
@@ -5852,6 +5889,9 @@ def list_project_shares(project_id):
             "expiresAt": row[4],
             "revokedAt": row[5],
             "active": not row[5] and row[4] > _now_iso(),
+            "role": str(row[6] or "viewer"),
+            "label": str(row[7] or ""),
+            "canWrite": str(row[6] or "viewer") == "editor",
         }
         for row in rows
     ]

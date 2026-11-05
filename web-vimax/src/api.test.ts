@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, activeMediaVersionIndex, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getManagedTenantAudit, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, shareEventsUrl, shareMediaSourceUrl, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, activeMediaVersionIndex, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getManagedTenantAudit, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, shareEventsUrl, shareMediaSourceUrl, shareWorkspaceSessionId, subscribeToEvents} from './api';
 
 describe('project event cursor', () => {
   it('reconnects SSE from the last rendered events for this project', () => {
@@ -18,6 +18,11 @@ describe('project event cursor', () => {
       'https://cdn.example.com/a.png',
     );
     expect(shareMediaSourceUrl('share-token', '/uploads/nested/a.png')).toBe('');
+  });
+
+  it('normalizes read-only workspace session ids without double prefixes', () => {
+    expect(shareWorkspaceSessionId('share-token')).toBe('share:share-token');
+    expect(shareWorkspaceSessionId('share:share-token')).toBe('share:share-token');
   });
 });
 

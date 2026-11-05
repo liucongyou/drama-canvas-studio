@@ -144,6 +144,9 @@ export type ProjectShareState = {
   expiresAt: string;
   revokedAt: string;
   active: boolean;
+  role: 'viewer' | 'editor';
+  label: string;
+  canWrite: boolean;
 };
 
 export async function getProjectShares(projectId: string): Promise<{
@@ -153,7 +156,14 @@ export async function getProjectShares(projectId: string): Promise<{
 }
 
 export async function getSharedProject(token: string): Promise<{
-  share: {projectId: string; expiresAt: string; readOnly: true};
+  share: {
+    projectId: string;
+    expiresAt: string;
+    role: 'viewer' | 'editor';
+    label: string;
+    canWrite: boolean;
+    readOnly: boolean;
+  };
   project: {
     id: string;
     title: string;
@@ -1087,19 +1097,24 @@ export async function getManagedTenantAudit(
 export async function createProjectShare(
   projectId: string,
   ttlDays = 7,
+  role: 'viewer' | 'editor' = 'viewer',
+  label = '',
 ): Promise<{
   id: string;
   projectId: string;
   url: string;
   token: string;
   expiresAt: string;
-  readOnly: true;
+  role: 'viewer' | 'editor';
+  label: string;
+  canWrite: boolean;
+  readOnly: boolean;
 }> {
   return request(
     `/api/projects/${encodeURIComponent(projectId)}/shares`,
     {
       method: 'POST',
-      body: JSON.stringify({ttlDays}),
+      body: JSON.stringify({ttlDays, role, label}),
     },
   );
 }
@@ -2759,8 +2774,9 @@ export async function getSharedCanvasWorkspace(
   mediaNodes: CanvasMediaNode[];
   connections: Array<{id?: string; fromNodeId: string; toNodeId: string}>;
 }> {
+  const shareSession = shareWorkspaceSessionId(token);
   const workspace = await getCanvasWorkspace(
-    `share:${token}`,
+    shareSession,
     episodeId,
   );
   return {
@@ -2769,6 +2785,13 @@ export async function getSharedCanvasWorkspace(
     mediaNodes: workspace.mediaNodes,
     connections: workspace.connections,
   };
+}
+
+export function shareWorkspaceSessionId(token: string): string {
+  const normalized = String(token || '').trim();
+  return normalized.startsWith('share:')
+    ? normalized
+    : `share:${normalized}`;
 }
 
 // ---------- shot patch（段/镜头编辑 → 存回节点 metadata.shotPatch） ----------

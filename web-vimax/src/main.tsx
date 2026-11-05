@@ -389,6 +389,49 @@ function Shell({
     return request;
   };
 
+  const createShareLink = async (role: 'viewer' | 'editor') => {
+    if (!pid) {
+      await dialog.alert({
+        title: '还未打开项目',
+        message: '先在左上角选择或创建一个项目。',
+      });
+      return;
+    }
+    const rawDays = await dialog.prompt({
+      title: role === 'editor' ? '生成协作编辑链接' : '生成只读分享链接',
+      icon: role === 'editor' ? Pencil : Share2,
+      message: role === 'editor'
+        ? '协作成员可修改画布、上传素材和提交生成；不能创建或撤销分享链接。'
+        : '访客只能实时查看，不能修改提示词、上传素材或提交生成。',
+      placeholder: '有效期（1-30 天）',
+      defaultValue: '7',
+      confirmText: '生成链接',
+    });
+    if (rawDays === null) return;
+    const days = Math.max(1, Math.min(30, Number(rawDays) || 7));
+    try {
+      const share = await createProjectShare(
+        pid,
+        days,
+        role,
+        role === 'editor' ? '协作编辑' : '只读查看',
+      );
+      const url = `${window.location.origin}${share.url}`;
+      await navigator.clipboard?.writeText(url);
+      await dialog.alert({
+        title: role === 'editor' ? '协作链接已生成' : '只读链接已生成',
+        message: `${url}\n\n有效期至 ${new Date(share.expiresAt).toLocaleString()}。链接已复制。`,
+        tone: 'success',
+      });
+    } catch (reason) {
+      await dialog.alert({
+        title: '生成分享链接失败',
+        message: reason instanceof Error ? reason.message : String(reason),
+        tone: 'danger',
+      });
+    }
+  };
+
   useEffect(() => {
     // Preload while the canvas is idle so opening settings is a pure state switch.
     const preload = () => {
@@ -1010,41 +1053,22 @@ function Shell({
                             className="shell-tools-menu-item"
                             onClick={(event) => {
                               event.stopPropagation();
-                              if (!pid) {
-                                void dialog.alert({title: '还未打开项目', message: '先在左上角选择或创建一个项目。'});
-                                return;
-                              }
-                              void dialog.prompt({
-                                title: '分享项目画布',
-                                icon: Share2,
-                                message: '生成只读链接。访客可实时查看当前项目，不能编辑、上传或生成；有效期最长 30 天。',
-                                placeholder: '分享有效期（1-30 天）',
-                                defaultValue: '7',
-                                confirmText: '生成分享链接',
-                              }).then(async (rawDays) => {
-                                if (rawDays === null) return;
-                                const days = Math.max(1, Math.min(30, Number(rawDays) || 7));
-                                try {
-                                  const share = await createProjectShare(pid, days);
-                                  const url = `${window.location.origin}${share.url}`;
-                                  await navigator.clipboard?.writeText(url);
-                                  await dialog.alert({
-                                    title: '分享链接已生成',
-                                    message: `${url}\n\n有效期至 ${new Date(share.expiresAt).toLocaleString()}。链接已复制。`,
-                                    tone: 'success',
-                                  });
-                                } catch (reason) {
-                                  await dialog.alert({
-                                    title: '生成分享链接失败',
-                                    message: reason instanceof Error ? reason.message : String(reason),
-                                    tone: 'danger',
-                                  });
-                                }
-                              });
+                              void createShareLink('viewer');
                             }}
                           >
                             <Share2 size={13} strokeWidth={1.9} aria-hidden="true" />
-                            <span>分享项目画布</span>
+                            <span>生成只读链接</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="shell-tools-menu-item"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void createShareLink('editor');
+                            }}
+                          >
+                            <Pencil size={13} strokeWidth={1.9} aria-hidden="true" />
+                            <span>生成协作编辑链接</span>
                           </button>
                           <button
                             type="button"
@@ -1056,19 +1080,24 @@ function Shell({
                                 .then((result) => {
                                   const active = result.shares.filter((share) => share.active);
                                   if (active.length === 0) {
-                                    return dialog.alert({title: '分享链接', message: '当前项目没有有效的只读分享链接。'});
+                                    return dialog.alert({title: '分享链接', message: '当前项目没有有效的分享链接。'});
                                   }
-                                  const selected = active[0];
+                                  const counts = {
+                                    viewer: active.filter((share) => share.role === 'viewer').length,
+                                    editor: active.filter((share) => share.role === 'editor').length,
+                                  };
                                   return dialog.confirm({
-                                    title: '撤销当前分享？',
-                                    message: `撤销后，已拿到链接的人会立即失去访问权限。有效期原为 ${new Date(selected.expiresAt).toLocaleString()}。`,
+                                    title: '撤销全部分享？',
+                                    message: `将撤销 ${counts.viewer} 个只读链接和 ${counts.editor} 个协作链接。已打开的人会立即失去权限。`,
                                     tone: 'danger',
-                                    confirmText: '撤销分享',
+                                    confirmText: '全部撤销',
                                   }).then((confirmed) => {
                                     if (!confirmed) return;
-                                    return revokeProjectShare(pid, selected.id).then(() => dialog.alert({
+                                    return Promise.all(
+                                      active.map((share) => revokeProjectShare(pid, share.id)),
+                                    ).then(() => dialog.alert({
                                       title: '分享已撤销',
-                                      message: '线上的只读链接现在已失效。',
+                                      message: '当前项目的全部分享链接已失效。',
                                       tone: 'success',
                                     }));
                                   });
@@ -1580,6 +1609,7 @@ function AuthGate() {
   const [busy, setBusy] = useState(false);
   const sharedToken = shareTokenInPath(window.location.pathname);
   const [sharedProject, setSharedProject] = useState<Awaited<ReturnType<typeof getSharedProject>>['project'] | null>(null);
+  const [sharedAccess, setSharedAccess] = useState<Awaited<ReturnType<typeof getSharedProject>>['share'] | null>(null);
   const [sharedError, setSharedError] = useState('');
 
   useEffect(() => {
@@ -1590,6 +1620,7 @@ function AuthGate() {
       .then((result) => {
         if (cancelled) return;
         setSharedProject(result.project);
+        setSharedAccess(result.share);
         setState('authenticated');
       })
       .catch((reason: unknown) => {
@@ -1718,13 +1749,15 @@ function AuthGate() {
     );
   }
 
-  if (sharedToken && sharedProject) {
+  if (sharedToken && sharedProject && sharedAccess) {
+    const sharedEditor = sharedAccess.canWrite === true;
     return (
       <div className="share-canvas-host">
         <CanvasView
-          session={`share:${sharedToken}`}
-          readOnly
+          session={sharedEditor ? sharedProject.id : `share:${sharedToken}`}
+          readOnly={!sharedEditor}
           sharedProject={sharedProject}
+          collaborationRole={sharedAccess.role}
           initialBackgroundMode="blank"
           onBackgroundModeChange={() => undefined}
         />
