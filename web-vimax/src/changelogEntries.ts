@@ -3,6 +3,17 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.05.02',
+    date: '2026-11-05',
+    title: 'Seedream 原始图 TOS 引用修复',
+    releasedAt: '2026-11-05 11:15:00 +08:00',
+    changes: [
+      'Seedream 生成图传给 Seedance 时优先使用同区域私有 TOS 原始对象，不再因为已经过期的供应商临时链阻断提交。',
+      '只有模型原始字节可以写入这条参考链路，压缩图、缩放图和转发镜像不会被冒充为 Seedream 原始产物。',
+      '历史角色图缺少 TOS 描述时从本地原始文件自动补传，已有图片无需重新付费生成。',
+    ],
+  },
+  {
     version: '2026.11.05.01',
     date: '2026-11-05',
     title: '设置面板重排与生成架构收口',

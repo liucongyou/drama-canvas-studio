@@ -240,12 +240,14 @@ class TosStorageTests(unittest.TestCase):
         self.assertIn("账号已欠费", str(error))
         self.assertIn("request-overdue", str(error))
 
-    def test_ark_reference_uses_tos_presigned_url(self):
-        with mock.patch.object(
-            tos_storage,
-            "internal_presigned_url",
-            return_value="https://bucket.tos-cn-beijing.ivolces.com/key?sig=ok",
-        ) as sign:
+    def test_ark_reference_uses_internal_tos_url(self):
+        with (
+            mock.patch.object(
+                tos_storage,
+                "internal_presigned_url",
+                return_value="https://bucket.tos-cn-beijing.ivolces.com/key?sig=ok",
+            ) as sign,
+        ):
             url = provider_client._ark_reference_url({
                 "url": "/uploads/role.png",
                 "kind": "image",
@@ -284,6 +286,51 @@ class TosStorageTests(unittest.TestCase):
             })
         self.assertEqual(url, source_url)
         probe.assert_called_once_with(source_url)
+
+    def test_seedream_reference_prefers_verified_tos_over_expiring_provider_url(self):
+        source_url = "https://ark-cdn.example/seedream/expired.png?sig=old"
+        descriptor = {
+            "status": "stored",
+            "provider": "tos",
+            "bucket": "drama-originals",
+            "key": "drama-canvas/image/role.png",
+        }
+        with (
+            mock.patch.object(tos_storage, "is_verified", return_value=True),
+            mock.patch.object(tos_storage, "is_ready", return_value=True),
+            mock.patch.object(
+                tos_storage,
+                "ensure_local_image",
+                return_value=descriptor,
+            ),
+            mock.patch.object(
+                tos_storage,
+                "internal_presigned_url",
+                return_value="https://bucket.tos-cn-beijing.ivolces.com/role?sig=ok",
+            ),
+            mock.patch.object(
+                provider_catalog,
+                "storage_profile_config",
+                return_value={"enabled": True, "provider": "tos"},
+            ),
+            mock.patch.object(
+                provider_catalog,
+                "storage_config",
+                return_value={"require_for_ark_portrait": True},
+            ),
+            mock.patch.object(
+                provider_client,
+                "_probe_ark_reference_url",
+            ) as probe,
+        ):
+            url = provider_client._ark_reference_url({
+                "url": "/uploads/role.png",
+                "kind": "image",
+                "sourceModel": "doubao-seedream-5-0-pro-260628",
+                "providerResultUrl": source_url,
+            })
+        self.assertIn("ivolces.com", url)
+        probe.assert_not_called()
 
     def test_seedream_expired_provider_url_is_blocked_before_submit(self):
         with (
@@ -395,7 +442,7 @@ class TosStorageTests(unittest.TestCase):
                 return_value={"require_for_ark_portrait": True},
             ),
         ):
-            with self.assertRaisesRegex(RuntimeError, "原始临时链接"):
+            with self.assertRaisesRegex(RuntimeError, "原始字节来源"):
                 provider_client._ark_reference_url({
                     "url": "https://oss-only.example/role.png",
                     "kind": "image",
@@ -462,7 +509,7 @@ class TosStorageTests(unittest.TestCase):
                 side_effect=RuntimeError("TOS overloaded"),
             ),
         ):
-            with self.assertRaisesRegex(RuntimeError, "原始临时链接"):
+            with self.assertRaisesRegex(RuntimeError, "原始字节来源"):
                 provider_client._ark_reference_url({
                     "url": "/uploads/role.png",
                     "kind": "image",
@@ -574,10 +621,12 @@ class TosStorageTests(unittest.TestCase):
         self.assertTrue(tos_storage.is_verified(profile))
 
     def test_seedream_tos_is_not_rejected_by_an_invented_time_window(self):
-        with mock.patch.object(
-            tos_storage,
-            "internal_presigned_url",
-            return_value="https://tos.internal/role?sig=ok",
+        with (
+            mock.patch.object(
+                tos_storage,
+                "internal_presigned_url",
+                return_value="https://tos.internal/role?sig=ok",
+            ),
         ):
             url = provider_client._ark_reference_url({
                 "url": "/uploads/role.png",

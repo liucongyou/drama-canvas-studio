@@ -963,24 +963,14 @@ def _ark_reference_url(ref: dict[str, Any]) -> str:
     storage_cfg = provider_catalog.storage_config()
     provider_source_url = _ark_reference_source_url(ref)
     if isinstance(storage, dict) and storage.get("provider") == "tos" and storage.get("key"):
-        return tos_storage.internal_presigned_url(storage)
-    if (
-        kind == "image"
-        and source_model.startswith("doubao-seedream-5-0-")
-        and provider_source_url
-    ):
         try:
-            _probe_ark_reference_url(provider_source_url)
-        except RuntimeError as exc:
-            raise RuntimeError(
-                "Seedream 原始临时链接当前不可用或已过期"
-                f"（{exc}）。请重新生成角色图，"
-                "或在火山 TOS 中保存并测试配置后再提交"
-            ) from exc
-        return provider_source_url
-    # A local original may be uploaded to a configured TOS profile. Failure
-    # here is a storage failure; the caller reports it instead of pretending
-    # that an OSS mirror is the provider original.
+            return tos_storage.internal_presigned_url(storage)
+        except Exception:
+            # A persisted TOS descriptor can be stale after credentials or
+            # bucket changes. The local original remains the durable source.
+            pass
+    # Ark must receive the model's original bytes through a TOS object. Never
+    # substitute a resized, recompressed, mirrored, or base64 copy here.
     if (
         kind == "image"
         and raw.startswith("/uploads/")
@@ -1007,11 +997,26 @@ def _ark_reference_url(ref: dict[str, Any]) -> str:
     if (
         kind == "image"
         and source_model.startswith("doubao-seedream-5-0-")
+        and provider_source_url
+    ):
+        try:
+            _probe_ark_reference_url(provider_source_url)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Seedream 原始临时链接当前不可用或已过期"
+                f"（{exc}）。系统会优先从本地原图补传到火山 TOS；"
+                "请确认本地原图仍在、TOS 已启用并完成“测试 火山 TOS”"
+            ) from exc
+        return provider_source_url
+    if (
+        kind == "image"
+        and source_model.startswith("doubao-seedream-5-0-")
         and storage_cfg.get("require_for_ark_portrait", True)
     ):
         raise RuntimeError(
-            "Seedream 5.0 角色图缺少可用的原始临时链接。"
-            "请重新生成角色图，或保存火山 TOS 配置并完成“测试 火山 TOS”"
+            "Seedream 5.0 角色图没有可用的原始字节来源。"
+            "请确认本地原图仍在，并保存火山 TOS 配置后完成“测试 火山 TOS”；"
+            "系统不会用压缩图或转发图替代模型原始产物"
         )
     return _asset_url_for_provider(raw)
 

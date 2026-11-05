@@ -5257,6 +5257,88 @@ def backfill_local_media_storage():
     return updated
 
 
+def repair_expiring_seedream_references():
+    """Attach a durable TOS object to completed Seedream image versions.
+
+    Older rows stored the provider's one-day URL beside a valid local original.
+    Generation must prefer the local file/TOS object, and this repair keeps the
+    Canvas projection consistent so clients do not need to resubmit for it.
+    """
+    if not tos_storage.is_verified(provider_catalog.storage_profile_config("tos")):
+        return 0
+    repaired = 0
+    for project_row in store.list_projects():
+        project = store.get_project(project_row.get("id"))
+        if not project:
+            continue
+        payload = project["payload"]
+        changed = 0
+        for node in payload.get("nodes", []):
+            if not isinstance(node, dict) or node.get("type") != "image":
+                continue
+            meta = node.get("metadata")
+            if not isinstance(meta, dict) or meta.get("status") != "done":
+                continue
+            content = str(meta.get("content") or "").strip()
+            if not content.startswith("/uploads/"):
+                continue
+            params = meta.setdefault("params", {})
+            if not isinstance(params, dict):
+                params = {}
+                meta["params"] = params
+            versions = params.get("mediaVersions")
+            versions = versions if isinstance(versions, list) else []
+            active_index = params.get("mediaVersionIndex")
+            try:
+                active_index = int(active_index)
+            except (TypeError, ValueError):
+                active_index = 0
+            target = (
+                versions[active_index]
+                if 0 <= active_index < len(versions)
+                else None
+            )
+            if not isinstance(target, dict):
+                continue
+            storage = target.get("storage") or meta.get("storage")
+            if isinstance(storage, dict) and storage.get("provider") == "tos" and storage.get("key"):
+                continue
+            source_model = str(
+                target.get("model") or meta.get("model") or ""
+            ).lower()
+            if not source_model.startswith("doubao-seedream-5-0-"):
+                continue
+            try:
+                descriptor = tos_storage.ensure_local_image(
+                    content,
+                    source={
+                        "provider": target.get("provider") or meta.get("provider"),
+                        "model": target.get("model") or meta.get("model"),
+                        "taskId": target.get("taskId"),
+                        "generatedAt": target.get("generatedAt"),
+                        "url": content,
+                    },
+                )
+                if not descriptor:
+                    continue
+                tos_storage._client().head_object(
+                    descriptor["bucket"],
+                    descriptor["key"],
+                )
+            except Exception as exc:
+                meta["storageError"] = str(exc)
+                changed += 1
+                continue
+            target["storage"] = descriptor
+            meta["storage"] = descriptor
+            meta["storageError"] = ""
+            changed += 1
+        if changed:
+            store.update_project(project["id"], payload=payload)
+            repaired += changed
+    return repaired
+
+
 def backfill_image_provider_result_urls():
     """Restore a trusted Seedream short URL from the task ledger."""
     updated = 0
@@ -10372,6 +10454,19 @@ def main():
             print(f"已校验 {validated} 个历史视频")
     except Exception as exc:
         print(f"[video-validation] 回填失败：{exc}", file=sys.stderr)
+    try:
+        repaired_references = _run_for_active_tenants(
+            repair_expiring_seedream_references
+        )
+        if repaired_references:
+            print(
+                f"已修复 {repaired_references} 个 Seedream 临时引用"
+            )
+    except Exception as exc:
+        print(
+            f"[seedream-reference] 历史引用修复失败：{exc}",
+            file=sys.stderr,
+        )
     try:
         covers = _run_for_active_tenants(backfill_generated_video_thumbnails)
         if covers:
