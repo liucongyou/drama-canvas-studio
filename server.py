@@ -5722,17 +5722,40 @@ class Handler(BaseHTTPRequestHandler):
         size = stat.st_size
         etag = f'"{size:x}-{stat.st_mtime_ns:x}"'
         last_modified = formatdate(stat.st_mtime, usegmt=True)
+        share_path = urlparse(self.path).path.startswith("/api/share/")
+        cors_headers = (
+            {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Expose-Headers": (
+                    "Accept-Ranges, Content-Length, Content-Range, "
+                    "Content-Type, ETag, Last-Modified"
+                ),
+            }
+            if share_path
+            else self._cors_headers()
+        )
         cache_headers = {
             "ETag": etag,
             "Last-Modified": last_modified,
-            "Cache-Control": "private, max-age=31536000, immutable",
+            "Cache-Control": (
+                "private, no-cache"
+                if share_path
+                else "private, max-age=31536000, immutable"
+            ),
+            "Cross-Origin-Resource-Policy": "cross-origin",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": (
+                "If-None-Match, If-Range, Range"
+                if share_path
+                else "Range, If-Range, If-None-Match, Content-Type"
+            ),
         }
         if self.command in {"GET", "HEAD"} and self.headers.get("If-None-Match", "").strip() == etag:
             self.send_response(304)
             for key, value in {
                 **_security_headers(),
                 **cache_headers,
-                **self._cors_headers(),
+                **cors_headers,
             }.items():
                 self.send_header(str(key), str(value))
             self.end_headers()
@@ -5753,7 +5776,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 for key, value in {
                     **_security_headers(),
-                    **self._cors_headers(),
+                    **cors_headers,
                 }.items():
                     self.send_header(str(key), str(value))
                 self.end_headers()
@@ -5772,7 +5795,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 for key, value in {
                     **_security_headers(),
-                    **self._cors_headers(),
+                    **cors_headers,
                 }.items():
                     self.send_header(str(key), str(value))
                 self.end_headers()
@@ -5787,12 +5810,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         for key, value in cache_headers.items():
             self.send_header(key, value)
-        self.send_header("Cross-Origin-Resource-Policy", "cross-origin")
         if partial:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         for key, value in {
             **_security_headers(),
-            **self._cors_headers(),
+            **cors_headers,
         }.items():
             self.send_header(str(key), str(value))
         self.end_headers()
@@ -6745,9 +6767,34 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         share_read = re.match(
-            r"^/api/share/([^/]+)/(project|workspace-index|workspace-nodes|notes|tasks|events)$",
+            r"^/api/share/([^/]+)/"
+            r"(project|workspace-index|workspace-nodes|notes|tasks|events)$",
             path,
         )
+        share_media = re.match(
+            r"^/api/share/([^/]+)/media/([^/]+)$",
+            path,
+        )
+        if share_media:
+            token = unquote(share_media.group(1))
+            filename = unquote(share_media.group(2))
+            resolved = _resolve_share_scope(token)
+            if not resolved:
+                return self._send(
+                    410,
+                    {"error": "分享链接已撤销或过期", "code": "SHARE_INVALID"},
+                )
+            share_scope, share = resolved
+            with share_scope:
+                if not store.project_references_upload(
+                    share["projectId"],
+                    filename,
+                ):
+                    return self._send(404, {"error": "文件不存在"})
+                fpath = os.path.join(_upload_dir(), filename)
+                if not os.path.isfile(fpath):
+                    return self._send(404, {"error": "文件不存在"})
+                return self._send_upload_file(fpath, filename)
         if share_read:
             token = unquote(share_read.group(1))
             resource = share_read.group(2)

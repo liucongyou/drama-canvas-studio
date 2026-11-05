@@ -47,6 +47,10 @@ _AUDIT_REQUEST_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
     "canvas_audit_request",
     default=None,
 )
+_SHARE_MEDIA_CACHE: dict[tuple[str, str, int], frozenset[str]] = {}
+_SHARE_MEDIA_CACHE_LOCK = __import__("threading").RLock()
+_SHARE_MEDIA_CACHE_LIMIT = 64
+_SHARE_MEDIA_CACHE_LOW_MARK = 32
 
 
 @contextmanager
@@ -2467,6 +2471,106 @@ def get_project_workspace_nodes(project_id, episode_id=None):
             else []
         ),
     }
+
+
+def project_references_upload(project_id, filename):
+    """Return whether a shareable project payload references one upload file."""
+    normalized = str(filename or "").strip()
+    if (
+        not project_id
+        or not normalized
+        or "/" in normalized
+        or "\\" in normalized
+        or normalized.startswith(".")
+    ):
+        return False
+    con = _connect()
+    try:
+        project_row = con.execute(
+            "SELECT revision FROM canvas_projects WHERE id=?",
+            (str(project_id),),
+        ).fetchone()
+        if not project_row:
+            return False
+        cache_key = (
+            _db_path(),
+            str(project_id),
+            int(project_row[0] or 0),
+        )
+        with _SHARE_MEDIA_CACHE_LOCK:
+            cached = _SHARE_MEDIA_CACHE.get(cache_key)
+        if cached is not None:
+            return normalized in cached
+        filenames: set[str] = set()
+        row = con.execute(
+            "SELECT metadata_json FROM canvas_projection_nodes "
+            "WHERE project_id=?",
+            (str(project_id),),
+        ).fetchall()
+        for item in row:
+            try:
+                metadata = json.loads(item[0] or "{}")
+            except (TypeError, ValueError):
+                continue
+            _collect_metadata_uploads(metadata, filenames)
+        project_row = con.execute(
+            "SELECT payload_json FROM canvas_projects WHERE id=?",
+            (str(project_id),),
+        ).fetchone()
+        if not project_row:
+            return False
+        try:
+            payload = json.loads(project_row[0] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        _collect_payload_uploads(payload, filenames)
+        cached = frozenset(filenames)
+        with _SHARE_MEDIA_CACHE_LOCK:
+            for key in [
+                key for key in _SHARE_MEDIA_CACHE
+                if key[0] == cache_key[0] and key[1] == cache_key[1]
+            ]:
+                _SHARE_MEDIA_CACHE.pop(key, None)
+            _SHARE_MEDIA_CACHE[cache_key] = cached
+            if len(_SHARE_MEDIA_CACHE) > _SHARE_MEDIA_CACHE_LIMIT:
+                for key in list(_SHARE_MEDIA_CACHE)[:-_SHARE_MEDIA_CACHE_LOW_MARK]:
+                    _SHARE_MEDIA_CACHE.pop(key, None)
+        return normalized in cached
+    finally:
+        con.close()
+
+
+def _collect_metadata_uploads(metadata, filenames):
+    if not isinstance(metadata, dict):
+        return
+    _collect_upload_url(metadata.get("content"), filenames)
+    params = metadata.get("params")
+    if not isinstance(params, dict):
+        return
+    _collect_upload_url(params.get("thumbUrl"), filenames)
+    for key in ("mediaVersions", "videoVersions"):
+        for version in params.get(key) or []:
+            if not isinstance(version, dict):
+                continue
+            _collect_upload_url(version.get("url"), filenames)
+            _collect_upload_url(version.get("thumbUrl"), filenames)
+
+
+def _collect_upload_url(value, filenames):
+    text = str(value or "").strip()
+    if not text.startswith("/uploads/"):
+        return
+    filename = text[len("/uploads/"):]
+    if filename and "/" not in filename and "\\" not in filename:
+        filenames.add(filename)
+
+
+def _collect_payload_uploads(payload, filenames):
+    if not isinstance(payload, dict):
+        return
+    for node in payload.get("nodes") or []:
+        if isinstance(node, dict):
+            _collect_metadata_uploads(node.get("metadata"), filenames)
 
 
 def _workspace_referenced_shared_nodes(con, project_id, episode_id, nodes):

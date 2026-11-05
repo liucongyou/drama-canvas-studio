@@ -58,6 +58,23 @@ export function mediaSourceUrl(raw: unknown): string {
   return value;
 }
 
+export function shareMediaSourceUrl(token: string, raw: unknown): string {
+  const value = String(raw || '').trim();
+  if (!value || /^(?:data:|blob:)/i.test(value)) return value;
+  let filename = '';
+  if (value.startsWith('/uploads/')) {
+    filename = value.slice('/uploads/'.length);
+  } else if (API_BASE) {
+    const prefix = `${API_BASE.replace(/\/+$/, '')}/uploads/`;
+    if (value.startsWith(prefix)) filename = value.slice(prefix.length);
+  }
+  if (!filename) return value;
+  if (!filename || filename.includes('/') || filename.includes('\\')) return '';
+  return apiUrl(
+    `/api/share/${encodeURIComponent(token)}/media/${encodeURIComponent(filename)}`,
+  );
+}
+
 function mediaStorageUrl(raw: unknown): string {
   const value = String(raw || '').trim();
   if (!value) return '';
@@ -74,6 +91,20 @@ function normalizeProjectMediaUrls<T>(value: T): T {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
         .map(([key, item]) => [key, normalizeProjectMediaUrls(item)]),
+    ) as T;
+  }
+  return value;
+}
+
+function normalizeSharedProjectMediaUrls<T>(value: T, token: string): T {
+  if (typeof value === 'string') return shareMediaSourceUrl(token, value) as T;
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeSharedProjectMediaUrls(item, token)) as T;
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .map(([key, item]) => [key, normalizeSharedProjectMediaUrls(item, token)]),
     ) as T;
   }
   return value;
@@ -1423,10 +1454,11 @@ export async function getWorkspaceIndex(
   const route = sessionId.startsWith('share:')
     ? `/api/share/${encodeURIComponent(sessionId.slice(6))}/workspace-index`
     : `/api/projects/${encodeURIComponent(sessionId)}/workspace-index`;
-  return request<WorkspaceIndex>(
-    route,
-    {signal},
-  ).then(normalizeProjectMediaUrls);
+  return request<WorkspaceIndex>(route, {signal}).then((workspace) => (
+    sessionId.startsWith('share:')
+      ? normalizeSharedProjectMediaUrls(workspace, sessionId.slice(6))
+      : normalizeProjectMediaUrls(workspace)
+  ));
 }
 
 function workspaceReadSessionId(sessionId: string): string {
@@ -1444,10 +1476,11 @@ export async function getWorkspaceNodes(
   const route = sessionId.startsWith('share:')
     ? `/api/share/${encodeURIComponent(workspaceReadSessionId(sessionId))}/workspace-nodes${suffix}`
     : `/api/projects/${encodeURIComponent(sessionId)}/workspace-nodes${suffix}`;
-  return request<WorkspaceNodes>(
-    route,
-    {signal},
-  ).then(normalizeProjectMediaUrls);
+  return request<WorkspaceNodes>(route, {signal}).then((workspace) => (
+    sessionId.startsWith('share:')
+      ? normalizeSharedProjectMediaUrls(workspace, workspaceReadSessionId(sessionId))
+      : normalizeProjectMediaUrls(workspace)
+  ));
 }
 
 /**
@@ -1756,12 +1789,12 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
   const mediaUrl = kind === 'video'
     ? urlOf(n)
     : rawPreviewUrl;
-  const normalizedMediaUrl = /^(?:https?:\/\/|\/uploads\/|data:|blob:)/.test(mediaUrl)
+  const normalizedMediaUrl = /^(?:https?:\/\/|\/uploads\/|\/api\/share\/[^/]+\/media\/|data:|blob:)/.test(mediaUrl)
     ? mediaUrl
     : '';
   const videoThumbUrl = kind === 'video'
     && typeof rawParams.thumbUrl === 'string'
-    && /^(?:https?:\/\/|\/uploads\/|data:|blob:)/.test(rawParams.thumbUrl)
+    && /^(?:https?:\/\/|\/uploads\/|\/api\/share\/[^/]+\/media\/|data:|blob:)/.test(rawParams.thumbUrl)
     ? rawParams.thumbUrl
     : undefined;
   return {

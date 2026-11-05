@@ -105,6 +105,38 @@ class ProjectShareTests(unittest.TestCase):
         self.assertEqual(status, 200, body.decode("utf-8"))
         return json.loads(body)
 
+    def create_referenced_upload(self):
+        with tenant_context.use_tenant(
+            self.alpha["id"],
+            self.alpha["slug"],
+        ):
+            upload_dir = server._upload_dir()
+            os.makedirs(upload_dir, exist_ok=True)
+            filename = "shared-media.png"
+            with open(os.path.join(upload_dir, filename), "wb") as stream:
+                stream.write(b"%PNG\r\nshared-share-media")
+            project = canvas_store.get_project(self.project_id)
+            payload = project["payload"]
+            node = {
+                "id": "image-shared-media",
+                "type": "image",
+                "title": "角色｜分享测试（图1）",
+                "position": {"x": 0, "y": 0},
+                "metadata": {
+                    "status": "done",
+                    "content": f"/uploads/{filename}",
+                },
+            }
+            payload.setdefault("nodes", []).append(node)
+            group = payload.setdefault("episodeImports", [{}])[0]
+            group.setdefault("nodeIds", []).append(node["id"])
+            canvas_store.update_project(
+                self.project_id,
+                payload=payload,
+                if_revision=project["revision"],
+            )
+        return filename
+
     def test_anonymous_share_can_read_only(self):
         share = self.create_share()
         status, _, body = self.request(
@@ -165,6 +197,36 @@ class ProjectShareTests(unittest.TestCase):
         status, _, body = self.request(
             "GET",
             "/api/share/not-a-real-token/project",
+        )
+        self.assertEqual(status, 410)
+        self.assertEqual(json.loads(body)["code"], "SHARE_INVALID")
+
+    def test_anonymous_share_reads_only_project_media(self):
+        filename = self.create_referenced_upload()
+        share = self.create_share()
+        status, headers, body = self.request(
+            "GET",
+            f"/api/share/{share['token']}/media/{filename}",
+            extra_headers={"Range": "bytes=1-4"},
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(body, b"PNG\r")
+        self.assertTrue(headers.get("Content-Range", "").startswith("bytes 1-4/"))
+        self.assertEqual(headers.get("Access-Control-Allow-Origin"), "*")
+        self.assertEqual(headers.get("Cache-Control"), "private, no-cache")
+
+        status, _, body = self.request(
+            "GET",
+            f"/api/share/{share['token']}/media/not-referenced.png",
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body)["error"], "文件不存在")
+
+    def test_share_media_rejects_invalid_share_token(self):
+        filename = self.create_referenced_upload()
+        status, _, body = self.request(
+            "GET",
+            f"/api/share/not-a-real-share-token/media/{filename}",
         )
         self.assertEqual(status, 410)
         self.assertEqual(json.loads(body)["code"], "SHARE_INVALID")

@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, activeMediaVersionIndex, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getManagedTenantAudit, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, shareEventsUrl, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, activeMediaVersionIndex, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getManagedTenantAudit, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, shareEventsUrl, shareMediaSourceUrl, subscribeToEvents} from './api';
 
 describe('project event cursor', () => {
   it('reconnects SSE from the last rendered events for this project', () => {
@@ -8,6 +8,16 @@ describe('project event cursor', () => {
       .toContain('/api/share/share-token/events?since=42');
     expect(projectCursorStorageKey('project-1'))
       .toBe('vimax.canvas.event-cursor.project-1');
+  });
+
+  it('routes shared uploads through the share-scoped media endpoint', () => {
+    expect(shareMediaSourceUrl('share-token', '/uploads/shared.png')).toBe(
+      '/api/share/share-token/media/shared.png',
+    );
+    expect(shareMediaSourceUrl('share-token', 'https://cdn.example.com/a.png')).toBe(
+      'https://cdn.example.com/a.png',
+    );
+    expect(shareMediaSourceUrl('share-token', '/uploads/nested/a.png')).toBe('');
   });
 });
 
@@ -742,7 +752,9 @@ describe('api request recovery', () => {
     const workspace = await getCanvasWorkspace('share:share-token', 'EP001');
 
     expect(workspace.mediaNodes).toHaveLength(1);
-    expect(workspace.mediaNodes[0].mediaUrl).toBe('/uploads/shared.png');
+    expect(workspace.mediaNodes[0].mediaUrl).toBe(
+      '/api/share/share-token/media/shared.png',
+    );
     expect(workspace.tasks).toEqual([]);
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
       '/api/share/share-token/workspace-index',
