@@ -193,6 +193,7 @@ import {
   type CanvasVisibleBounds,
 } from './canvasViewport';
 import {workspaceRetryDecision} from './requestRetry';
+import {mediaDownloadFilename} from './mediaDownloadName';
 
 type Props = {
   session: string;
@@ -12231,28 +12232,20 @@ function CanvasViewInner({
     }).filter((item) => !!item.url);
     if (items.length === 0) { setToast('选中的卡片里没有已生成的素材'); return; }
     setToast(`正在下载 ${items.length} 个素材…`);
-    const safeName = (s: string) => (s || '素材')
-      // ★ 去掉已存在的扩展名再统一补：素材标题常常本身就是 "1551f07a.png"，
-      //   直接拼 extOf 会得到 "1551f07a.png.png"（实测下载出来的就是这种双后缀）。
-      .replace(/\.(png|jpe?g|webp|gif|mp4|webm|mov|m4v|mp3|wav|m4a)$/i, '')
-      .replace(/[\\/:*?"<>|\r\n]+/g, '_')
-      .slice(0, 60);
-    const extOf = (url: string, kind: CanvasMediaNodeKind): string => {
-      const m = /\.(png|jpe?g|webp|gif|mp4|webm|mov|m4v|mp3|wav|m4a)(?:[?#]|$)/i.exec(url);
-      if (m) return `.${m[1].toLowerCase().replace('jpeg', 'jpg')}`;
-      return kind === 'video' ? '.mp4' : kind === 'audio' ? '.mp3' : '.png';
-    };
     let ok = 0;
     for (let i = 0; i < items.length; i += 1) {
       const item = items[i];
       const n = item.node;
       const url = item.url;
-      const projectName = canvas?.meta.episodes?.[0]?.title || '项目';
-      const episodeName = currentEp ? fmtEp(currentEp) : '整剧';
-      const versionName = item.versionTotal > 1
-        ? `_版本${item.versionIndex + 1}_共${item.versionTotal}版`
-        : '';
-      const filename = `${safeName(projectName)}_${safeName(episodeName)}_${safeName(n.title)}${versionName}${extOf(url, n.kind)}`;
+      const filename = mediaDownloadFilename({
+        projectTitle: canvas?.meta.project_title || canvas?.meta.episodes?.[0]?.title || '项目',
+        episodeId: currentEp || n.episodeId || 'EP01',
+        nodeTitle: n.title,
+        kind: n.kind,
+        url,
+        versionIndex: item.versionIndex,
+        versionTotal: item.versionTotal,
+      });
       let done = false;
       try {
         if (url.startsWith('data:')) {

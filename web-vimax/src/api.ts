@@ -213,6 +213,7 @@ export type CanvasMeta = {
   session_id: string;
   current_ep: string | null;
   episodes: CanvasEp[];
+  project_title?: string;
   overview?: boolean;
 };
 
@@ -1731,7 +1732,13 @@ function getCanvasSync(
     : (eps[0]?.ep_id || 'EP001');
 
   return {
-    meta: {session_id: sessionId, current_ep: currentEp, episodes: eps, overview: false},
+    meta: {
+      session_id: sessionId,
+      current_ep: currentEp,
+      episodes: eps,
+      project_title: title,
+      overview: false,
+    },
     characters, scenes, props, voices, shots, segments,
   };
 }
