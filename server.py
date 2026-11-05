@@ -5734,6 +5734,12 @@ class Handler(BaseHTTPRequestHandler):
             if share_path
             else self._cors_headers()
         )
+        if share_path:
+            cors_headers["Access-Control-Allow-Headers"] = (
+                "If-None-Match, If-Range, Range"
+            )
+            cors_headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
+            cors_headers["Cross-Origin-Resource-Policy"] = "cross-origin"
         cache_headers = {
             "ETag": etag,
             "Last-Modified": last_modified,
@@ -5742,12 +5748,16 @@ class Handler(BaseHTTPRequestHandler):
                 if share_path
                 else "private, max-age=31536000, immutable"
             ),
-            "Cross-Origin-Resource-Policy": "cross-origin",
-            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-            "Access-Control-Allow-Headers": (
-                "If-None-Match, If-Range, Range"
+            **(
+                {}
                 if share_path
-                else "Range, If-Range, If-None-Match, Content-Type"
+                else {
+                    "Cross-Origin-Resource-Policy": "cross-origin",
+                    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                    "Access-Control-Allow-Headers": (
+                        "Range, If-Range, If-None-Match, Content-Type"
+                    ),
+                }
             ),
         }
         if self.command in {"GET", "HEAD"} and self.headers.get("If-None-Match", "").strip() == etag:
