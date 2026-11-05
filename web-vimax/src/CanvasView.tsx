@@ -2445,7 +2445,11 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const [mediaLoaded, setMediaLoaded] = useState(false);
   const [videoSourceReady, setVideoSourceReady] = useState(false);
   const [videoCoverUrl, setVideoCoverUrl] = useState('');
-  const [videoCoverPending, setVideoCoverPending] = useState(false);
+  // A video task can be done before its poster has been extracted. Keep the
+  // loading layer until either the persisted/derived poster paints or poster
+  // extraction explicitly fails. A timer must not turn "still waiting" into
+  // the camera fallback while the real cover is still on the way.
+  const [videoCoverUnavailable, setVideoCoverUnavailable] = useState(false);
   const meta = MEDIA_KIND_META[node.kind];
   const isText = node.kind === 'text';
   const localAccept = node.kind === 'image'
@@ -2588,37 +2592,39 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     setMediaLoaded(false);
     setVideoSourceReady(false);
     setVideoCoverUrl('');
-    setVideoCoverPending(false);
+    setVideoCoverUnavailable(false);
   }, [node.mediaUrl]);
   useEffect(() => {
     if (node.kind !== 'video') return;
     const persisted = String(node.thumbUrl || '').trim();
-    if (persisted) setVideoCoverUrl(persisted);
+    if (persisted) {
+      setVideoCoverUrl(persisted);
+      setVideoCoverUnavailable(false);
+    }
   }, [node.kind, node.mediaUrl, node.thumbUrl]);
   useEffect(() => {
     if (
       node.kind !== 'video'
       || !node.mediaUrl
       || videoCoverUrl
+      || videoCoverUnavailable
       || !contentVisible
       || videoSourceReady
     ) {
       return;
     }
     let cancelled = false;
-    setVideoCoverPending(true);
     const video = document.createElement('video');
     let settled = false;
-    const settle = () => {
+    const settle = (unavailable: boolean) => {
       if (settled) return;
       settled = true;
-      if (!cancelled) setVideoCoverPending(false);
+      if (!cancelled && unavailable) setVideoCoverUnavailable(true);
       video.onloadeddata = null;
       video.onerror = null;
       video.removeAttribute('src');
       video.load();
     };
-    const fallbackTimer = window.setTimeout(settle, 8_000);
     video.preload = 'auto';
     video.muted = true;
     video.playsInline = true;
@@ -2633,27 +2639,33 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
         canvas.height = Math.max(1, Math.round(height * scale));
         canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
         setVideoCoverUrl(canvas.toDataURL('image/jpeg', 0.78));
+        settle(false);
       } catch {
-        // Canvas extraction can fail for codecs/CORS; the play control remains.
+        // Canvas extraction can fail for codecs/CORS. This is an explicit
+        // unavailable state, not a timeout; only now may the fallback paint.
+        settle(true);
       }
-      window.clearTimeout(fallbackTimer);
-      settle();
     };
     video.onerror = () => {
-      window.clearTimeout(fallbackTimer);
-      settle();
+      settle(true);
     };
     video.src = node.mediaUrl;
     video.load();
     return () => {
       cancelled = true;
-      setVideoCoverPending(false);
-      window.clearTimeout(fallbackTimer);
       video.onloadeddata = null;
       video.onerror = null;
-      settle();
+      video.removeAttribute('src');
+      video.load();
     };
-  }, [contentVisible, node.kind, node.mediaUrl, videoCoverUrl, videoSourceReady]);
+  }, [
+    contentVisible,
+    node.kind,
+    node.mediaUrl,
+    videoCoverUnavailable,
+    videoCoverUrl,
+    videoSourceReady,
+  ]);
   useEffect(() => {
     if (!videoPlaying) return;
     setVideoSourceReady(true);
@@ -2930,6 +2942,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     setMediaLoaded(false);
     setVideoSourceReady(false);
     setVideoCoverUrl('');
+    setVideoCoverUnavailable(false);
     const generatedVersionSource = version.sourceType === 'generated'
       || Boolean(version.providerResultUrl || version.storage || version.generatedAt);
     onChange(
@@ -3363,12 +3376,12 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                       onFailure={() => setVideoCoverUrl('')}
                     />
                   )}
-                  {!videoSourceReady && !videoCoverUrl && videoCoverPending && (
+                  {!videoSourceReady && !videoCoverUrl && !videoCoverUnavailable && (
                     <span className="canvas-video-cover-pending" aria-label="视频封面加载中">
                       <span className="canvas-image-loading" aria-hidden="true" />
                     </span>
                   )}
-                  {!videoSourceReady && !videoCoverUrl && !videoCoverPending && (
+                  {!videoSourceReady && !videoCoverUrl && videoCoverUnavailable && (
                     <span className="canvas-video-cover-fallback" aria-hidden="true">
                       <Video size={18} strokeWidth={1.7} />
                     </span>

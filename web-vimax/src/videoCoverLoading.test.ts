@@ -15,10 +15,11 @@ describe('video cover loading state', () => {
       /<VideoCoverImage\s+src=\{videoCoverUrl\}\s+onFailure=\{\(\) => setVideoCoverUrl\(''\)\}/s,
     );
     expect(canvas).toMatch(
-      /!videoSourceReady && !videoCoverUrl && videoCoverPending[\s\S]*canvas-video-cover-pending/,
+      /!videoSourceReady && !videoCoverUrl && !videoCoverUnavailable[\s\S]*canvas-video-cover-pending/,
     );
-    expect(canvas).toMatch(/setVideoCoverPending\(true\)/);
-    expect(canvas).toMatch(/setVideoCoverPending\(false\)/);
+    expect(canvas).not.toMatch(/fallbackTimer/);
+    expect(canvas).toMatch(/setVideoCoverUnavailable\(true\)/);
+    expect(canvas).toMatch(/setVideoCoverUnavailable\(false\)/);
     expect(canvas).toMatch(/canvas-video-cover-fallback/);
   });
 
