@@ -55,11 +55,11 @@ def _canonical_figure(value):
 COL_ROLE, COL_SCENE, COL_PROP, COL_AUDIO, COL_VIDEO = 0, 320, 640, 960, 1240
 
 _REF_RE = re.compile(
-    r"@(?:(?://(?:chr|scn|prp)\s*/\s*-\s*)|(?:角色|场景|道具|音频)\s*[｜|:：]\s*)"
+    r"@(?:(?://(?:chr|scn|prp)\s*/\s*-\s*)|(?:角色|场景|道具|音频|群像)\s*[｜|:：]\s*)"
     r"([^（(]+?)\s*（(?:参考)?图\s*(\d+)"
 )
 _NAMED_REF_RE = re.compile(
-    r"@?(?P<kind>角色|场景|道具|音频)\s*[｜|:：]\s*"
+    r"@?(?P<kind>角色|场景|道具|音频|群像)\s*[｜|:：]\s*"
     r"(?P<name>[^（(]+?)\s*（(?:参考)?图\s*(?P<code>\d+)"
 )
 _RAW_MENTION_RE = re.compile(
@@ -84,6 +84,8 @@ def _asset_kind_from_title(title):
     raw = str(title or "")
     if raw.startswith("角色｜") or raw.startswith("角色|"):
         return "角色"
+    if raw.startswith("群像｜") or raw.startswith("群像|"):
+        return "群像"
     if raw.startswith("场景｜") or raw.startswith("场景|"):
         return "场景"
     if raw.startswith("道具｜") or raw.startswith("道具|"):
@@ -95,7 +97,11 @@ def _asset_identity(title, kind=""):
     text = str(title or "").strip()
     text = re.sub(r"^[^｜|]*[｜|]\s*", "", text)
     text = re.sub(r"[（(]\s*图\s*\d+\s*[)）]\s*$", "", text)
-    text = re.sub(r"[（(](?:角色立绘|场景母版|九宫格|道具设定图)[)）]\s*$", "", text)
+    text = re.sub(
+        r"[（(](?:角色立绘|场景母版|九宫格|道具设定图|群像设定图|群像资产卡)[^）)]*[）)]\s*$",
+        "",
+        text,
+    )
     if kind == "场景":
         text = re.sub(r"\s*[·・]\s*(?:母版|九宫格)\s*$", "", text)
     text = re.sub(r"\s+", "", text).casefold()
@@ -416,7 +422,7 @@ def _image_size(ratio):
 
 def _short_asset_name(name):
     return re.sub(
-        r"[（(](?:角色立绘|场景母版|九宫格|道具设定图)[）)]\s*$",
+        r"[（(](?:角色立绘|场景母版|九宫格|道具设定图|群像设定图|群像资产卡)[^）)]*[）)]\s*$",
         "",
         str(name or "").strip(),
     ).strip()
@@ -857,7 +863,7 @@ def repair_payload_prompt_mentions(payload):
                     (node_by_id.get(str(ref.get("nodeId") or "")) or {}).get("type")
                     in {"image", "audio"}
                     or str(ref.get("label") or "").startswith(
-                        ("角色｜", "场景｜", "道具｜", "音频｜")
+                        ("角色｜", "群像｜", "场景｜", "道具｜", "音频｜")
                     )
                 )
                 and str(ref.get("label") or "").strip()
@@ -1145,7 +1151,12 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
     # ---------- 2) image 节点（按类型分区） ----------
     image_ids = {}          # 图N -> [node ids]
     asset_kinds = {}        # node id -> 类型
-    col_x = {"角色": COL_ROLE, "场景": COL_SCENE, "道具": COL_PROP}
+    col_x = {
+        "角色": COL_ROLE,
+        "群像": COL_ROLE + 160,
+        "场景": COL_SCENE,
+        "道具": COL_PROP,
+    }
     col_y = {k: 0 for k in col_x}
     reused_asset_keys = set()
     reused_generated_asset_keys = set()
@@ -1160,13 +1171,19 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         raw = a.get("raw", "").strip()
         canvas_asset = a.get("canvas") if isinstance(a.get("canvas"), dict) else {}
         canvas_kind = str(canvas_asset.get("kind") or "")
-        if canvas_kind in {"character", "scene", "prop"}:
-            kind = {"character": "角色", "scene": "场景", "prop": "道具"}[canvas_kind]
+        if canvas_kind in {"character", "scene", "prop", "crowd"}:
+            kind = {"character": "角色", "scene": "场景", "prop": "道具", "crowd": "群像"}[canvas_kind]
             short_name = _canvas_asset_name(
                 name,
                 canvas_asset.get("name"),
                 kind,
             ) or _short_asset_name(name)
+        elif "群像资产卡" in name or "群像设定" in name or "群像" in name:
+            # 第四族资产（GRP-N）：必须排在「角色立绘」之前判——群像卡名里常带
+            # 「群像资产卡 GRP-01」，落到 else 会被当成道具，身份键变 `道具:街坊群`，
+            # 与角色/场景复用池对不上，跨集复用直接失效。
+            kind = "群像"
+            short_name = _short_asset_name(name)
         elif "角色立绘" in name:
             kind, short_name = "角色", name.replace("（角色立绘）", "")
         elif "场景" in name or "母版" in name or "九宫格" in name:
@@ -1658,6 +1675,8 @@ def _layout_kind(node):
     if node_type == "image":
         if title.startswith("角色｜"):
             return "role"
+        if title.startswith("群像｜"):
+            return "crowd"
         if title.startswith("场景｜"):
             return "scene"
         if title.startswith("道具｜"):
@@ -1674,7 +1693,7 @@ def _layout_sort_key(node):
     if kind == "video":
         segment = re.search(r"段\s*(\d+)", title)
         return (int(segment.group(1)) if segment else 0, title.casefold())
-    if kind in {"role", "scene", "prop", "audio"}:
+    if kind in {"role", "crowd", "scene", "prop", "audio"}:
         return (figure_number, title.casefold())
     return (title.casefold(),)
 
@@ -1692,6 +1711,7 @@ def apply_import_layout(payload, episode_ids=None):
     fixed_columns = {
         "text": (-320, 150),
         "role": (COL_ROLE, 360),
+        "crowd": (COL_ROLE + 160, 360),
         "scene": (COL_SCENE, 360),
         "prop": (COL_PROP, 360),
         "audio": (COL_AUDIO, 200),
@@ -2083,9 +2103,12 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
         code = _canonical_figure(asset.get("code"))
         canvas = asset.get("canvas") if isinstance(asset.get("canvas"), dict) else {}
         canvas_kind = str(canvas.get("kind") or "")
-        if canvas_kind in {"character", "scene", "prop"}:
-            kind = {"character": "角色", "scene": "场景", "prop": "道具"}[canvas_kind]
+        if canvas_kind in {"character", "scene", "prop", "crowd"}:
+            kind = {"character": "角色", "scene": "场景", "prop": "道具", "crowd": "群像"}[canvas_kind]
             short_name = str(canvas.get("name") or _short_asset_name(asset.get("name", "")))
+        elif "群像" in str(asset.get("name") or ""):
+            kind = "群像"
+            short_name = _short_asset_name(str(asset.get("name") or ""))
         elif "角色立绘" in str(asset.get("name") or ""):
             kind = "角色"
             short_name = str(asset.get("name") or "").replace("（角色立绘）", "")
@@ -2176,6 +2199,8 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
     target_imported_at = _iso_datetime(created_at)
 
     def allowed_for_target(node):
+        if (node.get("metadata") or {}).get("_importCreated"):
+            return True
         if target_imported_at is None:
             return True
         if (node.get("metadata") or {}).get("autoPlaceholder"):
@@ -2250,6 +2275,7 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
                 "seriesId": str(canvas.get("seriesId") or ""),
                 "variantKey": str(canvas.get("variantKey") or "default"),
                 "episodeId": str(episode_id or payload.get("episodeId") or ""),
+                "_importCreated": True,
                 "params": image_params,
             },
             "position": {"x": 0, "y": 0},
@@ -2297,6 +2323,7 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
                 "nodeRole": "generator",
                 "autoPlaceholder": not bool(detailed_prompt),
                 "episodeId": str(episode_id or payload.get("episodeId") or ""),
+                "_importCreated": True,
                 "params": {
                     "provider": "aliyun_bailian",
                     "model": "cosyvoice-v3-5-flash",
@@ -2408,6 +2435,8 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
                             "toNodeId": video.get("id"),
                         })
 
+    for node in added:
+        (node.get("metadata") or {}).pop("_importCreated", None)
     group_changed = False
     if target_group is not None and used_ids:
         next_ids = list(dict.fromkeys([

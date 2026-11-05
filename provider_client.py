@@ -1107,6 +1107,7 @@ def _ark_material_reference_contract(
     ]
     groups: dict[str, list[str]] = {
         "人物": [],
+        "群像": [],
         "场景": [],
         "道具": [],
         "其它素材": [],
@@ -1118,6 +1119,12 @@ def _ark_material_reference_contract(
                 f"<{label}> 对应参考图 {image_index}，仅采用该人物的外貌、"
                 "发型和服装；人物身份必须严格按此标签绑定，"
                 "不得因画面左右位置或出场先后替换成其他角色。"
+            )
+        elif label.startswith("群像｜"):
+            groups["群像"].append(
+                f"<{label}> 对应参考图 {image_index}，仅采用该群体的统一制式、"
+                "体态与身高带、年龄与性别构成、同框密度和统一朝向；"
+                "不刻画个体五官，不得按段落更换群体长相。"
             )
         elif label.startswith("场景｜"):
             groups["场景"].append(
@@ -1149,14 +1156,53 @@ def _ark_material_reference_contract(
 
     sections = [
         "### 素材引用",
-        "角色、场景和道具均按标签识别，优先于画面中的人物出场顺序。",
+        "角色、群像、场景和道具均按标签识别，优先于画面中的人物出场顺序。",
         "场景参考图若出现人物，只取空间布局、建筑、陈设与光线，不采用人物。",
     ]
-    for heading in ("人物", "场景", "道具", "声音", "其它素材"):
+    for heading in ("人物", "群像", "场景", "道具", "声音", "其它素材"):
         lines = groups.get(heading, [])
         if lines:
             sections.extend([f"【{heading}】", *lines])
     return "\n".join(sections)
+
+
+_MATERIAL_CONTRACT_GROUPS = (
+    "【人物】",
+    "【群像】",
+    "【场景】",
+    "【道具】",
+    "【声音】",
+    "【其它素材】",
+)
+
+
+def _strip_material_contract_block(text: str) -> str:
+    """按块删除 `### 素材引用` 及其分组条目，不做 split 截断。
+
+    契约位置已从段末改为【场景资产】之前。旧实现 `re.split(head, maxsplit=1)[0]`
+    在契约不在末尾时会把它后面的全部正文（场景资产／核心人物／站位声明／
+    时间轴分镜）整段丢掉，提交给模型的分段直接残废。
+    """
+    lines = str(text or "").split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().startswith("### 素材引用"):
+            i += 1
+            while i < len(lines):
+                stripped = lines[i].strip()
+                if not stripped:
+                    i += 1
+                    continue
+                if stripped.startswith("【") and not stripped.startswith(_MATERIAL_CONTRACT_GROUPS):
+                    break
+                if stripped.startswith("#") or stripped.startswith("```"):
+                    break
+                i += 1
+            continue
+        out.append(lines[i])
+        i += 1
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip("\n")
 
 
 def _ark_prompt_with_material_reference_contract(
@@ -1164,14 +1210,21 @@ def _ark_prompt_with_material_reference_contract(
     refs: list[dict[str, Any]],
     voices: list[dict[str, Any]],
 ) -> str:
-    """Use the prompt's actual Ark slot order as the only numbering authority."""
-    base = re.split(
-        r"(?m)^### 素材引用\s*$",
-        str(prompt or ""),
-        maxsplit=1,
-    )[0].rstrip()
+    """Use the prompt's actual Ark slot order as the only numbering authority.
+
+    契约插在【场景资产】之前：段末是最低注意力区，模型读不到身份绑定。
+    """
+    base = _strip_material_contract_block(prompt)
     contract = _ark_material_reference_contract(refs, voices)
-    return f"{base}\n\n{contract}".strip()
+    if not contract:
+        return base
+    marker = re.search(r"(?m)^【场景资产】", base)
+    if marker:
+        return f"{base[:marker.start()]}{contract}\n\n{base[marker.start():]}".strip()
+    style = re.search(r"(?m)^【画幅风格】[^\n]*(?:\n|$)", base)
+    if style:
+        return f"{base[:style.end()]}\n{contract}\n{base[style.end():]}".strip()
+    return f"{contract}\n\n{base}".strip()
 
 
 def _text_refs(refs: list[dict[str, Any]]) -> str:

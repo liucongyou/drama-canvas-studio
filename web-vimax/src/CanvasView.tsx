@@ -4603,7 +4603,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
   const refRoleLabel = (r: {nodeId: string; label?: string}) => {
     const label = refLabel(r);
     if (/^音频/.test(label)) return '音色';
-    const role = /^(角色|场景|道具)/.exec(label)?.[1];
+    const role = /^(角色|群像|场景|道具)/.exec(label)?.[1];
     if (role) return role;
     const kind = refKind(r);
     return kind === 'text' ? '文本' : kind === 'audio' ? '音色' : kind === 'video' ? '视频' : '参考图';
@@ -16827,7 +16827,7 @@ function CanvasViewInner({
             ) : (
               <div className="canvas-asset-tray-body">
                 {/* 资产托盘：只列画布媒体节点（卡片），不再显示原生资产分组/分段树。
-                    分组按媒体节点标题前缀（角色｜/场景｜/道具｜）+ kind（音色/视频）区分，
+                    分组按媒体节点标题前缀（角色｜/群像｜/场景｜/道具｜）+ kind（音色/视频）区分，
                     与画布上的独立媒体卡片一一对应，点击定位。 */}
                 {/* ★ 分组要互斥：原来「资产图」用 kind==='image' 兜底，
                     又把角色/场景/道具（它们也是 image）按标题前缀先捞了一遍 →
@@ -16837,11 +16837,12 @@ function CanvasViewInner({
                 {(() => {
                   const claimed = new Set(
                     mediaNodes
-                      .filter((mn) => mn.kind === 'image' && /^(角色|场景|道具)[｜|]/.test(mn.title))
+                      .filter((mn) => mn.kind === 'image' && /^(角色|群像|场景|道具)[｜|]/.test(mn.title))
                       .map((mn) => mn.id),
                   );
                   const groups = ([
                     {label: '角色', key: 'role', Icon: UserRound, test: (mn: CanvasMediaNode) => /^角色[｜|]/.test(mn.title)},
+                    {label: '群像', key: 'crowd', Icon: Group, test: (mn: CanvasMediaNode) => /^群像[｜|]/.test(mn.title)},
                     {label: '场景', key: 'scene', Icon: Mountain, test: (mn: CanvasMediaNode) => /^场景[｜|]/.test(mn.title)},
                     {label: '道具', key: 'prop', Icon: Box, test: (mn: CanvasMediaNode) => /^道具[｜|]/.test(mn.title)},
                     // 音色：单独组，名字加「音色」后缀区分同名的角色图

@@ -1,0 +1,75 @@
+{
+  "title": "群像导入测试 · 第03集",
+  "meta": {
+    "画幅": "9:16",
+    "模型版本": "2.0"
+  },
+  "canvas_contract": {
+    "schema": "drama-canvas-feed/v2",
+    "generator": {
+      "name": "group-import-contract",
+      "skillVersion": "7.4.29",
+      "packageRevision": "crowd-test"
+    },
+    "video_model": "doubao-seedance-2-0",
+    "video_aspect": "9:16"
+  },
+  "assets": [
+    {
+      "code": "SCN-015",
+      "name": "厂办门口小广场（场景母版）",
+      "img": "图15"
+    },
+    {
+      "code": "GRP-016",
+      "name": "街坊群（群像资产卡 GRP-01 · B 级）",
+      "img": "图16"
+    }
+  ],
+  "asset_prompts": [
+    {
+      "code": "图15",
+      "semanticCode": "SCN-015",
+      "name": "厂办门口小广场（场景母版）",
+      "raw": "9:16 场景母版，红砖厂办门口小广场，无人。",
+      "canvas": {
+        "kind": "scene",
+        "name": "厂办门口小广场·母版",
+        "ratio": "9:16"
+      }
+    },
+    {
+      "code": "图16",
+      "semanticCode": "GRP-016",
+      "name": "街坊群（群像资产卡 GRP-01 · B 级）",
+      "raw": "3 格群像参考图：统一制式、体态带、年龄构成与同框密度；不刻画个体五官。",
+      "canvas": {
+        "kind": "crowd",
+        "name": "街坊群",
+        "ratio": "9:16"
+      }
+    }
+  ],
+  "voice_prompts": [],
+  "segments": [
+    {
+      "no": 2,
+      "name": "段2 · 人群哗然",
+      "raw": "【画幅风格】9:16 竖屏\n【场景资产】@场景｜厂办门口小广场·母版（图15）\n【核心人物】@群像｜街坊群（图16）\n【站位声明】@群像｜街坊群（图16）\n台词：无",
+      "canvas": {
+        "asset_codes": [
+          "图15",
+          "图16"
+        ],
+        "asset_refs": [
+          {
+            "code": "图15"
+          },
+          {
+            "code": "图16"
+          }
+        ]
+      }
+    }
+  ]
+}

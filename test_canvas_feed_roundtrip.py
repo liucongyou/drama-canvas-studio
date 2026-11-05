@@ -141,6 +141,40 @@ class CanvasFeedRoundTripTests(unittest.TestCase):
         self.assertEqual(before, once)
         self.assertEqual(once, twice)
 
+    def test_crowd_reference_creates_and_binds_missing_group_asset(self):
+        feed = self.episode_feed(3, "EP003")
+        feed["asset_prompts"] = []
+        feed["voice_prompts"] = []
+        feed["segments"][0]["raw"] = (
+            "【画幅风格】9:16 竖屏\n"
+            "【场景资产】@场景｜厂办门口小广场·母版（图15）\n"
+            "【核心人物】@角色｜赵铁柱（图1）；@群像｜街坊群（图16）\n"
+            "【站位声明】@角色｜赵铁柱（图1）；@群像｜街坊群（图16）\n"
+            "台词：无"
+        )
+        plan = self.import_feed(
+            {"nodes": [], "connections": [], "episodeImports": []},
+            feed,
+            1,
+        )
+        payload = plan.merged_payload
+        crowd = next(
+            node for node in payload["nodes"]
+            if node.get("title") == "群像｜街坊群（图16）"
+        )
+        video = next(node for node in payload["nodes"] if node.get("type") == "video")
+        self.assertIn(crowd["id"], {
+            ref.get("nodeId")
+            for ref in video["metadata"]["params"]["refs"]
+        })
+        self.assertIn(crowd["id"], {
+            connection.get("fromNodeId")
+            for connection in payload["connections"]
+            if connection.get("toNodeId") == video["id"]
+        })
+        self.assertEqual(crowd["metadata"]["assetKey"], "群像:街坊群")
+        self.assertFalse(crowd["metadata"].get("_importCreated"))
+
     def test_same_episode_reimport_is_semantically_idempotent(self):
         feed = self.episode_feed(1, "EP001")
         feed_before = copy.deepcopy(feed)

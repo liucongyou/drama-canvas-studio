@@ -41,7 +41,10 @@ function episodeLabel(value: string): string {
 
 function segmentLabel(value: string): string {
   const match = /(?:^|[^\d])段\s*(\d+)/.exec(String(value || ''));
-  return match ? `段${Number(match[1])}` : cleanPart(value, '素材');
+  if (match) return `段${Number(match[1])}`;
+  const crowd = /^群像｜(.+?)(?:[（(]图\s*\d+[）)])?$/.exec(String(value || ''));
+  if (crowd) return cleanPart(`群像_${crowd[1]}`, '群像');
+  return cleanPart(value, '素材');
 }
 
 function mediaExtension(url: string, kind: CanvasMediaNodeKind): string {

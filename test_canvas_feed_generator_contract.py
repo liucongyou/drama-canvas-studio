@@ -279,6 +279,10 @@ print(json.dumps(feed, ensure_ascii=False))
         self.assertIn("不采用图中人物", raw)
         self.assertEqual(raw.count("### 素材引用"), 1)
         self.assertNotIn("旧占位（图99）", raw)
+        # 契约位置：必须在【场景资产】之前（段末模型读不到身份绑定）
+        self.assertLess(raw.index("### 素材引用"), raw.index("【场景资产】"))
+        # 契约块不得吞掉它后面的正文——场景资产之后的核心人物/站位必须还在
+        self.assertIn("【核心人物】", raw)
         self.assertEqual(feed["voice_prompts"][0]["code"], "图1")
         self.assertEqual(feed["voice_prompts"][0]["semanticCode"], "CHR-001")
         self.assertIn("【音色引用】@音频｜赵铁柱（图1）", feed["segments"][0]["raw"])

@@ -89,7 +89,16 @@ def _canvas_video_model(value):
 
 
 def _canvas_asset_kind(name):
+    """判定资产族。群像必须在角色之前判——「街坊群」含「群」不含「角色」。
+
+    第四族资产「群像资产卡 GRP-N」（sd-asset-engine/references/
+    continuity-and-crowd.md §3.1）此前没有独立 kind，被判成 prop，
+    于是标题写成「道具｜街坊群…」、契约文案套成「仅采用造型、材质与状态」
+    ——把一群人当一件道具，模型自然不知道要按图统一群体形貌。
+    """
     text = str(name or "")
+    if "群像" in text or re.search(r"\bGRP-?\d+", text):
+        return "crowd"
     if "角色" in text:
         return "character"
     if "场景" in text or "母版" in text or "九宫格" in text:
@@ -99,14 +108,19 @@ def _canvas_asset_kind(name):
 
 def _canvas_asset_name(name):
     return re.sub(
-        r"[（(](?:角色立绘|场景母版|九宫格|道具设定图)[）)]\s*$",
+        r"[（(](?:角色立绘|场景母版|九宫格|道具设定图|群像设定图|群像资产卡)[^）)]*[）)]\s*$",
         "",
         str(name or "").strip(),
     ).strip()
 
 
 def _canvas_kind_label(kind):
-    return {"character": "角色", "scene": "场景", "prop": "道具"}.get(kind, "资产")
+    return {
+        "character": "角色",
+        "scene": "场景",
+        "prop": "道具",
+        "crowd": "群像",
+    }.get(kind, "资产")
 
 
 def _canvas_figure_number(code):
@@ -139,6 +153,29 @@ def _canvas_semantic_code(asset):
     return match.group(1) if match else ""
 
 
+def _split_toplevel(text, sep="·"):
+    """按分隔符切分，但跳过括号内部的同类分隔符。
+
+    资产标题 `图16 · 街坊群（群像资产卡 GRP-01 · B 级）` 里带了一个括号内的 `·`，
+    裸 `split("·")` 会把它切成三段，`name` 变成半截的「街坊群（群像资产卡 GRP-01」、
+    `desc` 变成「B 级）」——资产名残缺，后续按名字判类型、生成标题、
+    归一化 @ 引用全部跟着错位。
+    """
+    parts, buf, depth = [], [], 0
+    for ch in str(text or ""):
+        if ch in "（(":
+            depth += 1
+        elif ch in "）)":
+            depth = max(0, depth - 1)
+        if ch == sep and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
 def _canvas_source_manifest(data):
     manifest = {}
     for asset in data.get("assets") or []:
@@ -152,6 +189,7 @@ def _canvas_source_manifest(data):
                 "character": "CHR",
                 "scene": "SCN",
                 "prop": "PRP",
+                "crowd": "GRP",
             }.get(kind, "AST")
             semantic = f"{prefix}-{int(figure[1:]):03d}"
             asset["semanticCode"] = semantic
@@ -480,6 +518,8 @@ def _ensure_audio_prompt_refs(prompt, aliases):
     """Expose the concrete audio node name inside the prompt contract."""
     text = str(prompt or "")
     existing = re.compile(r"(?m)^【音色引用】[^\n]*(?:\n|$)")
+    preserved = existing.search(text)
+    preserved_line = preserved.group(0) if preserved else ""
     text = existing.sub("", text, count=1)
     text = re.sub(r"\n{3,}", "\n\n", text)
     characters = {
@@ -497,8 +537,14 @@ def _ensure_audio_prompt_refs(prompt, aliases):
         name = match.group("name").strip()
         if (name in characters or name in prompt_character_codes) and name not in speaking:
             speaking.append(name)
+    # 无「台词：角色（语气）」形式的显式对白时，不能把原有音色引用整行删掉：
+    # 画外独白（OS）、旁白等段落本就不用标准台词标记，但音色节点仍然必须挂。
+    # 官方 7.4.29 删掉旧版的保留分支后，OS 段的【音色引用】被静默清空 →
+    # validate_canvas_feed 报 VOICE_DECLARED_MISSING「对白角色与音色引用不一致」。
     if not speaking:
-        return text
+        if not preserved_line:
+            return text
+        return _reinsert_audio_section(text, preserved_line.rstrip("\n"))
     labels = []
     for name in speaking:
         title = str(characters.get(name, {}).get("title") or "")
@@ -510,6 +556,11 @@ def _ensure_audio_prompt_refs(prompt, aliases):
     if not labels:
         return text
     section = "【音色引用】" + "；".join(labels)
+    return _reinsert_audio_section(text, section)
+
+
+def _reinsert_audio_section(text, section):
+    """把【音色引用】行插回【核心人物】下方（规定位置：核心人物之下、站位声明之上）。"""
     core = re.search(r"(?m)^【核心人物】[^\n]*(?:\n|$)", text)
     if core:
         return text[:core.end()] + "\n" + section + "\n" + text[core.end():]
@@ -519,46 +570,89 @@ def _ensure_audio_prompt_refs(prompt, aliases):
     return text.rstrip() + "\n\n" + section + "\n"
 
 
+def _material_contract_base(title):
+    """从「类型｜资产名（图N）」剥出左侧别名：只留资产名。
+
+    投稿平台（火山短剧创作台）的素材引用行是「别名 → 素材」两段式：
+        左侧 `<钱万金>`            只放别名，不放类型、不放图号
+        右侧 `对应@角色｜钱万金（图2）` 这里才是真正的素材绑定
+    旧实现把完整标题塞进左侧尖括号、右侧只写「对应角色参考图」（无图号），
+    等于左边既当别名又当图号、右边却没有绑定任何素材——图挂不上。
+    """
+    base = re.sub(r"^[^｜]+｜", "", str(title or "")).strip()
+    return re.sub(r"[（(]\s*图\s*\d+\s*[）)]\s*$", "", base).strip()
+
+
 def _material_reference_contract(prompt, aliases):
-    """Render the Volcano drama-creation style material identity contract."""
+    """Render the Volcano drama-creation style material identity contract.
+
+    体例（2026-11-05 用户裁定，对齐短剧创作台真实格式）：
+        ### 素材引用
+        【人物】
+        <钱万金> 对应@角色｜钱万金（图2），仅采用该人物的外貌、发型和服装。人物身份必须按角色名锁定，不得按画面左右位置替换。
+        【场景】
+        <厂办门口小广场·母版> 对应@场景｜厂办门口小广场·母版（图15），仅采用空间布局、建筑、陈设和光线，不采用图中人物。
+        【道具】
+        <买断协议> 对应@道具｜买断协议（图7），仅采用造型、材质与状态，不作为人物身份参考。
+        【声音】
+        <钱万金>的音色对应@音频｜钱万金（图2），仅用于该角色发声，不得分配给其他角色。
+    """
     text = str(prompt or "")
+    # 资产标题必须以「（图N）」收尾。旧写法 [^；\n@]+ 是贪婪吞到分号为止，
+    # 会把整句画面描述并进标题（`<角色｜陈大强（图4）从摊棚后探出半个身子>`），
+    # 契约条目于是变成残缺指令——模型分不清哪一段是资产名、哪一段是该镜动作。
     image_titles = re.findall(
-        r"@(角色｜[^；\n@]+|场景｜[^；\n@]+|道具｜[^；\n@]+)",
+        r"@((?:角色|场景|道具|群像)｜[^；\n@（]{1,48}?（图\s*\d+）)",
         text,
     )
     seen_titles = set()
-    groups = {"人物": [], "场景": [], "道具": []}
+    groups = {"人物": [], "场景": [], "道具": [], "群像": []}
     for title in image_titles:
         title = title.strip()
         if not title or title in seen_titles:
             continue
         seen_titles.add(title)
+        base = _material_contract_base(title)
+        if not base:
+            continue
         if title.startswith("角色｜"):
             groups["人物"].append(
-                f"<{title}> 对应角色参考图，仅采用该人物的外貌、发型和服装。"
+                f"<{base}> 对应@{title}，仅采用该人物的外貌、发型和服装。"
                 "人物身份必须按角色名锁定，不得按画面左右位置替换。"
             )
         elif title.startswith("场景｜"):
             groups["场景"].append(
-                f"<{title}> 对应场景参考图，仅采用空间布局、建筑、陈设和光线，不采用图中人物。"
+                f"<{base}> 对应@{title}，仅采用空间布局、建筑、陈设和光线，不采用图中人物。"
             )
         elif title.startswith("道具｜"):
             groups["道具"].append(
-                f"<{title}> 对应道具参考图，仅采用造型、材质与状态，不作为人物身份参考。"
+                f"<{base}> 对应@{title}，仅采用造型、材质与状态，不作为人物身份参考。"
+            )
+        elif title.startswith("群像｜"):
+            # 群像卡只锁「群体长相」：制式、体态带、年龄构成、密度。
+            # 不刻画个体五官，也不得给小传脸/主角脸——否则下一段必定变脸。
+            groups["群像"].append(
+                f"<{base}> 对应@{title}，仅采用统一制式、体态与身高带、年龄与性别构成、"
+                "同框密度与统一朝向，不刻画个体五官、不给可辨识的个体脸；"
+                "群体形貌必须按该群像卡锁定，不得逐段更换长相。"
             )
 
     voice_titles = []
-    for title in re.findall(r"@(音频｜[^；\n@]+)", text):
+    # 同理：音频引用必须以「（图N）」收尾，否则会把台词正文吞进标题。
+    for title in re.findall(r"@(音频｜[^；\n@（]{1,48}?（图\s*\d+）)", text):
         title = title.strip()
         if title and title not in voice_titles:
             voice_titles.append(title)
-    voice_lines = [
-        f"<{title}> 的音色只用于该角色发声，不得分配给其他角色。"
-        for title in voice_titles
-    ]
+    voice_lines = []
+    for title in voice_titles:
+        base = _material_contract_base(title)
+        if base:
+            voice_lines.append(
+                f"<{base}>的音色对应@{title}，仅用于该角色发声，不得分配给其他角色。"
+            )
 
     sections = ["### 素材引用"]
-    for heading in ("人物", "场景", "道具"):
+    for heading in ("人物", "群像", "场景", "道具"):
         if groups[heading]:
             sections.extend([f"【{heading}】", *groups[heading]])
     if voice_lines:
@@ -566,18 +660,62 @@ def _material_reference_contract(prompt, aliases):
     return "\n".join(sections) if len(sections) > 1 else ""
 
 
+_MATERIAL_GROUP_PREFIX = ("【人物】", "【群像】", "【场景】", "【道具】", "【声音】")
+
+
+def _strip_material_reference_contract(text):
+    """删掉已有的 `### 素材引用` 块（含其分组标题与条目行），其余正文原样保留。
+
+    旧实现在 `### 素材引用` 处 split 后取前半段——契约一旦不在末尾（比如移到
+    【场景资产】上方），这一步会把契约之后的所有正文（场景资产、核心人物、
+    站位声明、时间轴分镜）整段删掉，段落直接残废。所以必须按块删除而非截断。
+    """
+    lines = str(text or "").split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        if re.match(r"^###\s*素材引用\s*$", lines[i].strip()):
+            i += 1
+            while i < len(lines):
+                stripped = lines[i].strip()
+                if not stripped:
+                    i += 1
+                    continue
+                if stripped.startswith("【") and not stripped.startswith(_MATERIAL_GROUP_PREFIX):
+                    break
+                if stripped.startswith("#") or stripped.startswith("```"):
+                    break
+                # 分组标题或条目行（`<别名> 对应@…`）——属于契约块，吞掉
+                i += 1
+            continue
+        out.append(lines[i])
+        i += 1
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip("\n")
+
+
+def _insert_material_reference_contract(text, contract):
+    """把契约插到 `【场景资产】` 之上（【画幅风格】紧随其后）。
+
+    2026-11-05 用户裁定：契约原先挂在分段末尾，模型读不到——末端是最低注意力区，
+    素材身份约束等于没写。移到场景资产之前，模型在展开任何资产之前就先拿到
+    「哪张图是谁、只能用来干什么」的绑定关系。
+    """
+    marker = re.search(r"(?m)^【场景资产】", text)
+    if marker:
+        return f"{text[:marker.start()]}{contract}\n\n{text[marker.start():]}"
+    style = re.search(r"(?m)^【画幅风格】[^\n]*(?:\n|$)", text)
+    if style:
+        return f"{text[:style.end()]}\n{contract}\n{text[style.end():]}"
+    return f"{contract}\n\n{text}"
+
+
 def _replace_material_reference_contract(prompt, aliases):
-    """Rebuild the terminal identity contract from the canonical asset labels."""
+    """Rebuild the identity contract from the canonical asset labels."""
     text = str(prompt or "")
     contract = _material_reference_contract(text, aliases)
     if not contract:
         return text
-    base = re.split(
-        r"(?m)^### 素材引用\s*$",
-        text,
-        maxsplit=1,
-    )[0].rstrip()
-    return f"{base}\n\n{contract}"
+    base = _strip_material_reference_contract(text)
+    return _insert_material_reference_contract(base, contract)
 
 
 _TEXT_BAN_POLICY_RE = re.compile(
@@ -901,6 +1039,7 @@ def enrich_canvas_contract(data, asset_ledger=None):
                     "character": "CHR",
                     "scene": "SCN",
                     "prop": "PRP",
+                    "crowd": "GRP",
                 }.get(
                     _canvas_asset_kind(chosen.get("name")),
                     "AST",
@@ -1306,7 +1445,7 @@ def parse_md(md_text: str, asset_ledger=None) -> dict:
                 data["segments"].append(seg)
                 ap = None
             elif z_sec == "ap":
-                parts = [p.strip() for p in sub_head.split("·")]
+                parts = [_p.strip() for _p in _split_toplevel(sub_head, "·")]
                 ap = {"code": clean_code(parts[0]) if parts else sub_head,
                       "_match": sub_head,
                       "semanticCode": (
@@ -1908,6 +2047,25 @@ def self_test():
     html = build_html(d)
     assert "00:00:00,000 --> 00:00:04,000" in srt and "你好" in srt
     assert "镜1" in csv_txt and "exportSRT()" in html and "exportTimelineCSV()" in html
+
+    # 群像资产（第四族 GRP）：标题带括号内 `·` 不得被切成两段；类型必须判成 crowd，
+    # 契约必须单列【群像】分组、语义码必须 GRP- 前缀。此前群像被判成道具，
+    # 标题写成「道具｜街坊群…」、契约文案套成「仅采用造型、材质与状态」——
+    # 把一群人当一件道具，模型不知道要按群像卡统一群体形貌。
+    assert _split_toplevel("图16 · 街坊群（群像资产卡 GRP-01 · B 级）") == [
+        "图16 ", " 街坊群（群像资产卡 GRP-01 · B 级）"
+    ]
+    assert _canvas_asset_kind("街坊群（群像资产卡 GRP-01 · B 级）") == "crowd"
+    assert _canvas_asset_name("街坊群（群像资产卡 GRP-01 · B 级）") == "街坊群"
+    assert _canvas_asset_title({"name": "街坊群（群像设定图）", "code": "图16"}) == "群像｜街坊群（图16）"
+    _crowd_contract = _material_reference_contract(
+        "【核心人物】@群像｜街坊群（图16）\n正文…",
+        [],
+    )
+    assert "### 素材引用" in _crowd_contract
+    assert "【群像】" in _crowd_contract
+    assert "<街坊群> 对应@群像｜街坊群（图16）" in _crowd_contract
+    assert "统一制式" in _crowd_contract and "不刻画个体五官" in _crowd_contract
 
     # 通用性锁：全新剧名、全新角色、无历史台账也必须独立生成完整音色。
     _generic_data = enrich_canvas_contract({

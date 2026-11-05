@@ -141,14 +141,14 @@ BARE_DIALOG_RE = re.compile(
     re.MULTILINE,
 )
 AUDIO_REF_RE = re.compile(r"@音频｜([^（(\n]+)[（(]图\s*(\d+)[）)]")
-ASSET_REF_RE = re.compile(r"@(?:角色|场景|道具)｜[^（(\n]+[（(](?:参考)?图\s*(\d+)[）)]")
+ASSET_REF_RE = re.compile(r"@(?:角色|场景|道具|群像)｜[^（(\n]+[（(](?:参考)?图\s*(\d+)[）)]")
 LEGACY_ASSET_REF_RE = re.compile(
     r"@//(?:chr|scn|prp)\s*/\s*-\s*[^（(\n]+[（(](?:参考)?图\s*(\d+)[）)]"
 )
 CODE_RE = re.compile(r"图\s*(\d+)")
 SEMANTIC_CODE_RE = re.compile(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*")
 TITLE_CODE_RE = re.compile(r"[（(]图\s*(\d+)[）)]")
-TITLE_ROLE_RE = re.compile(r"^(?:音频|角色|场景|道具)｜([^（(\n]+)")
+TITLE_ROLE_RE = re.compile(r"^(?:音频|角色|场景|道具|群像)｜([^（(\n]+)")
 BAD_AGE_RE = re.compile(
     r"A \d+(?:-\d+)?-year-old (?:male|female)|A (?:male|female) in his ",
     re.IGNORECASE,
