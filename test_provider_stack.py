@@ -2239,6 +2239,90 @@ class ProviderPayloadTests(unittest.TestCase):
         self.assertIn("audio_url", kinds)
         self.assertEqual(calls[1][1], "https://ark.example/api/v3/contents/generations/tasks/task-1")
 
+    def test_ark_video_labels_reference_images_in_request_order(self):
+        provider = {
+            "id": "ark",
+            "name": "火山方舟",
+            "base_url": "https://ark.example/api/v3",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "seedance",
+            "remoteModel": "doubao-seedance-2-0-mini-260615",
+            "adapter": "ark_video",
+            "params": {
+                "duration": {"min": 4, "max": 30},
+                "ratio": {"options": ["9:16"]},
+                "resolution": {"options": ["480P"]},
+            },
+        }
+        refs = [
+            {
+                "kind": "image",
+                "url": "https://image.example/role-4.jpg",
+                "label": "角色｜陈大强（图4）",
+            },
+            {
+                "kind": "image",
+                "url": "https://image.example/scene-10.jpg",
+                "label": "场景｜厂区后街·母版（图10）",
+            },
+            {
+                "kind": "image",
+                "url": "https://image.example/role-1.jpg",
+                "label": "角色｜赵铁柱（图1）",
+            },
+        ]
+        calls = []
+
+        def fake_request(method, url, key, body=None, **kwargs):
+            calls.append((method, url, body))
+            if method == "POST":
+                return {"id": "task-order"}
+            return {
+                "id": "task-order",
+                "status": "succeeded",
+                "content": {"video_url": "https://video.example/result.mp4"},
+            }
+
+        with (
+            patch.object(
+                provider_client,
+                "_request_json",
+                side_effect=fake_request,
+            ),
+            patch.object(
+                provider_client,
+                "_ark_reference_url",
+                side_effect=lambda ref: ref["url"],
+            ),
+        ):
+            provider_client.generate_video(
+                provider,
+                model,
+                "段3测试",
+                {"duration": 4, "ratio": "9:16", "resolution": "480P"},
+                refs,
+                [],
+            )
+
+        body = calls[0][2]
+        image_urls = [
+            item["image_url"]["url"]
+            for item in body["content"]
+            if item.get("type") == "image_url"
+        ]
+        text = body["content"][0]["text"]
+        self.assertEqual(image_urls, [
+            "https://image.example/role-1.jpg",
+            "https://image.example/role-4.jpg",
+            "https://image.example/scene-10.jpg",
+        ])
+        self.assertIn("<角色｜赵铁柱（图1）> 对应参考图 1", text)
+        self.assertIn("<角色｜陈大强（图4）> 对应参考图 2", text)
+        self.assertIn("<场景｜厂区后街·母版（图10）> 对应参考图 3", text)
+        self.assertIn("不采用图中人物", text)
+
     def test_ark_video_rejects_below_four_seconds_and_maps_expired_error(self):
         provider = {
             "id": "ark",

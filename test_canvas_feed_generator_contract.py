@@ -210,6 +210,70 @@ print(json.dumps(feed, ensure_ascii=False))
 
         self.assertEqual(feed["asset_prompts"][0]["code"], "图1")
         self.assertEqual(feed["asset_prompts"][0]["semanticCode"], "CHR-001")
+
+    def test_generated_feed_contains_material_reference_contract(self):
+        script = """
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(r"{skill_root}") / "scripts"))
+import build_board_lite
+
+feed = build_board_lite.enrich_canvas_contract({{
+    "title": "素材引用契约测试",
+    "meta": {{"画幅": "9:16", "模型版本": "2.0"}},
+    "assets": [
+        {{"code": "图1", "name": "赵铁柱（角色立绘）", "img": "图1"}},
+        {{"code": "图9", "name": "街口（场景母版）", "img": "图9"}},
+    ],
+    "asset_prompts": [
+        {{
+            "code": "图1",
+            "name": "赵铁柱（角色立绘）",
+            "raw": (
+                "一名 35 岁 男性。\\ncharacter sheet\\n"
+                "**Voice Description 完整版**： "
+                "A 35-year-old low, steady, threatening male voice.\\n"
+                "**Voice Description Label**： low steady male"
+            ),
+        }},
+        {{
+            "code": "图9",
+            "name": "街口（场景母版）",
+            "raw": "9:16 场景母版，无人。",
+        }},
+    ],
+    "segments": [{{
+        "no": 1,
+        "name": "段1",
+        "raw": (
+            "【场景资产】@街口（图9）\\n"
+            "【核心人物】@赵铁柱（图1）\\n"
+                    "【音色引用】@音频｜赵铁柱（图1）\\n"
+            "台词：赵铁柱（沉声）：\\"走。\\""
+        ),
+        "shots": [],
+    }}],
+}})
+print(json.dumps(feed, ensure_ascii=False))
+""".format(skill_root=str(SKILL_ROOT))
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, (result.stdout or "") + (result.stderr or ""))
+        feed = json.loads(result.stdout)
+        raw = feed["segments"][0]["raw"]
+        self.assertIn("### 素材引用", raw)
+        self.assertIn("【人物】", raw)
+        self.assertIn("【场景】", raw)
+        self.assertIn("仅采用该人物的外貌、发型和服装", raw)
+        self.assertIn("不采用图中人物", raw)
         self.assertEqual(feed["voice_prompts"][0]["code"], "图1")
         self.assertEqual(feed["voice_prompts"][0]["semanticCode"], "CHR-001")
         self.assertIn("【音色引用】@音频｜赵铁柱（图1）", feed["segments"][0]["raw"])
@@ -230,7 +294,18 @@ print(json.dumps(feed, ensure_ascii=False))
         self.assertIn("（图1）", audio["title"])
         refs = video["metadata"]["params"]["refs"]
         voices = video["metadata"]["params"]["voiceRefs"]
-        self.assertEqual({ref["nodeId"] for ref in refs}, {image["id"]})
+        ref_titles = {
+            next(
+                node["title"]
+                for node in payload["nodes"]
+                if node["id"] == ref["nodeId"]
+            )
+            for ref in refs
+        }
+        self.assertEqual(
+            ref_titles,
+            {"角色｜赵铁柱（图1）", "场景｜街口·母版（图9）"},
+        )
         self.assertEqual({ref["nodeId"] for ref in voices}, {audio["id"]})
 
 

@@ -1096,6 +1096,110 @@ def _reference_prompt(prompt: str, refs: list[dict[str, Any]]) -> str:
     return f"{prompt}\n\n[参考素材顺序]\n" + "\n".join(lines)
 
 
+def _ordered_ark_reference_images(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep character references in a stable identity order.
+
+    Ark's image references are ordered and unlabelled at the protocol level.
+    Scene/prop slots can stay first, while characters must keep a deterministic
+    order so the same prompt cannot bind 图4 to a different image next time.
+    """
+    characters: list[dict[str, Any]] = []
+    scenes: list[dict[str, Any]] = []
+    props: list[dict[str, Any]] = []
+    others: list[dict[str, Any]] = []
+    for ref in refs:
+        if str(ref.get("kind") or "image") != "image":
+            others.append(ref)
+            continue
+        label = str(ref.get("label") or "")
+        if label.startswith("角色｜"):
+            characters.append(ref)
+        elif label.startswith("场景｜"):
+            scenes.append(ref)
+        elif label.startswith("道具｜"):
+            props.append(ref)
+        else:
+            others.append(ref)
+
+    def figure_number(ref: dict[str, Any]) -> int:
+        match = re.search(r"图\s*(\d+)", str(ref.get("label") or ""))
+        return int(match.group(1)) if match else 10**9
+
+    sort_key = lambda ref: (
+        figure_number(ref),
+        str(ref.get("label") or ""),
+    )
+    return [
+        *sorted(characters, key=sort_key),
+        *sorted(scenes, key=sort_key),
+        *sorted(props, key=sort_key),
+        *others,
+    ]
+
+
+def _ark_material_reference_contract(
+    refs: list[dict[str, Any]],
+    voices: list[dict[str, Any]],
+) -> str:
+    """Describe ordered visual/audio references like Volcano drama creation."""
+    image_refs = [
+        ref for ref in refs
+        if str(ref.get("kind") or "image") == "image" and ref.get("url")
+    ]
+    groups: dict[str, list[str]] = {
+        "人物": [],
+        "场景": [],
+        "道具": [],
+        "其它素材": [],
+    }
+    for image_index, ref in enumerate(image_refs, 1):
+        label = str(ref.get("label") or f"参考图{image_index}").strip()
+        if label.startswith("角色｜"):
+            groups["人物"].append(
+                f"<{label}> 对应参考图 {image_index}，仅采用该人物的外貌、"
+                "发型和服装；人物身份必须严格按此标签绑定，"
+                "不得因画面左右位置或出场先后替换成其他角色。"
+            )
+        elif label.startswith("场景｜"):
+            groups["场景"].append(
+                f"<{label}> 对应参考图 {image_index}，仅采用该场景的空间布局、"
+                "建筑、陈设和光线，不采用图中人物。"
+            )
+        elif label.startswith("道具｜"):
+            groups["道具"].append(
+                f"<{label}> 对应参考图 {image_index}，仅采用该道具的造型、"
+                "材质与状态，不作为人物身份参考。"
+            )
+        else:
+            groups["其它素材"].append(
+                f"<{label}> 对应参考图 {image_index}，仅按标签指定用途引用。"
+            )
+
+    voice_lines = []
+    for voice_index, voice in enumerate(
+        [item for item in voices if item.get("url")],
+        1,
+    ):
+        label = str(voice.get("label") or f"参考音频{voice_index}").strip()
+        voice_lines.append(
+            f"<{label}> 的音色对应参考音频 {voice_index}，"
+            "仅用于该标签角色发声，不得分配给其他角色。"
+        )
+    if voice_lines:
+        groups["声音"] = voice_lines
+
+    sections = [
+        "### 素材引用",
+        "角色、场景和道具均按标签识别，优先于画面中的人物出场顺序。",
+        "场景参考图若出现人物，只取空间布局、建筑、陈设与光线，不采用人物。",
+    ]
+    for heading in ("人物", "场景", "道具", "声音", "其它素材"):
+        lines = groups.get(heading, [])
+        if lines:
+            sections.extend([f"【{heading}】", *lines])
+    return "\n".join(sections)
+
+
 def _text_refs(refs: list[dict[str, Any]]) -> str:
     parts = []
     for ref in refs:
@@ -3125,7 +3229,11 @@ def _ark_video(
     on_task_created: TaskEventCallback | None = None,
     on_task_update: TaskEventCallback | None = None,
 ) -> dict[str, Any]:
-    text = _reference_prompt(prompt, refs + voices)
+    ordered_refs = _ordered_ark_reference_images(refs)
+    text = (
+        f"{prompt}\n\n"
+        f"{_ark_material_reference_contract(ordered_refs, voices)}"
+    )
     text_refs = _text_refs(refs)
     if text_refs:
         text += "\n\n" + text_refs
@@ -3133,7 +3241,7 @@ def _ark_video(
     if guidance:
         text += _GUIDANCE_WORDS.get(guidance, "")
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-    for ref in refs:
+    for ref in ordered_refs:
         if not ref.get("url"):
             continue
         url = _ark_reference_url(ref)
