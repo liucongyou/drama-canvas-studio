@@ -2445,6 +2445,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const [mediaLoaded, setMediaLoaded] = useState(false);
   const [videoSourceReady, setVideoSourceReady] = useState(false);
   const [videoCoverUrl, setVideoCoverUrl] = useState('');
+  const [videoFrameReady, setVideoFrameReady] = useState(false);
   // A video task can be done before its poster has been extracted. Keep the
   // loading layer until either the persisted/derived poster paints or poster
   // extraction explicitly fails. A timer must not turn "still waiting" into
@@ -2591,6 +2592,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   useEffect(() => {
     setMediaLoaded(false);
     setVideoSourceReady(false);
+    setVideoFrameReady(false);
     setVideoCoverUrl('');
     setVideoCoverUnavailable(false);
   }, [node.mediaUrl]);
@@ -2864,6 +2866,9 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const resumableInBackground = generationVisualState.resumableInBackground;
   const generationFailed = generationVisualState.failed;
   const mediaMissing = !isText && !!node.mediaUrl && mediaLoadFailed;
+  const videoCoverVisible = node.kind === 'video'
+    && Boolean(videoCoverUrl)
+    && (!videoPlaying || !videoFrameReady);
   const done = node.status === 'done' && !liveProviderGeneration && !mediaMissing && !generationFailed;
   // The node row is the card's terminal authority. Once a new image/video has
   // been persisted and the node is done, an older uncertain task row for the
@@ -3370,18 +3375,18 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                     toggleVideoFullscreen();
                   }}
                 >
-                  {!videoSourceReady && videoCoverUrl && (
+                  {videoCoverVisible && (
                     <VideoCoverImage
                       src={videoCoverUrl}
                       onFailure={() => setVideoCoverUrl('')}
                     />
                   )}
-                  {!videoSourceReady && !videoCoverUrl && !videoCoverUnavailable && (
+                  {(!videoPlaying || !videoFrameReady) && !videoCoverUrl && !videoCoverUnavailable && (
                     <span className="canvas-video-cover-pending" aria-label="视频封面加载中">
                       <span className="canvas-image-loading" aria-hidden="true" />
                     </span>
                   )}
-                  {!videoSourceReady && !videoCoverUrl && videoCoverUnavailable && (
+                  {(!videoPlaying || !videoFrameReady) && !videoCoverUrl && videoCoverUnavailable && (
                     <span className="canvas-video-cover-fallback" aria-hidden="true">
                       <Video size={18} strokeWidth={1.7} />
                     </span>
@@ -3410,6 +3415,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                         // Codec may not allow seeking yet; playback still works.
                       }
                     }}
+                    onPlaying={() => setVideoFrameReady(true)}
                     onError={() => {
                       setMediaLoadFailed(true);
                       if (node.mediaAvailability !== 'missing') onMediaAvailability?.(node.id, 'missing');
