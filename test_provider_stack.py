@@ -2239,7 +2239,7 @@ class ProviderPayloadTests(unittest.TestCase):
         self.assertIn("audio_url", kinds)
         self.assertEqual(calls[1][1], "https://ark.example/api/v3/contents/generations/tasks/task-1")
 
-    def test_ark_video_labels_reference_images_in_request_order(self):
+    def test_ark_video_preserves_user_reference_slot_order(self):
         provider = {
             "id": "ark",
             "name": "火山方舟",
@@ -2271,6 +2271,21 @@ class ProviderPayloadTests(unittest.TestCase):
                 "kind": "image",
                 "url": "https://image.example/role-1.jpg",
                 "label": "角色｜赵铁柱（图1）",
+            },
+            {
+                "kind": "image",
+                "url": "https://image.example/scene-12.jpg",
+                "label": "场景｜塌方矿道·母版（图12）",
+            },
+            {
+                "kind": "image",
+                "url": "https://image.example/role-3.jpg",
+                "label": "角色｜贾富贵（图3）",
+            },
+            {
+                "kind": "image",
+                "url": "https://image.example/prop-7.jpg",
+                "label": "道具｜合同（图7）",
             },
         ]
         calls = []
@@ -2314,14 +2329,51 @@ class ProviderPayloadTests(unittest.TestCase):
         ]
         text = body["content"][0]["text"]
         self.assertEqual(image_urls, [
-            "https://image.example/role-1.jpg",
             "https://image.example/role-4.jpg",
             "https://image.example/scene-10.jpg",
+            "https://image.example/role-1.jpg",
+            "https://image.example/scene-12.jpg",
+            "https://image.example/role-3.jpg",
+            "https://image.example/prop-7.jpg",
         ])
-        self.assertIn("<角色｜赵铁柱（图1）> 对应参考图 1", text)
-        self.assertIn("<角色｜陈大强（图4）> 对应参考图 2", text)
-        self.assertIn("<场景｜厂区后街·母版（图10）> 对应参考图 3", text)
+        self.assertIn("<角色｜陈大强（图4）> 对应参考图 1", text)
+        self.assertIn("<场景｜厂区后街·母版（图10）> 对应参考图 2", text)
+        self.assertIn("<角色｜赵铁柱（图1）> 对应参考图 3", text)
+        self.assertIn("<场景｜塌方矿道·母版（图12）> 对应参考图 4", text)
+        self.assertIn("<角色｜贾富贵（图3）> 对应参考图 5", text)
+        self.assertIn("<道具｜合同（图7）> 对应参考图 6", text)
         self.assertIn("不采用图中人物", text)
+
+    def test_ark_video_replaces_existing_material_contract_with_actual_slots(self):
+        refs = [
+            {
+                "kind": "image",
+                "url": "https://image.example/scene-10.jpg",
+                "label": "场景｜厂区后街·母版（图10）",
+            },
+            {
+                "kind": "image",
+                "url": "https://image.example/role-4.jpg",
+                "label": "角色｜陈大强（图4）",
+            },
+        ]
+        prompt = (
+            "陈大强探出半个身子说话。\n\n"
+            "### 素材引用\n"
+            "【人物】\n"
+            "<角色｜陈大强（图4）> 对应参考图 99，旧编号"
+        )
+
+        text = provider_client._ark_prompt_with_material_reference_contract(
+            prompt,
+            refs,
+            [],
+        )
+
+        self.assertEqual(text.count("### 素材引用"), 1)
+        self.assertNotIn("参考图 99", text)
+        self.assertIn("<场景｜厂区后街·母版（图10）> 对应参考图 1", text)
+        self.assertIn("<角色｜陈大强（图4）> 对应参考图 2", text)
 
     def test_ark_video_rejects_below_four_seconds_and_maps_expired_error(self):
         provider = {

@@ -1096,47 +1096,6 @@ def _reference_prompt(prompt: str, refs: list[dict[str, Any]]) -> str:
     return f"{prompt}\n\n[参考素材顺序]\n" + "\n".join(lines)
 
 
-def _ordered_ark_reference_images(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep character references in a stable identity order.
-
-    Ark's image references are ordered and unlabelled at the protocol level.
-    Scene/prop slots can stay first, while characters must keep a deterministic
-    order so the same prompt cannot bind 图4 to a different image next time.
-    """
-    characters: list[dict[str, Any]] = []
-    scenes: list[dict[str, Any]] = []
-    props: list[dict[str, Any]] = []
-    others: list[dict[str, Any]] = []
-    for ref in refs:
-        if str(ref.get("kind") or "image") != "image":
-            others.append(ref)
-            continue
-        label = str(ref.get("label") or "")
-        if label.startswith("角色｜"):
-            characters.append(ref)
-        elif label.startswith("场景｜"):
-            scenes.append(ref)
-        elif label.startswith("道具｜"):
-            props.append(ref)
-        else:
-            others.append(ref)
-
-    def figure_number(ref: dict[str, Any]) -> int:
-        match = re.search(r"图\s*(\d+)", str(ref.get("label") or ""))
-        return int(match.group(1)) if match else 10**9
-
-    sort_key = lambda ref: (
-        figure_number(ref),
-        str(ref.get("label") or ""),
-    )
-    return [
-        *sorted(characters, key=sort_key),
-        *sorted(scenes, key=sort_key),
-        *sorted(props, key=sort_key),
-        *others,
-    ]
-
-
 def _ark_material_reference_contract(
     refs: list[dict[str, Any]],
     voices: list[dict[str, Any]],
@@ -1198,6 +1157,21 @@ def _ark_material_reference_contract(
         if lines:
             sections.extend([f"【{heading}】", *lines])
     return "\n".join(sections)
+
+
+def _ark_prompt_with_material_reference_contract(
+    prompt: str,
+    refs: list[dict[str, Any]],
+    voices: list[dict[str, Any]],
+) -> str:
+    """Use the prompt's actual Ark slot order as the only numbering authority."""
+    base = re.split(
+        r"(?m)^### 素材引用\s*$",
+        str(prompt or ""),
+        maxsplit=1,
+    )[0].rstrip()
+    contract = _ark_material_reference_contract(refs, voices)
+    return f"{base}\n\n{contract}".strip()
 
 
 def _text_refs(refs: list[dict[str, Any]]) -> str:
@@ -3229,10 +3203,10 @@ def _ark_video(
     on_task_created: TaskEventCallback | None = None,
     on_task_update: TaskEventCallback | None = None,
 ) -> dict[str, Any]:
-    ordered_refs = _ordered_ark_reference_images(refs)
-    text = (
-        f"{prompt}\n\n"
-        f"{_ark_material_reference_contract(ordered_refs, voices)}"
+    text = _ark_prompt_with_material_reference_contract(
+        prompt,
+        refs,
+        voices,
     )
     text_refs = _text_refs(refs)
     if text_refs:
@@ -3241,7 +3215,7 @@ def _ark_video(
     if guidance:
         text += _GUIDANCE_WORDS.get(guidance, "")
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-    for ref in ordered_refs:
+    for ref in refs:
         if not ref.get("url"):
             continue
         url = _ark_reference_url(ref)

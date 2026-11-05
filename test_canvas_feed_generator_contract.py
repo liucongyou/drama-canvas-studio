@@ -250,8 +250,11 @@ feed = build_board_lite.enrich_canvas_contract({{
         "raw": (
             "【场景资产】@街口（图9）\\n"
             "【核心人物】@赵铁柱（图1）\\n"
-                    "【音色引用】@音频｜赵铁柱（图1）\\n"
-            "台词：赵铁柱（沉声）：\\"走。\\""
+            "【音色引用】@音频｜赵铁柱（图1）\\n"
+            "台词：赵铁柱（沉声）：\\"走。\\"\\n\\n"
+            "### 素材引用\\n"
+            "【人物】\\n"
+            "<角色｜旧占位（图99）> 对应角色参考图"
         ),
         "shots": [],
     }}],
@@ -274,6 +277,8 @@ print(json.dumps(feed, ensure_ascii=False))
         self.assertIn("【场景】", raw)
         self.assertIn("仅采用该人物的外貌、发型和服装", raw)
         self.assertIn("不采用图中人物", raw)
+        self.assertEqual(raw.count("### 素材引用"), 1)
+        self.assertNotIn("旧占位（图99）", raw)
         self.assertEqual(feed["voice_prompts"][0]["code"], "图1")
         self.assertEqual(feed["voice_prompts"][0]["semanticCode"], "CHR-001")
         self.assertIn("【音色引用】@音频｜赵铁柱（图1）", feed["segments"][0]["raw"])

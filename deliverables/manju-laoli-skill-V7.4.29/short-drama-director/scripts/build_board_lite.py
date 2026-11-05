@@ -566,6 +566,20 @@ def _material_reference_contract(prompt, aliases):
     return "\n".join(sections) if len(sections) > 1 else ""
 
 
+def _replace_material_reference_contract(prompt, aliases):
+    """Rebuild the terminal identity contract from the canonical asset labels."""
+    text = str(prompt or "")
+    contract = _material_reference_contract(text, aliases)
+    if not contract:
+        return text
+    base = re.split(
+        r"(?m)^### 素材引用\s*$",
+        text,
+        maxsplit=1,
+    )[0].rstrip()
+    return f"{base}\n\n{contract}"
+
+
 _TEXT_BAN_POLICY_RE = re.compile(
     r"文字[：:]\s*禁\s*(?:任何)?文字"
     r"(?:\s*[/／、,，]\s*UI)?"
@@ -1012,9 +1026,10 @@ def enrich_canvas_contract(data, asset_ledger=None):
         segment["raw"] = _normalize_canvas_prompt(segment.get("raw"), aliases)
         segment["raw"] = _ensure_audio_prompt_refs(segment.get("raw"), aliases)
         segment["raw"] = _normalize_material_text_policy(segment.get("raw"))
-        material_contract = _material_reference_contract(segment["raw"], aliases)
-        if material_contract and "### 素材引用" not in segment["raw"]:
-            segment["raw"] += "\n\n" + material_contract
+        segment["raw"] = _replace_material_reference_contract(
+            segment["raw"],
+            aliases,
+        )
         if isinstance(segment.get("fence_body"), list):
             segment["fence_body"] = _normalize_material_text_policy(
                 "\n".join(segment["fence_body"])
