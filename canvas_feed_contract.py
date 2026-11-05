@@ -1321,8 +1321,7 @@ def validate_final_payload(
             if role
         }
         role_equivalent = (
-            has_incoming_assets
-            and expected_audio_roles
+            expected_audio_roles
             and actual_audio_roles == expected_audio_roles
             and ref_ids != expected_audio_ids
         )
@@ -1337,8 +1336,7 @@ def validate_final_payload(
             if any(audio.get("id") == source for audio in audio_nodes)
         }
         role_equivalent_edges = (
-            has_incoming_assets
-            and expected_audio_roles
+            expected_audio_roles
             and audio_edge_ids != expected_audio_ids
             and {
                 role

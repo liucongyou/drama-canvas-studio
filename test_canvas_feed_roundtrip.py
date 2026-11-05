@@ -269,6 +269,57 @@ class CanvasFeedRoundTripTests(unittest.TestCase):
 
         self.assertEqual(ep1_semantic_before, ep1_semantic_after)
 
+    def test_series_voice_assets_are_reused_across_three_episodes(self):
+        base = {
+            "nodes": [],
+            "connections": [],
+            "episodeImports": [],
+        }
+        payload = base
+        for episode in range(1, 4):
+            feed = self.episode_feed(episode, f"EP{episode:03d}")
+            plan = self.import_feed(payload, feed, episode)
+            payload = plan.merged_payload
+
+        audio_nodes = [
+            node for node in payload["nodes"]
+            if node.get("type") == "audio"
+        ]
+        audio_by_role = {}
+        for node in audio_nodes:
+            title = str(node.get("title") or "")
+            if not title.startswith("音频｜"):
+                continue
+            role = title.split("｜", 1)[1].split("（", 1)[0]
+            audio_by_role.setdefault(role, set()).add(node["id"])
+
+        self.assertTrue(audio_by_role)
+        self.assertTrue(all(len(ids) == 1 for ids in audio_by_role.values()))
+
+        for group in payload["episodeImports"]:
+            episode_id = group["id"]
+            for video in (
+                node for node in payload["nodes"]
+                if node.get("type") == "video"
+                and (node.get("metadata") or {}).get("episodeId") == episode_id
+            ):
+                metadata = video.get("metadata") or {}
+                params = metadata.get("params") or {}
+                voice_ids = {
+                    str(ref.get("nodeId") or "")
+                    for ref in params.get("voiceRefs") or []
+                    if isinstance(ref, dict)
+                }
+                audio_edge_ids = {
+                    str(edge.get("fromNodeId") or "")
+                    for edge in payload["connections"]
+                    if edge.get("toNodeId") == video.get("id")
+                    and str(edge.get("fromNodeId") or "") in {
+                        node["id"] for node in audio_nodes
+                    }
+                }
+                self.assertEqual(voice_ids, audio_edge_ids)
+
     def test_legacy_payload_imports_into_database_authoritative_store(self):
         first = self.import_feed(
             {"nodes": [], "connections": [], "episodeImports": []},

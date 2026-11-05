@@ -1931,6 +1931,18 @@ def _prompt_speaking_roles(prompt, role_names):
             if 0 <= pos < stop:
                 stop = pos
         search_region = line[:stop]
+        # An OS/VO line can start with `赵铁柱（OS: ...）："..."` where the
+        # annotation itself contains an ASCII colon. Stop at the opening quote
+        # so names mentioned inside the quoted dialogue never become speakers.
+        quote_positions = [
+            pos for pos in (
+                search_region.find('"'),
+                search_region.find('“'),
+            )
+            if pos >= 0
+        ]
+        if quote_positions:
+            search_region = search_region[:min(quote_positions)]
         ranked = sorted(
             (
                 (search_region.rfind(role), role)

@@ -19,6 +19,21 @@ class ImportFeedContractTests(unittest.TestCase):
             {"赵铁柱", "钱万金", "贾富贵", "陈大强"},
         )
 
+    def test_os_dialogue_does_not_treat_mentioned_character_as_speaker(self):
+        prompt = (
+            "【核心人物】@角色｜赵铁柱（图1）；@角色｜陈大强（图4）\n"
+            "【音色引用】@音频｜赵铁柱（图1）\n"
+            "【音效】画外声清单：\n"
+            '赵铁柱（OS·内心独白）："我背陈大强从塌方里爬出来那年，他喊我一声哥。"'
+        )
+
+        speaking = import_feed._prompt_speaking_roles(
+            prompt,
+            {"赵铁柱", "陈大强"},
+        )
+
+        self.assertEqual(speaking, {"赵铁柱"})
+
     def test_bracketed_dialog_generates_character_audio(self):
         feed = {
             "title": "括号台词测试 · 第01集",
