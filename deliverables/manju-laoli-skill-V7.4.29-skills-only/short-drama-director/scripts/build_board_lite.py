@@ -854,7 +854,7 @@ def _canvas_voice_fields(raw):
     age_conflict = bool(
         normalized_voice_age
         and normalized_portrait_age
-        and normalized_voice_age != normalized_portrait_age
+        and not _age_spans_overlap(normalized_voice_age, normalized_portrait_age)
     )
     if normalized_age:
         description = re.sub(
@@ -921,6 +921,23 @@ def _canvas_voice_fields(raw):
         "voiceGender": gender,
         "voiceDialect": dialect,
     }
+
+
+def _age_span(value):
+    match = re.fullmatch(r"\s*(\d{1,3})(?:\s*-\s*(\d{1,3}))?\s*", str(value or ""))
+    if not match:
+        return None
+    start = int(match.group(1))
+    end = int(match.group(2) or start)
+    return (min(start, end), max(start, end))
+
+
+def _age_spans_overlap(left, right):
+    left_span = _age_span(left)
+    right_span = _age_span(right)
+    if left_span is None or right_span is None:
+        return False
+    return max(left_span[0], right_span[0]) <= min(left_span[1], right_span[1])
 
 
 def enrich_canvas_contract(data, asset_ledger=None):
@@ -1110,13 +1127,14 @@ def enrich_canvas_contract(data, asset_ledger=None):
             str(asset.get("raw") or ""),
             re.IGNORECASE,
         )
+        visual_age = re.sub(r"\s+", "", visual.group(1)) if visual else ""
         if (
-            visual
+            visual_age
             and voice.get("voiceAge")
-            and re.sub(r"\s+", "", visual.group(1)) != voice["voiceAge"]
+            and not _age_spans_overlap(visual_age, voice["voiceAge"])
         ):
             age_conflicts[str(asset.get("code") or "")] = {
-                "visualAge": re.sub(r"\s+", "", visual.group(1)),
+                "visualAge": visual_age,
                 "voiceAge": voice["voiceAge"],
             }
     for asset in selected_assets:
