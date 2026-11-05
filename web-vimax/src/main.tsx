@@ -1722,7 +1722,7 @@ function AuthGate() {
     return (
       <div className="share-canvas-host">
         <CanvasView
-          session={sharedToken}
+          session={`share:${sharedToken}`}
           readOnly
           sharedProject={sharedProject}
           initialBackgroundMode="blank"
@@ -1749,7 +1749,17 @@ installGlobalErrorHandlers();
 // 此刻 ToastHost 还没挂载，但 toast 层会把提示排队，挂载后自动回放。
 installNetworkStatusToasts();
 
-createRoot(document.getElementById('root')!).render(
+const appRoot = createRoot(document.getElementById('root')!);
+const sharedToken = shareTokenInPath(window.location.pathname);
+
+if (sharedToken) {
+  appRoot.render(
+    <ErrorBoundary scope="root">
+      <AuthGate />
+    </ErrorBoundary>,
+  );
+} else {
+  appRoot.render(
   <>
     <ErrorBoundary scope="root">
       <AuthGate />
@@ -1758,4 +1768,5 @@ createRoot(document.getElementById('root')!).render(
     {/* 全局对话框宿主：16 处原生 prompt/confirm/alert 的替代实现 */}
     <DialogHost />
   </>,
-);
+  );
+}

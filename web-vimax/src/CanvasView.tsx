@@ -11448,7 +11448,10 @@ function CanvasViewInner({
       }
       source = new EventSource(
         readOnly
-          ? shareEventsUrl(session, since)
+          ? shareEventsUrl(
+              session.startsWith('share:') ? session.slice(6) : session,
+              since,
+            )
           : projectEventsUrl(session, since),
       );
       source.onopen = () => {
