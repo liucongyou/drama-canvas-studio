@@ -415,6 +415,54 @@ def _normalize_age(value: Any) -> str:
     return re.sub(r"\s*[~～—–-]\s*", "-", str(value or "").strip())
 
 
+def _age_span(value: Any) -> tuple[int, int] | None:
+    match = re.fullmatch(
+        r"\s*(\d{1,3})(?:\s*-\s*(\d{1,3}))?\s*",
+        str(value or ""),
+    )
+    if not match:
+        return None
+    start = int(match.group(1))
+    end = int(match.group(2) or start)
+    return min(start, end), max(start, end)
+
+
+def _age_values_conflict(visual_age: Any, voice_age: Any) -> bool:
+    left = _normalize_age(visual_age)
+    right = _normalize_age(voice_age)
+    if not left or not right or left == right:
+        return False
+    left_span = _age_span(left)
+    right_span = _age_span(right)
+    if left_span is None or right_span is None:
+        return True
+    return max(left_span[0], right_span[0]) > min(left_span[1], right_span[1])
+
+
+def _append_age_conflict_issues(
+    conflicts: Any,
+    semantic_to_figure: dict[str, str],
+    issues: list[ValidationIssue],
+) -> None:
+    if not isinstance(conflicts, dict):
+        return
+    for semantic, conflict in conflicts.items():
+        if not isinstance(conflict, dict):
+            continue
+        visual_age = _normalize_age(conflict.get("visualAge"))
+        voice_age = _normalize_age(conflict.get("voiceAge"))
+        if not _age_values_conflict(visual_age, voice_age):
+            continue
+        figure = semantic_to_figure.get(str(semantic).strip().upper(), "")
+        issues.append(_issue(
+            WarningCode.WARN_ASSET_IDENTITY_AUTO_CORRECTED,
+            f"{semantic} 视觉年龄 {visual_age} 与声线年龄 {voice_age} 冲突，"
+            "已保留图像/声线各自明确值；请在源稿统一",
+            path=f"canvas_contract.ageConflicts.{semantic}",
+            node_code=figure,
+        ))
+
+
 def analyze_declared_feed(payload: dict) -> GateResult:
     """Gate 1: validate declarations without touching store or derived edges."""
     issues: list[ValidationIssue] = validate_feed_schema(payload)
@@ -820,6 +868,9 @@ def _prepare_feed_for_import(payload: Any) -> tuple[Any, list[ValidationIssue]]:
 
     normalized = copy.deepcopy(payload)
     issues: list[ValidationIssue] = []
+    contract = normalized.get("canvas_contract")
+    ledger = contract.get("asset_ledger") if isinstance(contract, dict) else None
+    conflicts = contract.get("ageConflicts") if isinstance(contract, dict) else None
     semantic_to_figure: dict[str, str] = {}
     figure_to_semantic: dict[str, str] = {}
     top_assets = payload.get("assets")
@@ -865,6 +916,7 @@ def _prepare_feed_for_import(payload: Any) -> tuple[Any, list[ValidationIssue]]:
             figure_to_semantic[figure] = semantic
 
     if not semantic_to_figure:
+        _append_age_conflict_issues(conflicts, semantic_to_figure, issues)
         return normalized, issues
 
     def resolve_code(value: Any) -> tuple[str, str]:
@@ -917,25 +969,7 @@ def _prepare_feed_for_import(payload: Any) -> tuple[Any, list[ValidationIssue]]:
         if role and figure:
             voice_by_role[role] = voice
 
-    contract = normalized.get("canvas_contract")
-    ledger = contract.get("asset_ledger") if isinstance(contract, dict) else None
-    conflicts = contract.get("ageConflicts") if isinstance(contract, dict) else None
-    if isinstance(conflicts, dict):
-        for semantic, conflict in conflicts.items():
-            if not isinstance(conflict, dict):
-                continue
-            visual_age = _normalize_age(conflict.get("visualAge"))
-            voice_age = _normalize_age(conflict.get("voiceAge"))
-            if not visual_age or not voice_age or visual_age == voice_age:
-                continue
-            figure = semantic_to_figure.get(str(semantic).strip().upper(), "")
-            issues.append(_issue(
-                WarningCode.WARN_ASSET_IDENTITY_AUTO_CORRECTED,
-                f"{semantic} 视觉年龄 {visual_age} 与声线年龄 {voice_age} 冲突，"
-                "已保留图像/声线各自明确值；请在源稿统一",
-                path=f"canvas_contract.ageConflicts.{semantic}",
-                node_code=figure,
-            ))
+    _append_age_conflict_issues(conflicts, semantic_to_figure, issues)
     if isinstance(ledger, list):
         for entry in ledger:
             if not isinstance(entry, dict):

@@ -165,6 +165,36 @@ class CanvasFeedNegativeContractTests(unittest.TestCase):
             ErrorCode.VOICE_PROMPT_INCOMPLETE,
         )
 
+    def test_age_conflict_allows_overlapping_visual_and_voice_ranges(self):
+        feed = self.semantic_v2_feed()
+        feed["canvas_contract"]["ageConflicts"] = {
+            "图9": {"visualAge": "45", "voiceAge": "38-45"},
+        }
+
+        issues = validate_declared_feed(feed)
+
+        self.assertFalse(any(
+            issue.path.startswith("canvas_contract.ageConflicts")
+            for issue in issues
+        ))
+
+    def test_age_conflict_rejects_disjoint_visual_and_voice_ranges(self):
+        feed = self.semantic_v2_feed()
+        feed["canvas_contract"]["ageConflicts"] = {
+            "图9": {"visualAge": "45", "voiceAge": "56-60"},
+        }
+
+        issues = validate_declared_feed(feed)
+
+        conflict_issues = [
+            issue
+            for issue in issues
+            if issue.path.startswith("canvas_contract.ageConflicts")
+        ]
+        self.assertEqual(len(conflict_issues), 1)
+        self.assertIn("视觉年龄 45", conflict_issues[0].message)
+        self.assertIn("声线年龄 56-60", conflict_issues[0].message)
+
     def test_rejects_missing_voice_reference(self):
         self.assert_fixture_rejected(
             "04-missing-voice-ref.json",
