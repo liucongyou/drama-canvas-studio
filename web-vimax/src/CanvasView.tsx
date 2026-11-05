@@ -9783,6 +9783,12 @@ function CanvasViewInner({
 
   useEffect(() => {
     let alive = true;
+    if (session.startsWith('share:')) {
+      setModelCatalog(null);
+      return () => {
+        alive = false;
+      };
+    }
     const loadCatalog = () => {
       void getModelCatalog()
         .then((catalog) => { if (alive) setModelCatalog(catalog); })
@@ -9795,7 +9801,7 @@ function CanvasViewInner({
       window.clearTimeout(timer);
       window.removeEventListener('canvas-model-catalog-changed', loadCatalog);
     };
-  }, []);
+  }, [session]);
 
   // Imported and legacy nodes often have no model fields (or point to a model the
   // user later disabled). Resolve them to the first available model exactly once
@@ -10302,6 +10308,12 @@ function CanvasViewInner({
   // 避免与 workspace-nodes / 任务列表争抢首屏带宽和主线程。
   useEffect(() => {
     let alive = true;
+    if (session.startsWith('share:')) {
+      setQualityReport(null);
+      return () => {
+        alive = false;
+      };
+    }
     const load = () => {
       getQualityReport(session, currentEp)
         .then((rep) => { if (alive) setQualityReport(rep); })
