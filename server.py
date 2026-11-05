@@ -1871,6 +1871,18 @@ def _active_media_version(meta):
         versions = params.get("videoVersions")
     if not isinstance(versions, list):
         return {}
+    content = str(meta.get("content") or "").strip()
+    active_version_id = str(params.get("activeVersionId") or "").strip()
+    if active_version_id:
+        for item in versions:
+            if (
+                isinstance(item, dict)
+                and str(item.get("versionId") or "").strip()
+                == active_version_id
+            ):
+                if str(item.get("url") or "").strip() == content:
+                    return item
+                break
     index_key = (
         "videoVersionIndex"
         if isinstance(params.get("videoVersions"), list)
@@ -2004,15 +2016,28 @@ def merge_node_metadata(meta, incoming, generation_active=False):
             requested_version_id = str(
                 value.get("activeVersionId") or ""
             ).strip()
+            requested_version_index = -1
             if media_version_selection and requested_version_id and versions:
-                requested_index = next(
+                requested_version_index = next(
                     (
                         index
                         for index, item in enumerate(versions)
                         if str(item.get("versionId") or "") == requested_version_id
+                        and str(item.get("url") or "").strip() == requested_content
                     ),
-                    requested_index,
+                    -1,
                 )
+            if media_version_selection and requested_version_index < 0 and requested_content:
+                requested_version_index = next(
+                    (
+                        index
+                        for index, item in enumerate(versions)
+                        if str(item.get("url") or "").strip() == requested_content
+                    ),
+                    -1,
+                )
+            if requested_version_index >= 0:
+                requested_index = requested_version_index
             try:
                 requested_index = int(requested_index)
             except (TypeError, ValueError):

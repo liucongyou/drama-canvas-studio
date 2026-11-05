@@ -3,6 +3,17 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.05.03',
+    date: '2026-11-05',
+    title: '视频历史版本切换修复',
+    releasedAt: '2026-11-05 12:35:00 +08:00',
+    changes: [
+      '视频、图片和音频的历史版本统一以当前播放文件为准，不再被过期版本 ID 指向错误版本。',
+      '切换版本时同步重置播放进度、封面与加载状态，避免编号变化后仍显示上一版画面。',
+      '版本选择保存时校验“版本 ID 与文件地址必须一致”，并自动修复已错位的当前版本记录。',
+    ],
+  },
+  {
     version: '2026.11.05.02',
     date: '2026-11-05',
     title: 'Seedream 原始图 TOS 引用修复',

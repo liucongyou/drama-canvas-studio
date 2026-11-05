@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getManagedTenantAudit, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, shareEventsUrl, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, activeMediaVersionIndex, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getManagedTenantAudit, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, shareEventsUrl, subscribeToEvents} from './api';
 
 describe('project event cursor', () => {
   it('reconnects SSE from the last rendered events for this project', () => {
@@ -1933,5 +1933,37 @@ describe('api request recovery', () => {
       'image:task-a',
       'image:task-b',
     ]);
+  });
+
+  it('selects the version by the current media URL when activeVersionId is stale', () => {
+    const node = {
+      id: 'video-1',
+      kind: 'video' as const,
+      title: '视频',
+      prompt: '',
+      mediaUrl: '/uploads/v2.mp4',
+      status: 'done' as const,
+      x: 0,
+      y: 0,
+      updatedAt: '2026-11-05T00:00:00Z',
+      params: {
+        activeVersionId: 'video:task-old',
+        mediaVersionIndex: 1,
+        videoVersionIndex: 1,
+        mediaVersions: [
+          {
+            versionId: 'video:task-old',
+            url: '/uploads/v1.mp4',
+          },
+          {
+            versionId: 'video:task-new',
+            url: '/uploads/v2.mp4',
+          },
+        ],
+      },
+    };
+
+    expect(activeMediaVersionIndex(node)).toBe(1);
+    expect(mediaVersionList(node)).toHaveLength(2);
   });
 });

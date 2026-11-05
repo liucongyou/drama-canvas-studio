@@ -699,13 +699,12 @@ export function mediaVersionList(node: CanvasMediaNode): CanvasVideoVersion[] {
   });
   const currentUrl = mediaSourceUrl(node.mediaUrl);
   const currentVersionId = String(node.params?.activeVersionId || '').trim();
+  const currentUrlIndex = currentUrl
+    ? versions.findIndex((version) => version.url === currentUrl)
+    : -1;
   if (
     currentUrl
-    && !versions.some((version) => (
-      currentVersionId
-        ? version.versionId === currentVersionId
-        : version.url === currentUrl
-    ))
+    && currentUrlIndex < 0
   ) {
     versions.push({
       versionId: currentVersionId || `current:${currentUrl}`,
@@ -713,6 +712,27 @@ export function mediaVersionList(node: CanvasMediaNode): CanvasVideoVersion[] {
     });
   }
   return versions;
+}
+
+export function activeMediaVersionIndex(
+  node: CanvasMediaNode,
+  versions = mediaVersionList(node),
+): number {
+  if (!versions.length) return 0;
+  const currentUrl = mediaSourceUrl(node.mediaUrl);
+  const currentUrlIndex = currentUrl
+    ? versions.findIndex((version) => version.url === currentUrl)
+    : -1;
+  if (currentUrlIndex >= 0) return currentUrlIndex;
+  const configured = Number(
+    node.params?.mediaVersionIndex
+    ?? node.params?.videoVersionIndex
+    ?? versions.length - 1,
+  );
+  return Math.max(0, Math.min(
+    Number.isFinite(configured) ? configured : versions.length - 1,
+    versions.length - 1,
+  ));
 }
 
 export type QualityReportDimension = {

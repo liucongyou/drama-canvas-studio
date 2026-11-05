@@ -111,7 +111,7 @@ import {
   Share2,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, activeMediaVersionIndex, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -2911,23 +2911,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   );
   const p = node.params || {};
   const mediaVersions = mediaVersionList(node);
-  const activeVersionId = String(p.activeVersionId || '').trim();
-  const activeVersionIndex = activeVersionId
-    ? mediaVersions.findIndex(
-        (version) => String(version.versionId || '') === activeVersionId,
-      )
-    : -1;
-  const matchedMediaVersionIndex = activeVersionIndex >= 0
-    ? activeVersionIndex
-    : node.mediaUrl
-      ? mediaVersions.findIndex((version) => version.url === node.mediaUrl)
-      : -1;
-  const currentMediaVersionIndex = matchedMediaVersionIndex >= 0
-    ? matchedMediaVersionIndex
-    : Math.min(
-        Math.max(0, Number(p.mediaVersionIndex ?? p.videoVersionIndex ?? mediaVersions.length - 1)),
-        Math.max(0, mediaVersions.length - 1),
-      );
+  const currentMediaVersionIndex = activeMediaVersionIndex(node, mediaVersions);
   const selectMediaVersion = (nextIndex: number) => {
     if (mediaVersions.length < 2) return;
     const normalized = (nextIndex + mediaVersions.length) % mediaVersions.length;
@@ -2935,6 +2919,16 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     if (!version?.url) return;
     videoRef.current?.pause();
     audioRef.current?.pause();
+    setVideoPlaying(false);
+    setAudioPlaying(false);
+    setVideoDuration(0);
+    setAudioDuration(0);
+    setVideoCurrentTime(0);
+    setAudioCurrentTime(0);
+    setMediaLoadFailed(false);
+    setMediaLoaded(false);
+    setVideoSourceReady(false);
+    setVideoCoverUrl('');
     const generatedVersionSource = version.sourceType === 'generated'
       || Boolean(version.providerResultUrl || version.storage || version.generatedAt);
     onChange(
