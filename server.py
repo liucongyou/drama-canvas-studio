@@ -9145,6 +9145,44 @@ class Handler(BaseHTTPRequestHandler):
                     file=sys.stderr,
                 )
                 return None
+            if isinstance(exc, provider_client.ProviderTaskFailed):
+                provider_task_id = str(
+                    getattr(exc, "provider_task_id", "")
+                    or _submitted_provider_task_id(task_id)
+                    or ""
+                )
+                if task_id:
+                    store.finish_generation_task(
+                        task_id,
+                        status="failed",
+                        phase="生成失败",
+                        error=str(exc),
+                        provider_task_id=provider_task_id,
+                        delivery_status="failed",
+                        lease_owner=lease_owner,
+                    )
+                commit_node_metadata(pid, node["id"], {
+                    "status": "failed",
+                    "lastError": str(exc),
+                    "providerTaskStatus": "failed",
+                    "providerTaskPhase": "生成失败",
+                    "generationFinishedAt": store._now_iso(),
+                })
+                publish_project_event(pid, "media", node["id"], {
+                    "status": "failed",
+                    "error": str(exc),
+                    "providerTaskStatus": "failed",
+                    "providerTaskPhase": "生成失败",
+                })
+                return self._send(
+                    _generation_error_status(exc),
+                    {
+                        "error": str(exc),
+                        "code": "GENERATION_PROVIDER_FAILED",
+                        "taskId": task_id or "",
+                        "nodeId": node["id"],
+                    },
+                )
             if isinstance(exc, provider_client.ProviderOutcomeUncertain):
                 submitted_at = str(getattr(exc, "submitted_at", "") or "")
                 provider_response = getattr(exc, "response", {}) or {}
@@ -9183,7 +9221,46 @@ class Handler(BaseHTTPRequestHandler):
                     "providerSubmittedAt": submitted_at,
                 })
             submitted_provider_task_id = _submitted_provider_task_id(task_id)
-            if submitted_provider_task_id:
+            if (
+                submitted_provider_task_id
+            ):
+                if isinstance(exc, provider_client.ProviderTaskFailed):
+                    provider_task_id = str(
+                        getattr(exc, "provider_task_id", "")
+                        or submitted_provider_task_id
+                    )
+                    if task_id:
+                        store.finish_generation_task(
+                            task_id,
+                            status="failed",
+                            phase="生成失败",
+                            error=str(exc),
+                            provider_task_id=provider_task_id,
+                            delivery_status="failed",
+                            lease_owner=lease_owner,
+                        )
+                    commit_node_metadata(pid, node["id"], {
+                        "status": "failed",
+                        "lastError": str(exc),
+                        "providerTaskStatus": "failed",
+                        "providerTaskPhase": "生成失败",
+                        "generationFinishedAt": store._now_iso(),
+                    })
+                    publish_project_event(pid, "media", node["id"], {
+                        "status": "failed",
+                        "error": str(exc),
+                        "providerTaskStatus": "failed",
+                        "providerTaskPhase": "生成失败",
+                    })
+                    return self._send(
+                        _generation_error_status(exc),
+                        {
+                            "error": str(exc),
+                            "code": "GENERATION_PROVIDER_FAILED",
+                            "taskId": task_id or "",
+                            "nodeId": node["id"],
+                        },
+                    )
                 _mark_generation_outcome_uncertain(
                     task_id, pid, node["id"], exc, submitted_provider_task_id
                 )
@@ -9195,6 +9272,44 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "PROVIDER_OUTCOME_UNCERTAIN",
                     "error": str(exc),
                 })
+            if isinstance(exc, provider_client.ProviderTaskFailed):
+                provider_task_id = str(
+                    getattr(exc, "provider_task_id", "")
+                    or _submitted_provider_task_id(task_id)
+                    or ""
+                )
+                if task_id:
+                    store.finish_generation_task(
+                        task_id,
+                        status="failed",
+                        phase="生成失败",
+                        error=str(exc),
+                        provider_task_id=provider_task_id,
+                        delivery_status="failed",
+                        lease_owner=lease_owner,
+                    )
+                commit_node_metadata(pid, node["id"], {
+                    "status": "failed",
+                    "lastError": str(exc),
+                    "providerTaskStatus": "failed",
+                    "providerTaskPhase": "生成失败",
+                    "generationFinishedAt": store._now_iso(),
+                })
+                publish_project_event(pid, "media", node["id"], {
+                    "status": "failed",
+                    "error": str(exc),
+                    "providerTaskStatus": "failed",
+                    "providerTaskPhase": "生成失败",
+                })
+                return self._send(
+                    _generation_error_status(exc),
+                    {
+                        "error": str(exc),
+                        "code": "GENERATION_PROVIDER_FAILED",
+                        "taskId": task_id or "",
+                        "nodeId": node["id"],
+                    },
+                )
             if task_id:
                 store.finish_generation_task(
                     task_id,
@@ -9946,7 +10061,10 @@ class Handler(BaseHTTPRequestHandler):
                     task_id, pid, node["id"], exc
                 )
                 raise
-            if _submitted_provider_task_id(task_id):
+            if (
+                _submitted_provider_task_id(task_id)
+                and not isinstance(exc, provider_client.ProviderTaskFailed)
+            ):
                 _mark_generation_outcome_uncertain(
                     task_id, pid, node["id"], exc
                 )
@@ -9955,13 +10073,19 @@ class Handler(BaseHTTPRequestHandler):
                 ) from exc
             meta["status"] = "failed"
             meta["lastError"] = str(exc)
-            commit_node_metadata(pid, node["id"], {
+            explicit_provider_task_id = str(
+                getattr(exc, "provider_task_id", "") or ""
+            )
+            failed_updates = {
                 "status": "failed",
                 "lastError": str(exc),
                 "providerTaskStatus": "failed",
                 "providerTaskPhase": "生成失败",
                 "generationFinishedAt": store._now_iso(),
-            })
+            }
+            if explicit_provider_task_id:
+                failed_updates["taskId"] = explicit_provider_task_id
+            commit_node_metadata(pid, node["id"], failed_updates)
             publish_project_event(pid, "media", node["id"], {
                 "status": "failed",
                 "error": str(exc),
@@ -9970,13 +10094,18 @@ class Handler(BaseHTTPRequestHandler):
                 "providerTaskPhase": "生成失败",
             })
             if task_id:
+                task_updates = {
+                    "status": "failed",
+                    "phase": "生成失败",
+                    "error": str(exc),
+                    "delivery_status": "failed",
+                    "lease_owner": lease_owner,
+                }
+                if explicit_provider_task_id:
+                    task_updates["provider_task_id"] = explicit_provider_task_id
                 store.finish_generation_task(
                     task_id,
-                    status="failed",
-                    phase="生成失败",
-                    error=str(exc),
-                    delivery_status="failed",
-                    lease_owner=lease_owner,
+                    **task_updates,
                 )
             status = _generation_error_status(exc)
             store.record_audit_event(

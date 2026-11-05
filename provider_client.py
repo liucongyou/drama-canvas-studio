@@ -153,6 +153,23 @@ class ProviderOutcomeUncertain(RuntimeError):
         self.response = response or {}
 
 
+class ProviderTaskFailed(RuntimeError):
+    """The provider returned an explicit terminal failure for an accepted task."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider_task_id: str = "",
+        status: str = "failed",
+        error_code: str = "",
+    ):
+        super().__init__(message)
+        self.provider_task_id = provider_task_id
+        self.status = status
+        self.error_code = error_code
+
+
 _GUIDANCE_WORDS = {
     "轻度": "\nlight detail, keep loose and natural",
     "中等": "\nbalanced detail, standard quality",
@@ -2279,7 +2296,11 @@ def _agnes_video(
         if status in {"failed", "error", "cancelled", "canceled"}:
             error = task.get("error")
             detail = error.get("message") if isinstance(error, dict) else error
-            raise RuntimeError(f"Agnes 视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}")
+            raise ProviderTaskFailed(
+                f"Agnes 视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}",
+                provider_task_id=task_id,
+                status=status,
+            )
         time.sleep(poll_delay(time.time() - poll_started))
     suffix = f"，最后错误：{last_poll_error}" if last_poll_error else ""
     return {
@@ -2518,9 +2539,17 @@ def _fourstoken_video(
         if status in provider_protocols.for_adapter("fourstoken_video").failure_statuses:
             error = task.get("error")
             detail = error.get("message") if isinstance(error, dict) else error
-            raise RuntimeError(
+            provider_task_id = str(
+                task.get("task_id")
+                or task.get("taskId")
+                or task.get("id")
+                or task_id
+            )
+            raise ProviderTaskFailed(
                 f"4SToken 视频生成失败："
-                f"{detail or json.dumps(task, ensure_ascii=False)[:600]}"
+                f"{detail or json.dumps(task, ensure_ascii=False)[:600]}",
+                provider_task_id=provider_task_id,
+                status=status,
             )
         time.sleep(poll_delay(time.time() - poll_started))
     raise RuntimeError(f"4SToken 视频任务超时（3600s，任务 {task_id}）")
@@ -2766,8 +2795,11 @@ def _newapi_video(
         if status in compiled["failureStatuses"]:
             error = task.get("error")
             detail = error.get("message") if isinstance(error, dict) else error
-            raise RuntimeError(
+            raise ProviderTaskFailed(
                 f"视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}"
+                ,
+                provider_task_id=task_id,
+                status=status,
             )
         time.sleep(max(5.0, poll_delay(time.time() - poll_started)))
     raise RuntimeError(f"视频任务超时（3600s，任务 {task_id}）")
@@ -2877,8 +2909,11 @@ def _newapi_aistars_video(
         if status in {"failed", "error", "cancelled", "canceled"}:
             error = task.get("error")
             detail = error.get("message") if isinstance(error, dict) else error
-            raise RuntimeError(
+            raise ProviderTaskFailed(
                 f"即梦视频生成失败：{detail or json.dumps(task, ensure_ascii=False)[:600]}"
+                ,
+                provider_task_id=task_id,
+                status=status,
             )
         time.sleep(max(10.0, poll_delay(time.time() - poll_started)))
         task = _poll_json(poll_url, key, timeout=30)
@@ -2957,7 +2992,11 @@ def _newapi_hc_video(
                 raise RuntimeError("官转视频已完成，但没有返回视频地址")
             return {"url": url, "raw": task, "taskId": task_id}
         if status == "failed":
-            raise RuntimeError(f"官转视频生成失败：{json.dumps(task, ensure_ascii=False)[:600]}")
+            raise ProviderTaskFailed(
+                f"官转视频生成失败：{json.dumps(task, ensure_ascii=False)[:600]}",
+                provider_task_id=task_id,
+                status=status,
+            )
         time.sleep(max(10.0, poll_delay(time.time() - poll_started)))
     raise RuntimeError(f"官转视频任务超时（3600s，任务 {task_id}）")
 
@@ -3066,7 +3105,11 @@ def _newapi_suanli_video(
                 raise RuntimeError("特价视频已完成，但没有返回视频地址")
             return {"url": url, "raw": task, "taskId": task_id}
         if status == "failed":
-            raise RuntimeError(f"特价视频生成失败：{json.dumps(task, ensure_ascii=False)[:600]}")
+            raise ProviderTaskFailed(
+                f"特价视频生成失败：{json.dumps(task, ensure_ascii=False)[:600]}",
+                provider_task_id=task_id,
+                status=status,
+            )
         time.sleep(max(10.0, poll_delay(time.time() - poll_started)))
     raise RuntimeError(f"特价视频任务超时（3600s，任务 {task_id}）")
 
@@ -3196,9 +3239,16 @@ def _ark_video(
                 )
             else:
                 detail = str(error or "").strip()
-            raise RuntimeError(
+            raise ProviderTaskFailed(
                 f"视频生成失败{('：' + detail) if detail else ''}"
-                f"（status={status}）：{json.dumps(task, ensure_ascii=False)[:600]}"
+                f"（status={status}）：{json.dumps(task, ensure_ascii=False)[:600]}",
+                provider_task_id=task_id,
+                status=status,
+                error_code=(
+                    str(error.get("code") or "")
+                    if isinstance(error, dict)
+                    else ""
+                ),
             )
         time.sleep(poll_delay(time.time() - poll_started))
     raise RuntimeError(f"视频任务超时（900s，任务 {task_id}）")

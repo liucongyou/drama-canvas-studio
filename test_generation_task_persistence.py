@@ -3556,6 +3556,82 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertIn("任务不存在", saved["error"])
         self.assertEqual(saved["provider_task_id"], "provider-video-404")
 
+    def test_explicit_provider_failure_is_not_marked_uncertain(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("explicit-provider-failure")
+            project = canvas_store.get_project(project_id)
+            project["payload"]["nodes"] = [{
+                "id": "node-video",
+                "type": "video",
+                "title": "段13",
+                "metadata": {
+                    "status": "generating",
+                    "content": "",
+                    "params": {},
+                },
+            }]
+            canvas_store.update_project(project_id, payload=project["payload"])
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+                provider="ark",
+                model="doubao-seedance-2-0-mini",
+            )
+            claimed = canvas_store.claim_generation_task(
+                task["id"], "owner", 120,
+            )
+            self.assertTrue(claimed)
+            canvas_store.update_generation_task(
+                task["id"],
+                status="running",
+                provider_task_id="cgt-explicit-failed",
+            )
+            project = canvas_store.get_project(project_id)
+            node = project["payload"]["nodes"][0]
+            exc = provider_client.ProviderTaskFailed(
+                "OutputAudioSensitiveContentDetected：音频未通过审核",
+                provider_task_id="cgt-explicit-failed",
+            )
+            node["metadata"]["params"] = {
+                "provider": "ark",
+                "model": "doubao-seedance-2-0-mini",
+            }
+            node["metadata"]["provider"] = "ark"
+            node["metadata"]["model"] = "doubao-seedance-2-0-mini"
+            with patch.object(
+                server.Handler,
+                "_generate_once",
+                side_effect=exc,
+            ) as generate_once, patch.object(
+                server.Handler,
+                "_send",
+                return_value={"ok": True},
+            ) as send:
+                handler = object.__new__(server.Handler)
+                result = handler._generate(
+                    project_id,
+                    project,
+                    node,
+                    task_id=task["id"],
+                    lease_owner="owner",
+                )
+            saved_task = canvas_store.get_generation_task(task["id"])
+            saved_project = canvas_store.get_project(project_id)
+            saved_node = saved_project["payload"]["nodes"][0]
+
+        self.assertEqual(result, {"ok": True})
+        generate_once.assert_called_once()
+        send.assert_called_once()
+        self.assertEqual(saved_task["status"], "failed")
+        self.assertEqual(saved_task["delivery_status"], "failed")
+        self.assertEqual(saved_task["provider_task_id"], "cgt-explicit-failed")
+        self.assertEqual(saved_node["metadata"]["status"], "failed")
+        self.assertEqual(
+            saved_node["metadata"]["providerTaskStatus"],
+            "failed",
+        )
+
     def test_unknown_provider_status_is_not_treated_as_completed(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("unknown-provider-status")
