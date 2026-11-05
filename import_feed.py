@@ -2080,6 +2080,144 @@ def _remove_unmentioned_video_refs(payload):
     return removed
 
 
+def repair_dangling_media_references(payload):
+    """Resolve stale media node IDs by the stable asset identity in their label.
+
+    Re-importing an episode creates fresh node IDs. A video can therefore retain
+    ``refs[].nodeId`` from the previous import even though the correctly matched
+    asset still exists in the project under another ID. Agent tooling also saw
+    those dangling IDs as "missing dependencies", locking otherwise ready video
+    cards. Resolve by asset title/identity first, preferring generated media.
+    """
+    nodes = [
+        node for node in payload.get("nodes") or []
+        if isinstance(node, dict) and node.get("id")
+    ]
+    by_id = {str(node["id"]): node for node in nodes}
+    by_label: dict[str, list[dict]] = {}
+    by_identity: dict[str, list[dict]] = {}
+    by_role: dict[str, list[dict]] = {}
+    for node in nodes:
+        node_type = str(node.get("type") or "")
+        if node_type not in {"image", "audio"}:
+            continue
+        title = str(node.get("title") or "").strip()
+        if title:
+            by_label.setdefault(title, []).append(node)
+        kind = _asset_kind_from_title(title)
+        key = str((node.get("metadata") or {}).get("assetKey") or "")
+        if not key:
+            key = _asset_identity(
+                _asset_title_base(title, audio=node_type == "audio"),
+                kind or ("音色" if node_type == "audio" else ""),
+            )
+        if key:
+            by_identity.setdefault(key, []).append(node)
+        if node_type == "audio":
+            role = _asset_title_base(title, audio=True).split("·", 1)[0].strip()
+            if role:
+                by_role.setdefault(role, []).append(node)
+
+    def score(node):
+        meta = node.get("metadata") or {}
+        versions = (meta.get("params") or {}).get("mediaVersions") or []
+        return (
+            str(meta.get("status") or "") == "done",
+            bool(str(meta.get("content") or "").strip()),
+            any(bool(str(item.get("url") or "").strip()) for item in versions if isinstance(item, dict)),
+            str(node.get("updatedAt") or ""),
+        )
+
+    changed = 0
+
+    def resolve(item, valid_identities):
+        nonlocal changed
+        if not isinstance(item, dict):
+            return True
+        current = str(item.get("nodeId") or "").strip()
+        if current and current in by_id:
+            return True
+        label = str(item.get("label") or "").strip()
+        candidates = by_label.get(label) or []
+        identity = _asset_identity(
+            _asset_title_base(
+                label,
+                audio=label.startswith("音频｜"),
+            ),
+            _asset_kind_from_title(label)
+            or ("音色" if label.startswith("音频｜") else ""),
+        )
+        role = ""
+        if label.startswith("音频｜"):
+            role = _asset_title_base(label, audio=True).split("·", 1)[0].strip()
+        if not candidates and label:
+            candidates = by_identity.get(identity, [])
+        if not candidates and role:
+            candidates = by_role.get(role) or []
+        if not candidates:
+            return False
+        candidate_identity = (
+            role
+            if role
+            else identity
+        )
+        if candidate_identity and candidate_identity in valid_identities:
+            # A later valid ref already binds this identity. Drop the stale
+            # duplicate instead of adding a second blocker for the same asset.
+            changed += 1
+            return False
+        replacement = max(candidates, key=score)
+        item["nodeId"] = replacement["id"]
+        item["label"] = str(replacement.get("title") or label)
+        if candidate_identity:
+            valid_identities.add(candidate_identity)
+        changed += 1
+        return True
+
+    def identity_of(node_id):
+        node = by_id.get(str(node_id or ""))
+        if not node:
+            return ""
+        title = str(node.get("title") or "")
+        if node.get("type") == "audio":
+            return _asset_title_base(title, audio=True).split("·", 1)[0].strip()
+        return str((node.get("metadata") or {}).get("assetKey") or _asset_identity(
+            _asset_title_base(title),
+            _asset_kind_from_title(title),
+        ))
+
+    for node in nodes:
+        if node.get("type") != "video":
+            continue
+        meta = node.setdefault("metadata", {})
+        params = meta.setdefault("params", {})
+        for key in ("refs", "voiceRefs"):
+            items = params.get(key)
+            if not isinstance(items, list):
+                continue
+            valid_identities = {
+                identity
+                for item in items
+                if isinstance(item, dict)
+                for identity in [identity_of(item.get("nodeId"))]
+                if identity and str(item.get("nodeId") or "") in by_id
+            }
+            kept = []
+            for item in items:
+                if resolve(item, valid_identities):
+                    kept.append(item)
+            if kept != items:
+                params[key] = kept
+                meta[key] = kept
+        voice = params.get("voiceRef")
+        if isinstance(voice, dict):
+            resolve(voice, set())
+        voice = meta.get("voiceRef")
+        if isinstance(voice, dict):
+            resolve(voice, set())
+    return changed
+
+
 def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voice_sources=None):
     """Create placeholder cards for assets referenced by prompts but absent from the feed."""
     nodes = payload.setdefault("nodes", [])
@@ -3360,6 +3498,7 @@ def merge_payload_by_episode(existing, incoming):
     }
     removed_grids = _remove_redundant_scene_grids(merged_payload)
     _repair_reused_asset_identities(merged_payload)
+    repair_dangling_media_references(merged_payload)
     _remove_unmentioned_video_refs(merged_payload)
     repair_payload_prompt_mentions(merged_payload)
     bind_shared_assets_for_episode(merged_payload, episode_id)

@@ -11,7 +11,11 @@ import canvas_feed_contract
 import canvas_store
 import tenant_context
 from canvas_feed_contract import issue_dict, prepare_import
-from import_feed import repair_payload_prompt_mentions, repair_prompt_mentions
+from import_feed import (
+    repair_dangling_media_references,
+    repair_payload_prompt_mentions,
+    repair_prompt_mentions,
+)
 
 
 FIXTURES = Path(__file__).parent / "tests" / "fixtures" / "canvas-feed-valid"
@@ -174,6 +178,109 @@ class CanvasFeedRoundTripTests(unittest.TestCase):
         })
         self.assertEqual(crowd["metadata"]["assetKey"], "群像:街坊群")
         self.assertFalse(crowd["metadata"].get("_importCreated"))
+
+    def test_dangling_video_reference_rebinds_by_asset_identity(self):
+        payload = {
+            "nodes": [
+                {
+                    "id": "asset-role-current",
+                    "type": "image",
+                    "title": "角色｜钱万金（图2）",
+                    "metadata": {
+                        "assetKey": "角色:钱万金",
+                        "status": "done",
+                        "content": "/uploads/role-current.png",
+                    },
+                },
+                {
+                    "id": "asset-scene-current",
+                    "type": "image",
+                    "title": "场景｜厂办门口小广场·母版（图15）",
+                    "metadata": {
+                        "assetKey": "场景:厂办门口小广场",
+                        "status": "done",
+                        "content": "/uploads/scene-current.png",
+                    },
+                },
+                {
+                    "id": "video-current",
+                    "type": "video",
+                    "title": "段1 · 告示掀角",
+                    "metadata": {
+                        "prompt": (
+                            "@角色｜钱万金（图2）"
+                            "@场景｜厂办门口小广场·母版（图15）"
+                        ),
+                        "params": {
+                            "refs": [
+                                {
+                                    "nodeId": "old-role-id",
+                                    "label": "角色｜钱万金（图2）",
+                                },
+                                {
+                                    "nodeId": "old-scene-id",
+                                    "label": "场景｜厂办门口小广场·母版（图15）",
+                                },
+                            ],
+                        },
+                    },
+                },
+            ],
+        }
+
+        changed = repair_dangling_media_references(payload)
+
+        self.assertEqual(changed, 2)
+        refs = payload["nodes"][2]["metadata"]["params"]["refs"]
+        self.assertEqual(
+            {ref["nodeId"] for ref in refs},
+            {"asset-role-current", "asset-scene-current"},
+        )
+
+    def test_valid_reference_wins_over_duplicate_dangling_reference(self):
+        payload = {
+            "nodes": [
+                {
+                    "id": "asset-role-current",
+                    "type": "image",
+                    "title": "角色｜钱万金（图2）",
+                    "metadata": {
+                        "assetKey": "角色:钱万金",
+                        "status": "done",
+                        "content": "/uploads/role-current.png",
+                    },
+                },
+                {
+                    "id": "video-current",
+                    "type": "video",
+                    "title": "段1 · 告示掀角",
+                    "metadata": {
+                        "prompt": "@角色｜钱万金（图2）",
+                        "params": {
+                            "refs": [
+                                {
+                                    "nodeId": "old-role-id",
+                                    "label": "角色｜钱万金（图2）",
+                                },
+                                {
+                                    "nodeId": "asset-role-current",
+                                    "label": "角色｜钱万金（图2）",
+                                },
+                            ],
+                        },
+                    },
+                },
+            ],
+        }
+
+        changed = repair_dangling_media_references(payload)
+
+        self.assertEqual(changed, 1)
+        refs = payload["nodes"][1]["metadata"]["params"]["refs"]
+        self.assertEqual(refs, [{
+            "nodeId": "asset-role-current",
+            "label": "角色｜钱万金（图2）",
+        }])
 
     def test_same_episode_reimport_is_semantically_idempotent(self):
         feed = self.episode_feed(1, "EP001")
