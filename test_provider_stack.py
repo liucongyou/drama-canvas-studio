@@ -2287,6 +2287,11 @@ class ProviderPayloadTests(unittest.TestCase):
                 "url": "https://image.example/prop-7.jpg",
                 "label": "道具｜合同（图7）",
             },
+            {
+                "kind": "image",
+                "url": "https://image.example/crowd-16.jpg",
+                "label": "群像｜街坊群（图16）",
+            },
         ]
         calls = []
 
@@ -2335,6 +2340,7 @@ class ProviderPayloadTests(unittest.TestCase):
             "https://image.example/scene-12.jpg",
             "https://image.example/role-3.jpg",
             "https://image.example/prop-7.jpg",
+            "https://image.example/crowd-16.jpg",
         ])
         self.assertIn("<角色｜陈大强（图4）> 对应参考图 1", text)
         self.assertIn("<场景｜厂区后街·母版（图10）> 对应参考图 2", text)
@@ -2342,6 +2348,8 @@ class ProviderPayloadTests(unittest.TestCase):
         self.assertIn("<场景｜塌方矿道·母版（图12）> 对应参考图 4", text)
         self.assertIn("<角色｜贾富贵（图3）> 对应参考图 5", text)
         self.assertIn("<道具｜合同（图7）> 对应参考图 6", text)
+        self.assertIn("<群像｜街坊群（图16）> 对应参考图 7", text)
+        self.assertIn("【群像】", text)
         self.assertIn("不采用图中人物", text)
 
     def test_ark_video_replaces_existing_material_contract_with_actual_slots(self):
