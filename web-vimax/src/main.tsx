@@ -20,6 +20,11 @@ import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, creat
 import {TenantAdminView} from './TenantAdminView';
 import {shareTokenInPath} from './projectShare';
 import {APP_VERSION, RELEASE_SEEN_KEY} from './changelog';
+import {
+  SETTINGS_CATEGORIES,
+  firstAvailableSettingsCategory,
+  type SettingsCategoryKey,
+} from './settingsMenu';
 // 更新记录弹窗连带 55KB 发布文本一起异步加载，首屏不再背这个包袱。
 const loadChangelogDialog = () => import('./ChangelogDialog');
 const ChangelogDialog = lazy(loadChangelogDialog);
@@ -152,6 +157,9 @@ function Shell({
   const projectWrapRef = useRef<HTMLDivElement | null>(null);
   // 导入载荷是低频高级操作，收进「⋯」里，顶部只留项目切换 + 状态
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryKey>(
+    () => firstAvailableSettingsCategory(),
+  );
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
   const [tosSettingsOpen, setTosSettingsOpen] = useState(false);
   const [modelCatalogSnapshot, setModelCatalogSnapshot] = useState<ModelCatalog | null>(null);
@@ -186,6 +194,7 @@ function Shell({
       setCanvasBackgroundMode(next);
     }
   }, [backgroundPreference]);
+
 
   useLayoutEffect(() => {
     applyTheme(theme);
@@ -850,10 +859,7 @@ function Shell({
             type="button"
             className={`shell-topbar-btn ${settingsOpen ? 'is-open' : ''} ${releaseSeen ? '' : 'has-release'}`}
             onClick={() => {
-              setSettingsOpen((value) => {
-                if (!value) void loadChangelogDialog();
-                return !value;
-              });
+              setSettingsOpen((value) => !value);
             }}
             title="主题、模型接口与项目设置"
             aria-expanded={settingsOpen}
@@ -864,247 +870,270 @@ function Shell({
           </button>
           {settingsOpen && (
             <div className="shell-settings-menu" role="menu">
-              <div className="shell-settings-section">
-                <div className="shell-tools-menu-head"><Palette size={12} strokeWidth={1.9} aria-hidden="true" />界面主题</div>
-                <div className="shell-settings-themes" role="radiogroup" aria-label="界面主题">
-                  {THEMES.map((item) => (
+              <header className="shell-settings-title">
+                <span>设置</span>
+                <small>工作区偏好与项目配置</small>
+              </header>
+              <div className="shell-settings-layout">
+                <nav className="shell-settings-nav" aria-label="设置分类">
+                  {SETTINGS_CATEGORIES.map((category) => (
                     <button
-                      key={item.key}
+                      key={category.key}
                       type="button"
-                      role="radio"
-                      aria-checked={theme === item.key}
-                      className={`shell-theme-option ${theme === item.key ? 'is-active' : ''}`}
-                      title={item.desc}
-                      onClick={() => void changeTheme(item.key)}
+                      className={settingsCategory === category.key ? 'is-active' : ''}
+                      onClick={() => setSettingsCategory(category.key)}
                     >
-                      <i className={`theme-swatch is-${item.key}`} aria-hidden="true" />
-                      <span>{item.label}</span>
-                      {theme === item.key && <Check size={12} strokeWidth={2.3} aria-hidden="true" />}
+                      <span>{category.label}</span>
+                      <small>{category.description}</small>
                     </button>
                   ))}
-                </div>
-              </div>
-
-              <div className="shell-settings-section">
-                <div className="shell-tools-menu-head">版本</div>
-                <button
-                  type="button"
-                  className="shell-tools-menu-item shell-release-entry"
-                  onClick={openChangelog}
-                >
-                  <History size={13} strokeWidth={1.9} aria-hidden="true" />
-                  <span>更新记录</span>
-                  <em>v{APP_VERSION}</em>
-                  {!releaseSeen && <b>新</b>}
-                </button>
-              </div>
-
-              <div className="shell-settings-section">
-                <div className="shell-tools-menu-head">模型接口</div>
-                <button
-                  type="button"
-                  className="shell-tools-menu-item"
-                  onClick={() => void openSettings('models')}
-                >
-                  <Settings size={13} strokeWidth={1.9} aria-hidden="true" />
-                  <span>供应商、模型和参数范围</span>
-                </button>
-              </div>
-
-              <div className="shell-settings-section">
-                <div className="shell-tools-menu-head">素材存储</div>
-                <button
-                  type="button"
-                  className="shell-tools-menu-item"
-                  onClick={() => void openSettings('storage')}
-                >
-                  <CloudUpload size={13} strokeWidth={1.9} aria-hidden="true" />
-                  <span>对象存储 TOS</span>
-                </button>
-              </div>
-
-              {/* 本机单用户模式没有账号表：改密要 account_id（服务端会回 401「请先登录」），
-                  创建账号更是无凭无据。两项都按事实隐藏，避免点进去撞死路。 */}
-              {!localMode && (
-                <div className="shell-settings-section">
-                  <div className="shell-tools-menu-head">账号安全</div>
-                  <button
-                    type="button"
-                    className="shell-tools-menu-item"
-                    onClick={() => { setSettingsOpen(false); setPasswordOpen(true); }}
-                  >
-                    <KeyRound size={13} strokeWidth={1.9} aria-hidden="true" />
-                    <span>修改密码</span>
-                  </button>
-                </div>
-              )}
-
-              {isAdmin && !localMode && (
-                <div className="shell-settings-section">
-                  <div className="shell-tools-menu-head">管理员</div>
-                  <button
-                    type="button"
-                    className="shell-tools-menu-item"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSettingsOpen(false);
-                      window.setTimeout(() => setAdminConsoleOpen(true), 0);
-                    }}
-                  >
-                    <History size={13} strokeWidth={1.9} aria-hidden="true" />
-                    <span>租户数据与审计</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="shell-tools-menu-item"
-                    onClick={() => void openSettings('accounts')}
-                  >
-                    <Plus size={13} strokeWidth={1.9} aria-hidden="true" />
-                    <span>创建账号</span>
-                  </button>
-                </div>
-              )}
-
-              {!localMode && (
-                <div className="shell-settings-section">
-                  <div className="shell-tools-menu-head">项目协作</div>
-                  <button
-                    type="button"
-                    className="shell-tools-menu-item"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      if (!pid) {
-                        void dialog.alert({
-                          title: '还未打开项目',
-                          message: '先在左上角选择或创建一个项目。',
-                        });
-                        return;
-                      }
-                      void dialog.prompt({
-                        title: '分享项目画布',
-                        icon: Share2,
-                        message: '生成只读链接。访客可实时查看当前项目，不能编辑、上传或生成；有效期最长 30 天。',
-                        placeholder: '分享有效期（1-30 天）',
-                        defaultValue: '7',
-                        confirmText: '生成分享链接',
-                      }).then(async (rawDays) => {
-                        if (rawDays === null) return;
-                        const days = Math.max(
-                          1,
-                          Math.min(30, Number(rawDays) || 7),
-                        );
-                        try {
-                          const share = await createProjectShare(pid, days);
-                          const url = `${window.location.origin}${share.url}`;
-                          await navigator.clipboard?.writeText(url);
-                          await dialog.alert({
-                            title: '分享链接已生成',
-                            message: `${url}\n\n有效期至 ${new Date(share.expiresAt).toLocaleString()}。链接已复制。`,
-                            tone: 'success',
-                          });
-                        } catch (reason) {
-                          await dialog.alert({
-                            title: '生成分享链接失败',
-                            message: reason instanceof Error ? reason.message : String(reason),
-                            tone: 'danger',
-                          });
-                        }
-                      });
-                    }}
-                  >
-                    <Share2 size={13} strokeWidth={1.9} aria-hidden="true" />
-                    <span>分享项目画布</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="shell-tools-menu-item"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      if (!pid) return;
-                      void getProjectShares(pid)
-                        .then((result) => {
-                          const active = result.shares.filter((share) => share.active);
-                          if (active.length === 0) {
-                            return dialog.alert({
-                              title: '分享链接',
-                              message: '当前项目没有有效的只读分享链接。',
-                            });
-                          }
-                          const selected = active[0];
-                          return dialog.confirm({
-                            title: '撤销当前分享？',
-                            message: `撤销后，已拿到链接的人会立即失去访问权限。有效期原为 ${new Date(selected.expiresAt).toLocaleString()}。`,
-                            tone: 'danger',
-                            confirmText: '撤销分享',
-                          }).then((confirmed) => {
-                            if (!confirmed) return;
-                            return revokeProjectShare(pid, selected.id).then(() => {
-                              return dialog.alert({
-                                title: '分享已撤销',
-                                message: '线上的只读链接现在已失效。',
-                                tone: 'success',
+                </nav>
+                <div className="shell-settings-content">
+                  {settingsCategory === 'appearance' && (
+                    <>
+                      <section className="shell-settings-section">
+                        <div className="shell-tools-menu-head"><Palette size={12} strokeWidth={1.9} aria-hidden="true" />界面主题</div>
+                        <div className="shell-settings-themes" role="radiogroup" aria-label="界面主题">
+                          {THEMES.map((item) => (
+                            <button
+                              key={item.key}
+                              type="button"
+                              role="radio"
+                              aria-checked={theme === item.key}
+                              className={`shell-theme-option ${theme === item.key ? 'is-active' : ''}`}
+                              title={item.desc}
+                              onClick={() => void changeTheme(item.key)}
+                            >
+                              <i className={`theme-swatch is-${item.key}`} aria-hidden="true" />
+                              <span>{item.label}</span>
+                              {theme === item.key && <Check size={12} strokeWidth={2.3} aria-hidden="true" />}
+                            </button>
+                          ))}
+                        </div>
+                      </section>
+                      <section className="shell-settings-section">
+                        <div className="shell-tools-menu-head">版本</div>
+                        <button
+                          type="button"
+                          className="shell-tools-menu-item shell-release-entry"
+                          onClick={openChangelog}
+                        >
+                          <History size={13} strokeWidth={1.9} aria-hidden="true" />
+                          <span>更新记录</span>
+                          <em>v{APP_VERSION}</em>
+                          {!releaseSeen && <b>新</b>}
+                        </button>
+                      </section>
+                    </>
+                  )}
+                  {settingsCategory === 'integrations' && (
+                    <>
+                      <section className="shell-settings-section">
+                        <div className="shell-tools-menu-head">模型接口</div>
+                        <button
+                          type="button"
+                          className="shell-tools-menu-item"
+                          onClick={() => void openSettings('models')}
+                        >
+                          <Settings size={13} strokeWidth={1.9} aria-hidden="true" />
+                          <span>供应商、模型和参数范围</span>
+                        </button>
+                      </section>
+                      <section className="shell-settings-section">
+                        <div className="shell-tools-menu-head">素材存储</div>
+                        <button
+                          type="button"
+                          className="shell-tools-menu-item"
+                          onClick={() => void openSettings('storage')}
+                        >
+                          <CloudUpload size={13} strokeWidth={1.9} aria-hidden="true" />
+                          <span>对象存储 TOS</span>
+                        </button>
+                      </section>
+                    </>
+                  )}
+                  {settingsCategory === 'account' && (
+                    <>
+                      {!localMode && (
+                        <section className="shell-settings-section">
+                          <div className="shell-tools-menu-head">账号安全</div>
+                          <button
+                            type="button"
+                            className="shell-tools-menu-item"
+                            onClick={() => { setSettingsOpen(false); setPasswordOpen(true); }}
+                          >
+                            <KeyRound size={13} strokeWidth={1.9} aria-hidden="true" />
+                            <span>修改密码</span>
+                          </button>
+                        </section>
+                      )}
+                      {isAdmin && !localMode && (
+                        <section className="shell-settings-section">
+                          <div className="shell-tools-menu-head">管理员</div>
+                          <button
+                            type="button"
+                            className="shell-tools-menu-item"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSettingsOpen(false);
+                              window.setTimeout(() => setAdminConsoleOpen(true), 0);
+                            }}
+                          >
+                            <History size={13} strokeWidth={1.9} aria-hidden="true" />
+                            <span>租户数据与审计</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="shell-tools-menu-item"
+                            onClick={() => void openSettings('accounts')}
+                          >
+                            <Plus size={13} strokeWidth={1.9} aria-hidden="true" />
+                            <span>创建账号</span>
+                          </button>
+                        </section>
+                      )}
+                      {(localMode || !isAdmin) && (
+                        <section className="shell-settings-section shell-settings-empty">
+                          <div className="shell-tools-menu-head">账号安全</div>
+                          <p>当前为本地单用户模式，账号与成员管理由部署管理员配置。</p>
+                        </section>
+                      )}
+                    </>
+                  )}
+                  {settingsCategory === 'project' && (
+                    <>
+                      {!localMode && (
+                        <section className="shell-settings-section">
+                          <div className="shell-tools-menu-head">项目协作</div>
+                          <button
+                            type="button"
+                            className="shell-tools-menu-item"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (!pid) {
+                                void dialog.alert({title: '还未打开项目', message: '先在左上角选择或创建一个项目。'});
+                                return;
+                              }
+                              void dialog.prompt({
+                                title: '分享项目画布',
+                                icon: Share2,
+                                message: '生成只读链接。访客可实时查看当前项目，不能编辑、上传或生成；有效期最长 30 天。',
+                                placeholder: '分享有效期（1-30 天）',
+                                defaultValue: '7',
+                                confirmText: '生成分享链接',
+                              }).then(async (rawDays) => {
+                                if (rawDays === null) return;
+                                const days = Math.max(1, Math.min(30, Number(rawDays) || 7));
+                                try {
+                                  const share = await createProjectShare(pid, days);
+                                  const url = `${window.location.origin}${share.url}`;
+                                  await navigator.clipboard?.writeText(url);
+                                  await dialog.alert({
+                                    title: '分享链接已生成',
+                                    message: `${url}\n\n有效期至 ${new Date(share.expiresAt).toLocaleString()}。链接已复制。`,
+                                    tone: 'success',
+                                  });
+                                } catch (reason) {
+                                  await dialog.alert({
+                                    title: '生成分享链接失败',
+                                    message: reason instanceof Error ? reason.message : String(reason),
+                                    tone: 'danger',
+                                  });
+                                }
                               });
-                            });
-                          });
-                        })
-                        .catch((reason) => dialog.alert({
-                          title: '读取分享失败',
-                          message: reason instanceof Error ? reason.message : String(reason),
-                          tone: 'danger',
-                        }));
-                    }}
-                  >
-                    <X size={13} strokeWidth={1.9} aria-hidden="true" />
-                    <span>撤销项目分享</span>
-                  </button>
+                            }}
+                          >
+                            <Share2 size={13} strokeWidth={1.9} aria-hidden="true" />
+                            <span>分享项目画布</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="shell-tools-menu-item"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (!pid) return;
+                              void getProjectShares(pid)
+                                .then((result) => {
+                                  const active = result.shares.filter((share) => share.active);
+                                  if (active.length === 0) {
+                                    return dialog.alert({title: '分享链接', message: '当前项目没有有效的只读分享链接。'});
+                                  }
+                                  const selected = active[0];
+                                  return dialog.confirm({
+                                    title: '撤销当前分享？',
+                                    message: `撤销后，已拿到链接的人会立即失去访问权限。有效期原为 ${new Date(selected.expiresAt).toLocaleString()}。`,
+                                    tone: 'danger',
+                                    confirmText: '撤销分享',
+                                  }).then((confirmed) => {
+                                    if (!confirmed) return;
+                                    return revokeProjectShare(pid, selected.id).then(() => dialog.alert({
+                                      title: '分享已撤销',
+                                      message: '线上的只读链接现在已失效。',
+                                      tone: 'success',
+                                    }));
+                                  });
+                                })
+                                .catch((reason) => dialog.alert({
+                                  title: '读取分享失败',
+                                  message: reason instanceof Error ? reason.message : String(reason),
+                                  tone: 'danger',
+                                }));
+                            }}
+                          >
+                            <X size={13} strokeWidth={1.9} aria-hidden="true" />
+                            <span>撤销项目分享</span>
+                          </button>
+                        </section>
+                      )}
+                      <section className="shell-settings-section">
+                        <div className="shell-tools-menu-head">项目与数据</div>
+                        <div className="shell-tools-field">
+                          <input
+                            value={feedPath}
+                            onChange={e => setFeedPath(e.target.value)}
+                            placeholder="载荷 JSON 路径，或选择本地文件"
+                            title={feedPath || '例如 D:\\proj\\feed.json'}
+                            spellCheck={false}
+                            onKeyDown={e => { if (e.key === 'Enter' && !busy) void importFeed(); }}
+                          />
+                          <button
+                            type="button"
+                            className="shell-tools-pick"
+                            disabled={busy}
+                            title="选择本地投喂载荷 JSON"
+                            aria-label="选择本地投喂载荷 JSON"
+                            onClick={() => feedFileRef.current?.click()}
+                          >
+                            <FolderOpen size={14} strokeWidth={1.9} aria-hidden="true" />
+                          </button>
+                          <button type="button" className="shell-tools-submit" disabled={busy} onClick={() => void importFeed()}>
+                            <Upload size={12} strokeWidth={2.1} aria-hidden="true" />
+                            {busy ? '导入中…' : '导入'}
+                          </button>
+                        </div>
+                        <input
+                          ref={feedFileRef}
+                          type="file"
+                          accept="application/json,.json"
+                          hidden
+                          onChange={(event) => {
+                            const file = event.target.files?.[0];
+                            event.target.value = '';
+                            if (file) void importFeedFile(file);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="shell-tools-menu-item"
+                          onClick={() => void exportAssetRecord()}
+                        >
+                          <Download size={13} strokeWidth={1.9} aria-hidden="true" />
+                          <span>导出资产记录 JSON</span>
+                        </button>
+                      </section>
+                    </>
+                  )}
                 </div>
-              )}
-
-              <div className="shell-settings-section">
-                <div className="shell-tools-menu-head">导入投喂载荷</div>
-                <div className="shell-tools-field">
-                  <input
-                    value={feedPath}
-                    onChange={e => setFeedPath(e.target.value)}
-                    placeholder="载荷 JSON 路径，或选择本地文件"
-                    title={feedPath || '例如 D:\\proj\\feed.json'}
-                    spellCheck={false}
-                    onKeyDown={e => { if (e.key === 'Enter' && !busy) void importFeed(); }}
-                  />
-                  <button
-                    type="button"
-                    className="shell-tools-pick"
-                    disabled={busy}
-                    title="选择本地投喂载荷 JSON"
-                    aria-label="选择本地投喂载荷 JSON"
-                    onClick={() => feedFileRef.current?.click()}
-                  >
-                    <FolderOpen size={14} strokeWidth={1.9} aria-hidden="true" />
-                  </button>
-                  <button type="button" className="shell-tools-submit" disabled={busy} onClick={() => void importFeed()}>
-                    <Upload size={12} strokeWidth={2.1} aria-hidden="true" />
-                    {busy ? '导入中…' : '导入'}
-                  </button>
-                </div>
-                <input
-                  ref={feedFileRef}
-                  type="file"
-                  accept="application/json,.json"
-                  hidden
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    event.target.value = '';
-                    if (file) void importFeedFile(file);
-                  }}
-                />
-                <button
-                  type="button"
-                  className="shell-tools-menu-item"
-                  onClick={() => void exportAssetRecord()}
-                >
-                  <Download size={13} strokeWidth={1.9} aria-hidden="true" />
-                  <span>导出资产记录 JSON</span>
-                </button>
               </div>
             </div>
           )}

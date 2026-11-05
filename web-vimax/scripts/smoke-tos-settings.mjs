@@ -45,6 +45,12 @@ try {
   await page.click('.shell-topbar-right .shell-topbar-btn');
   await page.waitForSelector('.shell-settings-menu', {timeout: 10_000});
   await page.evaluate(() => {
+    const category = [...document.querySelectorAll('.shell-settings-nav button')]
+      .find((item) => (item.textContent || '').startsWith('服务'));
+    if (!(category instanceof HTMLElement)) throw new Error('services category missing');
+    category.click();
+  });
+  await page.evaluate(() => {
     const button = [...document.querySelectorAll('.shell-settings-menu button')]
       .find((item) => (item.textContent || '').includes('对象存储 TOS'));
     if (!(button instanceof HTMLElement)) throw new Error('TOS settings entry missing');

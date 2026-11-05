@@ -2845,7 +2845,6 @@ export async function generateCanvasNodeNow(
   if (inflight.has(key)) {
     return {deferred: true, reason: '该节点正在提交生成'};
   }
-  waitingForBackend.delete(key);
   inflight.add(key);
   try {
     const result = await request(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/generate`, {
@@ -2904,7 +2903,6 @@ export async function generateCanvasNodeNow(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes('GENERATION_IN_PROGRESS') || message.includes('正在生成，请勿重复提交')) {
-      waitingForBackend.add(key);
       startPolling(sessionId);
       return {deferred: true, reason: message};
     }
@@ -2937,7 +2935,6 @@ const listeners = new Set<(event: AgentEvent) => void>();
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 const pollSessions = new Set<string>();
 const inflight = new Set<string>();   // sessionId::nodeId，跨项目也不会串号
-const waitingForBackend = new Set<string>(); // 409 后只等后端完成，不再重复 POST
 
 export function subscribeToEvents(onEvent: (event: AgentEvent) => void, onConnection: (connected: boolean) => void) {
   listeners.add(onEvent);
@@ -2990,7 +2987,6 @@ async function pollProjectOnce(sessionId: string) {
   });
   if (generating && generating.metadata?.status === 'generating') {
     const key = `${sessionId}::${generating.id}`;
-    if (waitingForBackend.has(key)) return;
     if (!inflight.has(key)) {
       inflight.add(key);
       try {
@@ -3007,9 +3003,9 @@ async function pollProjectOnce(sessionId: string) {
       } catch (e) {
         const message = (e as Error).message || String(e);
         if (message.includes('GENERATION_IN_PROGRESS') || message.includes('正在生成，请勿重复提交')) {
-          // Another request/tab owns this generation. Keep polling backend truth
-          // instead of marking it failed or submitting a duplicate paid task.
-          waitingForBackend.add(key);
+          // The persisted task/node projection remains authoritative. A busy
+          // response is not a terminal card state and must never be rendered
+          // as a frontend-produced failure.
           return;
         }
         emit({type: 'error', sessionId, nodeId: generating.id, message});
@@ -3021,9 +3017,6 @@ async function pollProjectOnce(sessionId: string) {
   }
   const hasInflight = [...inflight].some(key => key.startsWith(`${sessionId}::`));
   if (!hasInflight) {
-    for (const key of [...waitingForBackend]) {
-      if (key.startsWith(`${sessionId}::`)) waitingForBackend.delete(key);
-    }
     pollSessions.delete(sessionId);
     stopPollTimerIfIdle();
   }

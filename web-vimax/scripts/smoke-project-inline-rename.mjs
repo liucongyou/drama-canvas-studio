@@ -71,6 +71,12 @@ try {
 
   await page.click('.shell-topbar-right .shell-topbar-btn');
   await page.waitForSelector('.shell-settings-menu', {timeout: 5_000});
+  await page.evaluate(() => {
+    const category = [...document.querySelectorAll('.shell-settings-nav button')]
+      .find((item) => (item.textContent || '').startsWith('项目'));
+    if (!(category instanceof HTMLElement)) throw new Error('project settings category missing');
+    category.click();
+  });
   const settings = await page.evaluate(() => ({
     hasRename: [...document.querySelectorAll('.shell-settings-menu button')]
       .some((item) => (item.textContent || '').includes('重命名项目')),

@@ -160,6 +160,12 @@ try {
   });
   await capture('设置菜单', '.shell-settings-menu');
   await page.evaluate(() => {
+    const category = [...document.querySelectorAll('.shell-settings-nav button')]
+      .find((item) => (item.textContent || '').startsWith('服务'));
+    if (category instanceof HTMLElement) category.click();
+  });
+  await sleep(120);
+  await page.evaluate(() => {
     const button = [...document.querySelectorAll('.shell-settings-menu button')]
       .find((item) => (item.textContent || '').includes('供应商、模型和参数范围'));
     if (button instanceof HTMLElement) button.click();
