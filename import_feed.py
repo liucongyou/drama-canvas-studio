@@ -498,7 +498,7 @@ def _mention_asset_base(label):
 
 
 def _resolve_mention_ref(kind, name, tail, refs):
-    prefix = _MENTION_KIND_PREFIX.get(kind, "")
+    prefix = _MENTION_KIND_PREFIX.get(kind, kind if kind in {"角色", "场景", "道具", "音频", "群像"} else "")
     candidates = [
         str(item.get("label") or "")
         for item in refs or []
@@ -511,7 +511,11 @@ def _resolve_mention_ref(kind, name, tail, refs):
     figure = re.search(r"图\s*(\d+)", str(tail or ""))
     if figure:
         code = _canonical_figure(figure.group(1))
-        by_code = [label for label in candidates if code in label]
+        by_code = [
+            label
+            for label in candidates
+            if canvas_feed_contract.canonical_code_from_text(label) == code
+        ]
         if by_code:
             if "九宫格" in str(tail):
                 nine = next((label for label in by_code if "九宫格" in label), "")
@@ -577,6 +581,42 @@ def _resolve_figure_ref(name, figure, refs):
         prefix = raw_name[:max(0, len(raw_name) - len(base))]
         return label, prefix
     return "", ""
+
+
+def _repair_named_short_alias(prompt, refs):
+    """Resolve `@场景｜早点摊（图12）` to the exact card title.
+
+    This pass is intentionally narrow: it only touches a mention that already
+    carries an explicit kind and figure number, and leaves every exact canonical
+    label unchanged. It therefore cannot modify role/audio prose references.
+    """
+    text = str(prompt or "")
+    known_labels = {
+        str(ref.get("label") or "").strip()
+        for ref in refs or []
+        if isinstance(ref, dict)
+    }
+    pattern = re.compile(
+        r"@(?P<kind>角色|场景|道具)\s*[｜|:：]\s*"
+        r"(?P<name>[^（(\n]+?)\s*[（(]\s*(?:参考)?图\s*"
+        r"(?P<code>\d+)\s*[）)]"
+    )
+
+    def replace(match):
+        kind = match.group("kind")
+        prefix = kind
+        exact = f"{prefix}｜{match.group('name').strip()}（图{match.group('code')}）"
+        if exact in known_labels:
+            return match.group(0)
+        title = _resolve_mention_ref(
+            prefix,
+            match.group("name"),
+            f"（图{match.group('code')}）",
+            refs,
+        )
+        return f"@{title}" if title else match.group(0)
+
+    return pattern.sub(replace, text)
 
 
 def repair_prompt_mentions(prompt, refs):
@@ -699,7 +739,9 @@ def repair_prompt_mentions(prompt, refs):
         return f"{prefix}@{title}" if title else match.group(0)
 
     repaired = _PLAIN_FIGURE_MENTION_RE.sub(replace_plain, repaired)
+    repaired = _repair_named_short_alias(repaired, refs)
     repaired = re.sub(r"\s*[（(]\s*model\s*=\s*[^）)]*[）)]", "", repaired, flags=re.IGNORECASE)
+
     return repaired
 
 
@@ -970,6 +1012,10 @@ def repair_payload_prompt_mentions(payload):
                     filtered_voices,
                 )
             )
+            # Exact canonical labels do not imply every named alias in the
+            # prompt is canonical. Apply only the narrow kind+figure pass so a
+            # stale `场景｜早点摊（图12）` can converge to the actual card title.
+            repaired = _repair_named_short_alias(repaired, filtered_refs)
             if repaired != value:
                 meta[key] = repaired
                 node_changed = True

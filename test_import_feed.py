@@ -850,6 +850,25 @@ class ImportFeedContractTests(unittest.TestCase):
         self.assertNotIn("@角色｜@角色｜", repaired)
         self.assertNotIn("@//", repaired)
 
+    def test_repairs_short_scene_alias_alongside_canonical_variant(self):
+        refs = [
+            {"nodeId": "scene-12", "label": "场景｜早点摊·母版（图12）"},
+            {"nodeId": "scene-120", "label": "场景｜夜宵摊·母版（图120）"},
+        ]
+        prompt = (
+            "@场景｜早点摊（图12）与@场景｜夜宵摊（图120）不是同一个场景。\n"
+            "完整引用：@场景｜早点摊·母版（图12）"
+        )
+        repaired = import_feed.repair_prompt_mentions(prompt, refs)
+
+        self.assertEqual(repaired.count("@场景｜早点摊·母版（图12）"), 2)
+        self.assertNotIn("@场景｜早点摊（图12）", repaired)
+        self.assertIn("@场景｜夜宵摊·母版（图120）", repaired)
+        self.assertEqual(
+            import_feed.repair_prompt_mentions(repaired, refs),
+            repaired,
+        )
+
     def test_repairs_existing_payload_idempotently(self):
         payload = {
             "nodes": [{
