@@ -2454,6 +2454,19 @@ def get_project_workspace_nodes(project_id, episode_id=None):
             )
         )
     sanitized = repair_workspace_dangling_references(nodes)
+    # A previous prompt repair could put an @ inside a `<...>` mapping label.
+    # This is a read-only compatibility cleanup for already persisted prompts.
+    import_feed = __import__("import_feed")
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "video":
+            continue
+        metadata = node.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        for key in ("prompt", "composerContent"):
+            value = str(metadata.get(key) or "")
+            if value:
+                metadata[key] = import_feed.repair_angle_bracket_mentions(value)
     node_ids = {str(node.get("id")) for node in nodes if node.get("id")}
     edge_rows = con.execute(
         "SELECT edge_json FROM canvas_projection_edges WHERE project_id=? ORDER BY rowid",

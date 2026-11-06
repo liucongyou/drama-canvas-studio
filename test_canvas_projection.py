@@ -207,6 +207,30 @@ class CanvasProjectionTests(unittest.TestCase):
             2,
         )
 
+    def test_episode_read_strips_legacy_at_inside_mapping_brackets(self):
+        payload = self._payload()
+        payload["nodes"][1]["metadata"]["prompt"] = (
+            "<@场景｜厂区后街·母版（图10）> "
+            "对应@场景｜厂区后街·母版（图10），仅采用空间布局。"
+        )
+        project_id = canvas_store.create_project(
+            "projection-bracket-cleanup",
+            payload,
+        )
+
+        workspace = canvas_store.get_project_workspace_nodes(
+            project_id,
+            "EP001",
+        )
+        video = next(
+            node for node in workspace["nodes"]
+            if node["id"] == "video-1"
+        )
+        prompt = video["metadata"]["prompt"]
+
+        self.assertIn("<场景｜厂区后街·母版（图10）>", prompt)
+        self.assertNotIn("<@", prompt)
+
     def test_notes_are_isolated_by_project_and_episode(self):
         first = canvas_store.create_project("notes-a", self._payload())
         second = canvas_store.create_project("notes-b", self._payload())

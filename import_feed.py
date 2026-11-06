@@ -624,11 +624,7 @@ def _repair_named_short_alias(prompt, refs):
 
 def repair_prompt_mentions(prompt, refs):
     """把技能载荷占位符换成输入框可识别、能渲染缩略图的 @资产节点名。"""
-    prompt = re.sub(
-        r"<@((?:角色|群像|场景|道具|音频)｜[^<>\n]*?图\s*\d+[^<>\n]*?)>",
-        r"<\1>",
-        str(prompt or ""),
-    )
+    prompt = repair_angle_bracket_mentions(prompt)
 
     def replace(match):
         title = _resolve_mention_ref(
@@ -753,6 +749,15 @@ def repair_prompt_mentions(prompt, refs):
     repaired = re.sub(r"\s*[（(]\s*model\s*=\s*[^）)]*[）)]", "", repaired, flags=re.IGNORECASE)
 
     return repaired
+
+
+def repair_angle_bracket_mentions(prompt):
+    """Strip an accidental @ inside an angle-bracket mapping label."""
+    return re.sub(
+        r"<@((?:角色|群像|场景|道具|音频)｜[^<>\n]*?图\s*\d+[^<>\n]*?)>",
+        r"<\1>",
+        str(prompt or ""),
+    )
 
 
 def _ensure_audio_mentions(prompt, voices):
