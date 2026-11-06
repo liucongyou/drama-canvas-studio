@@ -1421,6 +1421,71 @@ class ImportFeedContractTests(unittest.TestCase):
             ys = [node["position"]["y"] for node in matching]
             self.assertEqual(len(ys), len(set(ys)))
 
+    def test_import_layout_puts_crowd_assets_in_an_independent_column(self):
+        payload = import_feed.build_payload({
+            "title": "铁西硬汉 · 第01集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [
+                {
+                    "code": "图1",
+                    "name": "赵铁柱（角色立绘）",
+                    "raw": "男性角色。",
+                },
+                {
+                    "code": "图16",
+                    "name": "群像资产卡 GRP-01 街坊群",
+                    "raw": "街坊群像。",
+                    "canvas": {
+                        "kind": "crowd",
+                        "name": "街坊群",
+                        "ratio": "16:9",
+                    },
+                },
+                {
+                    "code": "图15",
+                    "name": "厂办门口小广场（场景母版）",
+                    "raw": "场景母版。",
+                },
+            ],
+            "segments": [{
+                "no": 1,
+                "name": "段1 · 门口",
+                "raw": (
+                    "@角色｜赵铁柱（图1）与@群像｜街坊群（图16）"
+                    "站在@场景｜厂办门口小广场（图15）。"
+                ),
+            }],
+        })
+        nodes = {
+            node["title"]: node
+            for node in payload["nodes"]
+            if node.get("type") == "image"
+        }
+        crowd = nodes["群像｜街坊群（图16）"]
+        role = nodes["角色｜赵铁柱（图1）"]
+        scene = nodes["场景｜厂办门口小广场·母版（图15）"]
+        by_id = {
+            node["id"]: node
+            for node in payload["nodes"]
+        }
+        layout = payload["episodeLayouts"]["EP001"]
+        crowd_position = layout[crowd["id"]]
+        role_position = layout[role["id"]]
+        scene_position = layout[scene["id"]]
+        self.assertEqual(crowd_position["x"], import_feed.COL_CROWD)
+        self.assertGreater(
+            crowd_position["x"] - role_position["x"],
+            280,
+        )
+        self.assertGreater(
+            scene_position["x"] - crowd_position["x"],
+            280,
+        )
+        self.assertEqual(
+            by_id[crowd["id"]]["position"],
+            crowd_position,
+        )
+
     def test_existing_scene_grid_is_collapsed_into_master(self):
         payload = {
             "nodes": [

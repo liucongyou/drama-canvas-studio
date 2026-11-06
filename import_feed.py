@@ -52,7 +52,8 @@ def _canonical_figure(value):
 
 
 # 五区列 x 坐标（按卡片真实尺寸紧密排布）
-COL_ROLE, COL_SCENE, COL_PROP, COL_AUDIO, COL_VIDEO = 0, 320, 640, 960, 1240
+COL_ROLE, COL_SCENE, COL_PROP, COL_AUDIO, COL_VIDEO = 0, 640, 960, 1280, 1600
+COL_CROWD = 320
 
 _REF_RE = re.compile(
     r"@(?:(?://(?:chr|scn|prp)\s*/\s*-\s*)|(?:角色|场景|道具|音频|群像)\s*[｜|:：]\s*)"
@@ -1153,7 +1154,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
     asset_kinds = {}        # node id -> 类型
     col_x = {
         "角色": COL_ROLE,
-        "群像": COL_ROLE + 160,
+        "群像": COL_CROWD,
         "场景": COL_SCENE,
         "道具": COL_PROP,
     }
@@ -1711,7 +1712,7 @@ def apply_import_layout(payload, episode_ids=None):
     fixed_columns = {
         "text": (-320, 150),
         "role": (COL_ROLE, 360),
-        "crowd": (COL_ROLE + 160, 360),
+        "crowd": (COL_CROWD, 360),
         "scene": (COL_SCENE, 360),
         "prop": (COL_PROP, 360),
         "audio": (COL_AUDIO, 200),
