@@ -3091,6 +3091,9 @@ html[data-theme='dark'][data-variant='immersive']{
   line-height:1;
   color:#d2d2d6;
   font-variant-numeric:tabular-nums;
+  position:relative;
+  z-index:6;
+  pointer-events:auto;
 }
 .canvas-media-version-nav button{
   width:15px;

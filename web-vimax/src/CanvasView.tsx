@@ -3781,24 +3781,28 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           >
             <button
               type="button"
+                className="nodrag"
               aria-label="上一个生成版本"
               title="上一个生成版本"
               onClick={(event) => {
                 event.stopPropagation();
                 selectMediaVersion(currentMediaVersionIndex - 1);
               }}
+              onPointerDown={(event) => event.stopPropagation()}
             >
               <ChevronLeft size={10} strokeWidth={2.3} aria-hidden="true" />
             </button>
             <span>{currentMediaVersionIndex + 1}/{mediaVersions.length}</span>
             <button
               type="button"
+              className="nodrag"
               aria-label="下一个生成版本"
               title="下一个生成版本"
               onClick={(event) => {
                 event.stopPropagation();
                 selectMediaVersion(currentMediaVersionIndex + 1);
               }}
+              onPointerDown={(event) => event.stopPropagation()}
             >
               <ChevronRight size={10} strokeWidth={2.3} aria-hidden="true" />
             </button>
