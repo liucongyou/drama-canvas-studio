@@ -153,6 +153,7 @@ import {
 } from './modelPickerGroups';
 import {validateModelParams} from './modelParamContract';
 import {clampDurationInput} from './durationInput';
+import {canvasHeaderStats, formatCanvasDuration} from './canvasStats';
 import {
   canvasBackgroundCss,
   isCanvasBackgroundMode,
@@ -2188,6 +2189,7 @@ function RichPromptEditor({
   value,
   mentions,
   placeholder,
+  editable = true,
   onChange,
   onKeyDown,
   onRendered,
@@ -2198,6 +2200,7 @@ function RichPromptEditor({
   value: string;
   mentions: PromptMentionToken[];
   placeholder: string;
+  editable?: boolean;
   onChange: (value: string) => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
   onRendered?: () => void;
@@ -2233,7 +2236,8 @@ function RichPromptEditor({
     <div
       ref={editorRef}
       className="jim-prompt"
-      contentEditable
+      contentEditable={editable}
+      aria-readonly={!editable}
       suppressContentEditableWarning
       spellCheck={false}
       role="textbox"
@@ -2241,6 +2245,7 @@ function RichPromptEditor({
       aria-label={placeholder}
       data-placeholder={placeholder}
       onInput={(event) => {
+        if (!editable) return;
         const next = promptTextFromEditor(event.currentTarget);
         const previous = lastEditorValueRef.current;
         if (next.trim() && next.length < previous.length && onMentionRemoved) {
@@ -2254,6 +2259,7 @@ function RichPromptEditor({
         onChange(next);
       }}
       onBlur={(event) => {
+        if (!editable) return;
         const next = promptTextFromEditor(event.currentTarget);
         event.currentTarget.dataset.promptValue = next;
         lastEditorValueRef.current = next;
@@ -2729,7 +2735,11 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     setVideoSourceReady(true);
     video.preload = 'auto';
     if (video.paused) {
-      void video.play().catch(() => setVideoPlaying(false));
+      if (video.readyState === HTMLMediaElement.HAVE_NOTHING) video.load();
+      void video.play().catch(() => {
+        setVideoPlaying(false);
+        setMediaLoadFailed(true);
+      });
     } else {
       video.pause();
     }
@@ -3416,6 +3426,11 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                         // Codec may not allow seeking yet; playback still works.
                       }
                     }}
+                    onClick={(event) => {
+                      if ((event.target as Element).closest('button, input, .canvas-video-controls')) return;
+                      event.stopPropagation();
+                      toggleVideoPlayback();
+                    }}
                     onPlaying={() => setVideoFrameReady(true)}
                     onError={() => {
                       setMediaLoadFailed(true);
@@ -3744,7 +3759,12 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
             </button>
           ) : null}
           {!isText && (
-            <button type="button" className="nodrag" title="编辑" onClick={(e) => { e.stopPropagation(); onEdit(node); }}>
+            <button
+              type="button"
+              className="nodrag"
+              title={readOnly ? '查看提示词' : '编辑'}
+              onClick={(e) => { e.stopPropagation(); onEdit(node); }}
+            >
               <Pencil size={13} strokeWidth={1.9} aria-hidden="true" />
             </button>
           )}
@@ -3801,7 +3821,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           <span className={`canvas-media-foot-main ${statusCls}`}><i className="canvas-media-dot" />{statusText}</span>
           <span className={`canvas-media-foot-sub${mediaMissing || (failed && node.lastError) ? ' is-error' : ''}`} title={footSubText}>{footSubText}</span>
         </span>
-        {!isText && mediaVersions.length > 1 && (
+          {!readOnly && !isText && mediaVersions.length > 1 && (
           <div
             className="canvas-media-version-nav nodrag"
             title={`生成版本 ${currentMediaVersionIndex + 1}/${mediaVersions.length}`}
@@ -3834,7 +3854,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           </div>
         )}
         <div className="canvas-media-foot-more">
-          <button type="button" className="nodrag" title="更多" onClick={(e) => { e.stopPropagation(); setMenu((v) => !v); }}>
+          <button type="button" className="nodrag" title={readOnly ? '查看提示词' : '更多'} onClick={(e) => { e.stopPropagation(); setMenu((v) => !v); }}>
             <MoreHorizontal size={14} strokeWidth={2} aria-hidden="true" />
           </button>
           {menu && (
@@ -3963,11 +3983,12 @@ function AnchoredJimPopover({owner, className = '', children}: {
 }
 
 /** 媒体节点提示词栏（即梦风：底部居中浮动编辑栏 + 内联参数 pill + 图标下拉面板） */
-function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onDelete, onClose, onRemoveRef, onUploadRef, onPickRef, onBackdropPick, onRevealAt, anchor, openToken}: {
+function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChange, onGenerate, onDelete, onClose, onRemoveRef, onUploadRef, onPickRef, onBackdropPick, onRevealAt, anchor, openToken}: {
   node: CanvasMediaNode | null;
   assets: CanvasMediaNode[];
   edges: Edge[];
   catalog: ModelCatalog | null;
+  readOnly?: boolean;
   onChange: (id: string, patch: Partial<CanvasMediaNode>) => void;
   onGenerate: (n: CanvasMediaNode) => boolean;
   onDelete: (id: string) => void;
@@ -4929,7 +4950,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
           <span className="jim-head-title" title={node.title}>{node.title || meta.label}</span>
           <span className={`jim-head-badge${overPromptLimit ? ' is-over-limit' : ''}`}>{isTxt ? `${(node.prompt || '').trim().length} / ${promptLimit} 字` : isAud ? (p.ttsMode === 'speech' ? `音色 ${p.voiceId || p.ttsVoice || '未设置'}` : '音色设计') : isVid ? `${ratioLabel} · ${resLabel}` : `${ratioLabel} · ${clarityLabel}`}</span>
           <div className="jim-head-tools">
-            <button
+            {!readOnly && <button
               type="button"
               className={`jim-head-expand ${taExpanded ? 'is-on' : ''}`}
               title={taExpanded ? '收起输入框' : '放大输入框'}
@@ -4945,14 +4966,15 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
               {taExpanded
                 ? <Minimize2 size={14} strokeWidth={1.9} aria-hidden="true" />
                 : <Maximize2 size={14} strokeWidth={1.9} aria-hidden="true" />}
-            </button>
+            </button>}
             <button
               type="button"
               className={`jim-head-more-btn ${openMenu === 'more' ? 'is-on' : ''}`} data-pop-owner="more"
               onClick={() => toggle('more')}
               title="更多"
+              hidden={readOnly}
             ><MoreHorizontal size={15} strokeWidth={2} aria-hidden="true" /></button>
-            {openMenu === 'more' && (
+            {!readOnly && openMenu === 'more' && (
               <div className="jim-pop jim-pop-more">
                 <button type="button" className="is-del" onClick={() => { onDelete(node.id); requestClose(); }}>删除节点</button>
               </div>
@@ -4964,7 +4986,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
         <div ref={promptAreaRef} className={`jim-prompt-area ${taExpanded ? 'is-expanded' : ''}`}>
           {/* 参考素材行（对标即梦）：已有引用缩略图 + 按类型的添加入口 + 「+」更多。
               全部用同尺寸扁平方块，不用虚线/实线描边 —— 旧版重边框看着像表单控件。 */}
-          <div className="jim-ref-row">
+          {!readOnly && <div className="jim-ref-row">
             {refEntries.map((r, i) => (
               <span
                 key={`${r.nodeId}-${i}`}
@@ -5097,14 +5119,14 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
             </div>
             {uploading && <span className="jim-add-busy">上传中…</span>}
             {refNotice && <span className="jim-add-busy">{refNotice}</span>}
-          </div>
+          </div>}
           {/* 即梦同款引导文案：告诉用户 @ 能干什么。
               ★ 现在直接写进输入框的 placeholder（见下方 textarea），不再单独占一行 ——
               单独一行会把提示词框往下压，长提示词一多弹窗就变成两屏（用户反馈）。 */}
           {/* 隐藏的 file input：图片/音频各一个。
               ★ 不用「点击前改 accept」的单 input 方案：React 的 attribute diff
                 不会把被 JS 改过的 accept 复原，第二次点选会沿用上一次的类型。 */}
-          <input
+          {!readOnly && <input
             ref={fileInputRef}
             type="file"
             accept="image/*"
@@ -5114,8 +5136,8 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
               e.target.value = '';    // 允许连续选同一个文件
               if (f) void addUploadedRef(f);
             }}
-          />
-          <input
+          />}
+          {!readOnly && <input
             ref={audioInputRef}
             type="file"
             accept="audio/*"
@@ -5125,8 +5147,8 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
               e.target.value = '';
               if (f) void addUploadedRef(f);
             }}
-          />
-          <input
+          />}
+          {!readOnly && <input
             ref={videoInputRef}
             type="file"
             accept="video/*"
@@ -5136,11 +5158,12 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
               e.target.value = '';
               if (f) void addUploadedRef(f);
             }}
-          />
+          />}
           <div className="jim-prompt-row">
             <RichPromptEditor
               editorRef={taRef}
               value={node.prompt}
+              editable={!readOnly}
               mentions={refEntries.map((ref) => ({
                 label: refLabel(ref),
                 url: refVisualUrl(ref),
@@ -5197,7 +5220,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                 }
               }}
             />
-            <div className="jim-prompt-side">
+          {!readOnly && <div className="jim-prompt-side">
               <button type="button" className="is-clear" title="清空提示词" onClick={() => onChange(node.id, {prompt: ''})}>
                 <Eraser size={14} strokeWidth={1.7} aria-hidden="true" />
               </button>
@@ -5235,7 +5258,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
                   <i className="jim-side-count">{extraParamSpecs.length}</i>
                 </button>
               )}
-            </div>
+            </div>}
           </div>
           {atOpen && (
             <AnchoredJimPopover owner="at" className="jim-at-pop">
@@ -5361,7 +5384,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
               ))}
             </div>
           )}
-          {dependenciesBlocked && (
+          {!readOnly && dependenciesBlocked && (
             <div className="jim-dependency-prepare">
               {!prepareOpen ? (
                 <button
@@ -5440,7 +5463,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
         </div>
 
         {/* 工具栏：＋ @ 风格 ｜ 模型 比例 清晰度/分辨率/时长 ｜ ✂ 费用 ↑ */}
-        <div className="jim-toolbar">
+        {!readOnly && <div className="jim-toolbar">
           <div className="jim-toolbar-left">
             {templates.length > 0 && (
               <div className="jim-tpl-wrap">
@@ -5524,7 +5547,7 @@ function MediaNodeModal({node, assets, edges, catalog, onChange, onGenerate, onD
             title={busy ? '当前节点正在生成，请到任务中心查看进度' : !curModelSpec ? '当前类型没有可用模型' : missingProviderKey ? '当前供应商尚未配置 API Key' : overPromptLimit ? `提示词超过当前模型上限（${promptLimit} 字符）` : referenceEvaluation.issue ? referenceEvaluation.message : modelParamIssues.length ? modelParamIssues[0].message : dependenciesBlocked ? `缺少：${dependencyBlockers.map((item) => `${item.title}（${item.reason}）`).join('；')}` : isTxt ? '按当前内容生成/改写文本 · Ctrl+⏎' : '按当前供应商与参数生成 · Ctrl+⏎'}
           ><ArrowUp size={16} strokeWidth={2.6} aria-hidden="true" /></button>
           </div>
-        </div>
+        </div>}
 
         {/* ---- 下拉面板（统一向上弹出） ---- */}
         {openMenu === 'model' && (
@@ -8710,10 +8733,11 @@ function CanvasViewInner({
     } finally {
       setEpisodeDeleting(false);
     }
-  }, [canvas, currentEp, episodeDeleting, fmtEp, session, setToast]);
+  }, [canvas, currentEp, episodeDeleting, fmtEp, readOnly, session, setToast]);
 
   // LibTV 风格交互状态
   const [mouseMode, setMouseMode] = useState<MouseMode>('select');
+  const effectiveMouseMode = readOnly ? 'hand' : mouseMode;
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
@@ -11454,13 +11478,13 @@ function CanvasViewInner({
       } catch {
         since = 0;
       }
+      const sharedToken = shareTokenInPath(window.location.pathname);
       source = new EventSource(
-        readOnly
-          ? shareEventsUrl(
-              session.startsWith('share:') ? session.slice(6) : session,
-              since,
-            )
-          : projectEventsUrl(session, since),
+        sharedToken
+          ? shareEventsUrl(sharedToken, since)
+          : readOnly && session.startsWith('share:')
+            ? shareEventsUrl(session.slice(6), since)
+            : projectEventsUrl(session, since),
       );
       source.onopen = () => {
         if (disposed) return;
@@ -12373,14 +12397,22 @@ function CanvasViewInner({
     const hasNote = [...patchMap.keys()].some((id) => id.startsWith(NOTE_PREFIX));
     if (hasMedia) {
       setMediaNodes((prev) => {
+        const moved: CanvasMediaNode[] = [];
         const next = prev.map((mn) => {
           const pos = patchMap.get(MEDIA_PREFIX + mn.id);
           if (!pos) return mn;
           const seq = ++positionMutationSeqRef.current;
           pendingPositionSavesRef.current.set(mn.id, {x: pos.x, y: pos.y, seq});
-          return {...mn, x: pos.x, y: pos.y, updatedAt: new Date().toISOString()};
+          const movedNode = {
+            ...mn,
+            x: pos.x,
+            y: pos.y,
+            updatedAt: new Date().toISOString(),
+          };
+          moved.push(movedNode);
+          return movedNode;
         });
-        persistMediaPositions(next);
+        persistMediaPositions(next, moved);
         return next;
       });
     }
@@ -16308,13 +16340,18 @@ function CanvasViewInner({
     () => qualityFailureDetails(qualityReport),
     [qualityReport],
   );
+  const headerStats = useMemo(
+    () => canvasHeaderStats(canvas, mediaNodes),
+    [canvas, mediaNodes],
+  );
 
   const canvasHeaderBody = (
     <div className="workspace-title-row">
           <div className="workspace-title-copy">
             <strong>画布</strong>
             <span>
-              {currentEp ? fmtEp(currentEp) : '项目画布'} · 资产 {canvas ? canvas.characters.length + canvas.scenes.length + canvas.props.length + canvas.voices.length : 0}
+              {currentEp ? fmtEp(currentEp) : '项目画布'} · 资产 {headerStats.assetCount}
+              {` · 本集视频总时长 ${formatCanvasDuration(headerStats.videoDurationSeconds)}`}
             </span>
           </div>
           {actions}
@@ -16458,26 +16495,26 @@ function CanvasViewInner({
                       </button>
                     </>
                   )}
-                  <div className="canvas-tools-section">导出</div>
-                  <button type="button" disabled={exporting} onClick={() => { setOpenMenu(null); void exportCanvasPng(); }}>{exporting ? '导出中…' : '导出画布 PNG'}</button>
-                  <button type="button" onClick={() => { setOpenMenu(null); exportStoryboardMd(); }}>导出分镜 Markdown</button>
-                  <button type="button" onClick={() => { setOpenMenu(null); exportShotsCsv(); }}>导出镜头清单 CSV</button>
-                  <div className="canvas-tools-section">布局</div>
-                  <button type="button" onClick={() => {
-                    setOpenMenu(null);
-                    persistLayout(
-                      currentLayoutPositions(),
-                      userEdges,
-                      deletedAutoEdgeIds,
-                      {groups},
-                    );
-                    setToast('布局已保存');
-                  }}>保存当前布局</button>
-                  <button type="button" onClick={() => { setOpenMenu(null); resetLayout(); }}>恢复默认布局</button>
-                  <button type="button" title="仅恢复节点位置和连线；技能生成的投喂载荷请用顶部「项目设置 → 导入投喂载荷」" onClick={() => { setOpenMenu(null); layoutFileRef.current?.click(); }}>导入布局 JSON</button>
-                  <button type="button" onClick={() => { setOpenMenu(null); exportLayoutJson(); }}>导出布局 JSON</button>
                   {!readOnly && (
                     <>
+                      <div className="canvas-tools-section">导出</div>
+                      <button type="button" disabled={exporting} onClick={() => { setOpenMenu(null); void exportCanvasPng(); }}>{exporting ? '导出中…' : '导出画布 PNG'}</button>
+                      <button type="button" onClick={() => { setOpenMenu(null); exportStoryboardMd(); }}>导出分镜 Markdown</button>
+                      <button type="button" onClick={() => { setOpenMenu(null); exportShotsCsv(); }}>导出镜头清单 CSV</button>
+                      <div className="canvas-tools-section">布局</div>
+                      <button type="button" onClick={() => {
+                        setOpenMenu(null);
+                        persistLayout(
+                          currentLayoutPositions(),
+                          userEdges,
+                          deletedAutoEdgeIds,
+                          {groups},
+                        );
+                        setToast('布局已保存');
+                      }}>保存当前布局</button>
+                      <button type="button" onClick={() => { setOpenMenu(null); resetLayout(); }}>恢复默认布局</button>
+                      <button type="button" title="仅恢复节点位置和连线；技能生成的投喂载荷请用顶部「项目设置 → 导入投喂载荷」" onClick={() => { setOpenMenu(null); layoutFileRef.current?.click(); }}>导入布局 JSON</button>
+                      <button type="button" onClick={() => { setOpenMenu(null); exportLayoutJson(); }}>导出布局 JSON</button>
                       <div className="canvas-tools-section">版本</div>
                       <button type="button" onClick={() => { toolsTriggerRef.current?.focus(); setOpenMenu(null); setVersionsOpen(true); }}>
                         <History size={13} strokeWidth={1.9} aria-hidden="true" />
@@ -16711,9 +16748,9 @@ function CanvasViewInner({
             <header className="canvas-ep-list-header">
               <div className="canvas-ep-list-heading">
                 <strong>{railTab === 'eps' ? '画布列表' : '资产托盘'}</strong>
-                <span className="canvas-ep-list-count">{railTab === 'eps' ? (canvas.meta.episodes.length || 1) : (canvas.characters.length + canvas.scenes.length + canvas.props.length + canvas.voices.length)}</span>
+                <span className="canvas-ep-list-count">{railTab === 'eps' ? (canvas.meta.episodes.length || 1) : headerStats.assetCount}</span>
               </div>
-              {railTab === 'eps' && (
+              {!readOnly && railTab === 'eps' && (
                 <button
                   type="button"
                   className="canvas-ep-list-add"
@@ -16751,7 +16788,7 @@ function CanvasViewInner({
               >
                 <Package size={12} strokeWidth={1.9} aria-hidden="true" />
                 <span>资产</span>
-                <em>{canvas.characters.length + canvas.scenes.length + canvas.props.length + canvas.voices.length}</em>
+                <em>{headerStats.assetCount}</em>
               </button>
             </div>
             {railTab === 'eps' && episodeCreateOpen && (
@@ -16842,7 +16879,7 @@ function CanvasViewInner({
                           {badge}
                         </span>
                       </button>
-                      <button
+                      {!readOnly && <button
                         type="button"
                         className="canvas-ep-more"
                         onClick={(event) => {
@@ -16859,7 +16896,7 @@ function CanvasViewInner({
                         disabled={episodeDeleting}
                         aria-label={`${episodeLabel}操作`}
                         title="集数操作"
-                      ><MoreHorizontal size={13} strokeWidth={2} aria-hidden="true" /></button>
+                      ><MoreHorizontal size={13} strokeWidth={2} aria-hidden="true" /></button>}
                     </div>
                   );
                 })}
@@ -16991,7 +17028,7 @@ function CanvasViewInner({
             }}
             onConnectStart={() => setConnecting(true)}
             onConnectEnd={() => setConnecting(false)}
-            data-mouse-mode={mouseMode}
+            data-mouse-mode={effectiveMouseMode}
             nodes={largeCanvasOverview ? [] : nodes}
             edges={largeCanvasOverview ? [] : renderedEdges}
             edgeTypes={CANVAS_EDGE_TYPES}
@@ -17013,7 +17050,7 @@ function CanvasViewInner({
             onNodeContextMenu={onNodeContextMenu}
             onPaneContextMenu={onPaneContextMenu}
             onNodeDoubleClick={(_event, node) => {
-              if (!readOnly || node.type !== 'media') return;
+              if (node.type !== 'media') return;
               const mediaId = node.id.startsWith(MEDIA_PREFIX)
                 ? node.id.slice(MEDIA_PREFIX.length)
                 : '';
@@ -17083,23 +17120,23 @@ function CanvasViewInner({
               ...edgeFlowVars(zoomPct / 100),
             } as CSSProperties}
             onSelectionChange={onSelectionChangeHandler}
-            panOnDrag={mouseMode === 'hand' || mouseMode === 'connect' || panning}
-            selectionOnDrag={mouseMode === 'select'}
+            panOnDrag={effectiveMouseMode === 'hand' || effectiveMouseMode === 'connect' || panning}
+            selectionOnDrag={effectiveMouseMode === 'select'}
             selectionMode={SelectionMode.Partial}
             onSelectionEnd={onSelectionEnd}
             selectionKeyCode={['Shift']}
             multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
-            nodesDraggable={mouseMode === 'select'}
+            nodesDraggable={!readOnly && effectiveMouseMode === 'select'}
             // 端口连线的可用性：此前只有「连续模式」才能拖端口，默认「选择模式」下拖端口毫无反应，
             // 是"手动连线连不上"的根因。成熟画布应当在常规选择态就能从端口拉线，只有抓手模式才禁用。
-            nodesConnectable={mouseMode !== 'hand'}
+            nodesConnectable={!readOnly && effectiveMouseMode !== 'hand'}
             // 改接：把已有连线的端点拖到别的节点即可重新接线，不必删掉重连
-            edgesReconnectable={mouseMode !== 'hand'}
+            edgesReconnectable={!readOnly && effectiveMouseMode !== 'hand'}
             onReconnect={onReconnect}
             onReconnectStart={() => setConnecting(true)}
             onReconnectEnd={() => setConnecting(false)}
             isValidConnection={(c) => !!c.source && !!c.target && c.source !== c.target}
-            elementsSelectable={mouseMode !== 'hand'}
+            elementsSelectable={!readOnly && effectiveMouseMode !== 'hand'}
             proOptions={{hideAttribution: true}}
           >
             <MiniMap
@@ -17334,17 +17371,17 @@ function CanvasViewInner({
                     删掉用户就不知道当前缩放到多少了。 */}
             <div className="canvas-toolbar">
               <div className="canvas-toolbar-group">
-                <button type="button" className={mouseMode === 'select' ? 'is-active' : ''} onClick={() => setMouseMode('select')} title="选择模式（V）：点选/拖动画布元素" aria-label="选择">
+                <button type="button" className={effectiveMouseMode === 'select' ? 'is-active' : ''} onClick={() => setMouseMode('select')} title="选择模式（V）：点选/拖动画布元素" aria-label="选择">
                   <span className="canvas-tool-ico"><MousePointer2 size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">选择</span>
                 </button>
-                <button type="button" className={mouseMode === 'hand' ? 'is-active' : ''} onClick={() => setMouseMode('hand')} title="抓手模式（H）：拖动平移画布" aria-label="抓手">
+                <button type="button" className={effectiveMouseMode === 'hand' ? 'is-active' : ''} onClick={() => setMouseMode('hand')} title="抓手模式（H）：拖动平移画布" aria-label="抓手">
                   <span className="canvas-tool-ico"><Hand size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">抓手</span>
                 </button>
-                <button type="button" className={mouseMode === 'connect' ? 'is-active' : ''} onClick={() => setMouseMode('connect')} title="连续模式（C）：拖端口建立镜头/资产连续关系" aria-label="连续">
+                {!readOnly && <button type="button" className={effectiveMouseMode === 'connect' ? 'is-active' : ''} onClick={() => setMouseMode('connect')} title="连续模式（C）：拖端口建立镜头/资产连续关系" aria-label="连续">
                   <span className="canvas-tool-ico"><Link2 size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">连续</span>
-                </button>
-                <span className="canvas-toolbar-sep" />
-                <div ref={addMenuRef} className="canvas-add-menu">
+                </button>}
+                {!readOnly && <span className="canvas-toolbar-sep" />}
+                {!readOnly && <div ref={addMenuRef} className="canvas-add-menu">
                   <button type="button" onClick={() => setAddMenuOpen((v) => !v)} title="添加节点（文本/图片/音频/视频）" aria-label="添加">
                     <span className="canvas-tool-ico"><Plus size={14} strokeWidth={2.2} aria-hidden="true" /></span><span className="canvas-tool-label">添加</span>
                   </button>
@@ -17363,11 +17400,11 @@ function CanvasViewInner({
                       <button type="button" onClick={() => { const s = newNodeSpot(); addMediaNode('video', s.x, s.y); setAddMenuOpen(false); }}><Video size={13} strokeWidth={1.8} aria-hidden="true" />视频节点</button>
                     </div>
                   )}
-                </div>
-                <span className="canvas-toolbar-sep" />
-                <button type="button" onClick={autoLayout} title="按段/镜头/资产自动排布" aria-label="自动布局">
+                </div>}
+                {!readOnly && <span className="canvas-toolbar-sep" />}
+                {!readOnly && <button type="button" onClick={autoLayout} title="按段/镜头/资产自动排布" aria-label="自动布局">
                   <span className="canvas-tool-ico"><LayoutGrid size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">自动布局</span>
-                </button>
+                </button>}
                 <button type="button" onClick={fitView} title="适配视图（F / Ctrl+1）" aria-label="适应视图">
                   <span className="canvas-tool-ico"><Maximize2 size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">适应</span>
                 </button>
@@ -17386,10 +17423,10 @@ function CanvasViewInner({
                 <button type="button" className="canvas-toolbar-zoom" onClick={() => zoomToLevel(1)} title="重置为 100%（Ctrl+0）"><span ref={zoomPctLabelRef}>{zoomPct}%</span></button>
                 <button type="button" onClick={zoomIn} title="放大" aria-label="放大"><Plus size={14} strokeWidth={2.2} aria-hidden="true" /></button>
                 <span className="canvas-toolbar-sep" />
-                <button type="button" className={snapGrid ? 'is-active' : ''} onClick={() => setSnapGrid((v) => !v)} title="网格吸附：拖动时按 12px 栅格对齐" aria-label="网格吸附">
+                {!readOnly && <button type="button" className={snapGrid ? 'is-active' : ''} onClick={() => setSnapGrid((v) => !v)} title="网格吸附：拖动时按 12px 栅格对齐" aria-label="网格吸附">
                   <span className="canvas-tool-ico"><Magnet size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">吸附</span>
-                </button>
-                <button
+                </button>}
+                {!readOnly && <button
                   type="button"
                   className={alignSnapOn ? 'is-active' : ''}
                   onClick={() => setAlignSnapOn((v) => !v)}
@@ -17397,7 +17434,7 @@ function CanvasViewInner({
                   aria-label="智能对齐参考线"
                 >
                   <span className="canvas-tool-ico"><Ruler size={14} strokeWidth={1.9} aria-hidden="true" /></span><span className="canvas-tool-label">对齐线</span>
-                </button>
+                </button>}
                 {/* 一键隐藏/显示连线：卡片多、连线交织成网时，开关一下就能看清卡片排版。
                     隐藏时连线数据与引用关系完全不动，只是不画，再点一次立刻回来。 */}
                 <button
@@ -17416,7 +17453,7 @@ function CanvasViewInner({
                   <span className="canvas-tool-label">{edgesHidden ? '显示连线' : '隐藏连线'}</span>
                 </button>
                 {/* 无选中时保留一个整理入口：在没有选区的情况下对齐/分布/排序整张画布 */}
-                {selectedCount < 2 && (
+                {!readOnly && selectedCount < 2 && (
                   <button
                     type="button"
                     onClick={() => setArrangeOpen(true)}
@@ -18265,7 +18302,8 @@ function CanvasViewInner({
         assets={modalCandidates}
         edges={allEdges}
         catalog={modelCatalog}
-        onChange={updateMediaNode}
+        readOnly={readOnly}
+        onChange={readOnly ? () => undefined : updateMediaNode}
         onGenerate={onGenerateMediaNode}
         onDelete={deleteMediaNode}
         onRemoveRef={(refNodeId) => { if (editNode) removeRefAndEdge(editNode.id, refNodeId); }}

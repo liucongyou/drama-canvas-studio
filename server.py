@@ -210,6 +210,7 @@ CANVAS_SHARE_COOKIE = os.environ.get(
     "CANVAS_SHARE_COOKIE",
     "canvas_share_session",
 )
+CANVAS_SHARE_HEADER = "X-Share-Token"
 CANVAS_SESSION_TTL = max(
     300, int(os.environ.get("CANVAS_SESSION_TTL_SECONDS", str(30 * 24 * 3600)))
 )
@@ -5617,7 +5618,10 @@ class Handler(BaseHTTPRequestHandler):
             "Access-Control-Allow-Origin": origin,
             "Access-Control-Allow-Credentials": "true",
             "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type,Authorization,X-File-Name,X-File-Type,X-Request-ID",
+            "Access-Control-Allow-Headers": (
+                "Content-Type,Authorization,X-File-Name,X-File-Type,"
+                "X-Request-ID,X-Share-Token"
+            ),
             "Access-Control-Expose-Headers": "Accept-Ranges,Content-Length,Content-Range,ETag,Last-Modified,X-Request-ID",
             "Access-Control-Max-Age": "600",
             "Vary": "Origin",
@@ -6215,29 +6219,6 @@ class Handler(BaseHTTPRequestHandler):
                 return True
         return bool(origin_host and origin_host == request_host)
 
-    def _share_cookie_header(self, token, expires_at):
-        max_age = max(60, int(CANVAS_SESSION_TTL))
-        try:
-            expires = datetime.fromisoformat(
-                str(expires_at or "").replace("Z", "+00:00")
-            )
-            max_age = max(
-                1,
-                min(
-                    int((expires - datetime.now(timezone.utc)).total_seconds()),
-                    int(CANVAS_SESSION_TTL),
-                ),
-            )
-        except (TypeError, ValueError):
-            pass
-        cookie = (
-            f"{CANVAS_SHARE_COOKIE}={token}; Path=/; "
-            f"Max-Age={max_age}; HttpOnly; SameSite=Lax"
-        )
-        if _cookie_secure():
-            cookie += "; Secure"
-        return cookie
-
     def _clear_share_cookie_header(self):
         cookie = (
             f"{CANVAS_SHARE_COOKIE}=; Path=/; Max-Age=0; "
@@ -6247,14 +6228,10 @@ class Handler(BaseHTTPRequestHandler):
             cookie += "; Secure"
         return cookie
 
-    def _share_cookie_token(self):
-        cookie = SimpleCookie()
-        try:
-            cookie.load(self.headers.get("Cookie", ""))
-        except Exception:
-            return ""
-        morsel = cookie.get(CANVAS_SHARE_COOKIE)
-        return morsel.value if morsel is not None else ""
+    def _share_request_token(self):
+        # The token travels with each request from the current tab URL. A
+        # global cookie lets an editor tab overwrite a viewer tab's authority.
+        return str(self.headers.get(CANVAS_SHARE_HEADER, "") or "").strip()
 
     def _share_request_target(self, path, parsed):
         project_match = re.match(r"^/api/projects/([^/]+)(?:/|$)", path)
@@ -6275,6 +6252,28 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/upload/stream":
             return "", "upload"
         return "", "unsupported"
+
+    def _share_owner_only_request(self, path, command):
+        if command in {"GET", "HEAD"}:
+            return False
+        project_match = re.match(
+            r"^/api/projects/([^/]+)(?:/(.*))?$",
+            path,
+        )
+        if not project_match:
+            return False
+        suffix = str(project_match.group(2) or "").strip("/")
+        if not suffix:
+            return True
+        if suffix == "import" or suffix.startswith("import/"):
+            return True
+        if suffix == "duplicate":
+            return True
+        if suffix == "episodes" or suffix.startswith("episodes/"):
+            return True
+        if suffix == "versions" or suffix.startswith("versions/"):
+            return True
+        return False
 
     def _request_tenant_scope(self):
         self._share_access = None
@@ -6297,7 +6296,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return None
             return nullcontext()
-        share_token = self._share_cookie_token()
+        share_token = self._share_request_token()
         if share_token:
             resolved_share = _resolve_share_scope(share_token)
             if resolved_share:
@@ -6333,6 +6332,18 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(403, {
                             "error": "该分享链接为只读，不能修改画布",
                             "code": "SHARE_READ_ONLY",
+                        })
+                        return None
+                    if (
+                        target_kind == "project"
+                        and self._share_owner_only_request(
+                            path,
+                            self.command,
+                        )
+                    ):
+                        self._send(403, {
+                            "error": "协作成员不能执行项目级管理操作",
+                            "code": "SHARE_OWNER_REQUIRED",
                         })
                         return None
                     self._share_access = share
@@ -6385,9 +6396,7 @@ class Handler(BaseHTTPRequestHandler):
                             "error": "协作分享已撤销或过期，请重新打开分享链接",
                             "code": "SHARE_INVALID",
                         },
-                        headers={
-                            "Set-Cookie": self._clear_share_cookie_header()
-                        },
+                        headers={"Set-Cookie": self._clear_share_cookie_header()},
                     )
                     return None
                 self._send(401, {
@@ -6962,16 +6971,7 @@ class Handler(BaseHTTPRequestHandler):
                     payload = _public_share_payload(share, project)
                     if not payload:
                         return self._send(404, {"error": "项目不存在"})
-                    return self._send(
-                        200,
-                        payload,
-                        headers={
-                            "Set-Cookie": self._share_cookie_header(
-                                token,
-                                share["expiresAt"],
-                            )
-                        },
-                    )
+                    return self._send(200, payload)
                 if resource == "workspace-index":
                     workspace = store.get_project_workspace_index(
                         share["projectId"]

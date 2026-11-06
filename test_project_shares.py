@@ -68,11 +68,21 @@ class ProjectShareTests(unittest.TestCase):
                 os.environ[key] = value
         self.temp.cleanup()
 
-    def request(self, method, path, body="", cookie="", extra_headers=None):
+    def request(
+        self,
+        method,
+        path,
+        body="",
+        cookie="",
+        share_token="",
+        extra_headers=None,
+    ):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         headers = {"Host": "yjapi.pduoduo.vip"}
         if cookie:
             headers["Cookie"] = cookie
+        if share_token:
+            headers[server.CANVAS_SHARE_HEADER] = share_token
         if body:
             headers["Content-Type"] = "application/json"
         headers.update(extra_headers or {})
@@ -106,12 +116,12 @@ class ProjectShareTests(unittest.TestCase):
         return json.loads(body)
 
     def open_share(self, share):
-        status, headers, body = self.request(
+        status, _, body = self.request(
             "GET",
             f"/api/share/{share['token']}/project",
         )
         self.assertEqual(status, 200, body.decode("utf-8"))
-        return headers.get("Set-Cookie", "").split(";", 1)[0]
+        return share["token"]
 
     def create_referenced_upload(self):
         with tenant_context.use_tenant(
@@ -223,7 +233,7 @@ class ProjectShareTests(unittest.TestCase):
                     "title": "只读不能写",
                 }],
             }),
-            cookie=share_cookie,
+            share_token=share_cookie,
             extra_headers={"Origin": "https://yj.pduoduo.vip"},
         )
         self.assertEqual(status, 403)
@@ -244,7 +254,7 @@ class ProjectShareTests(unittest.TestCase):
             "PUT",
             f"/api/projects/{self.project_id}/nodes",
             json.dumps({"episodeId": "EP001", "nodes": [node]}),
-            cookie=share_cookie,
+            share_token=share_cookie,
             extra_headers={"Origin": "https://yj.pduoduo.vip"},
         )
         self.assertEqual(status, 200, body.decode("utf-8"))
@@ -252,7 +262,7 @@ class ProjectShareTests(unittest.TestCase):
         status, _, body = self.request(
             "GET",
             f"/api/projects/{self.project_id}",
-            cookie=share_cookie,
+            share_token=share_cookie,
         )
         self.assertEqual(status, 200, body.decode("utf-8"))
         self.assertTrue(any(
@@ -263,7 +273,7 @@ class ProjectShareTests(unittest.TestCase):
         status, _, body = self.request(
             "DELETE",
             f"/api/projects/{self.project_id}/shares/{share['id']}",
-            cookie=share_cookie,
+            share_token=share_cookie,
             extra_headers={"Origin": "https://yj.pduoduo.vip"},
         )
         self.assertEqual(status, 403)
@@ -271,6 +281,41 @@ class ProjectShareTests(unittest.TestCase):
             json.loads(body)["code"],
             "SHARE_MANAGEMENT_FORBIDDEN",
         )
+
+        for method, path, payload in (
+            (
+                "PUT",
+                f"/api/projects/{self.project_id}",
+                json.dumps({"title": "越权重命名"}),
+            ),
+            (
+                "POST",
+                f"/api/projects/{self.project_id}/import",
+                json.dumps({"feed_json": {}}),
+            ),
+            (
+                "DELETE",
+                f"/api/projects/{self.project_id}/episodes/EP001",
+                "",
+            ),
+            (
+                "DELETE",
+                f"/api/projects/{self.project_id}",
+                "",
+            ),
+        ):
+            status, _, body = self.request(
+                method,
+                path,
+                payload,
+                share_token=share_cookie,
+                extra_headers={"Origin": "https://yj.pduoduo.vip"},
+            )
+            self.assertEqual(status, 403, (method, path, body))
+            self.assertEqual(
+                json.loads(body)["code"],
+                "SHARE_OWNER_REQUIRED",
+            )
 
     def test_editor_cookie_is_project_scoped(self):
         share = self.create_share("editor")
@@ -280,10 +325,94 @@ class ProjectShareTests(unittest.TestCase):
         status, _, body = self.request(
             "GET",
             f"/api/projects/{other_project_id}",
-            cookie=share_cookie,
+            share_token=share_cookie,
         )
         self.assertEqual(status, 410)
         self.assertEqual(json.loads(body)["code"], "SHARE_INVALID")
+
+    def test_viewer_and_editor_tabs_do_not_share_authority(self):
+        viewer = self.create_share("viewer")
+        editor = self.create_share("editor")
+        node = {
+            "id": "tab-isolation",
+            "type": "text",
+            "title": "标签页隔离",
+            "metadata": {"prompt": "tab isolation"},
+        }
+        payload = json.dumps({"episodeId": "EP001", "nodes": [node]})
+
+        status, _, body = self.request(
+            "PUT",
+            f"/api/projects/{self.project_id}/nodes",
+            payload,
+            share_token=editor["token"],
+            extra_headers={"Origin": "https://yj.pduoduo.vip"},
+        )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+
+        status, _, body = self.request(
+            "PUT",
+            f"/api/projects/{self.project_id}/nodes",
+            payload,
+            share_token=viewer["token"],
+            extra_headers={"Origin": "https://yj.pduoduo.vip"},
+        )
+        self.assertEqual(status, 403, body.decode("utf-8"))
+        self.assertEqual(json.loads(body)["code"], "SHARE_READ_ONLY")
+
+    def test_batch_position_sort_survives_fresh_read(self):
+        owner_cookie = self.login()
+        nodes = [
+            {
+                "id": f"sort-node-{index}",
+                "type": "text",
+                "title": f"排序节点 {index}",
+                "position": {"x": index * 300, "y": 0},
+                "metadata": {"prompt": f"sort {index}"},
+            }
+            for index in range(3)
+        ]
+        status, _, body = self.request(
+            "PUT",
+            f"/api/projects/{self.project_id}/nodes",
+            json.dumps({"episodeId": "EP001", "nodes": nodes}),
+            cookie=owner_cookie,
+            extra_headers={"Origin": "https://yj.pduoduo.vip"},
+        )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+
+        moves = [
+            {
+                "id": node["id"],
+                "position": {"x": index * 20, "y": 500 + index * 20},
+                "seq": index + 1,
+            }
+            for index, node in enumerate(nodes)
+        ]
+        status, _, body = self.request(
+            "PUT",
+            f"/api/projects/{self.project_id}/nodes/positions",
+            json.dumps({"episodeId": "EP001", "positions": moves}),
+            cookie=owner_cookie,
+            extra_headers={"Origin": "https://yj.pduoduo.vip"},
+        )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+
+        status, _, body = self.request(
+            "GET",
+            f"/api/projects/{self.project_id}/workspace-nodes?episodeId=EP001",
+            cookie=owner_cookie,
+        )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+        positions = {
+            row["id"]: row["position"]
+            for row in json.loads(body)["nodes"]
+        }
+        for index, node in enumerate(nodes):
+            self.assertEqual(
+                positions[node["id"]],
+                {"x": index * 20, "y": 500 + index * 20},
+            )
 
     def test_revoked_share_invalidates_cookie_and_new_share_works(self):
         first = self.create_share("editor")
@@ -297,18 +426,17 @@ class ProjectShareTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
 
-        status, headers, body = self.request(
+        status, _, body = self.request(
             "GET",
             f"/api/projects/{self.project_id}",
-            cookie=share_cookie,
+            share_token=share_cookie,
         )
         self.assertEqual(status, 410)
         self.assertEqual(json.loads(body)["code"], "SHARE_INVALID")
-        self.assertIn(f"{server.CANVAS_SHARE_COOKIE}=;", headers.get("Set-Cookie", ""))
 
         second = self.create_share("viewer")
         self.assertNotEqual(first["token"], second["token"])
-        self.assertEqual(self.open_share(second).split("=", 1)[0], server.CANVAS_SHARE_COOKIE)
+        self.assertEqual(self.open_share(second), second["token"])
 
     def test_anonymous_share_reads_only_project_media(self):
         filename = self.create_referenced_upload()

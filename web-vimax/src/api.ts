@@ -4,6 +4,7 @@
 
 import {latestTaskByNode} from './generationPresentation';
 import {withRequestStatus} from './requestRetry';
+import {shareTokenInPath} from './projectShare';
 import {
   buildAuditQuery,
   type AuditEventPage,
@@ -54,7 +55,11 @@ export function projectCursorStorageKey(sessionId: string): string {
 export function mediaSourceUrl(raw: unknown): string {
   const value = String(raw || '').trim();
   if (!value || /^(?:data:|blob:)/i.test(value)) return value;
-  if (value.startsWith('/uploads/')) return apiUrl(value);
+  if (value.startsWith('/uploads/')) {
+    const token = currentShareToken();
+    if (token) return shareMediaSourceUrl(token, value);
+    return apiUrl(value);
+  }
   return value;
 }
 
@@ -875,6 +880,16 @@ function friendlyRequestError(status: number, raw: string, url = ''): string {
  */
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
+function currentShareToken(): string {
+  if (typeof window === 'undefined' || !window.location) return '';
+  return shareTokenInPath(window.location.pathname);
+}
+
+function currentShareRequestHeaders(): Record<string, string> {
+  const token = currentShareToken();
+  return token ? {'X-Share-Token': token} : {};
+}
+
 async function request<T>(
   url: string,
   init: RequestInit & {timeoutMs?: number} = {},
@@ -915,7 +930,11 @@ async function request<T>(
         ...rest,
         ...(controller ? {signal: controller.signal} : {}),
         credentials: 'include',
-        headers: {'Content-Type': 'application/json', ...(rest.headers || {})},
+        headers: {
+          'Content-Type': 'application/json',
+          ...currentShareRequestHeaders(),
+          ...(rest.headers || {}),
+        },
       });
       // Keep the same timeout budget through body consumption. Some runtimes
       // do not reject a response stream when its fetch signal aborts, so the
@@ -2370,7 +2389,14 @@ export async function patchMediaNodeFields(
 // 删除单个媒体/文本节点：必须有对应后端调用，否则只改本地 state，
 // 刷新后节点会从 payload 里回来（后端此前没有 DELETE /nodes/{nid} 路由）。
 export async function deleteCanvasMediaNode(sessionId: string, nodeId: string) {
-  const res = await fetch(apiUrl(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}`), {method: 'DELETE', credentials: 'include'});
+  const res = await fetch(
+    apiUrl(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}`),
+    {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: currentShareRequestHeaders(),
+    },
+  );
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw withRequestStatus(
@@ -3160,6 +3186,10 @@ export function uploadWorkspaceFileWithProgress(
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
     xhr.setRequestHeader('X-File-Type', file.type || 'application/octet-stream');
+    const shareHeaders = currentShareRequestHeaders();
+    for (const [name, value] of Object.entries(shareHeaders)) {
+      xhr.setRequestHeader(name, value);
+    }
     xhr.upload.onprogress = (event) => {
       const total = event.lengthComputable ? event.total : file.size;
       const percent = total > 0 ? Math.min(100, Math.round((event.loaded / total) * 100)) : 0;

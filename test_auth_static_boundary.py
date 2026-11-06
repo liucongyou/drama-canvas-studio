@@ -31,6 +31,7 @@ class AuthStaticBoundaryTests(unittest.TestCase):
                 "CANVAS_ALLOWED_ORIGINS": "http://127.0.0.1:8891",
                 "CANVAS_COOKIE_SECURE": "0",
                 "CANVAS_TENANT_DATA_ROOT": temp,
+                "CANVAS_DIST_DIR": str(ROOT / "web-vimax" / "dist"),
             })
             process = subprocess.Popen(
                 [
