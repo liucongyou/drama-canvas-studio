@@ -23,4 +23,9 @@ describe('paid generation confirmation', () => {
     expect(block).toContain("title: '确认批量生成？'");
     expect(block).toContain('confirmed: true');
   });
+
+  it('skips a second confirmation when submitting from the prompt modal', () => {
+    expect(source).toContain("entry: 'prompt-modal'");
+    expect(source).toContain('confirmed: true');
+  });
 });

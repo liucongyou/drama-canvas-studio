@@ -3968,7 +3968,10 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   catalog: ModelCatalog | null;
   readOnly?: boolean;
   onChange: (id: string, patch: Partial<CanvasMediaNode>) => void;
-  onGenerate: (n: CanvasMediaNode) => boolean | Promise<boolean>;
+  onGenerate: (
+    n: CanvasMediaNode,
+    source?: {entry?: string; batchId?: string; confirmed?: boolean},
+  ) => boolean | Promise<boolean>;
   onDelete: (id: string) => void;
   onClose: (reason: 'preserve' | 'clear') => void;
   // 移除引用时必须连带删掉画布上对应的那条连线，否则下次打开弹窗
@@ -4280,7 +4283,10 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
 
   const nodeKind = node?.kind ?? 'image';
   const generateAndClose = async () => {
-    if (node && await onGenerate(node)) requestClose();
+    if (node && await onGenerate(node, {
+      entry: 'prompt-modal',
+      confirmed: true,
+    })) requestClose();
   };
   paramsRef.current = node?.params || {};
   const patch = (key: keyof CanvasMediaParams, value: unknown) => {
