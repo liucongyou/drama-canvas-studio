@@ -23,36 +23,38 @@ export function canvasHeaderStats(
   mediaNodes: CanvasMediaNode[],
 ): CanvasHeaderStats {
   if (!canvas) return {assetCount: 0, videoDurationSeconds: 0};
-  const keys = new Set<string>();
-  const add = (kind: string, title: unknown) => {
-    const normalized = normalizedAssetTitle(title);
-    if (!normalized) return;
-    keys.add(`${kind}:${normalized}`);
-  };
-
-  canvas.characters.forEach((item) => add('image', item.name));
-  canvas.scenes.forEach((item) => add('image', item.name));
-  canvas.props.forEach((item) => add('image', item.name));
-  canvas.voices.forEach((item) => add('audio', item.name));
-
+  const countableNodes = mediaNodes.filter((node) => (
+    node.kind === 'image'
+    || node.kind === 'audio'
+    || (node.kind === 'video' && Boolean(node.mediaUrl))
+  ));
   let videoDurationSeconds = 0;
-  mediaNodes.forEach((node) => {
-    if (node.kind === 'video') {
-      if (node.status === 'done' && node.mediaUrl) {
-        const duration = Number(node.actualDuration);
-        if (Number.isFinite(duration) && duration > 0) {
-          videoDurationSeconds += duration;
-        }
+  countableNodes.forEach((node) => {
+    if (node.kind === 'video' && node.status === 'done') {
+      const duration = Number(node.actualDuration);
+      if (Number.isFinite(duration) && duration > 0) {
+        videoDurationSeconds += duration;
       }
-      return;
-    }
-    if (node.kind === 'image' || node.kind === 'audio') {
-      add(node.kind, node.title);
     }
   });
 
+  if (countableNodes.length === 0) {
+    // Compatibility for a project that has not been projected into media
+    // cards yet. Once cards exist, their IDs are the only count authority.
+    const legacy = [
+      ...canvas.characters.map((item) => `image:${item.name}`),
+      ...canvas.scenes.map((item) => `image:${item.name}`),
+      ...canvas.props.map((item) => `image:${item.name}`),
+      ...canvas.voices.map((item) => `audio:${item.name}`),
+    ].filter((key) => normalizedAssetTitle(key.slice(key.indexOf(':') + 1)));
+    return {
+      assetCount: new Set(legacy).size,
+      videoDurationSeconds: 0,
+    };
+  }
+
   return {
-    assetCount: keys.size,
+    assetCount: countableNodes.length,
     videoDurationSeconds,
   };
 }
