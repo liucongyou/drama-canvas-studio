@@ -7,7 +7,20 @@
   - 实侧：video 节点入边来自 image 节点的图号集合（节点 title 含（图N））
 返回 PASS/FAIL 明细。
 """
+import re
+
 import canvas_feed_contract
+
+
+def _scene_prompt(raw):
+    text = str(raw or "")
+    lines = []
+    for line in text.splitlines():
+        if "对应@" in line:
+            continue
+        match = re.search(r"(?:【\s*)?台词\s*[:：]", line)
+        lines.append(line[:match.start()] if match else line)
+    return "\n".join(lines)
 
 
 def _declared_image_refs(raw, params):
@@ -21,9 +34,22 @@ def _declared_image_refs(raw, params):
             code = canvas_feed_contract.canonical_code_from_text(label)
             if code:
                 declared.add(code)
-    # Explicit prompt mentions are already parsed by the shared contract.
-    declared.update(canvas_feed_contract.asset_ref_codes(raw))
+    # The preamble's "素材引用" mapping can be stale after a prompt edit.
+    # Scene references are authoritative only in the timeline body.
+    declared.update(canvas_feed_contract.asset_ref_codes(_scene_prompt(raw)))
     return declared
+
+
+def _dialogue_only_codes(raw):
+    scene_codes = canvas_feed_contract.asset_ref_codes(_scene_prompt(raw))
+    dialogue_codes = set()
+    for line in str(raw or "").splitlines():
+        match = re.search(r"(?:【\s*)?台词\s*[:：]", line)
+        if match:
+            dialogue_codes.update(
+                canvas_feed_contract.asset_ref_codes(line[match.start():])
+            )
+    return dialogue_codes - scene_codes
 
 
 def run_check(payload, episode_id=None):
@@ -64,8 +90,12 @@ def run_check(payload, episode_id=None):
     for v in videos:
         raw = v.get("metadata", {}).get("prompt", "")
         params = (v.get("metadata") or {}).get("params") or {}
-        script_set = canvas_feed_contract.asset_ref_codes(raw)
-        declared_refs = _declared_image_refs(raw, params)
+        scene_prompt = _scene_prompt(raw)
+        script_set = canvas_feed_contract.asset_ref_codes(scene_prompt)
+        declared_refs = (
+            _declared_image_refs(raw, params)
+            - _dialogue_only_codes(raw)
+        )
         all_linked_figs = set()
         for src in in_edges.get(v["id"], []):
             if src in fig_of:

@@ -838,6 +838,39 @@ def repair_payload_prompt_mentions(payload):
                 and voice_role(ref) not in speaking
             )
         ]
+        non_dialogue_prompt = "\n".join(
+            (
+                line[:match.start()]
+                if (match := re.search(r"(?:【\s*)?台词\s*[:：]", line))
+                else line
+            )
+            for line in prompt.splitlines()
+            if "对应@" not in line
+        )
+        non_dialogue_codes = canvas_feed_contract.asset_ref_codes(
+            non_dialogue_prompt
+        )
+        dialogue_codes = set()
+        for line in prompt.splitlines():
+            match = re.search(r"(?:【\s*)?台词\s*[:：]", line)
+            if not match:
+                continue
+            dialogue_codes.update(
+                canvas_feed_contract.asset_ref_codes(line[match.start():])
+            )
+        filtered_refs = [
+            ref
+            for ref in filtered_refs
+            if not (
+                isinstance(ref, dict)
+                and canvas_feed_contract.canonical_code_from_text(
+                    str(ref.get("label") or "")
+                ) in dialogue_codes
+                and canvas_feed_contract.canonical_code_from_text(
+                    str(ref.get("label") or "")
+                ) not in non_dialogue_codes
+            )
+        ]
         allowed_audio_by_video[str(node.get("id") or "")] = {
             str(voice.get("nodeId") or "")
             for voice in filtered_voices

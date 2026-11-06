@@ -160,6 +160,92 @@ class GateCheckTests(unittest.TestCase):
         self.assertEqual(row["staleLinked"], ["图2"])
         self.assertFalse(row["imageStaleOk"])
 
+    def test_stale_asset_mapping_is_not_an_effective_scene_reference(self):
+        payload = {
+            "nodes": [
+                {"id": "img-1", "type": "image", "title": "角色｜赵铁柱（图1）"},
+                {"id": "img-2", "type": "image", "title": "角色｜钱万金（图2）"},
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段13",
+                    "metadata": {
+                        "prompt": (
+                            "### 素材引用\n"
+                            "<钱万金> 对应@角色｜钱万金（图2）\n"
+                            "【时间轴分镜】\n"
+                            "00:00-00:02 画面主体：@角色｜赵铁柱（图1）在门口。"
+                        ),
+                        "params": {
+                            "refs": [
+                                {"nodeId": "img-1", "label": "角色｜赵铁柱（图1）"},
+                            ],
+                        },
+                    },
+                },
+            ],
+            "connections": [
+                {"fromNodeId": "img-1", "toNodeId": "video-1"},
+                {"fromNodeId": "img-2", "toNodeId": "video-1"},
+            ],
+            "episodeImports": [{
+                "id": "EP001",
+                "nodeIds": ["img-1", "img-2", "video-1"],
+                "videoNodeIds": ["video-1"],
+            }],
+        }
+
+        result = gate_check.run_check_json(payload, episode_id="EP001")
+        row = result["results"][0]
+        self.assertEqual(row["script"], ["图1"])
+        self.assertEqual(row["linked"], ["图1"])
+        self.assertEqual(row["staleLinked"], ["图2"])
+
+    def test_dialogue_only_code_is_removed_even_when_params_refs_is_stale(self):
+        payload = {
+            "nodes": [
+                {"id": "img-1", "type": "image", "title": "角色｜赵铁柱（图1）"},
+                {"id": "img-2", "type": "image", "title": "角色｜钱万金（图2）"},
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段13",
+                    "metadata": {
+                        "prompt": (
+                            "### 素材引用\n"
+                            "<钱万金> 对应@角色｜钱万金（图2）\n"
+                            "【时间轴分镜】\n"
+                            "00:00-00:02 画面主体：@角色｜赵铁柱（图1）在门口。"
+                            "台词：【老会计（急）：\"要是在@角色｜钱万金（图2）手里。\"】"
+                        ),
+                        "params": {
+                            "refs": [
+                                {"nodeId": "img-1", "label": "角色｜赵铁柱（图1）"},
+                                {"nodeId": "img-2", "label": "角色｜钱万金（图2）"},
+                            ],
+                        },
+                    },
+                },
+            ],
+            "connections": [
+                {"fromNodeId": "img-1", "toNodeId": "video-1"},
+                {"fromNodeId": "img-2", "toNodeId": "video-1"},
+            ],
+            "episodeImports": [{
+                "id": "EP001",
+                "nodeIds": ["img-1", "img-2", "video-1"],
+                "videoNodeIds": ["video-1"],
+            }],
+        }
+
+        row = gate_check.run_check_json(
+            payload,
+            episode_id="EP001",
+        )["results"][0]
+        self.assertEqual(row["script"], ["图1"])
+        self.assertEqual(row["linked"], ["图1"])
+        self.assertEqual(row["staleLinked"], ["图2"])
+
 
 if __name__ == "__main__":
     unittest.main()
