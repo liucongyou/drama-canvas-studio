@@ -1432,6 +1432,72 @@ class ImportFeedContractTests(unittest.TestCase):
         })
         self.assertNotIn("legacy-generic-scene", ep2["nodeIds"])
 
+    def test_same_figure_code_never_reuses_a_different_series_asset(self):
+        first = import_feed.build_payload({
+            "title": "铁西硬汉 · 第01集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [{
+                "code": "图28",
+                "semanticCode": "CHR-028",
+                "name": "郑大头（角色立绘）",
+                "raw": "男性角色。",
+                "canvas": {
+                    "kind": "character",
+                    "name": "郑大头",
+                    "assetId": "character:郑大头:default",
+                    "seriesId": "character:郑大头",
+                    "variantKey": "default",
+                },
+            }],
+            "segments": [{
+                "no": 1,
+                "name": "段1 · 旧集",
+                "raw": "@角色｜郑大头（图28）站在门口。",
+            }],
+        })
+        second = import_feed.build_payload({
+            "title": "铁西硬汉 · 第02集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [{
+                "code": "图28",
+                "semanticCode": "PRP-028",
+                "name": "半张名册纸（道具设定图）",
+                "raw": "半张泛黄的名册纸。",
+                "canvas": {
+                    "kind": "prop",
+                    "name": "半张名册纸",
+                    "assetId": "prop:半张名册纸:default",
+                    "seriesId": "prop:半张名册纸",
+                    "variantKey": "default",
+                },
+            }],
+            "segments": [{
+                "no": 1,
+                "name": "段1 · 新集",
+                "raw": "@道具｜半张名册纸（图28）被举到眼前。",
+            }],
+        })
+
+        merged = import_feed.merge_payload_by_episode(first, second)
+        ep2 = next(
+            group for group in merged["episodeImports"]
+            if group["id"] == "EP002"
+        )
+        nodes_by_id = {
+            node["id"]: node for node in merged["nodes"]
+        }
+        video = nodes_by_id[ep2["videoNodeIds"][0]]
+        refs = video["metadata"]["params"]["refs"]
+        paper_refs = [
+            ref for ref in refs
+            if ref["label"].startswith("道具｜半张名册纸")
+        ]
+
+        self.assertEqual(len(paper_refs), 1)
+        paper = nodes_by_id[paper_refs[0]["nodeId"]]
+        self.assertEqual(paper["metadata"]["seriesId"], "prop:半张名册纸")
+        self.assertNotEqual(paper["metadata"]["seriesId"], "character:郑大头")
+
     def test_import_layout_keeps_media_types_in_vertical_columns(self):
         payload = import_feed.build_payload({
             "title": "铁西硬汉 · 第01集",

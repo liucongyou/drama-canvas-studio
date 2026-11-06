@@ -109,6 +109,50 @@ def _asset_identity(title, kind=""):
     return f"{kind}:{text}" if kind and text else ""
 
 
+def _asset_stable_identity(metadata) -> str:
+    """Return the series identity that survives figure-code reassignment."""
+    meta = metadata if isinstance(metadata, dict) else {}
+    for key in ("assetId", "seriesId"):
+        value = str(meta.get(key) or "").strip()
+        if value:
+            return (
+                f"{value}|{str(meta.get('variantKey') or 'default').strip()}"
+                if key == "seriesId"
+                else value
+            )
+    return ""
+
+
+def _asset_node_identity(node) -> str:
+    if not isinstance(node, dict):
+        return ""
+    meta = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+    node_type = str(node.get("type") or "")
+    if node_type == "audio":
+        return _asset_title_base(
+            node.get("title"),
+            audio=True,
+        ).split("·", 1)[0].strip()
+    return (
+        str(meta.get("assetKey") or "")
+        or _asset_identity(
+            _asset_title_base(node.get("title")),
+            _asset_kind_from_title(node.get("title")),
+        )
+    )
+
+
+def _asset_identities_match(left, right) -> bool:
+    """Never merge two assets just because they share a figure slot."""
+    left_stable = _asset_stable_identity(left.get("metadata") if isinstance(left, dict) else {})
+    right_stable = _asset_stable_identity(right.get("metadata") if isinstance(right, dict) else {})
+    if left_stable and right_stable:
+        return left_stable == right_stable
+    left_identity = _asset_node_identity(left)
+    right_identity = _asset_node_identity(right)
+    return bool(left_identity and right_identity and left_identity == right_identity)
+
+
 def _asset_pool(records, allow_idle_project_id=""):
     pool = []
     for item in records or []:
@@ -147,6 +191,9 @@ def build_asset_pool_from_payload(payload, project_id):
         source_meta = source_node.get("metadata") or {}
         pool.append({
             "assetKey": source_meta.get("assetKey", ""),
+            "assetId": source_meta.get("assetId", ""),
+            "seriesId": source_meta.get("seriesId", ""),
+            "variantKey": source_meta.get("variantKey", ""),
             "id": source_node.get("id", ""),
             "projectId": project_id,
             "title": source_node.get("title", ""),
@@ -1250,9 +1297,18 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         else:
             kind, short_name = "道具", name.replace("（道具设定图）", "")
         asset_key = _asset_identity(short_name, kind)
+        stable_identity = _asset_stable_identity(canvas_asset)
         same_project = [
             item for item in reusable_assets
-            if item.get("assetKey") == asset_key and item.get("projectId") == target_project_id
+            if item.get("projectId") == target_project_id
+            and (
+                (
+                    _asset_stable_identity(item) == stable_identity
+                    or item.get("assetKey") == asset_key
+                )
+                if stable_identity and _asset_stable_identity(item)
+                else item.get("assetKey") == asset_key
+            )
         ]
         candidates = same_project
         candidates.sort(
@@ -1362,6 +1418,11 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
                 "assetId": str(canvas_asset.get("assetId") or ""),
                 "seriesId": str(canvas_asset.get("seriesId") or ""),
                 "variantKey": str(canvas_asset.get("variantKey") or "default"),
+                "semanticCode": str(
+                    canvas_asset.get("semanticCode")
+                    or a.get("semanticCode")
+                    or ""
+                ),
                 "promptStale": prompt_stale,
                 "promptStaleReason": "源提示词已更新，当前复用图片仍是旧版本" if prompt_stale else "",
                 "sourcePromptUpdatedAt": now0 if prompt_stale else "",
@@ -2347,6 +2408,7 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
         and (not target_ids or node.get("id") in target_ids)
     ]
     image_by_code = {}
+    image_by_code_identity = {}
     image_by_key = {}
     audio_by_role = {}
     for node in nodes:
@@ -2371,7 +2433,12 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
             if key:
                 image_by_key.setdefault(key, node)
             for code in re.findall(r"图\s*(\d+)", str(node.get("title") or "")):
-                image_by_code.setdefault(_canonical_figure(code), node)
+                canonical = _canonical_figure(code)
+                image_by_code_identity.setdefault(canonical, {}).setdefault(
+                    key or _asset_node_identity(node),
+                    node,
+                )
+                image_by_code.setdefault(canonical, node)
         elif node.get("type") == "audio":
             audio_meta = node.get("metadata") or {}
             if _is_placeholder_asset_prompt(audio_meta.get("prompt")):
@@ -2411,14 +2478,22 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
 
     def find_image(kind, name, code):
         code = _canonical_figure(code)
-        existing = image_by_code.get(code)
-        if existing:
-            return existing
         key = _asset_identity(name, kind)
         existing = image_by_key.get(key)
         if existing:
             image_by_code[code] = existing
-        return existing
+            return existing
+        by_identity = image_by_code_identity.get(code) or {}
+        if key in by_identity:
+            existing = by_identity[key]
+            image_by_code[code] = existing
+            return existing
+        legacy_candidates = list(by_identity.values())
+        if len(legacy_candidates) == 1:
+            existing = legacy_candidates[0]
+            image_by_code[code] = existing
+            return existing
+        return None
 
     def add_image(kind, name, code, video):
         code = _canonical_figure(code)
@@ -2470,6 +2545,11 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
                 "assetId": str(canvas.get("assetId") or ""),
                 "seriesId": str(canvas.get("seriesId") or ""),
                 "variantKey": str(canvas.get("variantKey") or "default"),
+                "semanticCode": str(
+                    canvas.get("semanticCode")
+                    or (source or {}).get("semanticCode")
+                    or ""
+                ),
                 "episodeId": str(episode_id or payload.get("episodeId") or ""),
                 "_importCreated": True,
                 "params": image_params,
@@ -2482,6 +2562,9 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
         }
         nodes.append(node)
         image_by_code[code] = node
+        image_by_code_identity.setdefault(code, {})[
+            _asset_identity(name, kind)
+        ] = node
         image_by_key.setdefault(_asset_identity(name, kind), node)
         added.append(node)
         return node
