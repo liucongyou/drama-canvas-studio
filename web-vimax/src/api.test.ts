@@ -1688,6 +1688,31 @@ describe('api request recovery', () => {
     expect(report.levels?.fail).toBe(1);
   });
 
+  it('reports stale image edges separately from effective attachments', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      passed: false,
+      results: [{
+        ok: false,
+        title: '段13',
+        imageOk: true,
+        imageStaleOk: false,
+        script: ['图1'],
+        linked: ['图1'],
+        staleLinked: ['图2'],
+      }],
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    })));
+    const report = await getQualityReport('project-1', 'EP001');
+    expect(report.dimensions['段1·挂接'].detail).toContain(
+      '存在残余素材连线（图2）',
+    );
+    expect(report.dimensions['段1·挂接'].detail).not.toContain(
+      '画面引用不一致',
+    );
+  });
+
   it('emits immediate completion for a direct second generation request', async () => {
     const events: Array<Record<string, unknown>> = [];
     const unsubscribe = subscribeToEvents((event) => events.push(event), () => {});

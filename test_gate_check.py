@@ -122,6 +122,44 @@ class GateCheckTests(unittest.TestCase):
         self.assertTrue(result["passed"])
         self.assertEqual(result["results"][0]["script"], ["图1"])
 
+    def test_stale_declared_edge_is_not_reported_as_attached(self):
+        payload = {
+            "nodes": [
+                {"id": "img-1", "type": "image", "title": "角色｜赵铁柱（图1）"},
+                {"id": "img-2", "type": "image", "title": "角色｜钱万金（图2）"},
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段13",
+                    "metadata": {
+                        "prompt": "@角色｜赵铁柱（图1）在门口。",
+                        "params": {
+                            "refs": [
+                                {"nodeId": "img-1", "label": "角色｜赵铁柱（图1）"},
+                            ],
+                        },
+                    },
+                },
+            ],
+            "connections": [
+                {"fromNodeId": "img-1", "toNodeId": "video-1"},
+                {"fromNodeId": "img-2", "toNodeId": "video-1"},
+            ],
+            "episodeImports": [{
+                "id": "EP001",
+                "nodeIds": ["img-1", "img-2", "video-1"],
+                "videoNodeIds": ["video-1"],
+            }],
+        }
+
+        result = gate_check.run_check_json(payload, episode_id="EP001")
+        row = result["results"][0]
+        self.assertFalse(result["passed"])
+        self.assertTrue(row["imageOk"])
+        self.assertEqual(row["linked"], ["图1"])
+        self.assertEqual(row["staleLinked"], ["图2"])
+        self.assertFalse(row["imageStaleOk"])
+
 
 if __name__ == "__main__":
     unittest.main()

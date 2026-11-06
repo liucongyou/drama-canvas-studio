@@ -2852,9 +2852,11 @@ type GateCheckResult = {
   ok: boolean;
   title: string;
   imageOk?: boolean;
+  imageStaleOk?: boolean;
   audioOk?: boolean;
   script?: string[];
   linked?: string[];
+  staleLinked?: string[];
   voiceScript?: string[];
   voiceRefs?: string[];
   voiceLinked?: string[];
@@ -2871,6 +2873,10 @@ function gateCheckMismatchDetail(result: GateCheckResult): string {
     const script = (result.script || []).join('、') || '无';
     const linked = (result.linked || []).join('、') || '无';
     reasons.push(`画面引用不一致（稿面 ${script}；实挂 ${linked}）`);
+  }
+  if ((result.staleLinked || []).length > 0) {
+    const stale = (result.staleLinked || []).join('、');
+    reasons.push(`存在残余素材连线（${stale}），请在画布断开后再提交`);
   }
   if (result.audioOk === false) {
     const script = (result.voiceScript || []).join('、') || '无';

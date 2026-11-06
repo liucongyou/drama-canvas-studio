@@ -802,6 +802,7 @@ def repair_payload_prompt_mentions(payload):
         and str(node.get("title") or "").startswith("角色｜")
     }
     allowed_audio_by_video = {}
+    allowed_media_by_video = {}
 
     def voice_role(ref):
         source = node_by_id.get(str(ref.get("nodeId") or ""))
@@ -841,6 +842,14 @@ def repair_payload_prompt_mentions(payload):
             str(voice.get("nodeId") or "")
             for voice in filtered_voices
             if voice.get("nodeId")
+        }
+        allowed_media_by_video[str(node.get("id") or "")] = {
+            str(ref.get("nodeId") or "")
+            for ref in filtered_refs
+            if isinstance(ref, dict)
+            and ref.get("nodeId")
+            and (node_by_id.get(str(ref.get("nodeId") or "")) or {}).get("type")
+            in {"image", "video", "text"}
         }
         node_changed = False
         if filtered_voices != voices:
@@ -900,6 +909,21 @@ def repair_payload_prompt_mentions(payload):
             and source
             and source.get("type") == "audio"
             and str(source.get("id") or "") not in allowed_audio_by_video[target_id]
+        ):
+            changed += 1
+            continue
+        if (
+            target_id in allowed_media_by_video
+            and source
+            and source.get("type") in {"image", "video", "text"}
+            and (
+                source.get("type") == "image"
+                or canvas_feed_contract.canonical_code_from_text(
+                    str(source.get("title") or "")
+                )
+            )
+            and str(source.get("id") or "")
+            not in allowed_media_by_video[target_id]
         ):
             changed += 1
             continue

@@ -5,6 +5,47 @@ import import_feed
 
 
 class ImportFeedContractTests(unittest.TestCase):
+    def test_prompt_repair_removes_stale_media_edge(self):
+        payload = {
+            "nodes": [
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段13",
+                    "metadata": {
+                        "prompt": "@角色｜赵铁柱（图1）在门口。",
+                        "params": {
+                            "refs": [{
+                                "nodeId": "img-1",
+                                "label": "角色｜赵铁柱（图1）",
+                            }],
+                        },
+                    },
+                },
+                {
+                    "id": "img-1",
+                    "type": "image",
+                    "title": "角色｜赵铁柱（图1）",
+                },
+                {
+                    "id": "img-2",
+                    "type": "image",
+                    "title": "角色｜钱万金（图2）",
+                },
+            ],
+            "connections": [
+                {"id": "keep", "fromNodeId": "img-1", "toNodeId": "video-1"},
+                {"id": "stale", "fromNodeId": "img-2", "toNodeId": "video-1"},
+            ],
+        }
+
+        import_feed.repair_payload_prompt_mentions(payload)
+
+        self.assertEqual(
+            [edge["id"] for edge in payload["connections"]],
+            ["keep"],
+        )
+
     def test_dialog_parser_handles_bracket_wrapped_speakers(self):
         text = "\n".join([
             '台词：赵铁柱（低沉）："普通格式。"',

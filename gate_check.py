@@ -10,6 +10,22 @@
 import canvas_feed_contract
 
 
+def _declared_image_refs(raw, params):
+    declared = set()
+    for refs_key in ("refs",):
+        refs = params.get(refs_key) if isinstance(params, dict) else None
+        for ref in refs if isinstance(refs, list) else []:
+            if not isinstance(ref, dict):
+                continue
+            label = str(ref.get("label") or ref.get("title") or "")
+            code = canvas_feed_contract.canonical_code_from_text(label)
+            if code:
+                declared.add(code)
+    # Explicit prompt mentions are already parsed by the shared contract.
+    declared.update(canvas_feed_contract.asset_ref_codes(raw))
+    return declared
+
+
 def run_check(payload, episode_id=None):
     nodes = payload.get("nodes", [])
     conns = payload.get("connections", [])
@@ -49,10 +65,17 @@ def run_check(payload, episode_id=None):
         raw = v.get("metadata", {}).get("prompt", "")
         params = (v.get("metadata") or {}).get("params") or {}
         script_set = canvas_feed_contract.asset_ref_codes(raw)
-        linked_figs = set()
+        declared_refs = _declared_image_refs(raw, params)
+        all_linked_figs = set()
         for src in in_edges.get(v["id"], []):
             if src in fig_of:
-                linked_figs.add(fig_of[src])
+                all_linked_figs.add(fig_of[src])
+        # A stale edge is not an effective attachment. Only edges whose source
+        # is still declared by the current prompt or params.refs count.
+        linked_figs = {
+            code for code in all_linked_figs if code in declared_refs
+        }
+        stale_linked = all_linked_figs - linked_figs
         audio_script = {
             code for _role, code in canvas_feed_contract.audio_ref_entries(raw)
         }
@@ -77,13 +100,15 @@ def run_check(payload, episode_id=None):
             "title": v.get("title", ""), "ok": ok,
             "script": sorted(script_set, key=lambda x: int(x[1:])),
             "linked": sorted(linked_figs, key=lambda x: int(x[1:])),
+            "staleLinked": sorted(stale_linked, key=lambda x: int(x[1:])),
             "voiceScript": sorted(audio_script, key=lambda x: int(x[1:])),
             "voiceRefs": sorted(voice_ref_figs, key=lambda x: int(x[1:])),
             "voiceLinked": sorted(linked_audio, key=lambda x: int(x[1:])),
             "imageOk": image_ok,
             "audioOk": audio_ok,
+            "imageStaleOk": not stale_linked,
         })
-        if not ok:
+        if not ok or stale_linked:
             errors.append(v.get("title", ""))
     return results, errors
 
