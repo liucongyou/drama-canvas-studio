@@ -1712,8 +1712,8 @@ type MediaNodeData = {
   ) => void;
   onGenerate: (
     node: CanvasMediaNode,
-    source?: {entry?: string; batchId?: string},
-  ) => boolean;
+    source?: {entry?: string; batchId?: string; confirmed?: boolean},
+  ) => boolean | Promise<boolean>;
   onDelete: (id: string) => void;
   onZoom: (url: string) => void;
   onReadText: (node: CanvasMediaNode) => void;
@@ -3968,7 +3968,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   catalog: ModelCatalog | null;
   readOnly?: boolean;
   onChange: (id: string, patch: Partial<CanvasMediaNode>) => void;
-  onGenerate: (n: CanvasMediaNode) => boolean;
+  onGenerate: (n: CanvasMediaNode) => boolean | Promise<boolean>;
   onDelete: (id: string) => void;
   onClose: (reason: 'preserve' | 'clear') => void;
   // 移除引用时必须连带删掉画布上对应的那条连线，否则下次打开弹窗
@@ -4279,8 +4279,8 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   }, [node, anchor, taExpanded, refCount]);
 
   const nodeKind = node?.kind ?? 'image';
-  const generateAndClose = () => {
-    if (node && onGenerate(node)) requestClose();
+  const generateAndClose = async () => {
+    if (node && await onGenerate(node)) requestClose();
   };
   paramsRef.current = node?.params || {};
   const patch = (key: keyof CanvasMediaParams, value: unknown) => {
@@ -5185,7 +5185,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                     && curModelSpec
                     && !missingProviderKey
                   ) {
-                    generateAndClose();
+                    void generateAndClose();
                   }
                 }
               }}
@@ -5420,10 +5420,10 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                         type="button"
                         className="is-primary"
                         disabled={selectedPrepareTargets.length === 0}
-                        onClick={() => {
+                        onClick={async () => {
                           const started: string[] = [];
                           for (const item of selectedPrepareTargets) {
-                            if (onGenerate(item.source)) started.push(item.source.id);
+                            if (await onGenerate(item.source)) started.push(item.source.id);
                           }
                           setPrepareSelected((prev) => prev.filter((id) => !started.includes(id)));
                           setPrepareMessage(started.length > 0 ? `已提交 ${started.length} 项所选资产` : '没有提交任务');
@@ -5521,7 +5521,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
             type="button"
             className="jim-gen"
             disabled={busy || !node.prompt.trim() || overPromptLimit || Boolean(referenceEvaluation.issue) || !curModelSpec || missingProviderKey || dependenciesBlocked || modelParamIssues.length > 0}
-            onClick={generateAndClose}
+            onClick={() => void generateAndClose()}
             title={busy ? '当前节点正在生成，请到任务中心查看进度' : !curModelSpec ? '当前类型没有可用模型' : missingProviderKey ? '当前供应商尚未配置 API Key' : overPromptLimit ? `提示词超过当前模型上限（${promptLimit} 字符）` : referenceEvaluation.issue ? referenceEvaluation.message : modelParamIssues.length ? modelParamIssues[0].message : dependenciesBlocked ? `缺少：${dependencyBlockers.map((item) => `${item.title}（${item.reason}）`).join('；')}` : isTxt ? '按当前内容生成/改写文本 · Ctrl+⏎' : '按当前供应商与参数生成 · Ctrl+⏎'}
           ><ArrowUp size={16} strokeWidth={2.6} aria-hidden="true" /></button>
           </div>
@@ -8099,8 +8099,8 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
   onClose: () => void;
   onGenerate: (
     node: CanvasMediaNode,
-    source?: {entry?: string; batchId?: string},
-  ) => boolean;
+    source?: {entry?: string; batchId?: string; confirmed?: boolean},
+  ) => boolean | Promise<boolean>;
   onSubmitted: (started: number, selected: number) => void;
 }) {
   const dialogRef = useDialogFocusTrap();
@@ -8245,11 +8245,24 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
               type="button"
               className="is-primary"
               disabled={selected.length === 0}
-              onClick={() => {
+              onClick={async () => {
+                const costText = unknownCostCount > 0
+                  ? `${selected.length} 项，其中 ${unknownCostCount} 项按供应商账单`
+                  : `预估约 ${currency}${knownCost.toFixed(knownCost < 1 ? 3 : 2)}`;
+                const confirmed = await dialog.confirm({
+                  title: '确认批量生成？',
+                  message: `将提交 ${selected.length} 个节点，${costText}。\n生成会调用供应商并可能产生费用。`,
+                  confirmText: `生成 ${selected.length} 项`,
+                });
+                if (!confirmed) return;
                 let started = 0;
                 const batchId = `batch-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
                 for (const candidate of selected) {
-                  if (onGenerate(candidate.node, {entry: 'batch', batchId})) started += 1;
+                  if (await onGenerate(candidate.node, {
+                    entry: 'batch',
+                    batchId,
+                    confirmed: true,
+                  })) started += 1;
                 }
                 onSubmitted(started, selected.length);
                 onClose();
@@ -14914,9 +14927,9 @@ function CanvasViewInner({
     [mediaNodes, editNodeId],
   );
 
-  const onGenerateMediaNode = useCallback((
+  const onGenerateMediaNode = useCallback(async (
     node: CanvasMediaNode,
-    source?: {entry?: string; batchId?: string},
+    source?: {entry?: string; batchId?: string; confirmed?: boolean},
   ) => {
     if (readOnly) {
       setToast('只读分享不能提交生成任务');
@@ -14989,6 +15002,23 @@ function CanvasViewInner({
         .join('、');
       setToast(`还有 ${dependencyBlockers.length} 项引用未就绪：${names}${dependencyBlockers.length > 4 ? '…' : ''}`);
       return false;
+    }
+    if (!source?.confirmed) {
+      const modelName = activeModel?.label
+        || activeModel?.remoteModel
+        || storedModel
+        || '当前模型';
+      const kindLabelText = kindLabel[node.kind];
+      const confirmed = await dialog.confirm({
+        title: node.status === 'done' ? '确认重新生成？' : '确认开始生成？',
+        message: (
+          `${node.title || kindLabelText}\n`
+          + `模型：${modelName}\n`
+          + '提交后会调用供应商并可能产生费用。'
+        ),
+        confirmText: node.status === 'done' ? '重新生成' : '开始生成',
+      });
+      if (!confirmed) return false;
     }
     // 从这里开始是「已确认要提交」，占住同步锁直到请求返回。
     generationSubmittingRef.current.add(node.id);
