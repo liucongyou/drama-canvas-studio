@@ -156,6 +156,11 @@ import {clampDurationInput} from './durationInput';
 import {canvasHeaderStats, formatCanvasDuration} from './canvasStats';
 import {sortFlowNodesForEntry, sortMediaNodesForEntry} from './canvasEntryOrder';
 import {
+  cacheBustedMediaUrl,
+  shouldMarkMediaMissing,
+  shouldRetryMediaLoad,
+} from './mediaLoadRecovery';
+import {
   promptMentionMatches,
   type PromptMentionToken,
 } from './promptMentions';
@@ -2400,6 +2405,8 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const [localUploadError, setLocalUploadError] = useState('');
   const [localDragOver, setLocalDragOver] = useState(false);
   const [mediaLoadFailed, setMediaLoadFailed] = useState(false);
+  const [mediaLoadFailureCount, setMediaLoadFailureCount] = useState(0);
+  const [mediaRetryUrl, setMediaRetryUrl] = useState('');
   const [mediaLoaded, setMediaLoaded] = useState(false);
   const [videoSourceReady, setVideoSourceReady] = useState(false);
   const [videoCoverUrl, setVideoCoverUrl] = useState('');
@@ -2546,7 +2553,36 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   }, [node.mediaUrl]);
   useEffect(() => {
     setMediaLoadFailed(node.mediaAvailability === 'missing');
+    setMediaLoadFailureCount(node.mediaAvailability === 'missing' ? 2 : 0);
+    setMediaRetryUrl('');
   }, [node.id, node.mediaUrl, node.mediaAvailability]);
+  const handleMediaLoadError = () => {
+    const failures = mediaLoadFailureCount + 1;
+    setMediaLoadFailureCount(failures);
+    setMediaLoaded(false);
+    if (shouldRetryMediaLoad(failures, Boolean(node.mediaUrl))) {
+      setMediaLoadFailed(false);
+      setMediaRetryUrl(cacheBustedMediaUrl(node.mediaUrl || '', failures));
+      return;
+    }
+    if (shouldMarkMediaMissing(
+      failures,
+      node.mediaAvailability === 'missing',
+    )) {
+      setMediaLoadFailed(true);
+      if (node.mediaAvailability !== 'missing') {
+        onMediaAvailability?.(node.id, 'missing');
+      }
+    }
+  };
+  const handleMediaLoadSuccess = () => {
+    setMediaLoadFailed(false);
+    setMediaLoadFailureCount(0);
+    setMediaRetryUrl('');
+    if (node.mediaAvailability !== 'available') {
+      onMediaAvailability?.(node.id, 'available');
+    }
+  };
   useEffect(() => {
     setMediaLoaded(false);
     setVideoSourceReady(false);
@@ -2689,7 +2725,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
       if (video.readyState === HTMLMediaElement.HAVE_NOTHING) video.load();
       void video.play().catch(() => {
         setVideoPlaying(false);
-        setMediaLoadFailed(true);
+        handleMediaLoadError();
       });
     } else {
       video.pause();
@@ -3302,18 +3338,13 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
             ? <span className={`canvas-media-image-frame${mediaLoaded ? ' is-loaded' : ' is-loading'}`}>
                 <LazyCanvasImage
                   className="canvas-media-preview is-photo"
-                  src={node.mediaUrl}
+                  src={mediaRetryUrl || node.mediaUrl}
                   alt={node.title}
                   onLoad={() => {
                     setMediaLoaded(true);
-                    setMediaLoadFailed(false);
-                    if (node.mediaAvailability !== 'available') onMediaAvailability?.(node.id, 'available');
+                    handleMediaLoadSuccess();
                   }}
-                  onError={() => {
-                    setMediaLoaded(false);
-                    setMediaLoadFailed(true);
-                    if (node.mediaAvailability !== 'missing') onMediaAvailability?.(node.id, 'missing');
-                  }}
+                  onError={handleMediaLoadError}
                 />
               </span>
           : node.kind === 'video'
@@ -3356,7 +3387,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                   <video
                     ref={videoRef}
                     className="canvas-media-preview is-video nodrag nowheel"
-                    src={node.mediaUrl}
+                    src={mediaRetryUrl || node.mediaUrl}
                     playsInline
                     muted={videoMuted}
                     loop={videoLoop}
@@ -3364,8 +3395,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                     aria-label={node.title}
                     onLoadedMetadata={(event) => {
                       setVideoDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
-                      setMediaLoadFailed(false);
-                      if (node.mediaAvailability !== 'available') onMediaAvailability?.(node.id, 'available');
+                      handleMediaLoadSuccess();
                       try {
                         // Metadata-only preloads can show a blank first frame in
                         // some browsers. Seek a few milliseconds to paint the
@@ -3383,10 +3413,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                       toggleVideoPlayback();
                     }}
                     onPlaying={() => setVideoFrameReady(true)}
-                    onError={() => {
-                      setMediaLoadFailed(true);
-                      if (node.mediaAvailability !== 'missing') onMediaAvailability?.(node.id, 'missing');
-                    }}
+                    onError={handleMediaLoadError}
                     onDurationChange={(event) => {
                       setVideoDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
                     }}
@@ -3515,17 +3542,13 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                     <audio
                       ref={audioRef}
                       className="canvas-audio-engine"
-                      src={node.mediaUrl}
+                      src={mediaRetryUrl || node.mediaUrl}
                       preload="metadata"
                       onLoadedMetadata={(event) => {
                         setAudioDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
-                        setMediaLoadFailed(false);
-                        if (node.mediaAvailability !== 'available') onMediaAvailability?.(node.id, 'available');
+                        handleMediaLoadSuccess();
                       }}
-                      onError={() => {
-                        setMediaLoadFailed(true);
-                        if (node.mediaAvailability !== 'missing') onMediaAvailability?.(node.id, 'missing');
-                      }}
+                      onError={handleMediaLoadError}
                       onDurationChange={(event) => {
                         setAudioDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
                       }}
