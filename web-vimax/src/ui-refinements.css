@@ -2433,6 +2433,10 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
   left:0;
   right:auto;
   min-width:286px;
+  max-width:min(420px, calc(100vw - 24px));
+  max-height:min(70vh, 620px);
+  overflow-y:auto;
+  overscroll-behavior:contain;
   padding:8px;
 }
 .canvas-status-menu-head{
@@ -2456,8 +2460,14 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
   font-weight:500;
 }
 .canvas-header-menu .canvas-status-check{
+  flex:none;
+  width:100%;
+  height:auto;
+  min-height:32px;
   margin-top:5px;
+  padding:6px 8px;
   color:var(--v-accent);
+  line-height:1.35;
 }
 .canvas-status-failures{
   margin:5px 0 2px;
@@ -2472,36 +2482,41 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
   font-size:10px;
   font-weight:600;
 }
-.canvas-status-failure{
+.canvas-header-menu .canvas-status-failure{
   display:flex;
   flex-direction:column;
   align-items:flex-start;
   gap:2px;
   width:100%;
+  height:auto;
   padding:5px 6px;
   border:0;
   border-radius:6px;
   background:transparent;
   color:var(--v-text-2);
   text-align:left;
+  white-space:normal;
+  overflow-wrap:anywhere;
   cursor:pointer;
 }
-.canvas-status-failure:hover{
+.canvas-header-menu .canvas-status-failure:hover{
   background:color-mix(in srgb, var(--v-danger) 11%, transparent);
   color:var(--v-text);
 }
-.canvas-status-failure:disabled{
+.canvas-header-menu .canvas-status-failure:disabled{
   cursor:default;
   opacity:.8;
 }
-.canvas-status-failure span{
+.canvas-header-menu .canvas-status-failure span{
   font-size:11px;
   font-weight:550;
 }
-.canvas-status-failure small{
+.canvas-header-menu .canvas-status-failure small{
   color:var(--v-text-4);
   font-size:9.5px;
-  line-height:1.45;
+  line-height:1.55;
+  white-space:normal;
+  overflow-wrap:anywhere;
 }
 .canvas-tools-menu{min-width:214px}
 .canvas-tools-section{
