@@ -2027,7 +2027,11 @@ export async function getCanvasMediaNodes(
     }
     // 已删除的引用还要从节点自带的 params.refs 里滤掉
     // （手动连线曾把 ref 写进节点，只靠 connections 过滤是不够的）
-    const ownRefs = (mn.params?.refs || []).filter(r => !removed.has(`${mn.id}::${r.nodeId}`));
+    const ownRefs = (mn.params?.refs || []).filter((ref) => (
+      Boolean(ref.nodeId)
+      && typeById.has(ref.nodeId)
+      && !removed.has(`${mn.id}::${ref.nodeId}`)
+    ));
     // ★ label 就地修正（无论有没有 connections 都要做）：历史数据里的「资产图 / 角色音色」
     //   泛称会被后端原样拼进喂给模型的 prompt，必须换成真实节点名。
     //   只改 label、不动顺序（顺序决定第一张主参考图）。
@@ -2045,7 +2049,11 @@ export async function getCanvasMediaNodes(
     // connections（后端关系表）里，合并后会产生重复 refId → React Flow 渲染出
     // 两条 id 相同的媒体引用边，控制台刷满 "Encountered two children with the same key"。
     const mergedRefs = [...new Map([...fixedOwn, ...extra].map(r => [r.nodeId, r])).values()];
-    const ownVoices = voiceRefList(mn.params).filter(r => !removed.has(`${mn.id}::${r.nodeId}`));
+    const ownVoices = voiceRefList(mn.params).filter((ref) => (
+      Boolean(ref.nodeId)
+      && typeById.has(ref.nodeId)
+      && !removed.has(`${mn.id}::${ref.nodeId}`)
+    ));
     const knownVoice = new Set(ownVoices.map(r => r.nodeId));
     const mergedVoices = [
       ...ownVoices,

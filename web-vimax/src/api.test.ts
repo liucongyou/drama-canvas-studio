@@ -943,6 +943,44 @@ describe('api request recovery', () => {
     expect(current?.params?.refs ?? []).toEqual([]);
   });
 
+  it('drops refs whose source node no longer exists', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'project-dangling-ref',
+      title: '缺失引用',
+      payload: {
+        nodes: [{
+          id: 'video-1',
+          type: 'video',
+          title: '段1',
+          metadata: {
+            prompt: '@角色｜陈大强（图4）站在门口。',
+            status: 'idle',
+            params: {
+              ratio: '9:16',
+              refs: [{
+                nodeId: 'node-vk75ztfp8dnz-136e3ccd',
+                label: '资产图',
+              }],
+            },
+          },
+        }],
+        connections: [],
+        episodeImports: [{
+          id: 'EP005',
+          nodeIds: ['video-1'],
+          videoNodeIds: ['video-1'],
+        }],
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    const nodes = await getCanvasMediaNodes('project-dangling-ref', 'EP005');
+    expect(nodes[0].params?.refs ?? []).toEqual([]);
+    expect(nodes[0].refIds ?? []).toEqual([]);
+  });
+
   it('keeps referenced shared audio while isolating episodes', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       id: 'project-shared-audio',
