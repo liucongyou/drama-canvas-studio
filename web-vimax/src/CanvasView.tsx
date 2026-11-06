@@ -154,6 +154,11 @@ import {
 import {validateModelParams} from './modelParamContract';
 import {clampDurationInput} from './durationInput';
 import {canvasHeaderStats, formatCanvasDuration} from './canvasStats';
+import {sortFlowNodesForEntry, sortMediaNodesForEntry} from './canvasEntryOrder';
+import {
+  promptMentionMatches,
+  type PromptMentionToken,
+} from './promptMentions';
 import {
   canvasBackgroundCss,
   isCanvasBackgroundMode,
@@ -1993,60 +1998,6 @@ const RatioIcon = ({r}: {r: string}) => {
     </svg>
   );
 };
-
-type PromptMentionToken = {label: string; url?: string; kind: CanvasMediaNodeKind};
-type PromptMentionMatch = PromptMentionToken & {start: number; end: number; exact: boolean};
-
-function escapePromptRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function promptMentionMatches(value: string, mentions: PromptMentionToken[]): PromptMentionMatch[] {
-  const matches: PromptMentionMatch[] = [];
-  for (const mention of mentions) {
-    if (!mention.label) continue;
-    const token = `@${mention.label}`;
-    let from = 0;
-    while (from < value.length) {
-      const start = value.indexOf(token, from);
-      if (start < 0) break;
-      matches.push({...mention, start, end: start + token.length, exact: true});
-      from = start + token.length;
-    }
-  }
-
-  // 兼容旧导入数据里的「名称（图N）」写法。渲染时直接显示资产胶囊，
-  // 下一次编辑保存会自然写回标准 @资产节点名。
-  for (const mention of mentions) {
-    const figure = /[（(]\s*(?:参考)?图\s*(\d+)\s*[）)]/.exec(mention.label);
-    if (!figure) continue;
-    const withoutPrefix = mention.label.replace(/^[^｜|]*[｜|]\s*/, '');
-    const base = withoutPrefix.replace(/[（(]\s*(?:参考)?图\s*\d+\s*[）)]\s*$/, '').trim();
-    const candidates = [...new Set([base, base.split(/[·・]/)[0]?.trim() || ''].filter(Boolean))];
-    for (const candidate of candidates) {
-      const pattern = new RegExp(
-        `(?<![A-Za-z0-9_\\u3400-\\u9fff@｜|])${escapePromptRegExp(candidate)}`
-        + `\\s*[（(]\\s*(?:参考)?图\\s*${figure[1]}\\s*[）)]`,
-        'gu',
-      );
-      for (const match of value.matchAll(pattern)) {
-        const start = match.index ?? 0;
-        matches.push({...mention, start, end: start + match[0].length, exact: false});
-      }
-    }
-  }
-
-  // 标准 @资产名 优先，并且同一段文字只渲染一次胶囊。
-  matches.sort((a, b) => a.start - b.start || Number(b.exact) - Number(a.exact) || b.end - a.end);
-  const accepted: PromptMentionMatch[] = [];
-  let consumed = -1;
-  for (const match of matches) {
-    if (match.start < consumed) continue;
-    accepted.push(match);
-    consumed = match.end;
-  }
-  return accepted;
-}
 
 function promptTextFromNode(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
@@ -10035,8 +9986,6 @@ function CanvasViewInner({
     setCanvas(null);
     setMediaNodes([]);
     setNotes([]);
-    setGenerationTasks([]);
-    setGenerationBusyIds(new Set());
     taskLoadGenerationRef.current += 1;
     // 一集一画布：切集后备注由后端按 episodeId 重新加载。
     if (shotSaveTimer.current) { clearTimeout(shotSaveTimer.current); shotSaveTimer.current = null; }
@@ -10084,7 +10033,6 @@ function CanvasViewInner({
           setCanvas(data);
           setNotes(noteList);
           setMediaNodes(mediaList);
-          setGenerationTasks([]);
           setDataReady(true);
           setLoading(false);
           workspaceReadyAtRef.current = performance.now();
@@ -10173,7 +10121,6 @@ function CanvasViewInner({
         mediaNodes: mediaList,
         episodeViewports,
         activeEpisodeId,
-        tasks: initialTasks,
         connections: projectConnections,
       }) => {
         if (loadEpoch !== workspaceLoadEpochRef.current) return;
@@ -10192,6 +10139,12 @@ function CanvasViewInner({
           fallbackEpisodeId: pickDefaultEpisode(
             'empty' in data ? [] : data.meta.episodes,
           ),
+        });
+        performance.mark('canvas-enter-workspace', {
+          detail: {
+            episode: normalizedActiveEpisode,
+            mediaNodes: 'empty' in data ? 0 : mediaList.length,
+          },
         });
         activeWorkspaceEpisodeRef.current = normalizedActiveEpisode;
         if (normalizedActiveEpisode !== currentEp) {
@@ -10216,7 +10169,6 @@ function CanvasViewInner({
             setLargeCanvasVisibleBounds(null);
           }
           setMediaNodes(mediaList);
-          setGenerationTasks(initialTasks);
         });
         workspaceLoadStartedAtRef.current = 0;
         // The viewport effect owns the release on the next commit, after the
@@ -10224,6 +10176,11 @@ function CanvasViewInner({
         setDataReady(true);
         setLoading(false);
         workspaceReadyAtRef.current = performance.now();
+        requestAnimationFrame(() => {
+          performance.mark('canvas-layout-settled', {
+            detail: {episode: normalizedActiveEpisode},
+          });
+        });
       })
       .catch((err: unknown) => {
         if (loadEpoch === workspaceLoadEpochRef.current) {
@@ -10282,6 +10239,12 @@ function CanvasViewInner({
         const loadedEpisode = String(
           workspace.activeEpisodeId || target,
         ).trim().toUpperCase();
+        performance.mark('canvas-episode-settled', {
+          detail: {
+            episode: loadedEpisode,
+            mediaNodes: workspace.mediaNodes.length,
+          },
+        });
         activeWorkspaceEpisodeRef.current = loadedEpisode;
         projectConnectionsRef.current = workspace.connections;
         if ('empty' in workspace.canvas) {
@@ -15166,7 +15129,7 @@ function CanvasViewInner({
     ) {
       return mediaNodes;
     }
-    return filterMediaNodesInBounds(
+    return sortMediaNodesForEntry(filterMediaNodesInBounds(
       mediaNodes,
       viewportLoadBounds(
         largeCanvasVisibleBounds,
@@ -15176,7 +15139,7 @@ function CanvasViewInner({
         w: MEDIA_KIND_META[node.kind].w,
         h: MEDIA_KIND_META[node.kind].h + 44,
       }),
-    );
+    ));
   }, [largeCanvasOverview, largeCanvasVisibleBounds, mediaNodes]);
   const mediaRenderMode: 'overview' | 'compact' | 'full' = zoomPct < 35
     ? 'overview'
@@ -15464,7 +15427,7 @@ function CanvasViewInner({
       });
     });
 
-    const placed = out.map((node) => {
+    const placed = sortFlowNodesForEntry(out.map((node) => {
       // 资产卡子节点始终用组内自动排布位置（跟随分组框拖动），不恢复单独位置
       if (node.parentId && node.type !== 'segment') return node;
       // 媒体卡片位置以载荷 mn.x/mn.y 为准（拖动时同步回 mn，见 onNodeDragStop），
@@ -15474,7 +15437,7 @@ function CanvasViewInner({
       // 分段卡：恢复用户手动拖拽保存的位置
       const saved = positionRef.current[node.id];
       return saved ? {...node, position: saved} : node;
-    });
+    }));
     return placed;
   }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, mediaById, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasVisibleBounds, largeCanvasOverview, editNode?.id, recoverMissingMedia, readOnly]);
   const renderedEdges = useMemo(() => {

@@ -2529,30 +2529,33 @@ async function getProjectionCanvasWorkspace(
     currentEpisode,
     pseudoProject,
   );
-  const notes = Array.isArray(nodesPayload.notes)
-    ? nodesPayload.notes
+  const notesPromise = Array.isArray(nodesPayload.notes)
+    ? Promise.resolve(nodesPayload.notes)
     : sessionId.startsWith('share:')
-      ? await request<{notes: CanvasNote[]}>(
+      ? request<{notes: CanvasNote[]}>(
           `/api/share/${encodeURIComponent(workspaceReadSessionId(sessionId))}/notes?episodeId=${encodeURIComponent(currentEpisode)}`,
         ).then((result) => result.notes || [])
-      : await getCanvasNotes(sessionId, currentEpisode);
+      : getCanvasNotes(sessionId, currentEpisode);
   // The projection response already contains this episode's payload nodes.
   // Reusing pseudoProject avoids issuing /api/projects/{id} again solely to
   // reproject nodes that are already in memory. Fallback mode above still
   // reads the complete project once when the projection is unavailable.
-  const mediaNodes = await getCanvasMediaNodes(
+  const mediaNodesPromise = getCanvasMediaNodes(
     sessionId,
     currentEpisode,
     pseudoProject,
   );
-  let tasks: GenerationTask[] = [];
-  if (!sessionId.startsWith('share:')) {
-    try {
-      tasks = await getGenerationTasks(sessionId, 80, currentEpisode);
-    } catch {
-      // An auxiliary task-panel read must never block the interactive canvas.
-    }
-  }
+  // These independent reads share one round-trip window. Previously notes and
+  // media were awaited sequentially, then task history added another blocking
+  // request after the graph was already ready.
+  const tasksPromise = sessionId.startsWith('share:')
+    ? Promise.resolve([] as GenerationTask[])
+    : getGenerationTasks(sessionId, 80, currentEpisode).catch(() => []);
+  const [notes, mediaNodes, tasks] = await Promise.all([
+    notesPromise,
+    mediaNodesPromise,
+    tasksPromise,
+  ]);
   return {
     canvas,
     notes,

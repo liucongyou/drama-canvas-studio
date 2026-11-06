@@ -493,6 +493,55 @@ describe('api request recovery', () => {
     expect(workspace.tasks).toEqual([]);
   });
 
+  it('loads initial notes, media and tasks in one parallel window', async () => {
+    const calls: string[] = [];
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const target = String(url);
+      calls.push(target);
+      const body = target.includes('/api/generation-tasks')
+        ? {tasks: []}
+        : target.includes('/workspace-index')
+          ? {
+              id: 'project-parallel',
+              title: '并发首屏',
+              revision: 1,
+              updatedAt: '2026-11-06T00:00:00Z',
+              projectMeta: {},
+              episodes: [{id: 'EP001', title: '第01集', nodeIds: ['image-1']}],
+              episodeViewports: {},
+            }
+          : target.includes('/workspace-nodes')
+            ? {
+                episodeId: 'EP001',
+                episode: {id: 'EP001', title: '第01集', nodeIds: ['image-1']},
+                nodes: [{
+                  id: 'image-1',
+                  type: 'image',
+                  title: '角色｜测试（图1）',
+                  position: {x: 20, y: 30},
+                  metadata: {status: 'done', content: '/uploads/test.png'},
+                }],
+                connections: [],
+                layouts: {},
+              }
+            : {notes: []};
+      return Promise.resolve(new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const workspace = await getCanvasWorkspace(
+      'project-parallel',
+      'EP001',
+    );
+
+    expect(workspace.mediaNodes.map((node) => node.id)).toEqual(['image-1']);
+    expect(calls.filter((url) => url.includes('/notes?episodeId=EP001'))).toHaveLength(1);
+    expect(calls.filter((url) => url.includes('/api/generation-tasks'))).toHaveLength(1);
+  });
+
   it('rejects an aborted workspace load instead of presenting it as an empty project', async () => {
     const abortError = new DOMException('aborted', 'AbortError');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError));

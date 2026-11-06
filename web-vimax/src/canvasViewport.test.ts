@@ -131,7 +131,7 @@ describe('canvas viewport persistence threshold', () => {
     expect(moveEndBlock).toContain('flushViewportNow()');
   });
 
-  it('keeps the interactive graph read ahead of auxiliary task polling', () => {
+  it('loads notes, media and auxiliary task polling in parallel', () => {
     const source = readFileSync(resolve(__dirname, 'api.ts'), 'utf8');
     const start = source.indexOf(
       'async function getProjectionCanvasWorkspace(',
@@ -141,8 +141,10 @@ describe('canvas viewport persistence threshold', () => {
       start,
     );
     const block = source.slice(start, end);
-    expect(block.indexOf('await getWorkspaceNodes('))
-      .toBeLessThan(block.indexOf('await getGenerationTasks('));
+    expect(block).toMatch(
+      /const \[notes, mediaNodes, tasks\] = await Promise\.all\(\[/,
+    );
+    expect(block).toContain('getGenerationTasks(sessionId, 80, currentEpisode).catch');
   });
 
   it('does not guess an episode for payload-node prefetch without ?ep=', () => {
