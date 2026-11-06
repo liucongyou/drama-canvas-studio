@@ -12,19 +12,6 @@ export type PromptMentionMatch = PromptMentionToken & {
   exact: boolean;
 };
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function isDialogueLine(value: string, offset: number): boolean {
-  const lineStart = Math.max(
-    value.lastIndexOf('\n', offset - 1) + 1,
-    value.lastIndexOf('\r', offset - 1) + 1,
-  );
-  const prefix = value.slice(lineStart, offset).trimStart();
-  return /^(?:【\s*)?台词\s*[】:：]/.test(prefix);
-}
-
 export function promptMentionMatches(
   value: string,
   mentions: PromptMentionToken[],
@@ -37,43 +24,12 @@ export function promptMentionMatches(
     while (from < value.length) {
       const start = value.indexOf(token, from);
       if (start < 0) break;
+      if (start > 0 && value[start - 1] === '<') {
+        from = start + token.length;
+        continue;
+      }
       matches.push({...mention, start, end: start + token.length, exact: true});
       from = start + token.length;
-    }
-  }
-
-  // Legacy prompts may contain "name（图N）". That is only a media reference
-  // outside dialogue lines. Dialogue text such as
-  // "台词：【钱万金（图2）：..." must remain literal script text.
-  for (const mention of mentions) {
-    const figure = /[（(]\s*(?:参考)?图\s*(\d+)\s*[）)]/.exec(mention.label);
-    if (!figure) continue;
-    const withoutPrefix = mention.label.replace(/^[^｜|]*[｜|]\s*/, '');
-    const base = withoutPrefix
-      .replace(/[（(]\s*(?:参考)?图\s*\d+\s*[）)]\s*$/, '')
-      .trim();
-    const candidates = [
-      ...new Set([
-        base,
-        base.split(/[·・]/)[0]?.trim() || '',
-      ].filter(Boolean)),
-    ];
-    for (const candidate of candidates) {
-      const pattern = new RegExp(
-        `(?<![A-Za-z0-9_\\u3400-\\u9fff@｜|])${escapeRegExp(candidate)}`
-        + `\\s*[（(]\\s*(?:参考)?图\\s*${figure[1]}\\s*[）)]`,
-        'gu',
-      );
-      for (const match of value.matchAll(pattern)) {
-        const start = match.index ?? 0;
-        if (isDialogueLine(value, start)) continue;
-        matches.push({
-          ...mention,
-          start,
-          end: start + match[0].length,
-          exact: false,
-        });
-      }
     }
   }
 

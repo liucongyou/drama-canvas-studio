@@ -869,6 +869,19 @@ class ImportFeedContractTests(unittest.TestCase):
             repaired,
         )
 
+    def test_preserves_angle_bracket_mapping_labels_without_at_prefix(self):
+        refs = [
+            {"nodeId": "scene-10", "label": "场景｜厂区后街·母版（图10）"},
+        ]
+        prompt = (
+            "<@场景｜厂区后街·母版（图10）> "
+            "对应@场景｜厂区后街·母版（图10），仅采用空间布局。"
+        )
+        repaired = import_feed.repair_prompt_mentions(prompt, refs)
+
+        self.assertTrue(repaired.startswith("<场景｜厂区后街·母版（图10）>"))
+        self.assertNotIn("<@场景", repaired)
+
     def test_repairs_existing_payload_idempotently(self):
         payload = {
             "nodes": [{

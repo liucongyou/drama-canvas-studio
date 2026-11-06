@@ -605,6 +605,9 @@ def _repair_named_short_alias(prompt, refs):
     def replace(match):
         kind = match.group("kind")
         prefix = kind
+        start = match.start()
+        if start > 0 and text[start - 1] == "<":
+            return match.group(0)
         exact = f"{prefix}｜{match.group('name').strip()}（图{match.group('code')}）"
         if exact in known_labels:
             return match.group(0)
@@ -621,6 +624,11 @@ def _repair_named_short_alias(prompt, refs):
 
 def repair_prompt_mentions(prompt, refs):
     """把技能载荷占位符换成输入框可识别、能渲染缩略图的 @资产节点名。"""
+    prompt = re.sub(
+        r"<@((?:角色|群像|场景|道具|音频)｜[^<>\n]*?图\s*\d+[^<>\n]*?)>",
+        r"<\1>",
+        str(prompt or ""),
+    )
 
     def replace(match):
         title = _resolve_mention_ref(
@@ -660,8 +668,10 @@ def repair_prompt_mentions(prompt, refs):
             )
         }
         figure_mention = rf"{re.escape(base)}\s*[（(]\s*图\s*\d+\s*[）)]"
+        # Angle-bracket labels are explanatory names, not media references.
+        # Only rewrite bare prose or an already explicit @ mention.
         repaired = re.sub(
-            rf"(?<![@｜]){figure_mention}",
+            rf"(?<![@｜<]){figure_mention}",
             f"@{title}",
             repaired,
         )
@@ -704,7 +714,7 @@ def repair_prompt_mentions(prompt, refs):
     )
 
     def replace_unique_code(match):
-        if match.start() > 0 and repaired[match.start() - 1] == "｜":
+        if match.start() > 0 and repaired[match.start() - 1] in "｜<":
             return match.group(0)
         titles = refs_by_code.get(_canonical_figure(match.group("code"))) or []
         if len(titles) != 1:
