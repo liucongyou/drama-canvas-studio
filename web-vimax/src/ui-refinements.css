@@ -2845,6 +2845,15 @@ html[data-theme='dark'][data-variant='immersive']{
     var(--v-surface-sunken);
   pointer-events:none;
 }
+.canvas-video-cover-frame,
+.canvas-video-cover-pending,
+.canvas-video-cover-fallback{
+  pointer-events:none;
+}
+.canvas-video-center-play,
+.canvas-video-controls{
+  z-index:4;
+}
 .canvas-video-shell.is-source-deferred .canvas-video-controls{
   display:none;
 }

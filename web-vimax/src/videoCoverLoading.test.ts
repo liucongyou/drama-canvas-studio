@@ -51,4 +51,13 @@ describe('video cover loading state', () => {
     );
     expect(canvas).toMatch(/onPlaying=\{\(\) => setVideoFrameReady\(true\)\}/);
   });
+
+  it('keeps video controls above every cover layer', () => {
+    expect(refinements).toMatch(
+      /\.canvas-video-center-play,\s*\.canvas-video-controls\s*\{[^}]*z-index:\s*4/s,
+    );
+    expect(refinements).toMatch(
+      /\.canvas-video-cover-frame,\s*\.canvas-video-cover-pending,\s*\.canvas-video-cover-fallback\s*\{[^}]*pointer-events:\s*none/s,
+    );
+  });
 });
