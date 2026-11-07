@@ -145,6 +145,7 @@ import {
   inheritModelParams,
   migrateUnavailableModelParams,
 } from './modelParamInheritance';
+import {isTransientMediaError} from './mediaLoadRecovery';
 import {
   activeProviderGroup,
   favoriteModelsForProvider,
@@ -2558,7 +2559,15 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     setMediaLoadFailureCount(node.mediaAvailability === 'missing' ? 2 : 0);
     setMediaRetryUrl('');
   }, [node.id, node.mediaUrl, node.mediaAvailability]);
-  const handleMediaLoadError = () => {
+  const handleMediaLoadError = (event?: SyntheticEvent<HTMLMediaElement>) => {
+    const mediaError = event?.currentTarget?.error;
+    if (isTransientMediaError(mediaError)) {
+      // A freshly reloaded page can abort a metadata/preload request while the
+      // browser is switching network connections. That is not proof that the
+      // stored asset is gone.
+      setMediaLoaded(false);
+      return;
+    }
     const failures = mediaLoadFailureCount + 1;
     setMediaLoadFailureCount(failures);
     setMediaLoaded(false);
@@ -3447,11 +3456,6 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                       } catch {
                         // Codec may not allow seeking yet; playback still works.
                       }
-                    }}
-                    onClick={(event) => {
-                      if ((event.target as Element).closest('button, input, .canvas-video-controls')) return;
-                      event.stopPropagation();
-                      toggleVideoPlayback();
                     }}
                     onPlaying={() => setVideoFrameReady(true)}
                     onError={handleMediaLoadError}

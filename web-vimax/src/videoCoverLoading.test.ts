@@ -60,4 +60,13 @@ describe('video cover loading state', () => {
       /\.canvas-video-cover-frame,\s*\.canvas-video-cover-pending,\s*\.canvas-video-cover-fallback\s*\{[^}]*pointer-events:\s*none/s,
     );
   });
+
+  it('does not turn a card click into video playback', () => {
+    expect(canvas).not.toMatch(
+      /onClick=\{\(event\) => \{[\s\S]{0,240}closest\('button, input, \.canvas-video-controls'\)[\s\S]{0,160}toggleVideoPlayback\(\)/,
+    );
+    expect(canvas).toMatch(
+      /className="canvas-video-center-play nodrag"[\s\S]{0,500}toggleVideoPlayback\(\)/,
+    );
+  });
 });

@@ -1,4 +1,4 @@
-export const MEDIA_RETRY_LIMIT = 1;
+export const MEDIA_RETRY_LIMIT = 2;
 
 export function shouldRetryMediaLoad(
   failures: number,
@@ -13,6 +13,13 @@ export function shouldMarkMediaMissing(
 ): boolean {
   return serverConfirmedMissing
     || failures > MEDIA_RETRY_LIMIT;
+}
+
+export function isTransientMediaError(error?: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const name = String((error as {name?: unknown}).name || '');
+  return name === 'AbortError' || name === 'NotReadableError'
+    || name === 'NotSupportedError' || name === 'NetworkError';
 }
 
 export function cacheBustedMediaUrl(

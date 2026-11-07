@@ -1,6 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import {
   cacheBustedMediaUrl,
+  isTransientMediaError,
   shouldMarkMediaMissing,
   shouldRetryMediaLoad,
 } from './mediaLoadRecovery';
@@ -9,7 +10,15 @@ describe('media load recovery', () => {
   it('retries a transient playback failure once before declaring loss', () => {
     expect(shouldRetryMediaLoad(1, true)).toBe(true);
     expect(shouldMarkMediaMissing(1, false)).toBe(false);
-    expect(shouldMarkMediaMissing(2, false)).toBe(true);
+    expect(shouldMarkMediaMissing(2, false)).toBe(false);
+    expect(shouldMarkMediaMissing(3, false)).toBe(true);
+  });
+
+  it('ignores transient browser/media errors after refresh', () => {
+    expect(isTransientMediaError({name: 'AbortError'})).toBe(true);
+    expect(isTransientMediaError({name: 'NetworkError'})).toBe(true);
+    expect(isTransientMediaError({name: 'NotSupportedError'})).toBe(true);
+    expect(isTransientMediaError({name: 'DecodeError'})).toBe(false);
   });
 
   it('never retries without a source and marks backend-confirmed loss', () => {
