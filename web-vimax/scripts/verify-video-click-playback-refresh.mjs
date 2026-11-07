@@ -102,6 +102,27 @@ try {
     };
   });
 
+  await page.waitForFunction(
+    () => {
+      const video = document.querySelector('.react-flow__node-media video.canvas-media-preview.is-video');
+      return video instanceof HTMLVideoElement && video.currentTime > 0.05;
+    },
+    {timeout: 8_000},
+  ).catch(() => {});
+  await page.mouse.move(playButton.x, playButton.y);
+  await page.mouse.click(playButton.x, playButton.y);
+  await sleep(120);
+  const pauseState = await page.evaluate(() => {
+    const video = document.querySelector('.react-flow__node-media video.canvas-media-preview.is-video');
+    const card = video?.closest('.canvas-media-card');
+    return {
+      paused: video instanceof HTMLVideoElement ? video.paused : null,
+      currentTime: video instanceof HTMLVideoElement ? video.currentTime : null,
+      coverVisible: Boolean(card?.querySelector('.canvas-video-cover-frame, .canvas-video-cover-pending, .canvas-video-cover-fallback')),
+      missing: Boolean(card?.querySelector('.canvas-media-placeholder')),
+    };
+  });
+
   const rapidRounds = [];
   for (let round = 0; round < 8; round += 1) {
     const toggle = await page.$eval(
@@ -139,6 +160,7 @@ try {
     episodeId,
     clickState,
     playbackState,
+    pauseState,
     rapidRounds,
     pageErrors,
     consoleErrors: consoleErrors.filter((item) => (
@@ -153,6 +175,9 @@ try {
   }
   if (playbackState.missing || playbackState.placeholderText.includes('媒体文件丢失')) {
     throw new Error('immediate playback after refresh was misclassified as missing media');
+  }
+  if (pauseState.paused !== true || pauseState.coverVisible || pauseState.missing) {
+    throw new Error('paused video should keep its current frame instead of restoring the cover');
   }
   if (result.pageErrors.length || result.consoleErrors.length) {
     throw new Error('browser errors detected');

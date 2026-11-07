@@ -2895,7 +2895,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const mediaMissing = !isText && !!node.mediaUrl && mediaLoadFailed;
   const videoCoverVisible = node.kind === 'video'
     && Boolean(videoCoverUrl)
-    && (!videoPlaying || !videoFrameReady);
+    && !videoFrameReady;
   const done = node.status === 'done' && !liveProviderGeneration && !mediaMissing && !generationFailed;
   // The node row is the card's terminal authority. Once a new image/video has
   // been persisted and the node is done, an older uncertain task row for the
@@ -3426,12 +3426,12 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                       onFailure={() => setVideoCoverUrl('')}
                     />
                   )}
-                  {(!videoPlaying || !videoFrameReady) && !videoCoverUrl && !videoCoverUnavailable && (
+                  {!videoFrameReady && !videoCoverUrl && !videoCoverUnavailable && (
                     <span className="canvas-video-cover-pending" aria-label="视频封面加载中">
                       <span className="canvas-image-loading" aria-hidden="true" />
                     </span>
                   )}
-                  {(!videoPlaying || !videoFrameReady) && !videoCoverUrl && videoCoverUnavailable && (
+                  {!videoFrameReady && !videoCoverUrl && videoCoverUnavailable && (
                     <span className="canvas-video-cover-fallback" aria-hidden="true">
                       <Video size={18} strokeWidth={1.7} />
                     </span>

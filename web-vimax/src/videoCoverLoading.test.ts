@@ -15,7 +15,7 @@ describe('video cover loading state', () => {
       /<VideoCoverImage\s+src=\{videoCoverUrl\}\s+onFailure=\{\(\) => setVideoCoverUrl\(''\)\}/s,
     );
     expect(canvas).toMatch(
-      /\(!videoPlaying \|\| !videoFrameReady\) && !videoCoverUrl && !videoCoverUnavailable[\s\S]*canvas-video-cover-pending/,
+      /!videoFrameReady && !videoCoverUrl && !videoCoverUnavailable[\s\S]*canvas-video-cover-pending/,
     );
     expect(canvas).not.toMatch(/fallbackTimer/);
     expect(canvas).toMatch(/setVideoCoverUnavailable\(true\)/);
@@ -40,14 +40,14 @@ describe('video cover loading state', () => {
 
   it('keeps the persisted cover until the video paints a real frame', () => {
     expect(canvas).toMatch(
-      /const videoCoverVisible = node\.kind === 'video'[\s\S]*&& \(!videoPlaying \|\| !videoFrameReady\)/,
+      /const videoCoverVisible = node\.kind === 'video'[\s\S]*&& !videoFrameReady/,
     );
     expect(canvas).toMatch(/\{videoCoverVisible && \(/);
     expect(canvas).toMatch(
-      /\(!videoPlaying \|\| !videoFrameReady\) && !videoCoverUrl && !videoCoverUnavailable[\s\S]*canvas-video-cover-pending/,
+      /!videoFrameReady && !videoCoverUrl && !videoCoverUnavailable[\s\S]*canvas-video-cover-pending/,
     );
     expect(canvas).toMatch(
-      /\(!videoPlaying \|\| !videoFrameReady\) && !videoCoverUrl && videoCoverUnavailable[\s\S]*canvas-video-cover-fallback/,
+      /!videoFrameReady && !videoCoverUrl && videoCoverUnavailable[\s\S]*canvas-video-cover-fallback/,
     );
     expect(canvas).toMatch(/onPlaying=\{\(\) => setVideoFrameReady\(true\)\}/);
   });
