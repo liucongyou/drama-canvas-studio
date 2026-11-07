@@ -2340,7 +2340,11 @@ export async function createMediaDownloadUrl(
   versionId: string,
   downloadName: string,
 ): Promise<{url: string; expiresIn?: number; downloadName?: string}> {
-  return request(
+  const ticket = await request<{
+    url: string;
+    expiresIn?: number;
+    downloadName?: string;
+  }>(
     `/api/projects/${encodeURIComponent(sessionId)}/downloads`,
     {
       method: 'POST',
@@ -2348,6 +2352,10 @@ export async function createMediaDownloadUrl(
       timeoutMs: 30_000,
     },
   );
+  return {
+    ...ticket,
+    url: apiUrl(String(ticket.url || '')),
+  };
 }
 
 export async function saveCanvasEpisodeViewport(
