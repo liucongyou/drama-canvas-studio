@@ -284,8 +284,15 @@ export type CanvasNote = {
 
 export type CanvasMediaNodeKind = 'text' | 'image' | 'audio' | 'video';
 
-// 资产引用（@资产）：nodeId 指向本项目资产节点，url 已生成时直接引用
-export type CanvasAssetRef = {nodeId: string; label: string; url?: string};
+// 资产引用（@资产）：nodeId 是节点键，assetId 是跨集稳定的资产身份。
+export type CanvasAssetRef = {
+  nodeId: string;
+  assetId?: string;
+  seriesId?: string;
+  variantKey?: string;
+  label: string;
+  url?: string;
+};
 export type CanvasVideoVersion = {
   url: string;
   /** Stable identity for this generated/imported media version. */
@@ -616,6 +623,10 @@ export type CanvasMediaNode = {
   /** Transient command flag: allows one explicit switch to a known media version. */
   _mediaVersionSelection?: boolean;
   assetKey?: string;
+  assetId?: string;
+  seriesId?: string;
+  variantKey?: string;
+  semanticCode?: string;
   promptStale?: boolean;
   promptStaleReason?: string;
   sourcePromptUpdatedAt?: string;
@@ -696,6 +707,20 @@ export function voiceRefList(p?: CanvasMediaParams): CanvasAssetRef[] {
     out.push(r);
   }
   return out;
+}
+
+export function assetRefFromNode(
+  node: Pick<CanvasMediaNode, 'id' | 'title' | 'kind' | 'mediaUrl' | 'assetId' | 'seriesId' | 'variantKey'>,
+  label?: string,
+): CanvasAssetRef {
+  return {
+    nodeId: node.id,
+    ...(node.assetId ? {assetId: node.assetId} : {}),
+    ...(node.seriesId ? {seriesId: node.seriesId} : {}),
+    ...(node.variantKey ? {variantKey: node.variantKey} : {}),
+    label: String(label || node.title || node.kind),
+    ...(node.mediaUrl ? {url: node.mediaUrl} : {}),
+  };
 }
 
 /**
@@ -1870,6 +1895,10 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
       ? m.source as CanvasMediaNode['source']
       : undefined,
     assetKey: typeof m.assetKey === 'string' ? m.assetKey : undefined,
+    assetId: typeof m.assetId === 'string' ? m.assetId : undefined,
+    seriesId: typeof m.seriesId === 'string' ? m.seriesId : undefined,
+    variantKey: typeof m.variantKey === 'string' ? m.variantKey : undefined,
+    semanticCode: typeof m.semanticCode === 'string' ? m.semanticCode : undefined,
     promptStale: m.promptStale === true,
     promptStaleReason: typeof m.promptStaleReason === 'string' ? m.promptStaleReason : undefined,
     sourcePromptUpdatedAt: typeof m.sourcePromptUpdatedAt === 'string' ? m.sourcePromptUpdatedAt : undefined,
@@ -1962,16 +1991,25 @@ export async function getCanvasMediaNodes(
         }
       }
     }
+    for (const connection of proj.payload.connections || []) {
+      if (
+        connection
+        && episodeVideoIds.has(String(connection.toNodeId || ''))
+        && connection.fromNodeId
+      ) {
+        allowedIds.add(String(connection.fromNodeId));
+      }
+    }
   }
   const ownedIds = new Set(
-    (proj.payload.episodeImports || []).flatMap((group) => group.nodeIds || []),
+    (proj.payload.episodeImports || [])
+      .filter((group) => (
+        String(group.id || '').toUpperCase() === normalizedEpisode
+      ))
+      .flatMap((group) => group.nodeIds || []),
   );
   const nodes = allowedIds
-    ? allNodes.filter((node) => (
-        node.type === 'image'
-        || node.type === 'audio'
-        || allowedIds.has(node.id)
-      ))
+    ? allNodes.filter((node) => allowedIds.has(node.id))
     : allNodes;
   // 连线数据源：项目 connections（fromNodeId=资产图/音色 → toNodeId=视频/音频消费节点）
   const nodeIds = new Set(nodes.map((node) => node.id));
@@ -1991,6 +2029,12 @@ export async function getCanvasMediaNodes(
   //   7 张参考图全叫「资产图」时，模型完全无法分辨哪张是谁，生成结果必然对不上。
   //   这正是用户反复反馈「连线后引用资产对不上」的根因之一。
   const titleById = new Map(nodes.map(n => [n.id, n.title || '']));
+  const assetIdentityById = new Map<string, CanvasMediaNode>(
+    nodes.map((node): [string, CanvasMediaNode] => {
+      const media = toMediaNode(node);
+      return [media.id, media];
+    }),
+  );
   const labelOf = (id: string) => {
     const t = titleById.get(id);
     if (t && t.trim()) return t;
@@ -2035,20 +2079,25 @@ export async function getCanvasMediaNodes(
       Boolean(ref.nodeId)
       && typeById.has(ref.nodeId)
       && !removed.has(`${mn.id}::${ref.nodeId}`)
-    ));
+    )).map((ref) => {
+      const source = assetIdentityById.get(ref.nodeId);
+      const real = labelOf(ref.nodeId);
+      return source
+        ? {...ref, ...assetRefFromNode(source, real)}
+        : {...ref, label: real};
+    });
     // ★ label 就地修正（无论有没有 connections 都要做）：历史数据里的「资产图 / 角色音色」
     //   泛称会被后端原样拼进喂给模型的 prompt，必须换成真实节点名。
     //   只改 label、不动顺序（顺序决定第一张主参考图）。
-    const fixedOwn = ownRefs.map(r => {
-      const real = labelOf(r.nodeId);
-      return r.label === real ? r : {...r, label: real};
-    });
+    const fixedOwn = ownRefs;
     const labelChanged = fixedOwn.some((r, i) => r !== ownRefs[i]);
     const known = new Set(ownRefs.map(r => r.nodeId));
-    const extra = linked.filter(id => !known.has(id)).map(id => ({
-      nodeId: id,
-      label: labelOf(id),
-    }));
+    const extra = linked.filter(id => !known.has(id)).map((id) => {
+      const source = assetIdentityById.get(id);
+      return source
+        ? assetRefFromNode(source, labelOf(id))
+        : {nodeId: id, label: labelOf(id)};
+    });
     // 去重：同一张图片节点可能同时出现在 params.refs（手动连线写入）与
     // connections（后端关系表）里，合并后会产生重复 refId → React Flow 渲染出
     // 两条 id 相同的媒体引用边，控制台刷满 "Encountered two children with the same key"。
@@ -2057,11 +2106,21 @@ export async function getCanvasMediaNodes(
       Boolean(ref.nodeId)
       && typeById.has(ref.nodeId)
       && !removed.has(`${mn.id}::${ref.nodeId}`)
-    ));
+    )).map((ref) => {
+      const source = assetIdentityById.get(ref.nodeId);
+      return source
+        ? {...ref, ...assetRefFromNode(source, ref.label)}
+        : ref;
+    });
     const knownVoice = new Set(ownVoices.map(r => r.nodeId));
     const mergedVoices = [
       ...ownVoices,
-      ...linkedVoices.filter(id => !knownVoice.has(id)).map(id => ({nodeId: id, label: labelOf(id)})),
+      ...linkedVoices.filter(id => !knownVoice.has(id)).map((id) => {
+        const source = assetIdentityById.get(id);
+        return source
+          ? assetRefFromNode(source, labelOf(id))
+          : {nodeId: id, label: labelOf(id)};
+      }),
     ];
     const voiceChanged = mergedVoices.length !== voiceRefList(mn.params).length
       || mergedVoices.some((r, i) => r !== voiceRefList(mn.params)[i]);
@@ -2173,6 +2232,10 @@ function editableMetadataForStorage(
     refs: node.params?.refs || [],
     params: editableParamsForStorage(node.params, includeMediaState),
   };
+  for (const key of ['assetId', 'seriesId', 'variantKey', 'semanticCode'] as const) {
+    const value = node[key];
+    if (typeof value === 'string' && value) metadata[key] = value;
+  }
   if (node.episodeId) metadata.episodeId = node.episodeId;
   if (!includeMediaState) return metadata;
   return {
@@ -3172,6 +3235,9 @@ export type UploadFileResult = {
   mime: string;
   sha256?: string;
   kind?: 'image' | 'audio' | 'video';
+  assetId?: string;
+  seriesId?: string;
+  variantKey?: string;
   storage?: {
     provider?: string;
     bucket?: string;

@@ -981,7 +981,7 @@ describe('api request recovery', () => {
     expect(nodes[0].refIds ?? []).toEqual([]);
   });
 
-  it('keeps project media assets visible while isolating episode videos', async () => {
+  it('keeps referenced shared audio while isolating episodes', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       id: 'project-shared-audio',
       title: '共享音频',
@@ -1017,7 +1017,13 @@ describe('api request recovery', () => {
             id: 'image-ep001',
             type: 'image',
             title: '角色｜甲（图1）',
-            metadata: {status: 'done', content: '/uploads/a.png'},
+              metadata: {
+                status: 'done',
+                content: '/uploads/a.png',
+                assetId: 'character:甲:default',
+                seriesId: 'character:甲',
+                variantKey: 'default',
+              },
           },
           {
             id: 'image-ep002',
@@ -1029,7 +1035,13 @@ describe('api request recovery', () => {
             id: 'audio-shared',
             type: 'audio',
             title: '音频｜甲（图1）',
-            metadata: {status: 'done', content: '/uploads/a.wav'},
+            metadata: {
+              status: 'done',
+              content: '/uploads/a.wav',
+              assetId: 'voice:甲:default',
+              seriesId: 'voice:甲',
+              variantKey: 'default',
+            },
           },
           {
             id: 'audio-ep002',
@@ -1052,12 +1064,119 @@ describe('api request recovery', () => {
     const nodes = await getCanvasMediaNodes('project-shared-audio', 'EP001');
 
     expect(nodes.map((node) => node.id).sort()).toEqual([
-      'audio-ep002',
       'audio-shared',
       'image-ep001',
-      'image-ep002',
       'video-ep001',
     ]);
+    const video = nodes.find((node) => node.id === 'video-ep001');
+    expect(nodes.find((node) => node.id === 'image-ep001')?.assetId)
+      .toBe('character:甲:default');
+    expect(nodes.find((node) => node.id === 'audio-shared')?.assetId)
+      .toBe('voice:甲:default');
+  });
+
+  it('keeps a shared asset referenced only by a video edge', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'project-shared-edge',
+      title: '共享连线',
+      payload: {
+        nodes: [
+          {
+            id: 'video-ep001',
+            type: 'video',
+            title: '段1',
+            metadata: {status: 'idle', params: {refs: [], voiceRefs: []}},
+          },
+          {
+            id: 'image-shared',
+            type: 'image',
+            title: '角色｜共享（图1）',
+            metadata: {status: 'done', content: '/uploads/shared.png'},
+          },
+          {
+            id: 'image-other',
+            type: 'image',
+            title: '角色｜无关（图2）',
+            metadata: {status: 'done', content: '/uploads/other.png'},
+          },
+        ],
+        connections: [{
+          id: 'edge-shared',
+          fromNodeId: 'image-shared',
+          toNodeId: 'video-ep001',
+        }],
+        episodeImports: [{
+          id: 'EP001',
+          nodeIds: ['video-ep001'],
+          videoNodeIds: ['video-ep001'],
+        }],
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    const nodes = await getCanvasMediaNodes('project-shared-edge', 'EP001');
+
+    expect(nodes.map((node) => node.id).sort()).toEqual([
+      'image-shared',
+      'video-ep001',
+    ]);
+  });
+
+  it('preserves stable asset identity on canvas nodes', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'project-asset-identity',
+      title: '资产身份',
+      payload: {
+        nodes: [
+          {
+            id: 'video-1',
+            type: 'video',
+            title: '段1',
+            metadata: {
+              status: 'idle',
+              params: {
+                refs: [{nodeId: 'role-young', label: '角色｜赵铁柱·青年（图2）'}],
+                voiceRefs: [],
+              },
+            },
+          },
+          {
+            id: 'role-young',
+            type: 'image',
+            title: '角色｜赵铁柱·青年（图2）',
+            metadata: {
+              status: 'done',
+              content: '/uploads/young.png',
+              assetKey: '角色:赵铁柱·青年',
+              assetId: 'character:赵铁柱:young',
+              seriesId: 'character:赵铁柱',
+              variantKey: 'young',
+              semanticCode: 'CHR-001',
+            },
+          },
+        ],
+        connections: [],
+        episodeImports: [{
+          id: 'EP001',
+          nodeIds: ['video-1', 'role-young'],
+          videoNodeIds: ['video-1'],
+        }],
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    })));
+
+    const nodes = await getCanvasMediaNodes('project-asset-identity', 'EP001');
+    const role = nodes.find((node) => node.id === 'role-young');
+
+    expect(role?.assetKey).toBe('角色:赵铁柱·青年');
+    expect(role?.assetId).toBe('character:赵铁柱:young');
+    expect(role?.seriesId).toBe('character:赵铁柱');
+    expect(role?.variantKey).toBe('young');
+    expect(role?.semanticCode).toBe('CHR-001');
   });
 
   it('omits storage and task receipts from ordinary metadata patches', async () => {
@@ -1080,6 +1199,9 @@ describe('api request recovery', () => {
       kind: 'image',
       title: '本地图片',
       prompt: '',
+      assetId: 'image:upload:hash',
+      seriesId: 'image:upload:hash',
+      variantKey: 'default',
       status: 'done',
       mediaUrl: '/uploads/hash.jpg',
       storage,
@@ -1122,6 +1244,9 @@ describe('api request recovery', () => {
       kind: 'image',
       title: '本地图片',
       prompt: '',
+      assetId: 'image:upload:hash',
+      seriesId: 'image:upload:hash',
+      variantKey: 'default',
       status: 'done',
       mediaUrl: '/uploads/hash.jpg',
       storage,
@@ -1136,6 +1261,9 @@ describe('api request recovery', () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.nodes[0].metadata).toMatchObject({
       _mediaImport: true,
+      assetId: 'image:upload:hash',
+      seriesId: 'image:upload:hash',
+      variantKey: 'default',
       status: 'done',
       content: '/uploads/hash.jpg',
       storage,
@@ -1389,7 +1517,7 @@ describe('api request recovery', () => {
     ]);
   });
 
-  it('keeps project image and audio assets when reading one episode', async () => {
+  it('omits unreferenced project assets when reading one episode', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
       if (String(url).includes('/workspace-index')) {
         return Promise.resolve(new Response(JSON.stringify({
@@ -1469,8 +1597,6 @@ describe('api request recovery', () => {
 
     const workspace = await getCanvasWorkspace('project-assets', 'EP001');
     expect(workspace.mediaNodes.map((node) => node.id).sort()).toEqual([
-      'audio-other',
-      'role-other',
       'text-1',
       'video-1',
     ]);

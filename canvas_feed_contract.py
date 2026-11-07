@@ -1691,6 +1691,47 @@ def prepare_import(
     )
 
 
+def prepare_import_locked(
+    feed: dict,
+    project_id: str,
+    *,
+    source: dict | None = None,
+    attempts: int = 3,
+) -> tuple[ImportPlan, dict]:
+    """Prepare and commit one import under the per-project write lock.
+
+    Planning from a stale project snapshot and only checking revision at commit
+    time allows concurrent imports to merge duplicate video nodes. This helper
+    serializes read -> merge -> revision check -> write for the same project.
+    """
+    import canvas_repository
+
+    last_plan = None
+    for _ in range(max(1, int(attempts))):
+        with canvas_repository.project_write_lock(project_id):
+            current = canvas_repository.repository.get_project(project_id)
+            if not current:
+                raise ValueError("项目不存在")
+            plan = prepare_import(
+                current["payload"],
+                feed,
+                project_id,
+                int(current.get("revision") or 0),
+                source=source,
+            )
+            last_plan = plan
+            if not plan.ok or plan.merged_payload is None:
+                return plan
+            plan.merged_payload["id"] = project_id
+            plan.merged_payload["projectId"] = project_id
+            plan.merged_payload["workspaceProjectId"] = project_id
+            commit_result = commit_import(plan, if_revision=plan.revision)
+            return plan, commit_result
+    if last_plan is not None:
+        return last_plan, {}
+    raise RevisionConflictError("导入在多次重试后仍未完成")
+
+
 def commit_import(plan: ImportPlan, if_revision: int | None = None) -> dict:
     """Commit a prepared plan under a revision precondition."""
     import canvas_store as store

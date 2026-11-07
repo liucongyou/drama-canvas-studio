@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import canvas_store
+import canvas_feed_contract
+import import_feed
 import server
 import tenant_context
 
@@ -95,6 +97,231 @@ class GenerationMediaStressTests(unittest.TestCase):
             )
             self.assertTrue(committed.get("committed"))
             return task["id"]
+
+    def test_import_asset_reference_pipeline_stress_without_provider_calls(self):
+        """Exercise import -> projection -> provider payload with mocked generation."""
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("asset-pipeline-stress")
+
+        feed = {
+            "title": "资产链路压力测试 · 第01集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "canvas_contract": {
+                "schema": canvas_feed_contract.SCHEMA_VERSION,
+                "generator": {
+                    "name": "asset-pipeline-stress",
+                    "skillVersion": "test",
+                    "packageRevision": "test",
+                },
+            },
+            "asset_prompts": [
+                {
+                    "code": "图1",
+                    "semanticCode": "CHR-001",
+                    "name": "赵铁柱（角色立绘）",
+                    "raw": "男性角色。台词：赵铁柱（低沉）：\"走。\"",
+                    "canvas": {
+                        "kind": "character",
+                        "name": "赵铁柱",
+                        "assetId": "character:赵铁柱:default",
+                        "seriesId": "character:赵铁柱",
+                        "variantKey": "default",
+                    },
+                },
+                {
+                    "code": "图2",
+                    "semanticCode": "SCN-001",
+                    "name": "铁西厂大门口（场景母版）",
+                    "raw": "旧工业厂区门口，冷灰蓝。",
+                    "canvas": {
+                        "kind": "scene",
+                        "name": "铁西厂大门口",
+                        "assetId": "scene:铁西厂大门口:master",
+                        "seriesId": "scene:铁西厂大门口",
+                        "variantKey": "master",
+                    },
+                },
+            ],
+            "voice_prompts": [{
+                "code": "图1",
+                "name": "赵铁柱",
+                "title": "角色｜赵铁柱（图1）",
+                "prompt": (
+                    "low, steady, northeastern-accented baritone. "
+                    "A male voice, low and steady with a broad northeastern accent. "
+                    "A male aged 38-42, speaking northeastern-accented Mandarin, "
+                    "short drama dubbing reference clip, "
+                    "4.5 seconds clean voice, no background noise."
+                ),
+                "description": (
+                    "A male voice, low and steady with a broad northeastern accent."
+                ),
+                "label": "low, steady, northeastern-accented baritone",
+                "age": "38-42",
+                "gender": "male",
+                "dialect": "northeastern-accented",
+                "format": "audio-prompt-v1",
+            }],
+            "segments": [
+                {
+                    "no": index,
+                    "name": f"段{index} · 资产链路",
+                    "raw": (
+                        "@角色｜赵铁柱（图1）站在@场景｜铁西厂大门口（图2）。"
+                        "@音频｜赵铁柱（图1）\n"
+                        "【音色引用】@音频｜赵铁柱（图1）\n"
+                        f'台词：赵铁柱（低沉）："第{index}段。"'
+                    ),
+                    "shots": [],
+                }
+                for index in range(1, 7)
+            ],
+        }
+
+        def import_once():
+            with tenant_context.use_context(self.context):
+                plan, _commit_result = canvas_feed_contract.prepare_import_locked(
+                    feed,
+                    project_id,
+                )
+                if plan.errors:
+                    raise AssertionError([
+                        canvas_feed_contract.issue_dict(item)
+                        for item in plan.errors
+                    ])
+                workspace = canvas_store.get_project_workspace_nodes(
+                    project_id,
+                    "EP001",
+                )
+                nodes = {
+                    str(node.get("id")): node
+                    for node in workspace["nodes"]
+                }
+                identity_by_node = {
+                    node_id: str(
+                        ((node.get("metadata") or {}).get("assetId") or "")
+                    )
+                    for node_id, node in nodes.items()
+                    if node.get("type") in {"image", "audio"}
+                }
+                videos = [
+                    node for node in nodes.values()
+                    if node.get("type") == "video"
+                ]
+                self.assertEqual(len(videos), 6)
+                for video in videos:
+                    metadata = video.get("metadata") or {}
+                    params = metadata.get("params") or {}
+                    refs = [
+                        *list(params.get("refs") or []),
+                        *list(params.get("voiceRefs") or []),
+                    ]
+                    self.assertTrue(refs)
+                    for ref in refs:
+                        node_id = str(ref.get("nodeId") or "")
+                        self.assertIn(node_id, nodes)
+                        expected_id = identity_by_node.get(node_id)
+                        self.assertTrue(expected_id)
+                        self.assertEqual(ref.get("assetId"), expected_id)
+                return workspace
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            workspaces = list(pool.map(lambda _: import_once(), range(12)))
+
+        self.assertEqual(len(workspaces), 12)
+        with tenant_context.use_context(self.context):
+            project = canvas_store.get_project(project_id)
+        nodes = {
+            str(node.get("id")): node
+            for node in project["payload"]["nodes"]
+        }
+        videos = [
+            node for node in nodes.values()
+            if node.get("type") == "video"
+        ]
+        self.assertEqual(len(videos), 6)
+        video = videos[0]
+        refs = (video.get("metadata") or {}).get("params", {}).get("refs") or []
+        self.assertTrue(refs)
+        self.assertTrue(all(ref.get("assetId") for ref in refs))
+
+        materialized_payload = json.loads(json.dumps(project["payload"]))
+        materialized_nodes = {
+            str(node.get("id")): node
+            for node in materialized_payload.get("nodes") or []
+        }
+        for node in materialized_nodes.values():
+            if node.get("type") not in {"image", "audio"}:
+                continue
+            metadata = node.setdefault("metadata", {})
+            metadata["status"] = "done"
+            metadata["content"] = (
+                f"/uploads/{node['id']}.png"
+                if node.get("type") == "image"
+                else f"/uploads/{node['id']}.wav"
+            )
+        video = materialized_nodes[str(video["id"])]
+        project = {"id": project_id, "payload": materialized_payload}
+
+        provider = {"id": "mock", "api_key": "test-key"}
+        model = {
+            "id": "mock-video",
+            "remoteModel": "mock-video",
+            "defaultParams": {},
+            "limits": {},
+        }
+        captured = {}
+
+        def fake_generate(*args, **kwargs):
+            captured["refs"] = args[4]
+            captured["voices"] = args[5]
+            return {
+                "url": "https://provider.example/mock.mp4",
+                "taskId": "mock-task",
+            }
+
+        handler = object.__new__(server.Handler)
+        sent = []
+        handler._send = lambda status, payload: sent.append((status, payload)) or payload
+        upload_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(upload_dir.cleanup)
+        for node in materialized_nodes.values():
+            if node.get("type") not in {"image", "audio"}:
+                continue
+            content = str((node.get("metadata") or {}).get("content") or "")
+            if content.startswith("/uploads/"):
+                Path(upload_dir.name, content.removeprefix("/uploads/")).write_bytes(b"test")
+        with (
+            tenant_context.use_context(self.context),
+            patch.object(server, "_upload_dir", return_value=upload_dir.name),
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(provider, model, {}),
+            ),
+            patch.object(server, "ensure_provider_auth"),
+            patch.object(
+                server.provider_client,
+                "generate_video",
+                side_effect=fake_generate,
+            ),
+            patch.object(server, "persist_generated_media", return_value="/uploads/mock.mp4"),
+            patch.object(server, "ensure_video_thumbnail", return_value=""),
+            patch.object(server, "validate_generated_video", return_value={}),
+            patch.object(server, "queue_generated_video_finalize"),
+            patch.object(
+                server,
+                "commit_generation_terminal",
+                return_value={"committed": True},
+            ),
+        ):
+            handler._generate_once(project_id, project, video)
+
+        self.assertIn("refs", captured, sent[-1] if sent else "provider not called")
+        self.assertTrue(captured["refs"])
+        self.assertTrue(captured["voices"])
+        self.assertTrue(all(ref.get("assetId") for ref in captured["refs"]))
+        self.assertTrue(all(ref.get("assetId") for ref in captured["voices"]))
 
     def test_multi_user_image_audio_video_state_machine_stress(self):
         kinds = ("image", "audio", "video")

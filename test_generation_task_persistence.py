@@ -2128,6 +2128,13 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
                 node_id="node-1",
                 provider="new-apl",
                 model="65-seedream-5-pro",
+                request={
+                    "nodeAssetId": "image:node-1:default",
+                    "refs": [{
+                        "nodeId": "source-1",
+                        "assetId": "character:赵铁柱:default",
+                    }],
+                },
             )
             journal_entries = canvas_store.list_provider_task_journal()
 
@@ -2138,6 +2145,14 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(
             journal_entries[0]["providerTaskId"],
             "task_REiQtcNHsrOzoN21Fy3TxblDD9I3AG3h",
+        )
+        self.assertEqual(
+            journal_entries[0]["request"]["nodeAssetId"],
+            "image:node-1:default",
+        )
+        self.assertEqual(
+            journal_entries[0]["request"]["refs"][0]["assetId"],
+            "character:赵铁柱:default",
         )
         journal_path = (
             Path(self.temp.name)

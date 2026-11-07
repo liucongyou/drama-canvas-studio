@@ -149,6 +149,38 @@ def _asset_stable_identity(metadata) -> str:
     return ""
 
 
+def _asset_contract_identity(kind, name, metadata=None):
+    """Return one deterministic identity tuple for a media asset.
+
+    The node id remains the reference key. These values identify the asset
+    itself across episode imports and distinguish variants such as `young`
+    from the default appearance.
+    """
+    meta = metadata if isinstance(metadata, dict) else {}
+    base_kind = {
+        "角色": "character",
+        "群像": "crowd",
+        "场景": "scene",
+        "道具": "prop",
+        "音色": "voice",
+    }.get(str(kind or ""), str(kind or "").strip().casefold())
+    base_name = re.sub(
+        r"\s*[·・]\s*(?:母版|九宫格|default|master|grid)\s*$",
+        "",
+        str(name or "").strip(),
+        flags=re.IGNORECASE,
+    )
+    base_name = re.sub(r"\s+", "", base_name)
+    series_id = str(meta.get("seriesId") or "").strip()
+    if not series_id and base_kind and base_name:
+        series_id = f"{base_kind}:{base_name}"
+    variant_key = str(meta.get("variantKey") or "default").strip() or "default"
+    asset_id = str(meta.get("assetId") or "").strip()
+    if not asset_id and series_id:
+        asset_id = f"{series_id}:{variant_key}"
+    return asset_id, series_id, variant_key
+
+
 def _asset_node_identity(node) -> str:
     if not isinstance(node, dict):
         return ""
@@ -166,6 +198,34 @@ def _asset_node_identity(node) -> str:
             _asset_kind_from_title(node.get("title")),
         )
     )
+
+
+def _asset_ref_contract(node, label=""):
+    """Build the persisted reference identity from the authoritative node."""
+    if not isinstance(node, dict):
+        return {}
+    metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+    identity = _asset_contract_identity(
+        _asset_kind_from_title(node.get("title")) or (
+            "音色" if str(node.get("type") or "") == "audio" else ""
+        ),
+        _asset_title_base(
+            node.get("title"),
+            audio=str(node.get("type") or "") == "audio",
+        ),
+        metadata,
+    )
+    result = {
+        "nodeId": str(node.get("id") or ""),
+        "assetId": identity[0],
+        "seriesId": identity[1],
+        "variantKey": identity[2],
+        "label": str(label or node.get("title") or node.get("type") or ""),
+    }
+    return {
+        key: value for key, value in result.items()
+        if value not in (None, "")
+    }
 
 
 def _asset_identities_match(left, right) -> bool:
@@ -1384,7 +1444,17 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         else:
             kind, short_name = "道具", name.replace("（道具设定图）", "")
         asset_key = _asset_identity(short_name, kind)
-        stable_identity = _asset_stable_identity(canvas_asset)
+        asset_id, series_id, variant_key = _asset_contract_identity(
+            kind,
+            short_name,
+            canvas_asset,
+        )
+        stable_identity = _asset_stable_identity({
+            **canvas_asset,
+            "assetId": asset_id,
+            "seriesId": series_id,
+            "variantKey": variant_key,
+        })
         same_project = [
             item for item in reusable_assets
             if item.get("projectId") == target_project_id
@@ -1502,9 +1572,9 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
                 "size": visible_size, "status": "done" if reused_content else "idle",
                 "transparentBackground": "false", "nodeRole": "generator",
                 "assetKey": asset_key, "reusedAsset": reuse_meta,
-                "assetId": str(canvas_asset.get("assetId") or ""),
-                "seriesId": str(canvas_asset.get("seriesId") or ""),
-                "variantKey": str(canvas_asset.get("variantKey") or "default"),
+                "assetId": asset_id,
+                "seriesId": series_id,
+                "variantKey": variant_key,
                 "semanticCode": str(
                     canvas_asset.get("semanticCode")
                     or a.get("semanticCode")
@@ -1727,7 +1797,10 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             continue
         meta = target.setdefault("metadata", {})
         params = meta.setdefault("params", {})
-        ref = {"nodeId": source["id"], "label": source.get("title") or source.get("type", "引用")}
+        ref = _asset_ref_contract(
+            source,
+            source.get("title") or source.get("type", "引用"),
+        )
         if source.get("type") == "audio":
             voices = params.setdefault("voiceRefs", [])
             if not any(item.get("nodeId") == source["id"] for item in voices):
@@ -2274,6 +2347,10 @@ def _remove_unmentioned_video_refs(payload):
             if not isinstance(ref, dict):
                 continue
             source = node_by_id.get(ref.get("nodeId")) or {}
+            ref = {
+                **ref,
+                **_asset_ref_contract(source, str(ref.get("label") or "")),
+            }
             if (
                 source.get("type") == "video"
                 and str(source.get("title") or "") not in prompt
@@ -2303,6 +2380,27 @@ def repair_dangling_media_references(payload):
     by_label: dict[str, list[dict]] = {}
     by_identity: dict[str, list[dict]] = {}
     by_role: dict[str, list[dict]] = {}
+    for node in nodes:
+        if str(node.get("type") or "") != "video":
+            continue
+        metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        params = metadata.get("params") if isinstance(metadata.get("params"), dict) else {}
+        for key in ("refs", "voiceRefs"):
+            items = params.get(key)
+            if not isinstance(items, list):
+                continue
+            params[key] = [
+                {
+                    **item,
+                    **_asset_ref_contract(
+                        by_id.get(str(item.get("nodeId") or "")) or {},
+                        str(item.get("label") or ""),
+                    ),
+                }
+                for item in items
+                if isinstance(item, dict)
+            ]
+            metadata[key] = params[key]
     for node in nodes:
         node_type = str(node.get("type") or "")
         if node_type not in {"image", "audio"}:
@@ -2753,10 +2851,10 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
                 if isinstance(item, dict)
             }
             if source["id"] not in ref_ids:
-                refs.append({
-                    "nodeId": source["id"],
-                    "label": source.get("title") or name,
-                })
+                refs.append(_asset_ref_contract(
+                    source,
+                    source.get("title") or name,
+                ))
                 meta["refs"] = refs
                 pair = (source["id"], video.get("id"))
                 existing_pairs = {
@@ -2786,10 +2884,10 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
                     if isinstance(item, dict)
                 }
                 if voice["id"] not in voice_ids:
-                    voices.append({
-                        "nodeId": voice["id"],
-                        "label": voice.get("title") or name,
-                    })
+                    voices.append(_asset_ref_contract(
+                        voice,
+                        voice.get("title") or name,
+                    ))
                     params["voiceRefs"] = voices
                     params["voiceRef"] = voices[0]
                     meta["voiceRefs"] = voices
@@ -3046,7 +3144,11 @@ def bind_shared_assets_for_episode(payload, episode_id):
         for ref in refs:
             label = str(ref.get("label") or "") if isinstance(ref, dict) else ""
             node_id = str(ref.get("nodeId") or "") if isinstance(ref, dict) else ""
-            identity = _asset_title_base(label).split("·", 1)[0] if label else ""
+            source_node = node_by_id.get(node_id) or {}
+            identity = (
+                _asset_stable_identity(source_node.get("metadata") or {})
+                or _asset_node_identity(source_node)
+            )
             if node_id and node_id in seen_ref_ids:
                 continue
             if label and label in seen_ref_labels:
@@ -3094,7 +3196,7 @@ def bind_shared_assets_for_episode(payload, episode_id):
             if not code or code not in explicit_codes:
                 continue
             if image.get("id") not in ref_ids and len(refs) + len(voices) < max_refs:
-                ref = {"nodeId": image["id"], "label": full_title}
+                ref = _asset_ref_contract(image, full_title)
                 refs.append(ref)
                 ref_ids.add(image["id"])
                 added_node_ids.add(image["id"])
@@ -3120,7 +3222,7 @@ def bind_shared_assets_for_episode(payload, episode_id):
                 continue
             if len(voices) >= max_audios:
                 continue
-            voice = {"nodeId": audio["id"], "label": full_title}
+            voice = _asset_ref_contract(audio, full_title)
             voices.append(voice)
             voice_ids.add(audio["id"])
             added_node_ids.add(audio["id"])
@@ -3675,6 +3777,39 @@ def merge_payload_by_episode(existing, incoming):
             continue
         old_meta = old.get("metadata") or {}
         new_meta = node.get("metadata") or {}
+        if node.get("type") in {"image", "audio"}:
+            kind = (
+                _asset_title_base(node.get("title"), audio=True)
+                if node.get("type") == "audio"
+                else _asset_kind_from_title(node.get("title"))
+            )
+            if node.get("type") == "audio":
+                kind = "音色"
+            asset_name = (
+                _asset_title_base(node.get("title"), audio=True).split("·", 1)[0]
+                if node.get("type") == "audio"
+                else _asset_title_base(node.get("title"))
+            )
+            inherited_identity = {
+                **old_meta,
+                **{
+                    key: value
+                    for key, value in new_meta.items()
+                    if value not in (None, "")
+                },
+            }
+            asset_id, series_id, variant_key = _asset_contract_identity(
+                kind,
+                asset_name,
+                inherited_identity,
+            )
+            new_meta = {
+                **new_meta,
+                "assetId": asset_id,
+                "seriesId": series_id,
+                "variantKey": variant_key,
+            }
+            node["metadata"] = new_meta
         restored = _restore_generated_asset_prompt(old_meta, node.get("type"), old.get("title"))
         merged_meta = {**old_meta, **new_meta}
         old_prompt = str(old_meta.get("prompt") or "").strip()

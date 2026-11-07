@@ -747,6 +747,51 @@ class ImportFeedContractTests(unittest.TestCase):
         self.assertEqual(image["metadata"]["status"], "done")
         self.assertEqual(payload["importSummary"]["assetsReused"], 1)
 
+    def test_same_project_reuse_preserves_existing_asset_identity(self):
+        feed = {
+            "title": "资产唯一身份 · 第02集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [{
+                "code": "图1",
+                "name": "赵铁柱（角色立绘）",
+                "raw": "男性角色。",
+                "canvas": {
+                    "kind": "character",
+                    "name": "赵铁柱",
+                },
+            }],
+            "segments": [{
+                "no": 1,
+                "name": "段1",
+                "raw": "@角色｜赵铁柱（图1）站在门口。",
+            }],
+        }
+        pool = [{
+            "id": "stable-role-node",
+            "projectId": "same-project",
+            "title": "角色｜赵铁柱（图1）",
+            "content": "/uploads/zhaotiezhu.png",
+            "status": "done",
+            "assetKey": "角色:赵铁柱",
+            "assetId": "character:赵铁柱:default",
+            "seriesId": "character:赵铁柱",
+            "variantKey": "default",
+            "params": {"ratio": "16:9", "size": "1536x864"},
+            "updatedAt": "2026-10-25T02:00:00Z",
+        }]
+
+        payload = import_feed.build_payload(
+            feed,
+            asset_pool=pool,
+            target_project_id="same-project",
+        )
+        image = next(node for node in payload["nodes"] if node["type"] == "image")
+
+        self.assertEqual(image["id"], "stable-role-node")
+        self.assertEqual(image["metadata"]["assetId"], "character:赵铁柱:default")
+        self.assertEqual(image["metadata"]["seriesId"], "character:赵铁柱")
+        self.assertEqual(image["metadata"]["variantKey"], "default")
+
     def test_same_project_reuse_keeps_first_locked_figure_identity(self):
         feed = {
             "title": "同角色改图号测试",
@@ -1790,6 +1835,76 @@ class ImportFeedContractTests(unittest.TestCase):
         paper = nodes_by_id[paper_refs[0]["nodeId"]]
         self.assertEqual(paper["metadata"]["seriesId"], "prop:半张名册纸")
         self.assertNotEqual(paper["metadata"]["seriesId"], "character:郑大头")
+
+    def test_reference_dedupe_keeps_distinct_asset_variants(self):
+        payload = {
+            "nodes": [
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "段1",
+                    "metadata": {
+                        "prompt": (
+                            "@角色｜赵铁柱（图1）与"
+                            "@角色｜赵铁柱（图2）对视。"
+                        ),
+                        "params": {
+                            "refs": [
+                                {
+                                    "nodeId": "role-default",
+                                    "label": "角色｜赵铁柱（图1）",
+                                },
+                                {
+                                    "nodeId": "role-young",
+                                    "label": "角色｜赵铁柱（图2）",
+                                },
+                                {
+                                    "nodeId": "role-default",
+                                    "label": "角色｜赵铁柱（图1）",
+                                },
+                            ],
+                            "voiceRefs": [],
+                        },
+                    },
+                },
+                {
+                    "id": "role-default",
+                    "type": "image",
+                    "title": "角色｜赵铁柱（图1）",
+                    "metadata": {
+                        "assetKey": "角色:赵铁柱",
+                        "assetId": "character:赵铁柱:default",
+                        "seriesId": "character:赵铁柱",
+                        "variantKey": "default",
+                    },
+                },
+                {
+                    "id": "role-young",
+                    "type": "image",
+                    "title": "角色｜赵铁柱·青年（图2）",
+                    "metadata": {
+                        "assetKey": "角色:赵铁柱·青年",
+                        "assetId": "character:赵铁柱:young",
+                        "seriesId": "character:赵铁柱",
+                        "variantKey": "young",
+                    },
+                },
+            ],
+            "connections": [],
+            "episodeImports": [{
+                "id": "EP001",
+                "nodeIds": ["video-1", "role-default", "role-young"],
+                "videoNodeIds": ["video-1"],
+            }],
+        }
+
+        import_feed.bind_shared_assets_for_episode(payload, "EP001")
+
+        refs = payload["nodes"][0]["metadata"]["params"]["refs"]
+        self.assertEqual(
+            [ref["nodeId"] for ref in refs],
+            ["role-default", "role-young"],
+        )
 
     def test_import_layout_keeps_media_types_in_vertical_columns(self):
         payload = import_feed.build_payload({

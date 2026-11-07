@@ -63,6 +63,9 @@ class UploadStorageTests(unittest.TestCase):
         payload = self.sent[0][1]
         self.assertEqual(payload["storage"], storage)
         self.assertTrue(payload["remoteUrl"].startswith("https://bucket."))
+        self.assertEqual(payload["assetId"], f"image:upload:{__import__('hashlib').sha256(image).hexdigest()[:24]}")
+        self.assertEqual(payload["seriesId"], payload["assetId"])
+        self.assertEqual(payload["variantKey"], "default")
         persist.assert_called_once()
         self.assertEqual(persist.call_args.args[0], payload["url"])
 
@@ -140,6 +143,7 @@ class UploadStorageTests(unittest.TestCase):
 
         self.assertEqual(self.sent[0][0], 200)
         self.assertEqual(self.sent[0][1]["storage"], storage)
+        self.assertTrue(self.sent[0][1]["assetId"].startswith("image:upload:"))
 
     def test_stream_upload_uses_resolved_active_storage_profile(self):
         image = b"\x89PNG\r\n\x1a\n" + b"d" * 32

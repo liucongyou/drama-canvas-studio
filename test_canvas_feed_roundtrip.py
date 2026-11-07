@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import concurrent.futures
 import copy
 import json
 import os
@@ -277,10 +278,12 @@ class CanvasFeedRoundTripTests(unittest.TestCase):
 
         self.assertEqual(changed, 1)
         refs = payload["nodes"][1]["metadata"]["params"]["refs"]
-        self.assertEqual(refs, [{
-            "nodeId": "asset-role-current",
-            "label": "角色｜钱万金（图2）",
-        }])
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0]["nodeId"], "asset-role-current")
+        self.assertEqual(refs[0]["label"], "角色｜钱万金（图2）")
+        self.assertEqual(refs[0]["assetId"], "character:钱万金:default")
+        self.assertEqual(refs[0]["seriesId"], "character:钱万金")
+        self.assertEqual(refs[0]["variantKey"], "default")
 
     def test_same_episode_reimport_is_semantically_idempotent(self):
         feed = self.episode_feed(1, "EP001")
@@ -558,6 +561,64 @@ class CanvasFeedRoundTripTests(unittest.TestCase):
             }
         )
         self.assertNotIn("stale-ghost", ep1_ids)
+
+    def test_concurrent_lock_import_does_not_duplicate_episode_videos(self):
+        feed = self.episode_feed(1, "EP001")
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, {
+                "CANVAS_MULTI_TENANT": "1",
+                "CANVAS_TENANT_DATA_ROOT": temp,
+            }):
+                context = tenant_context.make_context(
+                    "import-lock-stress",
+                    "import-lock-stress",
+                )
+                tenant_context.ensure_context_dirs(context)
+                with tenant_context.use_context(context):
+                    project_id = canvas_store.create_project("import-lock-stress")
+
+                    def run_import(_index):
+                        with tenant_context.use_context(context):
+                            plan, _commit_result = canvas_feed_contract.prepare_import_locked(
+                                feed,
+                                project_id,
+                            )
+                            if plan.errors:
+                                raise AssertionError([
+                                    issue_dict(item)
+                                    for item in plan.errors
+                                ])
+                            return plan.episode_id
+
+                    with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=6
+                    ) as pool:
+                        results = list(pool.map(run_import, range(12)))
+
+                    workspace = canvas_store.get_project_workspace_nodes(
+                        project_id,
+                        "EP001",
+                    )
+
+        self.assertEqual(len(results), 12)
+        videos = [
+            node for node in workspace["nodes"]
+            if node.get("type") == "video"
+        ]
+        expected_videos = len(feed["segments"])
+        self.assertEqual(len(videos), expected_videos)
+        video_ids = [str(node.get("id")) for node in videos]
+        self.assertEqual(len(video_ids), len(set(video_ids)))
+        node_by_id = {
+            str(node.get("id")): node
+            for node in workspace["nodes"]
+        }
+        for video in videos:
+            params = (video.get("metadata") or {}).get("params") or {}
+            for key in ("refs", "voiceRefs"):
+                for ref in params.get(key) or []:
+                    self.assertIn(str(ref.get("nodeId") or ""), node_by_id)
+                    self.assertTrue(ref.get("assetId"))
 
 
 if __name__ == "__main__":

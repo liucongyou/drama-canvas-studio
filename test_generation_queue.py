@@ -2152,6 +2152,9 @@ class GenerationQueueTests(unittest.TestCase):
             "metadata": {
                 "status": "done",
                 "content": "/uploads/current.png",
+                "assetId": "character:当前版本:default",
+                "seriesId": "character:当前版本",
+                "variantKey": "default",
                 "provider": "ark",
                 "model": "doubao-seedream-5-0-pro",
                 "storage": {
@@ -2199,6 +2202,9 @@ class GenerationQueueTests(unittest.TestCase):
                     "ratio": "9:16",
                     "refs": [{
                         "nodeId": "seedream-source",
+                        "assetId": "character:当前版本:default",
+                        "seriesId": "character:当前版本",
+                        "variantKey": "default",
                         "label": "角色｜当前版本",
                     }],
                 },
@@ -2258,6 +2264,9 @@ class GenerationQueueTests(unittest.TestCase):
             handler._generate_once(project_id, project, node)
 
         ref = captured["refs"][0]
+        self.assertEqual(ref["assetId"], "character:当前版本:default")
+        self.assertEqual(ref["seriesId"], "character:当前版本")
+        self.assertEqual(ref["variantKey"], "default")
         self.assertEqual(ref["storage"]["provider"], "tos")
         self.assertEqual(
             ref["storage"]["key"],
@@ -2271,6 +2280,72 @@ class GenerationQueueTests(unittest.TestCase):
             ref["generatedAt"],
             "2026-10-31T05:55:16Z",
         )
+
+    def test_reference_asset_id_mismatch_is_rejected_before_provider_call(self):
+        source = {
+            "id": "role-source",
+            "type": "image",
+            "title": "角色｜陈大强（图4）",
+            "metadata": {
+                "status": "done",
+                "content": "/uploads/chen.png",
+                "assetId": "character:陈大强:default",
+                "seriesId": "character:陈大强",
+                "variantKey": "default",
+            },
+        }
+        node = {
+            "id": "video-target",
+            "type": "video",
+            "title": "视频目标",
+            "metadata": {
+                "prompt": "生成视频",
+                "status": "generating",
+                "params": {
+                    "provider": "ark",
+                    "model": "seedance",
+                    "duration": 5,
+                    "resolution": "480P",
+                    "ratio": "9:16",
+                    "refs": [{
+                        "nodeId": "role-source",
+                        "assetId": "character:赵铁柱:default",
+                        "label": "角色｜陈大强（图4）",
+                    }],
+                },
+            },
+        }
+        project_id = canvas_store.create_project("reference-id-mismatch")
+        project = {"id": project_id, "payload": {"nodes": [source, node]}}
+        canvas_store.update_project(project_id, payload=project["payload"])
+        provider = {"id": "ark", "api_key": "test-key"}
+        model = {
+            "id": "seedance",
+            "remoteModel": "doubao-seedance-2-0-fast",
+            "defaultParams": {},
+            "limits": {},
+        }
+        upload_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(upload_dir.cleanup)
+        Path(upload_dir.name, "chen.png").write_bytes(b"image")
+        handler = object.__new__(server.Handler)
+        sent = []
+        handler._send = lambda status, payload: sent.append((status, payload)) or payload
+        with (
+            patch.object(server, "_upload_dir", return_value=upload_dir.name),
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(provider, model, {}),
+            ),
+            patch.object(server, "ensure_provider_auth"),
+            patch.object(server.provider_client, "generate_video") as generate,
+        ):
+            handler._generate_once(project_id, project, node)
+
+        self.assertEqual(sent[-1][0], 400)
+        self.assertIn("资产唯一 ID 不一致", sent[-1][1]["error"])
+        generate.assert_not_called()
 
     def test_missing_local_voice_reference_is_rejected_before_provider_call(self):
         source = {

@@ -3,6 +3,7 @@
 import json
 import hashlib
 import os
+import re
 import secrets
 import sqlite3
 import string
@@ -24,6 +25,90 @@ def _rid(n=22):
 
 def _now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _asset_node_identity(metadata, node_type="", title=""):
+    """Return and persist a stable asset identity at the storage boundary."""
+    meta = metadata if isinstance(metadata, dict) else {}
+    kind = "image" if str(node_type or "") == "image" else ""
+    if str(node_type or "") == "audio":
+        kind = "voice"
+    else:
+        prefix = str(title or "").split("｜", 1)[0].strip()
+        kind = {
+            "角色": "character",
+            "群像": "crowd",
+            "场景": "scene",
+            "道具": "prop",
+            "音频": "voice",
+        }.get(prefix, kind)
+    name = str(title or "").strip()
+    if "｜" in name:
+        name = name.split("｜", 1)[1].strip()
+    name = re.sub(
+        r"[（(]\s*图\s*\d+\s*[)）]\s*$",
+        "",
+        name,
+    ).strip()
+    name = re.sub(
+        r"[（(](?:角色立绘|场景母版|九宫格|道具设定图|群像设定图|群像资产卡)[^）)]*[）)]\s*$",
+        "",
+        name,
+    ).strip()
+    series_id = str(meta.get("seriesId") or "").strip()
+    if not series_id and kind and name:
+        series_id = f"{kind}:{name}"
+    variant_key = str(meta.get("variantKey") or "default").strip() or "default"
+    asset_id = str(meta.get("assetId") or "").strip()
+    if not asset_id and series_id:
+        asset_id = f"{series_id}:{variant_key}"
+    if asset_id:
+        meta["assetId"] = asset_id
+    if series_id:
+        meta["seriesId"] = series_id
+    if asset_id or series_id:
+        meta["variantKey"] = variant_key
+    return asset_id, series_id, variant_key
+
+
+def _ensure_asset_identities(payload):
+    """Write deterministic asset identities for image/audio nodes.
+
+    Importers and clients are allowed to omit these fields. Existing persisted
+    values always win, so a later reimport cannot rotate the database identity.
+    """
+    if not isinstance(payload, dict):
+        return 0
+    changed = 0
+    for node in payload.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("type") or "")
+        if node_type not in {"image", "audio"}:
+            continue
+        metadata = node.get("metadata")
+        original_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        metadata = dict(original_metadata)
+        asset_id, series_id, variant_key = _asset_node_identity(
+            metadata,
+            node_type=node_type,
+            title=node.get("title") or "",
+        )
+        if not asset_id:
+            continue
+        before = (
+            original_metadata.get("assetId"),
+            original_metadata.get("seriesId"),
+            original_metadata.get("variantKey"),
+        )
+        after = (asset_id, series_id, variant_key)
+        if before != after:
+            changed += 1
+        metadata["assetId"] = asset_id
+        metadata["seriesId"] = series_id
+        metadata["variantKey"] = variant_key
+        node["metadata"] = metadata
+    return changed
 
 
 _SCHEMA_READY = False
@@ -687,6 +772,7 @@ def sync_payload_projection(
     """Keep relational read models aligned with the legacy payload copy."""
     if not isinstance(payload, dict):
         return
+    _ensure_asset_identities(payload)
     stamp = str(updated_at or _now_iso())
     nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
     edges = (
@@ -1162,6 +1248,14 @@ def sync_projection_node(
         (project_id, str(node["id"])),
     ).fetchone()
     previous_owner = str(previous_row[0] or "").strip().upper() if previous_row else ""
+    metadata = node.get("metadata")
+    metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    _asset_node_identity(
+        metadata,
+        node_type=str(node.get("type") or ""),
+        title=node.get("title") or "",
+    )
+    node["metadata"] = metadata
     con.execute(
         "INSERT INTO canvas_projection_nodes("
         "project_id,node_id,episode_id,node_type,title,position_x,position_y,"
@@ -1831,6 +1925,12 @@ def sync_projection_nodes_batch(
         if normalized:
             metadata["episodeId"] = normalized
             item["metadata"] = metadata
+        _asset_node_identity(
+            metadata,
+            node_type=str(item.get("type") or ""),
+            title=item.get("title") or "",
+        )
+        item["metadata"] = metadata
         item.setdefault("updatedAt", stamp)
         con.execute(
             "INSERT INTO canvas_projection_nodes("
@@ -2446,7 +2546,7 @@ def get_project_workspace_nodes(project_id, episode_id=None):
             nodes.append(node)
     if normalized_episode:
         nodes.extend(
-            _workspace_project_assets(
+            _workspace_referenced_project_assets(
                 con,
                 project_id,
                 nodes,
@@ -2601,32 +2701,57 @@ def _collect_payload_uploads(payload, filenames):
             _collect_metadata_uploads(node.get("metadata"), filenames)
 
 
-def _workspace_project_assets(con, project_id, nodes):
-    """Return project-wide image/audio assets for any episode workspace.
-
-    Assets are project-scoped. Only narrative/generation nodes (text, video,
-    notes) are episode-scoped. Depending on reference edges to surface an asset
-    makes reimports fragile and can hide valid assets when prompt/ref
-    projection is being repaired.
-    """
+def _workspace_referenced_project_assets(con, project_id, nodes):
+    """Return shared project assets referenced by this episode's videos."""
+    referenced = set()
+    video_ids = set()
+    for node in nodes:
+        if not isinstance(node, dict) or str(node.get("type") or "") != "video":
+            continue
+        if node.get("id"):
+            video_ids.add(str(node["id"]))
+        metadata = node.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        params = metadata.get("params")
+        params = params if isinstance(params, dict) else {}
+        for key in ("refs", "voiceRefs"):
+            for collection in (params.get(key), metadata.get(key)):
+                for item in collection or []:
+                    if isinstance(item, dict) and item.get("nodeId"):
+                        referenced.add(str(item["nodeId"]))
+        item = params.get("voiceRef") or metadata.get("voiceRef")
+        if isinstance(item, dict) and item.get("nodeId"):
+            referenced.add(str(item["nodeId"]))
+    if video_ids:
+        edge_rows = con.execute(
+            "SELECT edge_json FROM canvas_projection_edges WHERE project_id=?",
+            (project_id,),
+        ).fetchall()
+        for row in edge_rows:
+            try:
+                edge = json.loads(row[0] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if (
+                isinstance(edge, dict)
+                and str(edge.get("toNodeId") or "") in video_ids
+                and edge.get("fromNodeId")
+            ):
+                referenced.add(str(edge["fromNodeId"]))
     visible_ids = {
         str(node.get("id"))
         for node in nodes
         if isinstance(node, dict) and node.get("id")
     }
-    if not visible_ids:
-        placeholders = ""
-        params = (project_id,)
-    else:
-        placeholders = " AND node_id NOT IN (" + ",".join(
-            "?" for _ in visible_ids
-        ) + ")"
-        params = (project_id, *sorted(visible_ids))
+    wanted = sorted(referenced - visible_ids)
+    if not wanted:
+        return []
+    placeholders = ",".join("?" for _ in wanted)
     rows = con.execute(
         f"SELECT node_json FROM canvas_projection_nodes "
-        f"WHERE project_id=? AND node_type IN ('image','audio')"
-        f"{placeholders} ORDER BY rowid",
-        params,
+        f"WHERE project_id=? AND node_id IN ({placeholders}) "
+        f"AND node_type IN ('image','audio') ORDER BY rowid",
+        (project_id, *wanted),
     ).fetchall()
     shared = []
     for row in rows:
@@ -3155,6 +3280,7 @@ def create_project(title, payload=None):
         payload.setdefault("workspaceProjectId", pid)
         payload.setdefault("title", title)
         payload.setdefault("revision", 1)
+    _ensure_asset_identities(payload)
     # 以前这里是裸连接直写：没开 BEGIN IMMEDIATE、没走重试包装，出错时
     # con.close() 也不会执行（连接泄漏）。并发建项目时实测会抛
     # "attempt to write a readonly database" 直接导致建项目失败。
@@ -3215,6 +3341,7 @@ def update_project(
         new_payload["revision"] = new_rev
         new_payload["title"] = new_title
         new_payload["updatedAt"] = now
+        _ensure_asset_identities(new_payload)
         cursor = con.execute(
             "UPDATE canvas_projects SET title=?, payload_json=?, revision=?, updated_at=?, "
             "node_count=?, connection_count=?, episode_count=?,"
@@ -3577,6 +3704,11 @@ def insert_project_nodes(
                     f"与保存目标 {normalized_episode} 不一致"
                 )
             metadata["episodeId"] = normalized_episode
+            _asset_node_identity(
+                metadata,
+                node_type=str(item.get("type") or ""),
+                title=item.get("title") or "",
+            )
             item["metadata"] = metadata
             item.setdefault("createdAt", stamp)
             item.setdefault("positionUpdatedAt", stamp)
@@ -3842,6 +3974,11 @@ def update_project_nodes(
                     )
                 metadata["episodeId"] = normalized_episode
                 item["metadata"] = metadata
+            _asset_node_identity(
+                metadata,
+                node_type=str(item.get("type") or ""),
+                title=item.get("title") or "",
+            )
             item.setdefault("updatedAt", stamp)
         existing_ids = {
             str(row[0])
@@ -3991,6 +4128,9 @@ def update_project_rows(
     snapshot_mode="none",
 ):
     """Patch graph rows without serializing the entire project payload."""
+    if isinstance(nodes, list):
+        _ensure_asset_identities({"nodes": nodes})
+
     def write(con):
         reconcile_project_projection_on_connection(con, project_id)
         row = con.execute(
@@ -4017,6 +4157,147 @@ def update_project_rows(
         )
 
     return _run_write_transaction(write)
+
+
+def backfill_asset_identities():
+    """Persist identities for legacy image/audio rows without rotating IDs."""
+    def write(con):
+        rows = con.execute(
+            "SELECT project_id,node_id,node_type,title,node_json "
+            "FROM canvas_projection_nodes "
+            "WHERE node_type IN ('image','audio')"
+        ).fetchall()
+        updated_projects = set()
+        updated_nodes = 0
+        stamp = _now_iso()
+        for project_id, node_id, node_type, title, encoded in rows:
+            try:
+                node = json.loads(encoded or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(node, dict):
+                continue
+            metadata = node.get("metadata")
+            metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            before = (
+                metadata.get("assetId"),
+                metadata.get("seriesId"),
+                metadata.get("variantKey"),
+            )
+            asset_id, series_id, variant_key = _asset_node_identity(
+                metadata,
+                node_type=str(node_type or node.get("type") or ""),
+                title=str(title or node.get("title") or ""),
+            )
+            after = (asset_id, series_id, variant_key)
+            if not asset_id or before == after:
+                continue
+            node["metadata"] = metadata
+            con.execute(
+                "UPDATE canvas_projection_nodes SET metadata_json=?,"
+                "node_json=?,updated_at=? "
+                "WHERE project_id=? AND node_id=?",
+                (
+                    json.dumps(metadata, ensure_ascii=False),
+                    json.dumps(node, ensure_ascii=False),
+                    stamp,
+                    project_id,
+                    node_id,
+                ),
+            )
+            updated_projects.add(str(project_id))
+            updated_nodes += 1
+        # References live on video/audio nodes. Backfill their asset identity
+        # from the authoritative source node so old references do not keep
+        # flowing into generation with nodeId/label only.
+        reference_rows = con.execute(
+            "SELECT project_id,node_id,node_json FROM canvas_projection_nodes "
+            "WHERE node_type IN ('video','audio')"
+        ).fetchall()
+        for project_id, node_id, encoded in reference_rows:
+            try:
+                node = json.loads(encoded or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(node, dict):
+                continue
+            metadata = node.get("metadata")
+            metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            params = metadata.get("params")
+            params = dict(params) if isinstance(params, dict) else {}
+            changed = False
+            for key in ("refs", "voiceRefs"):
+                items = params.get(key) or metadata.get(key) or []
+                if not isinstance(items, list):
+                    continue
+                normalized = []
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    source_id = str(item.get("nodeId") or "").strip()
+                    source_row = con.execute(
+                        "SELECT node_json FROM canvas_projection_nodes "
+                        "WHERE project_id=? AND node_id=?",
+                        (project_id, source_id),
+                    ).fetchone() if source_id else None
+                    if not source_row:
+                        normalized.append(item)
+                        continue
+                    try:
+                        source = json.loads(source_row[0] or "{}")
+                    except (TypeError, ValueError):
+                        normalized.append(item)
+                        continue
+                    source_meta = source.get("metadata") if isinstance(source, dict) else {}
+                    source_meta = source_meta if isinstance(source_meta, dict) else {}
+                    asset_id, series_id, variant_key = _asset_node_identity(
+                        dict(source_meta),
+                        node_type=str(source.get("type") or ""),
+                        title=source.get("title") or "",
+                    )
+                    if not asset_id:
+                        normalized.append(item)
+                        continue
+                    enriched = {
+                        **item,
+                        "assetId": asset_id,
+                        "seriesId": series_id,
+                        "variantKey": variant_key,
+                    }
+                    if enriched != item:
+                        changed = True
+                    normalized.append(enriched)
+                if normalized != items:
+                    params[key] = normalized
+                    metadata[key] = normalized
+            if changed or params != (metadata.get("params") or {}):
+                metadata["params"] = params
+                node["metadata"] = metadata
+                con.execute(
+                    "UPDATE canvas_projection_nodes SET metadata_json=?,"
+                    "node_json=?,updated_at=? "
+                    "WHERE project_id=? AND node_id=?",
+                    (
+                        json.dumps(metadata, ensure_ascii=False),
+                        json.dumps(node, ensure_ascii=False),
+                        stamp,
+                        project_id,
+                        node_id,
+                    ),
+                )
+                updated_projects.add(str(project_id))
+                updated_nodes += 1
+        for project_id in updated_projects:
+            con.execute(
+                "UPDATE canvas_projects SET updated_at=? WHERE id=?",
+                (stamp, project_id),
+            )
+        return {
+            "projects": len(updated_projects),
+            "nodes": updated_nodes,
+        }
+
+    return _run_write_transaction(write) or {"projects": 0, "nodes": 0}
 
 
 def sync_projection_meta(con, project_id, payload, *, updated_at=""):
@@ -4078,6 +4359,7 @@ def update_project_node(
             payload = {}
         if not isinstance(payload, dict):
             payload = {}
+        _ensure_asset_identities(payload)
         nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
         node = next(
             (
@@ -4231,6 +4513,12 @@ def patch_project_node_atomic(
         metadata = source.get("metadata")
         metadata = dict(metadata) if isinstance(metadata, dict) else {}
         merge_metadata(metadata, incoming.get("metadata") or {})
+        _asset_node_identity(
+            metadata,
+            node_type=str(source.get("type") or "")
+            or str(incoming.get("type") or ""),
+            title=str(incoming.get("title") or source.get("title") or ""),
+        )
         source["metadata"] = metadata
         if isinstance(incoming.get("position"), dict):
             source["position"] = incoming["position"]
@@ -5125,6 +5413,7 @@ def remember_provider_task(
     node_id="",
     provider="",
     model="",
+    request=None,
 ):
     """Persist a recovery journal entry independently from SQLite."""
     provider_task_id = str(provider_task_id or "").strip()
@@ -5139,6 +5428,7 @@ def remember_provider_task(
         "nodeId": str(node_id or ""),
         "provider": str(provider or ""),
         "model": str(model or ""),
+        "request": request if isinstance(request, dict) else {},
         "savedAt": _now_iso(),
     }
     safe_name = "".join(

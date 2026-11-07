@@ -111,7 +111,7 @@ import {
   Share2,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, mediaVersionList, activeMediaVersionIndex, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -10989,12 +10989,12 @@ function CanvasViewInner({
       return;
     }
     if (!(target.kind === 'video' && src.kind === 'audio')) {
-      refs.push({nodeId: refNodeId, label: src.title || src.kind, url: src.mediaUrl});
+      refs.push(assetRefFromNode(src));
     }
     const params: CanvasMediaParams = {...(target.params || {}), refs};
     // 视频卡的音频引用同样累加进多值音色列表（第 17 轮：不能覆盖）
     const nextParams = (target.kind === 'video' && src.kind === 'audio')
-      ? withVoiceRefs(params, [...voiceRefList(params), {nodeId: refNodeId, label: src.title || src.kind, url: src.mediaUrl}])
+      ? withVoiceRefs(params, [...voiceRefList(params), assetRefFromNode(src)])
       : params;
     // 引用与连线必须同源；@、上传、从画布选择三个入口统一在这里补线。
     ensureEdge();
@@ -11036,6 +11036,9 @@ function CanvasViewInner({
         kind,
         title: file.name,
         prompt: '',
+        assetId: uploaded.assetId,
+        seriesId: uploaded.seriesId,
+        variantKey: uploaded.variantKey,
         mediaUrl: url,
         status: 'done',
         episodeId: currentEp,
@@ -11157,6 +11160,9 @@ function CanvasViewInner({
           kind,
           title: file.name.replace(/\.[^.]+$/, ''),
           prompt: '',
+          assetId: uploaded.assetId,
+          seriesId: uploaded.seriesId,
+          variantKey: uploaded.variantKey,
           mediaUrl: uploaded.url,
           status: 'done',
           episodeId: currentEp,
@@ -11631,7 +11637,7 @@ function CanvasViewInner({
         if (n.id !== targetId) return n;
         // ★ label 必须写**真实节点名**（src.title），不能是 src.kind 泛称。
         //   后端 _generate 会把它拼进喂给模型的 prompt，泛称 = 模型分不清谁是谁。
-        const ref = {nodeId: src.id, label: (src.title || '').trim() || src.kind, url: src.mediaUrl};
+        const ref = assetRefFromNode(src);
         let params = {...(n.params || {})};
         if (n.kind === 'video') {
           if (src.kind === 'image') {
@@ -14945,7 +14951,7 @@ function CanvasViewInner({
         if (src.kind !== 'audio'
           && !refs.some((r) => r.nodeId === src.id)
           && refs.length + voiceList.length < linkedLimit) {
-          refs.push({nodeId: src.id, label: src.title || src.kind, url: src.mediaUrl});
+          refs.push(assetRefFromNode(src));
           dirty = true;
         }
         // 音色：视频卡吃 audio；音频卡自身也可能被连了角色图（音色参考图）
@@ -14957,7 +14963,7 @@ function CanvasViewInner({
           && !voiceList.some((v) => v.nodeId === src.id)
           && refs.length + voiceList.length < linkedLimit
           && voiceList.length < audioLimit) {
-          voiceList = [...voiceList, {nodeId: src.id, label: src.title || src.kind, url: src.mediaUrl}];
+          voiceList = [...voiceList, assetRefFromNode(src)];
           dirty = true;
         }
       }

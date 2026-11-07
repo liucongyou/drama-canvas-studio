@@ -115,7 +115,7 @@ class CanvasProjectionTests(unittest.TestCase):
             0.5,
         )
 
-    def test_episode_read_combines_episode_nodes_with_project_assets(self):
+    def test_episode_read_returns_only_episode_nodes_without_refs(self):
         project_id = canvas_store.create_project("projection", self._payload())
         workspace = canvas_store.get_project_workspace_nodes(
             project_id,
@@ -123,14 +123,8 @@ class CanvasProjectionTests(unittest.TestCase):
         )
         self.assertEqual(
             [node["id"] for node in workspace["nodes"]],
-            ["image-1", "video-1", "image-2"],
+            ["image-1", "video-1"],
         )
-        image_2 = next(
-            node for node in workspace["nodes"]
-            if node["id"] == "image-2"
-        )
-        self.assertTrue(image_2["metadata"]["projectAsset"])
-        self.assertTrue(image_2["metadata"]["sharedAcrossEpisodes"])
         self.assertEqual(
             [edge["id"] for edge in workspace["connections"]],
             ["edge-1"],
@@ -170,6 +164,33 @@ class CanvasProjectionTests(unittest.TestCase):
         self.assertEqual(
             {node["id"] for node in ep001["nodes"]},
             {"image-1", "video-1", "image-2"},
+        )
+
+    def test_episode_read_includes_shared_assets_from_video_edges(self):
+        payload = self._payload()
+        payload["connections"].append({
+            "id": "edge-shared-image",
+            "fromNodeId": "image-2",
+            "toNodeId": "video-1",
+            "source": "user",
+        })
+        project_id = canvas_store.create_project(
+            "projection-shared-edge-assets",
+            payload,
+        )
+
+        workspace = canvas_store.get_project_workspace_nodes(
+            project_id,
+            "EP001",
+        )
+
+        self.assertEqual(
+            {node["id"] for node in workspace["nodes"]},
+            {"image-1", "video-1", "image-2"},
+        )
+        self.assertIn(
+            "edge-shared-image",
+            {edge["id"] for edge in workspace["connections"]},
         )
 
     def test_reimport_persists_shared_role_refs_through_projection(self):
@@ -447,7 +468,7 @@ class CanvasProjectionTests(unittest.TestCase):
 
         self.assertEqual(
             [node["id"] for node in workspace["nodes"]],
-            ["image-1", "video-1", "image-2"],
+            ["image-1", "video-1"],
         )
         self.assertEqual(ep001["nodeIds"], ["image-1", "video-1"])
         self.assertEqual(ep001["videoNodeIds"], ["video-1"])
@@ -482,39 +503,32 @@ class CanvasProjectionTests(unittest.TestCase):
             )["nodeIds"],
         )
 
-    def test_project_assets_remain_visible_after_projection_owner_changes(self):
+    def test_node_moved_to_other_episode_is_absent_from_original_episode(self):
+        payload = self._payload()
+        payload["connections"] = []
         project_id = canvas_store.create_project(
             "projection-ownership-move",
-            self._payload(),
+            payload,
         )
-        video = canvas_store.get_projection_node(project_id, "video-1")
-        video["metadata"]["episodeId"] = "EP002"
+        node = canvas_store.get_projection_node(project_id, "image-1")
+        node["metadata"]["episodeId"] = "EP002"
         canvas_store.update_project_nodes(
             project_id,
-            [video],
+            [node],
             episode_id="EP002",
         )
 
         ep001 = canvas_store.get_project_workspace_nodes(project_id, "EP001")
         ep002 = canvas_store.get_project_workspace_nodes(project_id, "EP002")
 
-        self.assertIn(
-            "image-1",
-            {item["id"] for item in ep001["nodes"]},
-        )
-        self.assertIn(
-            "image-1",
-            {item["id"] for item in ep002["nodes"]},
-        )
         self.assertNotIn(
-            "video-1",
+            "image-1",
             {item["id"] for item in ep001["nodes"]},
         )
         self.assertIn(
-            "video-1",
+            "image-1",
             {item["id"] for item in ep002["nodes"]},
         )
-
     def test_atomic_node_edit_bumps_revision_and_owned_snapshot(self):
         project_id = canvas_store.create_project(
             "projection-atomic-edit",
@@ -837,6 +851,107 @@ class CanvasProjectionTests(unittest.TestCase):
         )
         self.assertEqual(first["metadata"]["prompt"], "updated")
 
+    def test_projection_backfills_legacy_asset_identity_without_rotation(self):
+        payload = self._payload()
+        payload["nodes"][0]["metadata"].pop("assetId", None)
+        payload["nodes"][0]["metadata"].pop("seriesId", None)
+        payload["nodes"][0]["metadata"].pop("variantKey", None)
+        project_id = canvas_store.create_project(
+            "projection-asset-identity-backfill",
+            payload,
+        )
+        row = canvas_store._connect()
+        try:
+            metadata = json.loads(row.execute(
+                "SELECT metadata_json FROM canvas_projection_nodes "
+                "WHERE project_id=? AND node_id='image-1'",
+                (project_id,),
+            ).fetchone()[0])
+            metadata.pop("assetId", None)
+            metadata.pop("seriesId", None)
+            metadata.pop("variantKey", None)
+            node_json = json.loads(row.execute(
+                "SELECT node_json FROM canvas_projection_nodes "
+                "WHERE project_id=? AND node_id='image-1'",
+                (project_id,),
+            ).fetchone()[0])
+            node_json["metadata"] = metadata
+            row.execute(
+                "UPDATE canvas_projection_nodes SET metadata_json=?,node_json=? "
+                "WHERE project_id=? AND node_id='image-1'",
+                (
+                    json.dumps(metadata, ensure_ascii=False),
+                    json.dumps(node_json, ensure_ascii=False),
+                    project_id,
+                ),
+            )
+            row.commit()
+        finally:
+            row.close()
+
+        result = canvas_store.backfill_asset_identities()
+        self.assertEqual(result["nodes"], 1)
+        stored = canvas_store.get_projection_node(project_id, "image-1")
+        first_identity = stored["metadata"]["assetId"]
+        self.assertEqual(first_identity, "character:甲:default")
+        self.assertEqual(
+            stored["metadata"]["seriesId"],
+            "character:甲",
+        )
+
+        self.assertEqual(
+            canvas_store.backfill_asset_identities()["nodes"],
+            0,
+        )
+        stored = canvas_store.get_projection_node(project_id, "image-1")
+        self.assertEqual(stored["metadata"]["assetId"], first_identity)
+
+    def test_projection_backfills_reference_asset_identity(self):
+        payload = self._payload()
+        payload["nodes"][1]["metadata"]["params"] = {
+            "refs": [{
+                "nodeId": "image-1",
+                "label": "角色｜甲",
+            }],
+            "voiceRefs": [],
+        }
+        project_id = canvas_store.create_project(
+            "projection-reference-identity-backfill",
+            payload,
+        )
+        row = canvas_store._connect()
+        try:
+            video = json.loads(row.execute(
+                "SELECT node_json FROM canvas_projection_nodes "
+                "WHERE project_id=? AND node_id='video-1'",
+                (project_id,),
+            ).fetchone()[0])
+            video["metadata"]["params"]["refs"] = [{
+                "nodeId": "image-1",
+                "label": "角色｜甲",
+            }]
+            video["metadata"]["refs"] = video["metadata"]["params"]["refs"]
+            row.execute(
+                "UPDATE canvas_projection_nodes SET metadata_json=?,node_json=? "
+                "WHERE project_id=? AND node_id='video-1'",
+                (
+                    json.dumps(video["metadata"], ensure_ascii=False),
+                    json.dumps(video, ensure_ascii=False),
+                    project_id,
+                ),
+            )
+            row.commit()
+        finally:
+            row.close()
+
+        canvas_store.backfill_asset_identities()
+        stored = canvas_store.get_projection_node(project_id, "video-1")
+        ref = stored["metadata"]["params"]["refs"][0]
+
+        self.assertEqual(ref["assetId"], "character:甲:default")
+        self.assertEqual(ref["seriesId"], "character:甲")
+        self.assertEqual(ref["variantKey"], "default")
+
     def test_empty_project_projection_accepts_new_nodes(self):
         project_id = canvas_store.create_project("empty-projection", {
             "nodes": [],
@@ -864,6 +979,14 @@ class CanvasProjectionTests(unittest.TestCase):
         self.assertEqual(
             project["payload"]["episodeImports"][0]["nodeIds"],
             ["new-node"],
+        )
+        self.assertEqual(
+            project["payload"]["nodes"][0]["metadata"]["assetId"],
+            "image:新节点:default",
+        )
+        self.assertEqual(
+            project["payload"]["nodes"][0]["metadata"]["seriesId"],
+            "image:新节点",
         )
 
     def test_new_project_workspace_index_is_empty_and_non_breaking(self):

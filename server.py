@@ -1047,7 +1047,7 @@ def _generation_terminal_event_payload(node_id, updates, *, task=None):
             "status", "content", "lastError", "providerTaskStatus",
             "providerTaskPhase", "providerTaskProgress", "generationFinishedAt",
             "providerResultUrl", "finalizePending", "storage", "storageError", "videoValidation",
-            "actualDuration",
+            "actualDuration", "assetId", "seriesId", "variantKey", "semanticCode",
         )
         if key in (updates or {})
     }
@@ -5967,7 +5967,11 @@ class Handler(BaseHTTPRequestHandler):
             "name": raw_name or fname,
             "size": len(blob),
             "mime": mime,
+            "assetId": f"{self._upload_kind_for_extension(ext) or 'media'}:upload:"
+            + hashlib.sha256(blob).hexdigest()[:24],
+            "variantKey": "default",
         }
+        result["seriesId"] = result["assetId"]
         storage_cfg = provider_catalog.storage_config()
         if media_storage.is_ready(storage_cfg):
             try:
@@ -6061,6 +6065,13 @@ class Handler(BaseHTTPRequestHandler):
             "mime": mime,
             "sha256": digest.hexdigest(),
             "kind": kind,
+            "assetId": (
+                f"{kind}:upload:{digest.hexdigest()[:24]}"
+            ),
+            "seriesId": (
+                f"{kind}:upload:{digest.hexdigest()[:24]}"
+            ),
+            "variantKey": "default",
         }
         storage_cfg = provider_catalog.storage_config()
         if media_storage.is_ready(storage_cfg):
@@ -7880,6 +7891,7 @@ class Handler(BaseHTTPRequestHandler):
                         "warnings": warning_payload,
                     })
                 if preview_only:
+                    # Preview is read-only and may reuse the normal planner.
                     return self._send(200, {
                         "dryRun": True,
                         "id": pid,
@@ -7909,10 +7921,25 @@ class Handler(BaseHTTPRequestHandler):
                             group["importWarnings"] = warning_payload
                             break
                 try:
-                    commit_result = canvas_feed_contract.commit_import(
-                        plan,
-                        if_revision=plan.revision,
+                    committed_plan, commit_result = canvas_feed_contract.prepare_import_locked(
+                        feed_json,
+                        pid,
+                        source=source_meta,
                     )
+                    if committed_plan.errors:
+                        return self._send(422, {
+                            "error": "导入校验失败，项目未被修改",
+                            "code": "FEED_VALIDATION_FAILED",
+                            "revision": committed_plan.revision,
+                            "issues": [
+                                canvas_feed_contract.issue_dict(item)
+                                for item in committed_plan.errors
+                            ],
+                            "warnings": [
+                                canvas_feed_contract.issue_dict(item)
+                                for item in committed_plan.warnings
+                            ],
+                        })
                 except canvas_feed_contract.RevisionConflictError as exc:
                     return self._send(409, {
                         "error": str(exc),
@@ -7925,6 +7952,7 @@ class Handler(BaseHTTPRequestHandler):
                         "error": str(exc),
                         "code": "CANVAS_IMPORT_OWNERSHIP_INVALID",
                     })
+                plan = committed_plan
                 payload = plan.merged_payload
                 readiness = import_feed.episode_readiness(payload, plan.episode_id)
                 store.record_audit_event(
@@ -9582,7 +9610,7 @@ class Handler(BaseHTTPRequestHandler):
             for raw in raw_refs or []:
                 if not isinstance(raw, dict):
                     continue
-                ref_id = raw.get("nodeId")
+                ref_id = str(raw.get("nodeId") or "").strip()
                 if ref_id in seen_refs:
                     continue
                 seen_refs.add(ref_id)
@@ -9598,16 +9626,48 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 source_meta = source.get("metadata", {}) or {}
                 source_type = str(source.get("type") or "")
+                source_asset_id = str(source_meta.get("assetId") or "").strip()
+                source_series_id = str(source_meta.get("seriesId") or "").strip()
+                source_variant_key = str(
+                    source_meta.get("variantKey") or "default"
+                ).strip()
+                requested_asset_id = str(raw.get("assetId") or "").strip()
+                if (
+                    source_asset_id
+                    and requested_asset_id
+                    and source_asset_id != requested_asset_id
+                ):
+                    missing.append({
+                        "nodeId": ref_id,
+                        "assetId": requested_asset_id,
+                        "label": label,
+                        "reason": (
+                            f"资产唯一 ID 不一致"
+                            f"（请求 {requested_asset_id}，数据库 {source_asset_id}）"
+                        ),
+                    })
+                    continue
+                resolved_ref = {
+                    "nodeId": ref_id,
+                    "label": label,
+                    **(
+                        {
+                            "assetId": source_asset_id,
+                            "seriesId": source_series_id,
+                            "variantKey": source_variant_key,
+                        }
+                        if source_asset_id else {}
+                    ),
+                }
                 if source_type == "text":
                     text = str(source_meta.get("prompt") or source_meta.get("content") or "").strip()
                     if not text:
                         missing.append({"nodeId": ref_id, "label": label, "reason": "引用文本为空"})
                         continue
                     resolved.append({
+                        **resolved_ref,
                         "kind": "text",
                         "text": text,
-                        "label": label,
-                        "nodeId": ref_id,
                     })
                     continue
                 # The source node is authoritative. params.refs[].url is only a
@@ -9672,10 +9732,9 @@ class Handler(BaseHTTPRequestHandler):
                             pass
                     active_version["providerResultUrl"] = provider_result_url
                 resolved.append({
+                    **resolved_ref,
                     "kind": kind,
                     "url": url,
-                    "label": label,
-                    "nodeId": ref_id,
                     "prompt": str(source_meta.get("prompt") or ""),
                     "storage": storage if isinstance(storage, dict) else None,
                     "sourceModel": source_model,
@@ -9792,6 +9851,14 @@ class Handler(BaseHTTPRequestHandler):
                         node_id=node["id"],
                         provider=provider.get("id"),
                         model=model.get("id"),
+                        request={
+                            "prompt": prompt,
+                            "params": effective,
+                            "refs": refs,
+                            "voices": voices,
+                            "nodeAssetId": str(meta.get("assetId") or ""),
+                            "episodeId": str(meta.get("episodeId") or ""),
+                        },
                     )
                     meta.update({
                         "taskId": provider_task_id,
@@ -9972,6 +10039,26 @@ class Handler(BaseHTTPRequestHandler):
                     voice_meta = voice_node.get("metadata", {}) or {}
                     voice_url = str(voice_meta.get("content") or "").strip()
                     voice_label = str(voice_node.get("title") or voice_ref.get("label") or "角色音色").strip()
+                    voice_asset_id = str(voice_meta.get("assetId") or "").strip()
+                    requested_voice_asset_id = str(
+                        voice_ref.get("assetId") or ""
+                    ).strip()
+                    if (
+                        voice_asset_id
+                        and requested_voice_asset_id
+                        and voice_asset_id != requested_voice_asset_id
+                    ):
+                        missing.append({
+                            "nodeId": voice_ref.get("nodeId"),
+                            "assetId": requested_voice_asset_id,
+                            "label": voice_label,
+                            "reason": (
+                                "音色资产唯一 ID 不一致"
+                                f"（请求 {requested_voice_asset_id}，"
+                                f"数据库 {voice_asset_id}）"
+                            ),
+                        })
+                        continue
                     if not voice_url:
                         missing.append({
                             "nodeId": voice_ref.get("nodeId"),
@@ -9999,6 +10086,19 @@ class Handler(BaseHTTPRequestHandler):
                         "prompt": str(voice_meta.get("prompt") or ""),
                         "url": voice_url,
                         "label": voice_label,
+                        **(
+                            {
+                                "nodeId": voice_node.get("id"),
+                                "assetId": voice_asset_id,
+                                "seriesId": str(
+                                    voice_meta.get("seriesId") or ""
+                                ).strip(),
+                                "variantKey": str(
+                                    voice_meta.get("variantKey") or "default"
+                                ).strip(),
+                            }
+                            if voice_asset_id else {}
+                        ),
                     })
                 refs = [item for item in refs if item.get("kind") in ("image", "video", "text")]
                 if missing:
@@ -10027,6 +10127,13 @@ class Handler(BaseHTTPRequestHandler):
                         node_id=node["id"],
                         provider=provider.get("id"),
                         model=model.get("id"),
+                        request={
+                            "prompt": prompt,
+                            "params": effective,
+                            "refs": refs,
+                            "nodeAssetId": str(meta.get("assetId") or ""),
+                            "episodeId": str(meta.get("episodeId") or ""),
+                        },
                     )
                     meta.update({
                         "taskId": provider_task_id,
@@ -10776,6 +10883,14 @@ def main():
             print(f"已恢复 {recovered_episodes} 个项目的多集导入数据")
     except Exception as exc:
         print(f"[episode-import] 多集恢复失败：{exc}", file=sys.stderr)
+    try:
+        backfilled_nodes = _run_for_active_tenants(
+            lambda: store.backfill_asset_identities().get("nodes", 0)
+        )
+        if backfilled_nodes:
+            print(f"已为 {backfilled_nodes} 个资产节点补齐唯一 ID")
+    except Exception as exc:
+        print(f"[asset-identity] 资产唯一 ID 回填失败：{exc}", file=sys.stderr)
     try:
         isolated_projects = _run_for_active_tenants(backfill_project_asset_isolation)
         if isolated_projects:
