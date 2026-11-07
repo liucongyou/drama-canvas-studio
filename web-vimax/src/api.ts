@@ -3,6 +3,7 @@
 // 生成：轮询器检测 generating 节点 → POST generate → done/error 事件
 
 import {latestTaskByNode} from './generationPresentation';
+import {resolveMediaVersionIndex} from './mediaVersions';
 import {withRequestStatus} from './requestRetry';
 import {shareTokenInPath} from './projectShare';
 import {
@@ -790,21 +791,14 @@ export function activeMediaVersionIndex(
   node: CanvasMediaNode,
   versions = mediaVersionList(node),
 ): number {
-  if (!versions.length) return 0;
-  const currentUrl = mediaSourceUrl(node.mediaUrl);
-  const currentUrlIndex = currentUrl
-    ? versions.findIndex((version) => version.url === currentUrl)
-    : -1;
-  if (currentUrlIndex >= 0) return currentUrlIndex;
-  const configured = Number(
-    node.params?.mediaVersionIndex
-    ?? node.params?.videoVersionIndex
-    ?? versions.length - 1,
+  return resolveMediaVersionIndex(
+    mediaSourceUrl(node.mediaUrl),
+    versions,
+    {
+      activeVersionId: node.params?.activeVersionId,
+      index: node.params?.mediaVersionIndex ?? node.params?.videoVersionIndex,
+    },
   );
-  return Math.max(0, Math.min(
-    Number.isFinite(configured) ? configured : versions.length - 1,
-    versions.length - 1,
-  ));
 }
 
 export type QualityReportDimension = {
@@ -3279,6 +3273,7 @@ export function uploadWorkspaceFileWithProgress(
   options?: {
     signal?: AbortSignal;
     onProgress?: (loaded: number, total: number, percent: number) => void;
+    idleTimeoutMs?: number;
   },
 ): Promise<UploadFileResult> {
   return new Promise((resolve, reject) => {
@@ -3287,7 +3282,24 @@ export function uploadWorkspaceFileWithProgress(
       return;
     }
     const xhr = new XMLHttpRequest();
+    const idleTimeoutMs = Math.max(15_000, options?.idleTimeoutMs ?? 120_000);
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    const clearIdleTimer = () => {
+      if (idleTimer !== undefined) {
+        clearTimeout(idleTimer);
+        idleTimer = undefined;
+      }
+    };
+    const armIdleTimer = () => {
+      clearIdleTimer();
+      idleTimer = setTimeout(() => {
+        timedOut = true;
+        xhr.abort();
+      }, idleTimeoutMs);
+    };
     const cleanup = () => {
+      clearIdleTimer();
       options?.signal?.removeEventListener('abort', abort);
     };
     const abort = () => xhr.abort();
@@ -3302,6 +3314,7 @@ export function uploadWorkspaceFileWithProgress(
       xhr.setRequestHeader(name, value);
     }
     xhr.upload.onprogress = (event) => {
+      armIdleTimer();
       const total = event.lengthComputable ? event.total : file.size;
       const percent = total > 0 ? Math.min(100, Math.round((event.loaded / total) * 100)) : 0;
       options?.onProgress?.(event.loaded, total, percent);
@@ -3312,7 +3325,9 @@ export function uploadWorkspaceFileWithProgress(
     };
     xhr.onabort = () => {
       cleanup();
-      reject(new DOMException('上传已取消', 'AbortError'));
+      reject(timedOut
+        ? new Error('上传长时间没有进度，已自动停止；请检查网络后重试')
+        : new DOMException('上传已取消', 'AbortError'));
     };
     xhr.onload = () => {
       cleanup();
@@ -3336,6 +3351,7 @@ export function uploadWorkspaceFileWithProgress(
         url: mediaSourceUrl(payload.url),
       });
     };
+    armIdleTimer();
     xhr.send(file);
   });
 }

@@ -209,6 +209,11 @@ import {
 } from './canvasViewport';
 import {workspaceRetryDecision} from './requestRetry';
 import {mediaDownloadFilename} from './mediaDownloadName';
+import {
+  canvasUploadKind,
+  prepareCanvasUploadFiles,
+  shouldArmCanvasFileDrop,
+} from './uploadDragState';
 
 type Props = {
   session: string;
@@ -2282,15 +2287,7 @@ function RichPromptEditor({
 }
 
 function localFileKind(file: File): CanvasMediaNodeKind | null {
-  const mime = String(file.type || '').toLowerCase();
-  if (mime.startsWith('image/')) return 'image';
-  if (mime.startsWith('audio/')) return 'audio';
-  if (mime.startsWith('video/')) return 'video';
-  const ext = file.name.split('.').pop()?.toLowerCase() || '';
-  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'].includes(ext)) return 'image';
-  if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(ext)) return 'audio';
-  if (['mp4', 'webm', 'mov'].includes(ext)) return 'video';
-  return null;
+  return canvasUploadKind(file);
 }
 
 function nearestCanvasRatio(width: number, height: number): string {
@@ -3267,13 +3264,13 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           '--card-menu-max-scale': String(cardMenuMaxScale),
         } as CSSProperties}
         onDragEnter={(event) => {
-          if (isText || !Array.from(event.dataTransfer.types || []).includes('Files')) return;
+          if (isText || !shouldArmCanvasFileDrop(event.dataTransfer)) return;
           event.preventDefault();
           event.stopPropagation();
           setLocalDragOver(true);
         }}
         onDragOver={(event) => {
-          if (isText || !Array.from(event.dataTransfer.types || []).includes('Files')) return;
+          if (isText || !shouldArmCanvasFileDrop(event.dataTransfer)) return;
           event.preventDefault();
           event.stopPropagation();
           event.dataTransfer.dropEffect = 'copy';
@@ -8404,6 +8401,13 @@ function CanvasViewInner({
   const nodeLocalUploadInputRef = useRef<HTMLInputElement | null>(null);
   const nodeLocalUploadTargetRef = useRef<string | null>(null);
   const batchUploadAbortRef = useRef<AbortController | null>(null);
+  const uploadFilesToCanvasRef = useRef<(
+    files: File[],
+    origin?: {x: number; y: number},
+    trigger?: 'picker' | 'drop',
+  ) => Promise<void>>(async () => {});
+  const [dropArmed, setDropArmed] = useState(false);
+  const dropDepthRef = useRef(0);
   const [nodeLocalUploadAccept, setNodeLocalUploadAccept] = useState('image/*,audio/*,video/*');
   const [batchUploadState, setBatchUploadState] = useState<{
     total: number;
@@ -8420,6 +8424,9 @@ function CanvasViewInner({
     [],
   );
   const openMaterialPicker = useCallback((origin?: {x: number; y: number}) => {
+    batchUploadAbortRef.current?.abort();
+    batchUploadAbortRef.current = null;
+    setBatchUploadState(null);
     canvasUploadOriginRef.current = origin || null;
     materialFileInputRef.current?.click();
   }, []);
@@ -10878,6 +10885,10 @@ function CanvasViewInner({
 
   const openNodeLocalUpload = useCallback((node: CanvasMediaNode) => {
     if (node.kind === 'text') return;
+    if (batchUploadAbortRef.current) {
+      setToast('已有素材正在上传；完成或取消后再添加单个素材');
+      return;
+    }
     suppressNodeOpen();
     nodeLocalUploadTargetRef.current = node.id;
     const accept = node.kind === 'image'
@@ -10888,7 +10899,7 @@ function CanvasViewInner({
     setNodeLocalUploadAccept(accept);
     if (nodeLocalUploadInputRef.current) nodeLocalUploadInputRef.current.accept = accept;
     nodeLocalUploadInputRef.current?.click();
-  }, [suppressNodeOpen]);
+  }, [setToast, suppressNodeOpen]);
 
   const uploadNodeLocalFromMenu = useCallback(async (file: File) => {
     const targetId = nodeLocalUploadTargetRef.current;
@@ -11107,11 +11118,16 @@ function CanvasViewInner({
     }
   }, [session, currentEp, freeSpot, addRefById, setToast]);
 
+  const clearCanvasDropState = useCallback(() => {
+    dropDepthRef.current = 0;
+    setDropArmed(false);
+  }, []);
+
   // 顶部批量上传和拖入画布共用这一条链路：真实上传 → 读取媒体元数据 → 创建节点 → 落库。
-  const [dropArmed, setDropArmed] = useState(false);
   const uploadFilesToCanvas = useCallback(async (
     files: File[],
     origin?: {x: number; y: number},
+    trigger: 'picker' | 'drop' = 'picker',
   ) => {
     if (readOnly) {
       setToast('只读分享不能上传素材');
@@ -11121,9 +11137,17 @@ function CanvasViewInner({
       setToast('画布尚未绑定集数，请稍后再上传素材');
       return;
     }
-    const supported = files.filter((file) => !!localFileKind(file));
-    if (supported.length === 0) {
-      setToast('没有可导入的图片、音频或视频文件');
+    if (batchUploadAbortRef.current) {
+      if (trigger === 'drop') {
+        setToast('已有素材正在上传；当前批次完成或取消后再拖入');
+      }
+      return;
+    }
+    const {accepted, unsupported, overflow} = prepareCanvasUploadFiles(files);
+    if (accepted.length === 0) {
+      setToast(overflow > 0
+        ? '单次最多上传 40 个素材，请分批拖入'
+        : '没有可导入的图片、音频或视频文件');
       return;
     }
     const base = origin || rf.screenToFlowPosition({
@@ -11132,15 +11156,16 @@ function CanvasViewInner({
     });
     const controller = new AbortController();
     batchUploadAbortRef.current = controller;
-    setBatchUploadState({total: supported.length, done: 0, percent: 0, currentName: supported[0].name});
+    setBatchUploadState({total: accepted.length, done: 0, percent: 0, currentName: accepted[0].name});
     let completed = 0;
     const failed: string[] = [];
-    for (let index = 0; index < supported.length; index += 1) {
-      const file = supported[index];
+    for (let index = 0; index < accepted.length; index += 1) {
+      if (controller.signal.aborted) break;
+      const file = accepted[index];
       const kind = localFileKind(file);
       if (!kind) continue;
       setBatchUploadState({
-        total: supported.length,
+        total: accepted.length,
         done: completed,
         percent: 0,
         currentName: file.name,
@@ -11150,7 +11175,7 @@ function CanvasViewInner({
           signal: controller.signal,
           onProgress: (_loaded, _total, percent) => {
             setBatchUploadState({
-              total: supported.length,
+              total: accepted.length,
               done: completed,
               percent,
               currentName: file.name,
@@ -11237,29 +11262,100 @@ function CanvasViewInner({
         failed.push(file.name);
       }
     }
-    batchUploadAbortRef.current = null;
-    setBatchUploadState(null);
+    if (batchUploadAbortRef.current === controller) {
+      batchUploadAbortRef.current = null;
+      setBatchUploadState(null);
+    }
+    const skipped = [
+      unsupported > 0 ? `${unsupported} 个不支持` : '',
+      overflow > 0 ? `${overflow} 个超过单批上限` : '',
+    ].filter(Boolean).join('、');
     if (completed > 0) {
-      setToast(`已导入 ${completed} 个本地素材${failed.length ? `，${failed.length} 个失败` : ''}`);
+      setToast(
+        `已导入 ${completed} 个本地素材${failed.length ? `，${failed.length} 个失败` : ''}`
+        + (skipped ? `，${skipped}` : ''),
+      );
     } else if (failed.length > 0) {
-      setToast(`上传失败：${failed.slice(0, 3).join('、')}${failed.length > 3 ? '…' : ''}`);
+      setToast(
+        `上传失败：${failed.slice(0, 3).join('、')}${failed.length > 3 ? '…' : ''}`
+        + (skipped ? `；${skipped}` : ''),
+      );
+    } else if (skipped) {
+      setToast(`没有导入素材：${skipped}`);
     }
   }, [broadcastMediaChange, currentEp, readOnly, rf, session, setToast]);
+  uploadFilesToCanvasRef.current = uploadFilesToCanvas;
 
   const handleCanvasDrop = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    clearCanvasDropState();
     if (readOnly) {
-      event.preventDefault();
-      setDropArmed(false);
       setToast('只读分享不能上传素材');
       return;
     }
-    event.preventDefault();
-    setDropArmed(false);
     const files = Array.from(event.dataTransfer.files || []);
     if (files.length === 0) return;
     const origin = rf.screenToFlowPosition({x: event.clientX, y: event.clientY});
-    void uploadFilesToCanvas(files, origin);
-  }, [readOnly, rf, setToast, uploadFilesToCanvas]);
+    void uploadFilesToCanvasRef.current(files, origin, 'drop');
+  }, [clearCanvasDropState, readOnly, rf, setToast]);
+
+  useEffect(() => {
+    const reset = () => clearCanvasDropState();
+    const resetOnWindowLeave = (event: DragEvent) => {
+      if (!event.relatedTarget) reset();
+    };
+    const resetOnVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') reset();
+    };
+    window.addEventListener('drop', reset, true);
+    window.addEventListener('dragend', reset, true);
+    window.addEventListener('blur', reset);
+    window.addEventListener('dragleave', resetOnWindowLeave, true);
+    document.addEventListener('visibilitychange', resetOnVisibilityChange);
+    return () => {
+      window.removeEventListener('drop', reset, true);
+      window.removeEventListener('dragend', reset, true);
+      window.removeEventListener('blur', reset);
+      window.removeEventListener('dragleave', resetOnWindowLeave, true);
+      document.removeEventListener('visibilitychange', resetOnVisibilityChange);
+    };
+  }, [clearCanvasDropState]);
+
+  useEffect(() => () => {
+    batchUploadAbortRef.current?.abort();
+    batchUploadAbortRef.current = null;
+  }, []);
+
+  const handleCanvasDragEnter = useCallback((event: React.DragEvent) => {
+    if (readOnly || !shouldArmCanvasFileDrop(event.dataTransfer)) {
+      clearCanvasDropState();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    dropDepthRef.current += 1;
+    setDropArmed(true);
+  }, [clearCanvasDropState, readOnly]);
+
+  const handleCanvasDragOver = useCallback((event: React.DragEvent) => {
+    if (readOnly || !shouldArmCanvasFileDrop(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    if (!dropArmed) setDropArmed(true);
+  }, [dropArmed, readOnly]);
+
+  const handleCanvasDragLeave = useCallback(() => {
+    dropDepthRef.current = Math.max(0, dropDepthRef.current - 1);
+    if (dropDepthRef.current === 0) setDropArmed(false);
+  }, []);
+
+  const handleCanvasDragEnd = useCallback(() => {
+    clearCanvasDropState();
+  }, [clearCanvasDropState]);
+
   const deleteMediaNode = useCallback((id: string) => {
     if (readOnly) {
       setToast('只读分享不能删除节点');
@@ -16672,7 +16768,7 @@ function CanvasViewInner({
                 event.target.value = '';
                 const origin = canvasUploadOriginRef.current || undefined;
                 canvasUploadOriginRef.current = null;
-                if (files.length > 0) void uploadFilesToCanvas(files, origin);
+                if (files.length > 0) void uploadFilesToCanvas(files, origin, 'picker');
               }}
             />
             <input
@@ -16768,8 +16864,10 @@ function CanvasViewInner({
           data-bg={bgMode}
           // 底纹的两个尺寸变量只随缩放变化；平移时不变 → 点阵固定不动（即梦行为）。
           style={{'--canvas-pitch': bgVars.pitch, '--canvas-dot': bgVars.dot} as CSSProperties}
-          onDragOver={(e) => { e.preventDefault(); setDropArmed(true); }}
-          onDragLeave={(e) => { if (e.currentTarget === e.target) setDropArmed(false); }}
+          onDragEnter={handleCanvasDragEnter}
+          onDragOver={handleCanvasDragOver}
+          onDragLeave={handleCanvasDragLeave}
+          onDragEnd={handleCanvasDragEnd}
           onDrop={handleCanvasDrop}
         >
           <div
