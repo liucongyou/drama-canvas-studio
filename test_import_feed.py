@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import re
 import unittest
 
 import import_feed
@@ -1408,6 +1409,60 @@ class ImportFeedContractTests(unittest.TestCase):
         self.assertEqual(
             video["metadata"]["params"]["videoVersions"],
             [{"content": "/uploads/generated-test.mp4"}],
+        )
+
+    def test_same_episode_reimport_keeps_segment_chain_edges(self):
+        def ordered_video_ids(payload):
+            group = next(
+                item for item in payload["episodeImports"]
+                if item["id"] == "EP001"
+            )
+            nodes = {node["id"]: node for node in payload["nodes"]}
+            return sorted(
+                group["videoNodeIds"],
+                key=lambda node_id: int(
+                    re.search(r"段\s*(\d+)", nodes[node_id]["title"]).group(1)
+                ),
+            )
+
+        feed = {
+            "title": "重导连线 · 第01集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [],
+            "segments": [
+                {"no": 1, "name": "段1", "raw": "段1画面。"},
+                {"no": 2, "name": "段2", "raw": "段2画面。"},
+                {"no": 3, "name": "段3", "raw": "段3画面。"},
+            ],
+        }
+        first = import_feed.build_payload(feed)
+        first_video_ids = ordered_video_ids(first)
+        merged = import_feed.merge_payload_by_episode(
+            first,
+            import_feed.build_payload(feed),
+        )
+        second_video_ids = ordered_video_ids(merged)
+        chain_pairs = {
+            (video_ids[index], video_ids[index + 1])
+            for video_ids in (first_video_ids, second_video_ids)
+            for index in range(len(video_ids) - 1)
+        }
+        actual_pairs = {
+            (edge["fromNodeId"], edge["toNodeId"])
+            for edge in merged["connections"]
+            if edge["fromNodeId"] in second_video_ids
+            and edge["toNodeId"] in second_video_ids
+        }
+
+        self.assertEqual(second_video_ids, first_video_ids)
+        self.assertEqual(actual_pairs, chain_pairs)
+        self.assertEqual(
+            ordered_video_ids(merged),
+            [
+                node["id"]
+                for node in merged["nodes"]
+                if node["type"] == "video"
+            ],
         )
 
     def test_second_episode_carries_only_mentioned_shared_assets_and_links(self):

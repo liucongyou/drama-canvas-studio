@@ -3137,6 +3137,8 @@ def bind_shared_assets_for_episode(payload, episode_id):
                 isinstance(conn, dict)
                 and conn.get("toNodeId") == video.get("id")
                 and conn.get("fromNodeId") not in allowed_sources
+                and (node_by_id.get(conn.get("fromNodeId")) or {}).get("type")
+                    in {"image", "audio"}
             )
         ]
         image_ids = {
@@ -3159,6 +3161,8 @@ def bind_shared_assets_for_episode(payload, episode_id):
                 isinstance(conn, dict)
                 and conn.get("toNodeId") == video.get("id")
                 and conn.get("fromNodeId") not in allowed_sources
+                and (node_by_id.get(conn.get("fromNodeId")) or {}).get("type")
+                    in {"image", "audio"}
             )
         ]
         existing_pairs = {(conn.get("fromNodeId"), conn.get("toNodeId")) for conn in connections if isinstance(conn, dict)}
@@ -3373,6 +3377,31 @@ def merge_payload_by_episode(existing, incoming):
             node["id"] = old["id"]
         if old:
             claimed_old_ids.add(str(old["id"]))
+    segment_chain_pairs = []
+    for connection in incoming.get("connections") or []:
+        if not isinstance(connection, dict):
+            continue
+        source = existing_by_id.get(
+            stable_node_remap.get(
+                str(connection.get("fromNodeId") or ""),
+                str(connection.get("fromNodeId") or ""),
+            )
+        )
+        target = existing_by_id.get(
+            stable_node_remap.get(
+                str(connection.get("toNodeId") or ""),
+                str(connection.get("toNodeId") or ""),
+            )
+        )
+        if (
+            (source or {}).get("type") == "video"
+            and (target or {}).get("type") == "video"
+        ):
+            segment_chain_pairs.append((
+                source.get("id"),
+                target.get("id"),
+                connection.get("id"),
+            ))
 
     # Audio identity is role-based across the whole series. Reuse an existing
     # generated voice node instead of creating a new random audio node each import.
@@ -3530,6 +3559,18 @@ def merge_payload_by_episode(existing, incoming):
             if source_id in reuse_remap:
                 voice_ref["nodeId"] = reuse_remap[source_id]
 
+    for node in incoming_nodes:
+        old_id = str(node.get("id") or "")
+        if old_id in reuse_remap:
+            node["id"] = reuse_remap[old_id]
+        for item in incoming.get("connections") or []:
+            if not isinstance(item, dict):
+                continue
+            for field in ("fromNodeId", "toNodeId"):
+                value = str(item.get(field) or "")
+                if value in reuse_remap:
+                    item[field] = reuse_remap[value]
+
     old_conns = existing.get("connections") or []
     old_pair_ids = {
         (str(conn.get("fromNodeId") or ""), str(conn.get("toNodeId") or "")): str(conn.get("id"))
@@ -3541,8 +3582,21 @@ def merge_payload_by_episode(existing, incoming):
         if not isinstance(conn, dict):
             continue
         rewritten = dict(conn)
-        rewritten["fromNodeId"] = reuse_remap.get(str(rewritten.get("fromNodeId")), rewritten.get("fromNodeId"))
-        rewritten["toNodeId"] = reuse_remap.get(str(rewritten.get("toNodeId")), rewritten.get("toNodeId"))
+        # Remap endpoints through the final node identity map. Segment-chain
+        # edges are built inside the importer and therefore carry temporary
+        # IDs that are not present in the incoming group's original node list.
+        node_remap = {
+            **reuse_remap,
+            **stable_node_remap,
+        }
+        rewritten["fromNodeId"] = node_remap.get(
+            str(rewritten.get("fromNodeId")),
+            rewritten.get("fromNodeId"),
+        )
+        rewritten["toNodeId"] = node_remap.get(
+            str(rewritten.get("toNodeId")),
+            rewritten.get("toNodeId"),
+        )
         pair = (str(rewritten.get("fromNodeId") or ""), str(rewritten.get("toNodeId") or ""))
         rewritten["id"] = old_pair_ids.get(pair) or rewritten.get("id") or _rid_edge()
         incoming_conns.append(rewritten)
@@ -3662,15 +3716,15 @@ def merge_payload_by_episode(existing, incoming):
             merged_conns[conn.get("id") or _rid_edge()] = conn
 
     imported_now = _now_iso()
-    # every node used by this episode, including reused series assets.
-    # A reused audio/image node is still part of the current episode when a
-    # video references it; omitting it makes the asset exist in the payload but
-    # disappear from the episode canvas.
+    incoming_video_ids = {
+        str(node_id)
+        for node_id in incoming_group.get("videoNodeIds") or []
+    }
     episode_referenced_ids = set()
     for connection in incoming_conns:
         target_id = str(connection.get("toNodeId") or "")
         source_id = str(connection.get("fromNodeId") or "")
-        if target_id in set(incoming_group.get("videoNodeIds") or []):
+        if target_id in incoming_video_ids:
             episode_referenced_ids.add(source_id)
     for node in incoming_nodes:
         if node.get("type") != "video":
@@ -3705,6 +3759,12 @@ def merge_payload_by_episode(existing, incoming):
         "lastImportedAt": imported_now,
         "importedAt": imported_now,
     }
+    if segment_chain_pairs:
+        incoming_conns.extend({
+            "fromNodeId": source_id,
+            "id": in_use_edge_id or old_pair_ids.get((source_id, target_id)) or _rid_edge(),
+            "toNodeId": target_id,
+        } for source_id, target_id, in_use_edge_id in segment_chain_pairs)
     merged_groups = sorted(
         [*other_groups, incoming_group],
         key=lambda group: str(group.get("id") or ""),
