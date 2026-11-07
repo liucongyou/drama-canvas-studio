@@ -2411,6 +2411,8 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const [videoSourceReady, setVideoSourceReady] = useState(false);
   const [videoCoverUrl, setVideoCoverUrl] = useState('');
   const [videoFrameReady, setVideoFrameReady] = useState(false);
+  const [videoIntrinsicRatio, setVideoIntrinsicRatio] = useState(0);
+  const [videoFullscreen, setVideoFullscreen] = useState(false);
   // A video task can be done before its poster has been extracted. Keep the
   // loading layer until either the persisted/derived poster paints or poster
   // extraction explicitly fails. A timer must not turn "still waiting" into
@@ -2756,6 +2758,18 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
       void shell.requestFullscreen?.();
     }
   };
+  useEffect(() => {
+    const syncFullscreen = () => {
+      const shell = videoShellRef.current;
+      setVideoFullscreen(!!shell && document.fullscreenElement === shell);
+    };
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    document.addEventListener('webkitfullscreenchange', syncFullscreen);
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFullscreen);
+      document.removeEventListener('webkitfullscreenchange', syncFullscreen);
+    };
+  }, []);
   const videoProgressPercent = videoDuration > 0
     ? Math.max(0, Math.min(100, (videoCurrentTime / videoDuration) * 100))
     : 0;
@@ -3008,6 +3022,11 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const textSize = {width: p.textW || cardSize.width, height: p.textH || cardSize.height};
   const size = isText ? (dragSize ? {width: dragSize.w, height: dragSize.h} : textSize) : cardSize;
   const cardStyle = {width: size.width, height: size.height};
+  const videoFullscreenRatio = videoIntrinsicRatio > 0
+    ? videoIntrinsicRatio
+    : rm && Number(rm[1]) > 0 && Number(rm[2]) > 0
+      ? Number(rm[1]) / Number(rm[2])
+      : 9 / 16;
   // ★★ 节点宽度必须等于卡片的**真实外框宽度**（第 17 轮修，两处都踩过）。
   //   为什么：连线端口是绝对定位挂在**节点容器**上的（left/right: 0）。
   //   端口圆心 = 容器边缘；若卡片比容器宽，端口圆心就会陷进卡片内侧，
@@ -3350,7 +3369,11 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           : node.kind === 'video'
               ? <div
                   ref={videoShellRef}
-                  className={`canvas-video-shell ${videoPlaying ? 'is-playing' : 'is-paused'}${videoSourceReady ? ' is-source-ready' : ' is-source-deferred'}`}
+                  className={`canvas-video-shell ${videoPlaying ? 'is-playing' : 'is-paused'}${videoSourceReady ? ' is-source-ready' : ' is-source-deferred'}${videoFullscreen ? ' is-fullscreen' : ''}`}
+                  style={{
+                    '--canvas-video-ratio': videoFullscreenRatio,
+                    '--canvas-video-width-limit': `${videoFullscreenRatio * 100}vh`,
+                  } as CSSProperties}
                   onPointerEnter={() => {
                     // Cover-first loading must not make hover controls
                     // unreachable. Entering the card is the explicit intent to
@@ -3368,6 +3391,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                     toggleVideoFullscreen();
                   }}
                 >
+                  <div className="canvas-video-stage nodrag">
                   {videoCoverVisible && (
                     <VideoCoverImage
                       src={videoCoverUrl}
@@ -3394,6 +3418,10 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                     preload="metadata"
                     aria-label={node.title}
                     onLoadedMetadata={(event) => {
+                      const intrinsicRatio = event.currentTarget.videoHeight > 0
+                        ? event.currentTarget.videoWidth / event.currentTarget.videoHeight
+                        : 0;
+                      setVideoIntrinsicRatio(Number.isFinite(intrinsicRatio) ? intrinsicRatio : 0);
                       setVideoDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
                       handleMediaLoadSuccess();
                       try {
@@ -3535,6 +3563,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                         <Maximize2 size={10} />
                       </button>
                     </div>
+                  </div>
                   </div>
                 </div>
               : (

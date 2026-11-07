@@ -81,6 +81,32 @@ def _dialog_speaker_names(text):
     return canvas_feed_contract.dialogue_speakers(str(text or ""))
 
 
+def _explicit_asset_ref_codes(text):
+    """Return only codes carried by an explicit @ mention.
+
+    Accepted forms:
+      @角色｜赵铁柱（图1）
+      @赵铁柱（图1）
+      @//chr/- 赵铁柱（图1）
+    A bare ``赵铁柱（图1）`` is descriptive text, never a media reference.
+    """
+    codes = set()
+    for match in re.finditer(
+        r"@(?:"
+        r"//(?:chr|scn|prp)\s*/\s*-\s*"
+        r"|(?:角色|群像|场景|道具|音频)\s*[｜|:：]\s*"
+        r")?"
+        r"[^（(\n@<>]{1,80}?[（(](?:参考)?图\s*(\d+)[）)]",
+        str(text or ""),
+    ):
+        if match.start() > 0 and str(text)[match.start() - 1] == "<":
+            continue
+        code = _canonical_figure(match.group(1))
+        if code:
+            codes.add(code)
+    return codes
+
+
 def _asset_kind_from_title(title):
     raw = str(title or "")
     if raw.startswith("角色｜") or raw.startswith("角色|"):
@@ -1633,11 +1659,11 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         if not vid:
             continue
         seen = set()
-        for _name, fig_no in _REF_RE.findall(raw):
+        for fig_no in _explicit_asset_ref_codes(raw):
             candidates = image_ids.get(_canonical_figure(fig_no), [])
             if not candidates:
                 continue
-            target = candidates[1] if (len(candidates) > 1 and ("九宫格" in _name or "窗内" in _name)) else candidates[0]
+            target = candidates[0]
             key = (target, vid)
             if key in seen:
                 continue
@@ -1651,7 +1677,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             continue
         speaking_in_segment = _dialog_speaker_names(raw)
         seen_a = set()
-        for _name, fig_no in _REF_RE.findall(raw):
+        for fig_no in _explicit_asset_ref_codes(raw):
             role = character_names.get(_canonical_figure(fig_no), "")
             if role not in speaking_in_segment:
                 continue
@@ -2691,6 +2717,9 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
         prompt = str(meta.get("prompt") or "")
         composer = str(meta.get("composerContent") or "")
         reference_text = f"{prompt}\n{composer}"
+        # Resolve explicit references per segment. A code explicitly used by
+        # another segment must not turn this segment's bare prose into a ref.
+        explicit_codes = _explicit_asset_ref_codes(reference_text)
         named_roles = {
             name.strip()
             for kind, name, _code in _NAMED_REF_RE.findall(reference_text)
@@ -2706,6 +2735,8 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
             name = match.group("name").strip()
             code = match.group("code").strip()
             if kind == "音频":
+                continue
+            if _canonical_figure(code) not in explicit_codes:
                 continue
             source = find_image(kind, name, code)
             if source is None:
@@ -3010,10 +3041,16 @@ def bind_shared_assets_for_episode(payload, episode_id):
         ]
         deduped_refs = []
         seen_ref_labels = set()
+        seen_ref_ids = set()
         for ref in refs:
             label = str(ref.get("label") or "") if isinstance(ref, dict) else ""
+            node_id = str(ref.get("nodeId") or "") if isinstance(ref, dict) else ""
+            if node_id and node_id in seen_ref_ids:
+                continue
             if label and label in seen_ref_labels:
                 continue
+            if node_id:
+                seen_ref_ids.add(node_id)
             if label:
                 seen_ref_labels.add(label)
             deduped_refs.append(ref)
@@ -3042,28 +3079,13 @@ def bind_shared_assets_for_episode(payload, episode_id):
             cleanup_changes += 1
         ref_ids = {item.get("nodeId") for item in refs if isinstance(item, dict)}
         voice_ids = {item.get("nodeId") for item in voices if isinstance(item, dict)}
+        explicit_codes = _explicit_asset_ref_codes(match_text)
         for image in image_assets:
             full_title = str(image.get("title") or "")
             base = _asset_title_base(full_title)
             match_base = base.split("·", 1)[0]
-            figure = re.search(r"图\s*(\d+)", full_title)
-            figure_match = False
-            if figure and len(match_base) >= 2:
-                figure_id = re.escape(figure.group(1))
-                figure_match = any(
-                    re.search(
-                        rf"(?<![@｜]){re.escape(match_base[index:])}"
-                        rf"\s*[（(]\s*图\s*{figure_id}(?!\d)",
-                        match_text,
-                    )
-                    for index in range(len(match_base))
-                    if len(match_base[index:]) >= 2
-                )
-            if len(match_base) < 2 or (
-                match_base not in match_text
-                and base not in match_text
-                and not figure_match
-            ):
+            code = canvas_feed_contract.canonical_code_from_text(full_title)
+            if not code or code not in explicit_codes:
                 continue
             if image.get("id") not in ref_ids and len(refs) + len(voices) < max_refs:
                 ref = {"nodeId": image["id"], "label": full_title}
@@ -3106,6 +3128,17 @@ def bind_shared_assets_for_episode(payload, episode_id):
             params["voiceRef"] = voices[0]
             meta["voiceRefs"] = voices
         meta["prompt"] = prompt
+        # `connections` are only a projection of the explicit refs above. Drop
+        # any extra media edge for this video before serializing the payload.
+        allowed_sources = {ref.get("nodeId") for ref in refs + voices}
+        connections[:] = [
+            conn for conn in connections
+            if not (
+                isinstance(conn, dict)
+                and conn.get("toNodeId") == video.get("id")
+                and conn.get("fromNodeId") not in allowed_sources
+            )
+        ]
         image_ids = {
             ref.get("nodeId") for ref in refs
             if (node_by_id.get(ref.get("nodeId")) or {}).get("type") == "image"
@@ -3726,6 +3759,38 @@ def merge_payload_by_episode(existing, incoming):
         None,
     )
     if merged_episode:
+        # Final merged payload is the persistence boundary. Re-assert one
+        # source node per identity here so merge-time concatenation cannot
+        # leave duplicate references for the same video.
+        for merged_node in merged_payload.get("nodes") or []:
+            if not isinstance(merged_node, dict) or merged_node.get("type") != "video":
+                continue
+            merged_meta = merged_node.get("metadata") or {}
+            merged_params = merged_meta.get("params") or {}
+            final_refs = []
+            seen_final_refs = set()
+            seen_final_identities = set()
+            for ref in merged_params.get("refs") or []:
+                if not isinstance(ref, dict):
+                    continue
+                node_id = str(ref.get("nodeId") or "")
+                label = str(ref.get("label") or "")
+                identity = _asset_title_base(
+                    label,
+                    audio=label.startswith(("音频｜", "音色｜")),
+                ).split("·", 1)[0]
+                if label.startswith(("角色｜", "群像｜", "音频｜", "音色｜")) and identity:
+                    if identity in seen_final_identities:
+                        continue
+                    seen_final_identities.add(identity)
+                identity = node_id or label
+                if not identity or node_id in seen_final_refs:
+                    continue
+                if node_id:
+                    seen_final_refs.add(node_id)
+                final_refs.append(ref)
+            merged_params["refs"] = final_refs
+            merged_meta["refs"] = final_refs
         merged_video_ids = set(merged_episode.get("videoNodeIds") or [])
         merged_episode["connectionIds"] = [
             connection.get("id")

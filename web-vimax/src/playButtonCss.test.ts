@@ -45,4 +45,15 @@ describe('video overlay controls', () => {
       /onFocusCapture=\{\(\) => \{[\s\S]*setVideoSourceReady\(true\)/,
     );
   });
+
+  it('keeps fullscreen controls inside the video aspect box', () => {
+    expect(source).toMatch(/--canvas-video-ratio/);
+    expect(source).toMatch(/--canvas-video-width-limit/);
+    expect(css).toMatch(
+      /\.canvas-video-shell:fullscreen>\.canvas-video-stage\{[^}]*width:min\(100vw,var\(--canvas-video-width-limit,56\.25vh\)\)[^}]*aspect-ratio:var\(--canvas-video-ratio,9 \/ 16\)/s,
+    );
+    expect(css).toMatch(
+      /\.canvas-video-shell:fullscreen \.canvas-video-controls\{[^}]*left:6px;[^}]*right:6px/s,
+    );
+  });
 });

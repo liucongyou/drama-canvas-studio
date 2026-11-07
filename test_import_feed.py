@@ -343,8 +343,8 @@ class ImportFeedContractTests(unittest.TestCase):
                 "name": "段1 · 通用测试",
                 "raw": (
                     "【画幅风格】9:16 竖屏（model=seedance-2.5）\n"
-                    "【场景资产】@//scn/ - 旧车间（图11）\n"
-                    "【核心人物】@//chr/ - 王五（图10，声线锁：low calm voice）\n"
+                    "【场景资产】@场景｜旧车间·母版（图11）\n"
+                    "【核心人物】@角色｜王五（图10）（声线锁：low calm voice）\n"
                     "- 00:00-00:04 [镜头1] 王五开口。台词：王五（低沉）：\"你来晚了。\""
                 ),
                 "shots": [
@@ -379,7 +379,10 @@ class ImportFeedContractTests(unittest.TestCase):
         self.assertEqual(video["metadata"]["params"]["model"], "doubao-seedance-2-5")
         self.assertEqual(video["metadata"]["params"]["duration"], 8)
         self.assertEqual(video["metadata"]["params"]["ratio"], "9:16")
-        self.assertTrue(any(ref["label"].startswith("角色｜王五") for ref in video["metadata"]["refs"]))
+        self.assertTrue(any(
+            ref["label"].startswith("角色｜王五")
+            for ref in video["metadata"]["params"]["refs"]
+        ))
         self.assertTrue(video["metadata"]["params"]["voiceRefs"])
         self.assertFalse(any("剧本头卡" in ref["label"] for ref in video["metadata"]["refs"]))
         self.assertNotIn("@//chr/", video["metadata"]["prompt"])
@@ -882,6 +885,151 @@ class ImportFeedContractTests(unittest.TestCase):
         self.assertTrue(repaired.startswith("<场景｜厂区后街·母版（图10）>"))
         self.assertNotIn("<@场景", repaired)
 
+    def test_explicit_at_reference_does_not_pull_short_name_into_refs(self):
+        payload = import_feed.build_payload({
+            "title": "引用边界 · 第01集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [
+                {
+                    "code": "图10",
+                    "name": "厂区后街（场景母版）",
+                    "raw": "厂区后街场景。",
+                    "canvas": {"kind": "scene", "name": "厂区后街·母版"},
+                },
+                {
+                    "code": "图11",
+                    "name": "名册（道具设定图）",
+                    "raw": "名册道具。",
+                    "canvas": {"kind": "prop", "name": "名册"},
+                },
+            ],
+            "segments": [{
+                "no": 1,
+                "name": "段1 · 引用边界",
+                "raw": (
+                    "<厂区后街> 对应@场景｜厂区后街·母版（图10），"
+                    "仅采用空间布局与建筑。\n"
+                    "道具｜名册（图11）只是说明，不是图片引用。"
+                ),
+            }],
+        })
+        video = next(node for node in payload["nodes"] if node["type"] == "video")
+        refs = video["metadata"]["params"]["refs"]
+        self.assertEqual(
+            {ref["label"] for ref in refs},
+            {"场景｜厂区后街·母版（图10）"},
+        )
+
+    def test_explicit_reference_in_one_segment_does_not_leak_into_another(self):
+        payload = import_feed.build_payload({
+            "title": "引用边界 · 第01集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [
+                {
+                    "code": "图10",
+                    "name": "厂区后街（场景母版）",
+                    "raw": "厂区后街场景。",
+                    "canvas": {"kind": "scene", "name": "厂区后街·母版"},
+                },
+                {
+                    "code": "图11",
+                    "name": "名册（道具设定图）",
+                    "raw": "名册道具。",
+                    "canvas": {"kind": "prop", "name": "名册"},
+                },
+            ],
+            "segments": [
+                {
+                    "no": 1,
+                    "name": "段1 · 只提到裸文本",
+                    "raw": (
+                        "@场景｜厂区后街（图10）\n"
+                        "道具｜名册（图11）只是说明，没有 @。"
+                    ),
+                },
+                {
+                    "no": 2,
+                    "name": "段2 · 显式引用",
+                    "raw": "@道具｜名册（图11）被角色拿起。",
+                },
+            ],
+        })
+        videos = {
+            node["title"]: node
+            for node in payload["nodes"]
+            if node["type"] == "video"
+        }
+        seg1_refs = videos["段1 · 只提到裸文本"]["metadata"]["params"]["refs"]
+        seg2_refs = videos["段2 · 显式引用"]["metadata"]["params"]["refs"]
+        self.assertEqual(
+            {ref["label"] for ref in seg1_refs},
+            {"场景｜厂区后街·母版（图10）"},
+        )
+        self.assertIn("道具｜名册（图11）", {ref["label"] for ref in seg2_refs})
+
+    def test_reimport_removes_stale_extra_reference_and_edge(self):
+        feed = {
+            "title": "引用边界 · 第01集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [
+                {
+                    "code": "图10",
+                    "name": "厂区后街（场景母版）",
+                    "raw": "厂区后街场景。",
+                    "canvas": {"kind": "scene", "name": "厂区后街·母版"},
+                },
+                {
+                    "code": "图11",
+                    "name": "名册（道具设定图）",
+                    "raw": "名册道具。",
+                    "canvas": {"kind": "prop", "name": "名册"},
+                },
+            ],
+            "segments": [{
+                "no": 1,
+                "name": "段1 · 引用边界",
+                "raw": (
+                    "@场景｜厂区后街（图10）\n"
+                    "道具｜名册（图11）只是说明，没有 @。"
+                ),
+            }],
+        }
+        first = import_feed.build_payload(feed)
+        video = next(node for node in first["nodes"] if node["type"] == "video")
+        stale_source = next(
+            node for node in first["nodes"]
+            if node["type"] == "image" and "图11" in node["title"]
+        )
+        video["metadata"]["params"]["refs"].append({
+            "nodeId": stale_source["id"],
+            "label": stale_source["title"],
+        })
+        first["connections"].append({
+            "id": "edge-stale-11",
+            "fromNodeId": stale_source["id"],
+            "toNodeId": video["id"],
+        })
+
+        reimported = import_feed.merge_payload_by_episode(
+            first,
+            import_feed.build_payload(feed),
+        )
+        merged_video = next(
+            node for node in reimported["nodes"]
+            if node["type"] == "video"
+        )
+        refs = merged_video["metadata"]["params"]["refs"]
+        incoming = [
+            edge for edge in reimported["connections"]
+            if edge["toNodeId"] == merged_video["id"]
+        ]
+
+        self.assertEqual(
+            {ref["label"] for ref in refs},
+            {"场景｜厂区后街·母版（图10）"},
+        )
+        self.assertNotIn("edge-stale-11", {edge["id"] for edge in incoming})
+
     def test_repairs_existing_payload_idempotently(self):
         payload = {
             "nodes": [{
@@ -944,7 +1092,7 @@ class ImportFeedContractTests(unittest.TestCase):
                 "type": "video",
                 "title": "段8 · 黑影",
                 "metadata": {
-                    "prompt": "赵铁柱把纸条（图32）压进账本。",
+                    "prompt": "赵铁柱把@道具｜匿名纸条（图32）压进账本。",
                     "params": {"model": "doubao-seedance-2-0", "refs": [], "voiceRefs": []},
                 },
             }, {
@@ -1274,7 +1422,7 @@ class ImportFeedContractTests(unittest.TestCase):
             "segments": [{
                 "no": 1,
                 "name": "段1 · 第一集",
-                "raw": '赵铁柱站在门口。台词：赵铁柱（低沉）："走。"',
+                "raw": '@角色｜赵铁柱（图1）站在门口。台词：赵铁柱（低沉）："走。"',
                 "shots": [],
             }],
         })
@@ -1290,7 +1438,7 @@ class ImportFeedContractTests(unittest.TestCase):
                 "no": 1,
                 "name": "段1 · 第二集",
                 "raw": (
-                    '赵铁柱站在门口。台词：赵铁柱（低沉）："走。"'
+                    '@角色｜赵铁柱（图1）站在门口。台词：赵铁柱（低沉）："走。"'
                     '郝秀兰点头。台词：郝秀兰（温和）："好。"'
                 ),
                 "shots": [],
@@ -1873,7 +2021,7 @@ class ImportFeedContractTests(unittest.TestCase):
                 "no": 1,
                 "name": "段1 · 第一集",
                 "raw": (
-                    "@//chr/- 赵铁柱（图1）站在门口。"
+                    "@角色｜赵铁柱（图1）站在门口。"
                     '台词：赵铁柱（低沉）："走。"'
                 ),
                 "shots": [],
@@ -1891,7 +2039,7 @@ class ImportFeedContractTests(unittest.TestCase):
                 "no": 1,
                 "name": "段1 · 第二集",
                 "raw": (
-                    "@//chr/- 赵铁柱（图1）与@//chr/- 郝秀兰（图9）站在门口。"
+                    "@角色｜赵铁柱（图1）与@角色｜郝秀兰（图9）站在门口。"
                     '台词：赵铁柱（低沉）："走。"'
                     '台词：郝秀兰（温和）："好。"'
                 ),
@@ -1905,7 +2053,10 @@ class ImportFeedContractTests(unittest.TestCase):
         roles = [
             (nodes[node_id]["title"], positions[node_id])
             for node_id in ep2["nodeIds"]
-            if nodes[node_id]["type"] == "image" and nodes[node_id]["title"].startswith("角色｜")
+            if node_id in nodes
+            and node_id in positions
+            and nodes[node_id]["type"] == "image"
+            and nodes[node_id]["title"].startswith("角色｜")
         ]
         roles.sort(key=lambda item: item[1]["y"])
         self.assertEqual([position["y"] for _, position in roles], [0, 360])
