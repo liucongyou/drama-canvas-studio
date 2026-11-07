@@ -751,6 +751,28 @@ class CanvasProjectionTests(unittest.TestCase):
         workspace = canvas_store.get_project_workspace_index(project_id)
         self.assertEqual(workspace["episodeViewports"]["EP002"]["zoom"], 0.42)
 
+    def test_unchanged_viewport_does_not_create_database_write_or_revision(self):
+        project_id = canvas_store.create_project("projection", self._payload())
+        before = canvas_store.get_project(project_id)
+        first = canvas_store.update_project_viewport(
+            project_id,
+            {"x": 77, "y": 88, "zoom": 0.42},
+            episode_id="EP002",
+            if_revision=before["revision"],
+        )
+        self.assertFalse(first["unchanged"])
+        revision_after_first = first["revision"]
+        second = canvas_store.update_project_viewport(
+            project_id,
+            {"x": 77.1, "y": 88.1, "zoom": 0.42001},
+            episode_id="EP002",
+            if_revision=revision_after_first,
+        )
+        self.assertTrue(second["unchanged"])
+        self.assertEqual(second["revision"], revision_after_first)
+        current = canvas_store.get_project(project_id)
+        self.assertEqual(current["revision"], revision_after_first)
+
     def test_legacy_project_stats_are_backfilled_on_real_upgrade(self):
         context = tenant_context.make_context("legacy-stats", "legacy-stats")
         tenant_context.ensure_context_dirs(context)

@@ -4598,6 +4598,20 @@ def patch_project_node_atomic(
     return _run_write_transaction(write)
 
 
+def should_persist_viewport(value, previous) -> bool:
+    """Match the browser persistence threshold for viewport writes."""
+    if not isinstance(previous, dict):
+        return True
+    try:
+        return (
+            abs(float(value.get("x") or 0) - float(previous.get("x") or 0)) >= 0.5
+            or abs(float(value.get("y") or 0) - float(previous.get("y") or 0)) >= 0.5
+            or abs(float(value.get("zoom") or 1) - float(previous.get("zoom") or 1)) >= 0.0001
+        )
+    except (TypeError, ValueError):
+        return True
+
+
 def update_project_viewport(
     project_id,
     viewport,
@@ -4613,7 +4627,7 @@ def update_project_viewport(
     """
     def write(con):
         project_row = con.execute(
-            "SELECT title,revision FROM canvas_projects WHERE id=?",
+            "SELECT title,revision,updated_at FROM canvas_projects WHERE id=?",
             (project_id,),
         ).fetchone()
         if not project_row:
@@ -4632,13 +4646,29 @@ def update_project_viewport(
             "zoom": float(viewport.get("zoom") or 1),
         }
         ep_id = str(episode_id or "").strip().upper()
-        stamp = _now_iso()
         if ep_id:
             existing = con.execute(
-                "SELECT title FROM canvas_projection_episodes "
+                "SELECT title,viewport_json FROM canvas_projection_episodes "
                 "WHERE project_id=? AND episode_id=?",
                 (project_id, ep_id),
             ).fetchone()
+            previous = {}
+            if existing and existing[1]:
+                try:
+                    previous = json.loads(existing[1] or "{}")
+                except (TypeError, ValueError):
+                    previous = {}
+            if (
+                isinstance(previous, dict)
+                and not should_persist_viewport(normalized, previous)
+            ):
+                return {
+                    "viewport": normalized,
+                    "revision": current_revision,
+                    "updated_at": str(project_row[2] or ""),
+                    "unchanged": True,
+                }
+            stamp = _now_iso()
             con.execute(
                 "INSERT INTO canvas_projection_episodes("
                 "project_id,episode_id,title,viewport_json,updated_at"
@@ -4665,6 +4695,18 @@ def update_project_viewport(
                 meta = {}
             if not isinstance(meta, dict):
                 meta = {}
+            previous = meta.get("viewport")
+            if (
+                isinstance(previous, dict)
+                and not should_persist_viewport(normalized, previous)
+            ):
+                return {
+                    "viewport": normalized,
+                    "revision": current_revision,
+                    "updated_at": str(project_row[2] or ""),
+                    "unchanged": True,
+                }
+            stamp = _now_iso()
             meta["viewport"] = normalized
             con.execute(
                 "INSERT INTO canvas_project_meta(project_id,meta_json,updated_at) "
@@ -4688,6 +4730,7 @@ def update_project_viewport(
             "viewport": normalized,
             "revision": new_revision,
             "updated_at": stamp,
+            "unchanged": False,
         }
 
     return _run_write_transaction(write)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -358,6 +360,212 @@ class GenerationMediaStressTests(unittest.TestCase):
                     saved_node = nodes_by_id[node["id"]]
                     self.assertEqual(saved_node["metadata"]["status"], "done")
                     self.assertTrue(saved_node["metadata"]["content"])
+
+    def test_two_running_video_workers_do_not_block_project_reads_or_writes(self):
+        """Two slow provider waits must not serialize the canvas API.
+
+        The production path starts one worker thread per persisted task and the
+        provider adapters poll synchronously inside that worker. This regression
+        holds both workers at the provider-submit boundary, then verifies that
+        independent project reads and another project's terminal write still
+        complete well below the simulated provider wait.
+        """
+        with tenant_context.use_context(self.context):
+            first_project, first_nodes = self._project(201, ("video",))
+            second_project, second_nodes = self._project(202, ("video",))
+            other_project, other_nodes = self._project(203, ("text",))
+            first_task = canvas_store.create_generation_task(
+                first_project,
+                first_nodes[0]["id"],
+                kind="video",
+                provider="mock",
+                model="mock-video",
+            )
+            second_task = canvas_store.create_generation_task(
+                second_project,
+                second_nodes[0]["id"],
+                kind="video",
+                provider="mock",
+                model="mock-video",
+            )
+
+        started = threading.Barrier(3)
+        release = threading.Event()
+        entered = []
+        entered_lock = threading.Lock()
+
+        def slow_generate(*_args, **_kwargs):
+            with entered_lock:
+                entered.append(time.monotonic())
+            started.wait(timeout=5)
+            if not release.wait(timeout=10):
+                raise RuntimeError("test did not release provider wait")
+            return {
+                "url": "https://provider.example/slow.mp4",
+                "taskId": "mock-provider-task",
+            }
+
+        provider = {"id": "mock", "api_key": "test-key"}
+        model = {
+            "id": "mock-video",
+            "remoteModel": "mock-video",
+            "defaultParams": {},
+            "limits": {},
+        }
+        worker_errors = []
+
+        def run_worker(task):
+            try:
+                server._run_generation_task_worker(
+                    task["id"],
+                    self.context.tenant_id,
+                    self.context.slug,
+                )
+            except Exception as exc:  # pragma: no cover - asserted below
+                worker_errors.append(exc)
+
+        with (
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(provider, model, {}),
+            ),
+            patch.object(server, "ensure_provider_auth"),
+            patch.object(
+                server.provider_client,
+                "generate_video",
+                side_effect=slow_generate,
+            ),
+            patch.object(server, "persist_generated_media", return_value="/uploads/slow.mp4"),
+            patch.object(server, "ensure_video_thumbnail", return_value=""),
+            patch.object(server, "validate_generated_video", return_value={}),
+            patch.object(server, "queue_generated_video_finalize"),
+        ):
+            workers = [
+                threading.Thread(target=run_worker, args=(task,), daemon=True)
+                for task in (first_task, second_task)
+            ]
+            for worker in workers:
+                worker.start()
+            started.wait(timeout=5)
+
+            read_started = time.monotonic()
+            with tenant_context.use_context(self.context):
+                read_project = canvas_store.get_project(other_project)
+            read_elapsed = time.monotonic() - read_started
+
+            write_started = time.monotonic()
+            with tenant_context.use_context(self.context):
+                write_task = canvas_store.create_generation_task(
+                    other_project,
+                    other_nodes[0]["id"],
+                    kind="text",
+                    provider="mock",
+                    model="mock-text",
+                )
+            write_elapsed = time.monotonic() - write_started
+
+            self.assertIsNotNone(read_project)
+            self.assertTrue(write_task.get("created_new"))
+            self.assertLess(read_elapsed, 1.5)
+            self.assertLess(write_elapsed, 1.5)
+
+            release.set()
+            for worker in workers:
+                worker.join(timeout=10)
+
+        self.assertFalse(worker_errors)
+        self.assertEqual(len(entered), 2)
+
+    def test_same_project_two_video_workers_remain_responsive_during_provider_wait(self):
+        with tenant_context.use_context(self.context):
+            project_id, nodes = self._project(204, ("video", "video", "text"))
+            tasks = [
+                canvas_store.create_generation_task(
+                    project_id,
+                    nodes[index]["id"],
+                    kind="video",
+                    provider="mock",
+                    model="mock-video",
+                )
+                for index in range(2)
+            ]
+
+        started = threading.Barrier(3)
+        release = threading.Event()
+
+        def slow_generate(*_args, **_kwargs):
+            started.wait(timeout=5)
+            if not release.wait(timeout=10):
+                raise RuntimeError("test did not release provider wait")
+            return {
+                "url": "https://provider.example/same-project.mp4",
+                "taskId": "same-project-provider-task",
+            }
+
+        provider = {"id": "mock", "api_key": "test-key"}
+        model = {
+            "id": "mock-video",
+            "remoteModel": "mock-video",
+            "defaultParams": {},
+            "limits": {},
+        }
+        worker_errors = []
+
+        def run_worker(task):
+            try:
+                server._run_generation_task_worker(
+                    task["id"],
+                    self.context.tenant_id,
+                    self.context.slug,
+                )
+            except Exception as exc:  # pragma: no cover - asserted below
+                worker_errors.append(exc)
+
+        with (
+            patch.object(
+                server.provider_catalog,
+                "resolve_model",
+                return_value=(provider, model, {}),
+            ),
+            patch.object(server, "ensure_provider_auth"),
+            patch.object(
+                server.provider_client,
+                "generate_video",
+                side_effect=slow_generate,
+            ),
+            patch.object(server, "persist_generated_media", return_value="/uploads/same-project.mp4"),
+            patch.object(server, "ensure_video_thumbnail", return_value=""),
+            patch.object(server, "validate_generated_video", return_value={}),
+            patch.object(server, "queue_generated_video_finalize"),
+        ):
+            workers = [
+                threading.Thread(target=run_worker, args=(task,), daemon=True)
+                for task in tasks
+            ]
+            for worker in workers:
+                worker.start()
+            started.wait(timeout=5)
+
+            latency = []
+            for _ in range(6):
+                started_at = time.monotonic()
+                with tenant_context.use_context(self.context):
+                    project = canvas_store.get_project(project_id)
+                    workspace = canvas_store.get_project_workspace_nodes(
+                        project_id,
+                        "EP001",
+                    )
+                latency.append(time.monotonic() - started_at)
+                self.assertIsNotNone(project)
+                self.assertGreaterEqual(len(workspace["nodes"]), 3)
+
+            self.assertLess(max(latency), 1.5)
+            release.set()
+            for worker in workers:
+                worker.join(timeout=10)
+
+        self.assertFalse(worker_errors)
 
     def test_same_node_repeated_and_batch_submissions_create_one_active_task(self):
         with tenant_context.use_context(self.context):
