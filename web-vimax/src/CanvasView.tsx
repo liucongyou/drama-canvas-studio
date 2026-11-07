@@ -111,7 +111,7 @@ import {
   Share2,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -12352,14 +12352,22 @@ function CanvasViewInner({
         return versions.map((version, versionIndex) => ({
           node,
           url: String(version.url || ''),
+          versionId: String(version.versionId || ''),
           versionIndex,
           versionTotal: versions.length,
         }));
       }
       const currentIndex = versions.findIndex((version) => version.url === node.mediaUrl);
+      const currentVersion = currentIndex >= 0
+        ? versions[currentIndex]
+        : versions.find((version) => (
+            version.versionId
+            && version.versionId === node.params?.activeVersionId
+          ));
       return node.mediaUrl ? [{
         node,
         url: node.mediaUrl,
+        versionId: String(currentVersion?.versionId || ''),
         versionIndex: currentIndex >= 0 ? currentIndex : Math.max(0, Number(node.params?.mediaVersionIndex ?? node.params?.videoVersionIndex ?? versions.length - 1)),
         versionTotal: versions.length,
       }] : [];
@@ -12371,6 +12379,7 @@ function CanvasViewInner({
       const item = items[i];
       const n = item.node;
       const url = item.url;
+      const versionId = item.versionId;
       const filename = mediaDownloadFilename({
         projectTitle: canvas?.meta.project_title || canvas?.meta.episodes?.[0]?.title || '项目',
         episodeId: currentEp || n.episodeId || 'EP01',
@@ -12388,20 +12397,34 @@ function CanvasViewInner({
           a.href = url; a.download = filename; a.click();
           done = true;
         } else {
-          // 同源（/uploads/…）与跨域统一走 blob，行为一致且能真正拿到文件名
-          const res = await fetch(url, {credentials: 'include'});
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const blob = await res.blob();
-          const objUrl = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = objUrl; a.download = filename; a.click();
-          // 立刻 revoke 会让部分浏览器中断下载，延后一拍
-          window.setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
-          done = true;
+          try {
+            const ticket = await createMediaDownloadUrl(
+              session,
+              n.id,
+              versionId,
+              filename,
+            );
+            const a = document.createElement('a');
+            a.href = ticket.url;
+            a.download = filename;
+            a.rel = 'noopener';
+            a.click();
+            done = true;
+          } catch {
+            // Legacy records without a node/version receipt can still use a
+            // CORS-enabled direct URL. TOS receipts never take this path.
+            const res = await fetch(url, {credentials: 'include'});
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const blob = await res.blob();
+            const objUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = objUrl; a.download = filename; a.click();
+            window.setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
+            done = true;
+          }
         }
       } catch {
-        // 兜底：至少把原地址打开，用户可自行另存
-        window.open(url, '_blank', 'noopener');
+        setToast(`下载失败：${filename}`);
       }
       if (done) ok += 1;
       // 串行间隔：给浏览器处理上一轮下载的时间（20 个以上时肉眼可见地必要）

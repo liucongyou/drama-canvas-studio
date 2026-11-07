@@ -2334,6 +2334,22 @@ export async function saveCanvasMediaNodePositions(
   });
 }
 
+export async function createMediaDownloadUrl(
+  sessionId: string,
+  nodeId: string,
+  versionId: string,
+  downloadName: string,
+): Promise<{url: string; expiresIn?: number; downloadName?: string}> {
+  return request(
+    `/api/projects/${encodeURIComponent(sessionId)}/downloads`,
+    {
+      method: 'POST',
+      body: JSON.stringify({nodeId, versionId, downloadName}),
+      timeoutMs: 30_000,
+    },
+  );
+}
+
 export async function saveCanvasEpisodeViewport(
   sessionId: string,
   viewport: {x: number; y: number; zoom: number},

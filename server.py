@@ -27,6 +27,7 @@ import base64
 import binascii
 import gzip
 import hashlib
+import hmac
 import inspect
 import mimetypes
 import secrets
@@ -36,6 +37,8 @@ import subprocess
 import threading
 import time
 import urllib.parse
+import urllib.error
+import urllib.request
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from email.utils import formatdate
@@ -59,6 +62,7 @@ import tos_storage
 import tenant_bootstrap
 import tenant_context
 import tenant_registry
+import tenant_security
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 # 后端根路径真正要端出去的前端产物。
@@ -76,6 +80,249 @@ _STATIC_COMPRESSIBLE_EXT = {
     ".txt", ".xml", ".webmanifest",
 }
 _STATIC_COMPRESS_MIN_BYTES = 1024
+DOWNLOAD_TICKET_TTL_SECONDS = max(
+    60,
+    min(
+        3600,
+        int(os.environ.get("CANVAS_DOWNLOAD_TICKET_TTL_SECONDS", "600")),
+    ),
+)
+
+
+def _download_ticket_key() -> bytes:
+    return hashlib.sha256(
+        b"canvas-download-v1\0" + tenant_security.master_key()
+    ).digest()
+
+
+def _download_content_disposition(download_name: str) -> str:
+    raw = re.sub(
+        r"[\x00-\x1f\x7f]+",
+        "_",
+        str(download_name or "").strip(),
+    )
+    raw = os.path.basename(raw.replace("\\", "/"))[:240] or "download.bin"
+    stem, suffix = os.path.splitext(raw)
+    if not re.fullmatch(r"\.[A-Za-z0-9]{1,10}", suffix or ""):
+        suffix = ".bin"
+    safe_ascii = re.sub(
+        r"[^A-Za-z0-9._-]+",
+        "_",
+        stem,
+    ).strip("._") or "download"
+    return (
+        f'attachment; filename="{safe_ascii}{suffix}"; '
+        f"filename*=UTF-8''{urllib.parse.quote(raw, safe='')}"
+    )
+
+
+def issue_media_download_ticket(
+    *,
+    project_id: str,
+    node_id: str,
+    version_id: str,
+    download_name: str,
+) -> str:
+    project_id = str(project_id or "").strip()
+    node_id = str(node_id or "").strip()
+    version_id = str(version_id or "").strip()
+    download_name = str(download_name or "").strip()
+    if (
+        not project_id
+        or not node_id
+        or not download_name
+    ):
+        raise ValueError("下载票据参数无效")
+    payload = {
+        "v": 1,
+        "t": tenant_context.current_tenant_id(),
+        "p": project_id,
+        "node": node_id,
+        "vid": version_id,
+        "n": download_name[:240],
+        "e": int(time.time()) + DOWNLOAD_TICKET_TTL_SECONDS,
+        "j": secrets.token_hex(8),
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).rstrip(b"=")
+    signature = hmac.new(
+        _download_ticket_key(),
+        encoded,
+        hashlib.sha256,
+    ).digest()
+    return (
+        encoded.decode("ascii")
+        + "."
+        + base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+    )
+
+
+def verify_media_download_ticket(token: str) -> dict:
+    raw = str(token or "").strip()
+    if not raw or len(raw) > 2048 or "." not in raw:
+        raise ValueError("下载票据无效")
+    encoded, signature = raw.rsplit(".", 1)
+    try:
+        expected = hmac.new(
+            _download_ticket_key(),
+            encoded.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        actual = base64.urlsafe_b64decode(
+            signature + "=" * ((4 - len(signature) % 4) % 4)
+        )
+        if not hmac.compare_digest(actual, expected):
+            raise ValueError("下载票据签名无效")
+        payload = json.loads(
+            base64.urlsafe_b64decode(
+                encoded + "=" * ((4 - len(encoded) % 4) % 4)
+            ).decode("utf-8")
+        )
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("下载票据无效") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("v") != 1
+        or str(payload.get("t") or "")
+        != tenant_context.current_tenant_id()
+        or int(payload.get("e") or 0) < int(time.time())
+    ):
+        raise ValueError("下载票据已过期或不属于当前租户")
+    return payload
+
+
+def resolve_media_download_source(
+    project_id: str,
+    node_id: str,
+    version_id: str = "",
+) -> dict[str, Any]:
+    """Resolve one node media version from durable project state.
+
+    Never trust a browser-provided file path or object URL. The ticket can only
+    name a project node/version; this function resolves the actual source.
+    """
+    project = store.get_project(project_id)
+    if not project:
+        raise KeyError("项目不存在")
+    node = next(
+        (
+            item
+            for item in (project.get("payload") or {}).get("nodes") or []
+            if isinstance(item, dict)
+            and str(item.get("id") or "") == str(node_id or "")
+        ),
+        None,
+    )
+    if not node:
+        raise KeyError("节点不存在")
+    meta = node.get("metadata") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    params = meta.get("params") or {}
+    if not isinstance(params, dict):
+        params = {}
+    versions = [
+        item
+        for item in (
+            params.get("mediaVersions")
+            or params.get("videoVersions")
+            or []
+        )
+        if isinstance(item, dict)
+    ]
+    requested = str(version_id or "").strip()
+    active_id = str(params.get("activeVersionId") or "").strip()
+    version = next(
+        (
+            item
+            for item in versions
+            if requested
+            and str(item.get("versionId") or "") == requested
+        ),
+        None,
+    )
+    if not version and requested:
+        version = next(
+            (
+                item
+                for item in versions
+                if str(item.get("taskId") or "") == requested
+            ),
+            None,
+        )
+    if requested and not version:
+        raise FileNotFoundError("请求的媒体版本不存在")
+    if not requested and active_id:
+        version = next(
+            (
+                item
+                for item in versions
+                if str(item.get("versionId") or "") == active_id
+            ),
+            None,
+        )
+    is_active = bool(
+        version
+        and (
+            not active_id
+            or str(version.get("versionId") or "") == active_id
+        )
+    )
+    candidates = [
+        str((version or {}).get("url") or ""),
+        str(meta.get("content") or "") if is_active else "",
+    ]
+    local_filename = ""
+    for candidate in candidates:
+        if not candidate.startswith("/uploads/"):
+            continue
+        filename = os.path.basename(
+            urllib.parse.unquote(candidate[len("/uploads/"):])
+        )
+        if (
+            filename
+            and filename not in {".", ".."}
+            and os.path.isfile(os.path.join(_upload_dir(), filename))
+        ):
+            local_filename = filename
+            break
+    storage = (
+        (version or {}).get("storage")
+        if isinstance((version or {}).get("storage"), dict)
+        else {}
+    )
+    if (
+        (not storage or storage.get("status") != "stored")
+        and is_active
+        and isinstance(meta.get("storage"), dict)
+    ):
+        storage = meta.get("storage") or {}
+    if (
+        not local_filename
+        and storage.get("status") == "stored"
+        and storage.get("key")
+    ):
+        return {
+            "node": node,
+            "version": version or {},
+            "localFilename": "",
+            "storage": storage,
+        }
+    if not local_filename:
+        raise FileNotFoundError("媒体文件不存在")
+    return {
+        "node": node,
+        "version": version or {},
+        "localFilename": local_filename,
+        "storage": storage if isinstance(storage, dict) else {},
+    }
+
+
 # key=(绝对路径, mtime_ns, size)：重新构建后 mtime 变化，旧的压缩结果自然失效。
 _STATIC_GZIP_CACHE: dict[tuple[str, int, int], bytes] = {}
 _STATIC_GZIP_CACHE_MAX_BYTES = 24 * 1024 * 1024
@@ -5672,7 +5919,7 @@ class Handler(BaseHTTPRequestHandler):
                 "Content-Type,Authorization,X-File-Name,X-File-Type,"
                 "X-Request-ID,X-Share-Token"
             ),
-            "Access-Control-Expose-Headers": "Accept-Ranges,Content-Length,Content-Range,ETag,Last-Modified,X-Request-ID",
+            "Access-Control-Expose-Headers": "Accept-Ranges,Content-Disposition,Content-Length,Content-Range,ETag,Last-Modified,X-Request-ID",
             "Access-Control-Max-Age": "600",
             "Vary": "Origin",
         }
@@ -5782,6 +6029,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_upload_file(self, fpath: str, name: str):
         """Serve tenant media with session auth, CORS and single-range support."""
+        return self._send_upload_file_with_options(
+            fpath,
+            name,
+            download_name="",
+        )
+
+    def _send_upload_file_with_options(
+        self,
+        fpath: str,
+        name: str,
+        *,
+        download_name: str = "",
+    ):
+        """Serve tenant media with optional RFC 5987 attachment filename."""
         stat = os.stat(fpath)
         size = stat.st_size
         etag = f'"{size:x}-{stat.st_mtime_ns:x}"'
@@ -5884,6 +6145,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(length))
         self.send_header("Accept-Ranges", "bytes")
+        if download_name:
+            self.send_header(
+                "Content-Disposition",
+                _download_content_disposition(download_name),
+            )
         for key, value in cache_headers.items():
             self.send_header(key, value)
         if partial:
@@ -5913,6 +6179,105 @@ class Handler(BaseHTTPRequestHandler):
                     self.close_connection = True
                     return
                 remaining -= len(chunk)
+
+    def _send_remote_download(
+        self,
+        url: str,
+        *,
+        download_name: str,
+    ):
+        """Proxy a trusted object-store download through the app origin."""
+        request_headers = {}
+        range_header = str(self.headers.get("Range") or "").strip()
+        if_range = str(self.headers.get("If-Range") or "").strip()
+        if range_header:
+            request_headers["Range"] = range_header
+        if if_range:
+            request_headers["If-Range"] = if_range
+        request = urllib.request.Request(
+            url,
+            headers=request_headers,
+            method=self.command,
+        )
+        try:
+            response = urllib.request.urlopen(
+                request,
+                timeout=60,
+            )
+        except urllib.error.HTTPError as exc:
+            return self._send(
+                exc.code,
+                {"error": "对象存储下载失败"},
+            )
+        except Exception as exc:
+            return self._send(
+                502,
+                {
+                    "error": f"对象存储下载失败：{exc}",
+                    "code": "REMOTE_DOWNLOAD_FAILED",
+                },
+            )
+        with response:
+            status = int(getattr(response, "status", 200))
+            response_headers = getattr(response, "headers", {})
+            content_type = str(
+                response_headers.get("Content-Type")
+                or "application/octet-stream"
+            )
+            content_length = str(
+                response_headers.get("Content-Length")
+                or ""
+            )
+            content_range = str(
+                response_headers.get("Content-Range")
+                or ""
+            )
+            accept_ranges = str(
+                response_headers.get("Accept-Ranges")
+                or ("bytes" if status == 206 else "")
+            )
+            etag = str(response_headers.get("ETag") or "")
+            last_modified = str(
+                response_headers.get("Last-Modified")
+                or ""
+            )
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            if content_length:
+                self.send_header("Content-Length", content_length)
+            if content_range:
+                self.send_header("Content-Range", content_range)
+            if accept_ranges:
+                self.send_header("Accept-Ranges", accept_ranges)
+            if etag:
+                self.send_header("ETag", etag)
+            if last_modified:
+                self.send_header("Last-Modified", last_modified)
+            self.send_header("Cache-Control", "private, no-store")
+            self.send_header(
+                "Content-Disposition",
+                _download_content_disposition(download_name),
+            )
+            for key, value in {
+                **_security_headers(),
+                **self._cors_headers(),
+                "Cross-Origin-Resource-Policy": "cross-origin",
+            }.items():
+                self.send_header(str(key), str(value))
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except OSError as exc:
+                    if not is_client_disconnect_error(exc):
+                        raise
+                    self.close_connection = True
+                    return
 
     # ---------- 文件上传 ----------
     # 允许的扩展名白名单：只收图片/音频/视频，避免上传目录被塞入可执行文件
@@ -6987,6 +7352,61 @@ class Handler(BaseHTTPRequestHandler):
     def _do_get(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        download_media = re.match(
+            r"^/api/downloads/media/([^/]+)$",
+            path,
+        )
+        if download_media:
+            try:
+                ticket = verify_media_download_ticket(
+                    unquote(download_media.group(1))
+                )
+            except ValueError as exc:
+                return self._send(
+                    403,
+                    {"error": str(exc), "code": "DOWNLOAD_TICKET_INVALID"},
+                )
+            project_id = str(ticket.get("p") or "")
+            node_id = str(ticket.get("node") or "")
+            version_id = str(ticket.get("vid") or "")
+            download_name = str(ticket.get("n") or "")
+            try:
+                source = resolve_media_download_source(
+                    project_id,
+                    node_id,
+                    version_id,
+                )
+            except (KeyError, FileNotFoundError):
+                return self._send(
+                    404,
+                    {"error": "文件不存在"},
+                )
+            if source["localFilename"]:
+                return self._send_upload_file_with_options(
+                    os.path.join(
+                        _upload_dir(),
+                        source["localFilename"],
+                    ),
+                    source["localFilename"],
+                    download_name=download_name,
+                )
+            try:
+                signed_url = tos_storage.public_presigned_url(
+                    source["storage"],
+                    expires=DOWNLOAD_TICKET_TTL_SECONDS,
+                )
+            except Exception as exc:
+                return self._send(
+                    502,
+                    {
+                        "error": f"生成对象存储下载地址失败：{exc}",
+                        "code": "REMOTE_DOWNLOAD_SIGN_FAILED",
+                    },
+                )
+            return self._send_remote_download(
+                signed_url,
+                download_name=download_name,
+            )
         share_read = re.match(
             r"^/api/share/([^/]+)/"
             r"(project|workspace-index|workspace-nodes|notes|tasks|events)$",
@@ -7490,6 +7910,48 @@ class Handler(BaseHTTPRequestHandler):
     def _do_post(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        m = re.match(
+            r"^/api/projects/([^/]+)/downloads$",
+            path,
+        )
+        if m:
+            body = self._read_json()
+            project_id = unquote(m.group(1))
+            node_id = str(body.get("nodeId") or "").strip()
+            version_id = str(body.get("versionId") or "").strip()
+            download_name = str(
+                body.get("downloadName") or ""
+            ).strip()
+            if not node_id or not download_name:
+                return self._send(400, {"error": "下载参数不完整"})
+            try:
+                resolve_media_download_source(
+                    project_id,
+                    node_id,
+                    version_id,
+                )
+            except (KeyError, FileNotFoundError):
+                return self._send(404, {"error": "文件不存在"})
+            try:
+                ticket = issue_media_download_ticket(
+                    project_id=project_id,
+                    node_id=node_id,
+                    version_id=version_id,
+                    download_name=download_name,
+                )
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
+            return self._send(
+                200,
+                {
+                    "url": (
+                        "/api/downloads/media/"
+                        + urllib.parse.quote(ticket, safe="")
+                    ),
+                    "expiresIn": DOWNLOAD_TICKET_TTL_SECONDS,
+                    "downloadName": download_name,
+                },
+            )
         if path == "/api/upload/stream":
             return self._handle_stream_upload()
         body = self._read_json()

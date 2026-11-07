@@ -6,11 +6,14 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
 import canvas_feed_contract
+import canvas_store
 import server
 import tenant_bootstrap
 import tenant_context
@@ -54,7 +57,15 @@ class TenantHttpTests(unittest.TestCase):
                 os.environ[key] = value
         self.temp.cleanup()
 
-    def request(self, method, path, host, cookie="", body=None):
+    def request(
+        self,
+        method,
+        path,
+        host,
+        cookie="",
+        body=None,
+        extra_headers=None,
+    ):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         headers = {"Host": host}
         if cookie:
@@ -63,6 +74,7 @@ class TenantHttpTests(unittest.TestCase):
         if body is not None:
             payload = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
+        headers.update(extra_headers or {})
         connection.request(method, path, headers=headers, body=payload)
         response = connection.getresponse()
         body = response.read()
@@ -492,6 +504,317 @@ class TenantHttpTests(unittest.TestCase):
         self.assertEqual(
             project["payload"]["episodeViewports"]["EP001"],
             {"x": 50.0, "y": 60.0, "zoom": 0.75},
+        )
+
+    def test_media_download_ticket_sets_filename_and_keeps_ranges(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        _, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "下载票据测试"},
+        )
+        project_id = json.loads(body)["id"]
+        context = tenant_context.make_context(tenant["id"], "alpha")
+        upload_dir = Path(context.upload_dir)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        filename = "download-ticket.mp4"
+        payload = b"0123456789abcdef"
+        (upload_dir / filename).write_bytes(payload)
+        node = {
+            "id": "download-node",
+            "type": "video",
+            "title": "段13",
+            "metadata": {
+                "status": "done",
+                "content": f"/uploads/{filename}",
+                "params": {
+                    "activeVersionId": "video:download-task",
+                    "mediaVersions": [{
+                        "versionId": "video:download-task",
+                        "taskId": "download-task",
+                        "url": f"/uploads/{filename}",
+                    }],
+                    "videoVersions": [{
+                        "versionId": "video:download-task",
+                        "taskId": "download-task",
+                        "url": f"/uploads/{filename}",
+                    }],
+                    "mediaVersionIndex": 0,
+                    "videoVersionIndex": 0,
+                },
+            },
+        }
+        status, _, body = self.request(
+            "PUT",
+            f"/api/projects/{project_id}/nodes",
+            "alpha.example.com",
+            cookie,
+            {"episodeId": "EP001", "nodes": [node]},
+        )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+        status, _, body = self.request(
+            "POST",
+            f"/api/projects/{project_id}/downloads",
+            "alpha.example.com",
+            cookie,
+            {
+                "nodeId": node["id"],
+                "versionId": "video:download-task",
+                "downloadName": "铁西硬汉_EP07_段13.mp4",
+            },
+        )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+        url = json.loads(body)["url"]
+        self.assertTrue(url.startswith("/api/downloads/media/"))
+
+        status, headers, body = self.request(
+            "GET",
+            url,
+            "alpha.example.com",
+            cookie,
+            extra_headers={"Range": "bytes=0-3"},
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(body, payload[:4])
+        self.assertEqual(headers.get("Content-Range"), "bytes 0-3/16")
+        disposition = headers.get("Content-Disposition", "")
+        self.assertIn("attachment", disposition)
+        self.assertIn("filename*=UTF-8''", disposition)
+        self.assertIn(
+            urllib.parse.quote("铁西硬汉_EP07_段13.mp4", safe=""),
+            disposition,
+        )
+        self.assertEqual(
+            self.request("GET", url, "alpha.example.com")[0],
+            401,
+        )
+
+    def test_media_download_ticket_is_tenant_bound_and_expires(self):
+        alpha = tenant_registry.get_tenant_by_slug("alpha")
+        beta = tenant_bootstrap.create_tenant("beta", name="Beta")
+        with tenant_context.use_tenant(alpha["id"], alpha["slug"]):
+            project_id = canvas_store.create_project("Alpha download")
+            upload_dir = Path(tenant_context.current_upload_dir())
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            filename = "alpha-download.mp4"
+            (upload_dir / filename).write_bytes(b"alpha-video")
+            canvas_store.update_project(
+                project_id,
+                payload={
+                    "nodes": [{
+                        "id": "alpha-video",
+                        "type": "video",
+                        "title": "段13",
+                        "metadata": {
+                            "status": "done",
+                            "content": f"/uploads/{filename}",
+                            "params": {
+                                "activeVersionId": "video:alpha-download",
+                                "mediaVersions": [{
+                                    "versionId": "video:alpha-download",
+                                    "taskId": "alpha-download",
+                                    "url": f"/uploads/{filename}",
+                                }],
+                                "mediaVersionIndex": 0,
+                            },
+                        },
+                    }],
+                    "connections": [],
+                    "episodeImports": [],
+                },
+            )
+        with tenant_context.use_tenant(alpha["id"], alpha["slug"]):
+            ticket = server.issue_media_download_ticket(
+                project_id=project_id,
+                node_id="alpha-video",
+                version_id="video:alpha-download",
+                download_name="alpha.mp4",
+            )
+        with tenant_context.use_tenant(beta["id"], beta["slug"]):
+            with self.assertRaisesRegex(ValueError, "当前租户"):
+                server.verify_media_download_ticket(ticket)
+        with tenant_context.use_tenant(alpha["id"], alpha["slug"]):
+            with patch.object(server.time, "time", return_value=time.time() + 3600):
+                with self.assertRaisesRegex(ValueError, "过期"):
+                    server.verify_media_download_ticket(ticket)
+
+    def test_media_download_ticket_does_not_fallback_to_another_version(self):
+        alpha = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(alpha["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        with tenant_context.use_tenant(alpha["id"], alpha["slug"]):
+            project_id = canvas_store.create_project("Strict download version")
+            upload_dir = Path(tenant_context.current_upload_dir())
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            filename = "current-version.mp4"
+            (upload_dir / filename).write_bytes(b"current")
+            canvas_store.update_project(
+                project_id,
+                payload={
+                    "nodes": [{
+                        "id": "versioned-video",
+                        "type": "video",
+                        "title": "段13",
+                        "metadata": {
+                            "status": "done",
+                            "content": f"/uploads/{filename}",
+                            "params": {
+                                "activeVersionId": "video:current",
+                                "mediaVersions": [{
+                                    "versionId": "video:current",
+                                    "taskId": "current-task",
+                                    "url": f"/uploads/{filename}",
+                                }],
+                                "mediaVersionIndex": 0,
+                            },
+                        },
+                    }],
+                    "connections": [],
+                    "episodeImports": [],
+                },
+            )
+        status, _, body = self.request(
+            "POST",
+            f"/api/projects/{project_id}/downloads",
+            "alpha.example.com",
+            cookie,
+            {
+                "nodeId": "versioned-video",
+                "versionId": "video:missing",
+                "downloadName": "missing.mp4",
+            },
+        )
+        self.assertEqual(status, 404, body.decode("utf-8"))
+
+    def test_media_download_ticket_proxies_tos_with_range_and_filename(self):
+        alpha = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(alpha["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        with tenant_context.use_tenant(alpha["id"], alpha["slug"]):
+            project_id = canvas_store.create_project("TOS download")
+            storage = {
+                "status": "stored",
+                "provider": "tos",
+                "bucket": "media-bucket",
+                "key": "drama-canvas/video/tos-only.mp4",
+            }
+            canvas_store.update_project(
+                project_id,
+                payload={
+                    "nodes": [{
+                        "id": "tos-video",
+                        "type": "video",
+                        "title": "段13",
+                        "metadata": {
+                            "status": "done",
+                            "content": "/uploads/missing-local.mp4",
+                            "storage": storage,
+                            "params": {
+                                "activeVersionId": "video:tos-task",
+                                "mediaVersions": [{
+                                    "versionId": "video:tos-task",
+                                    "taskId": "tos-task",
+                                    "url": "/uploads/missing-local.mp4",
+                                    "storage": storage,
+                                }],
+                                "mediaVersionIndex": 0,
+                            },
+                        },
+                    }],
+                    "connections": [],
+                    "episodeImports": [],
+                },
+            )
+        status, _, body = self.request(
+            "POST",
+            f"/api/projects/{project_id}/downloads",
+            "alpha.example.com",
+            cookie,
+            {
+                "nodeId": "tos-video",
+                "versionId": "video:tos-task",
+                "downloadName": "铁西硬汉_EP07_段13_TOS.mp4",
+            },
+        )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+        ticket_url = json.loads(body)["url"]
+
+        class FakeRemoteResponse:
+            status = 206
+            headers = {
+                "Content-Type": "video/mp4",
+                "Content-Length": "4",
+                "Content-Range": "bytes 0-3/16",
+                "Accept-Ranges": "bytes",
+            }
+
+            def __init__(self):
+                self._body = b"TOS!"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size=-1):
+                body, self._body = self._body, b""
+                return body
+
+        captured = {}
+
+        def fake_urlopen(request, timeout=0):
+            captured["url"] = request.full_url
+            captured["range"] = request.get_header("Range")
+            captured["timeout"] = timeout
+            return FakeRemoteResponse()
+
+        with (
+            patch.object(
+                server.tos_storage,
+                "public_presigned_url",
+                return_value="https://media-bucket.tos-cn-beijing.volces.com/signed",
+            ),
+            patch.object(
+                server.urllib.request,
+                "urlopen",
+                side_effect=fake_urlopen,
+            ),
+        ):
+            status, headers, body = self.request(
+                "GET",
+                ticket_url,
+                "alpha.example.com",
+                cookie,
+                extra_headers={"Range": "bytes=0-3"},
+            )
+        self.assertEqual(status, 206)
+        self.assertEqual(body, b"TOS!")
+        self.assertEqual(captured["range"], "bytes=0-3")
+        self.assertEqual(captured["timeout"], 60)
+        self.assertIn("Content-Range", headers)
+        self.assertIn(
+            urllib.parse.quote("铁西硬汉_EP07_段13_TOS.mp4", safe=""),
+            headers.get("Content-Disposition", ""),
         )
 
     def test_node_save_rejects_wrong_episode(self):
