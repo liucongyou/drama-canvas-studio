@@ -6301,7 +6301,9 @@ class Handler(BaseHTTPRequestHandler):
                 return project_id, "share_manage"
             return project_id, "project"
         if path == "/api/generation-tasks":
-            query = urllib.parse.parse_qs(parsed.query)
+            query = urllib.parse.parse_qs(
+                urllib.parse.urlsplit(self.path).query
+            )
             project_id = str((query.get("projectId") or [""])[0]).strip()
             return project_id, "project"
         if path == "/api/model-catalog":
@@ -8516,7 +8518,14 @@ class Handler(BaseHTTPRequestHandler):
                 or not 0.12 <= viewport["zoom"] <= 8
             ):
                 return self._send(400, {"error": "viewport 缩放范围无效"})
-            normalized_episode = str(body.get("episodeId") or "").strip().upper()
+            query = urllib.parse.parse_qs(
+                urllib.parse.urlsplit(self.path).query
+            )
+            normalized_episode = str(
+                body.get("episodeId")
+                or (query.get("episodeId") or [""])[0]
+                or ""
+            ).strip().upper()
             try:
                 saved = canvas_repository.CanvasRepository().save_viewport(
                     pid,
@@ -8530,7 +8539,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": str(exc)})
             return self._send(200, {
                 "ok": True,
-                "viewport": saved,
+                "viewport": saved.get("viewport") if isinstance(saved, dict) else saved,
+                "revision": saved.get("revision") if isinstance(saved, dict) else None,
+                "unchanged": bool(
+                    saved.get("unchanged")
+                    if isinstance(saved, dict)
+                    else False
+                ),
                 "episodeId": normalized_episode,
             })
         # Position-only save: dragging/layout code must never write stale metadata

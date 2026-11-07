@@ -141,7 +141,12 @@ class CanvasRepository:
             )
             if saved is None:
                 raise KeyError("项目不存在")
-            return normalized
+            return {
+                "viewport": saved.get("viewport") or normalized,
+                "revision": saved.get("revision"),
+                "updatedAt": saved.get("updated_at"),
+                "unchanged": saved.get("unchanged") is True,
+            }
 
     def upsert_nodes(self, project_id, nodes, *, episode_id=None, if_revision=None):
         if not isinstance(nodes, list):

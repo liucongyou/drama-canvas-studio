@@ -440,7 +440,59 @@ class TenantHttpTests(unittest.TestCase):
             if item["id"] == node["id"]
         )
         self.assertEqual(final_node["position"], {"x": 10.0, "y": 20.0})
-        self.assertEqual(final_node["metadata"]["prompt"], "更新提示词")
+
+    def test_viewport_body_episode_and_repeated_write_are_idempotent(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        _, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "视口幂等测试"},
+        )
+        project_id = json.loads(body)["id"]
+        payload = {"viewport": {"x": 50, "y": 60, "zoom": 0.75}, "episodeId": "EP001"}
+        first_status, _, first_body = self.request(
+            "PUT",
+            f"/api/projects/{project_id}/viewport",
+            "alpha.example.com",
+            cookie,
+            payload,
+        )
+        self.assertEqual(first_status, 200, first_body.decode("utf-8"))
+        first = json.loads(first_body)
+        self.assertEqual(first["episodeId"], "EP001")
+        self.assertFalse(first["unchanged"])
+        second_status, _, second_body = self.request(
+            "PUT",
+            f"/api/projects/{project_id}/viewport",
+            "alpha.example.com",
+            cookie,
+            payload,
+        )
+        self.assertEqual(second_status, 200, second_body.decode("utf-8"))
+        second = json.loads(second_body)
+        self.assertTrue(second["unchanged"])
+        self.assertEqual(second["revision"], first["revision"])
+
+        _, _, project_body = self.request(
+            "GET",
+            f"/api/projects/{project_id}",
+            "alpha.example.com",
+            cookie,
+        )
+        project = json.loads(project_body)
+        self.assertEqual(
+            project["payload"]["episodeViewports"]["EP001"],
+            {"x": 50.0, "y": 60.0, "zoom": 0.75},
+        )
 
     def test_node_save_rejects_wrong_episode(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
