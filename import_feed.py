@@ -3490,7 +3490,56 @@ def merge_payload_by_episode(existing, incoming):
             audio_remap[str(node.get("id"))] = old.get("id")
             incoming_nodes.remove(node)
 
-    reuse_remap = {**stable_node_remap, **audio_remap}
+    # Same-episode reimport rebuilds shared image nodes with fresh IDs. If
+    # those rebuilt nodes are not mapped back to the already persisted asset
+    # nodes, the new video refs point at IDs that are absent from the final
+    # payload. Include every repeated image identity in the same remap used by
+    # video refs and edges.
+    image_remap = {}
+    for node in incoming_nodes:
+        if node.get("type") != "image":
+            continue
+        node_id = str(node.get("id") or "")
+        if not node_id:
+            continue
+        incoming_key = str(
+            (node.get("metadata") or {}).get("assetKey")
+            or _asset_identity(
+                _asset_title_base(node.get("title")),
+                _asset_kind_from_title(node.get("title")),
+            )
+        )
+        if not incoming_key:
+            continue
+        old = next(
+            (
+                candidate for candidate in existing_nodes
+                if candidate.get("type") == "image"
+                and str(
+                    (candidate.get("metadata") or {}).get("assetKey")
+                    or _asset_identity(
+                        _asset_title_base(candidate.get("title")),
+                        _asset_kind_from_title(candidate.get("title")),
+                    )
+                ) == incoming_key
+            ),
+            None,
+        )
+        if old is None:
+            old = next(
+                (
+                    candidate for candidate in existing_nodes
+                    if candidate.get("type") == "image"
+                    and str(candidate.get("title") or "") == str(node.get("title") or "")
+                    and str(candidate.get("id") or "") not in claimed_old_ids
+                ),
+                None,
+            )
+        if old and old.get("id") and str(old["id"]) != node_id:
+            image_remap[node_id] = str(old["id"])
+            claimed_old_ids.add(str(old["id"]))
+
+    reuse_remap = {**stable_node_remap, **image_remap, **audio_remap}
     incoming_ids_after_remap = {
         str(node.get("id"))
         for node in incoming_nodes

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import canvas_store
+import import_feed
 import tenant_context
 
 
@@ -164,6 +165,87 @@ class CanvasProjectionTests(unittest.TestCase):
             {node["id"] for node in ep001["nodes"]},
             {"image-1", "video-1", "image-2"},
         )
+
+    def test_reimport_persists_shared_role_refs_through_projection(self):
+        feed = {
+            "title": "共享角色重导 · 第02集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [
+                {
+                    "code": "图1",
+                    "name": "赵铁柱（角色立绘）",
+                    "raw": "赵铁柱。",
+                    "canvas": {"kind": "character", "name": "赵铁柱"},
+                },
+                {
+                    "code": "图9",
+                    "name": "郝秀兰（角色立绘）",
+                    "raw": "郝秀兰。",
+                    "canvas": {"kind": "character", "name": "郝秀兰"},
+                },
+            ],
+            "segments": [{
+                "no": 1,
+                "name": "段1",
+                "raw": (
+                    "@角色｜赵铁柱（图1）和@角色｜郝秀兰（图9）同框。\n"
+                    '台词：赵铁柱（低沉）："走。"'
+                ),
+                "shots": [],
+            }],
+        }
+        first = import_feed.build_payload(feed)
+        for node in first["nodes"]:
+            if node["type"] in {"image", "audio"}:
+                node["metadata"]["episodeId"] = "EP001"
+            if node["type"] == "video":
+                node["metadata"]["episodeId"] = "EP001"
+
+        project_id = canvas_store.create_project("shared-role-reimport", first)
+        incoming = import_feed.build_payload(feed)
+        incoming["id"] = project_id
+        incoming["episodeId"] = "EP002"
+        for group in incoming["episodeImports"]:
+            group["id"] = "EP002"
+        for node in incoming["nodes"]:
+            if node["type"] in {"image", "audio", "video", "text"}:
+                node["metadata"]["episodeId"] = "EP002"
+
+        existing = canvas_store.get_project(project_id)["payload"]
+        merged = import_feed.merge_payload_by_episode(existing, incoming)
+        canvas_store.update_project(project_id, payload=merged)
+
+        stored = canvas_store.get_project(project_id)["payload"]
+        episode = next(
+            group for group in stored["episodeImports"]
+            if group["id"] == "EP002"
+        )
+        video_id = episode["videoNodeIds"][0]
+        video = next(node for node in stored["nodes"] if node["id"] == video_id)
+        refs = video["metadata"]["params"]["refs"]
+        labels = {ref["label"] for ref in refs}
+        self.assertIn("角色｜赵铁柱（图1）", labels)
+        self.assertIn("角色｜郝秀兰（图9）", labels)
+
+        workspace = canvas_store.get_project_workspace_nodes(
+            project_id,
+            "EP002",
+        )
+        workspace_by_id = {node["id"]: node for node in workspace["nodes"]}
+        workspace_video = workspace_by_id[video_id]
+        workspace_labels = {
+            ref["label"]
+            for ref in workspace_video["metadata"]["params"]["refs"]
+        }
+        self.assertIn("角色｜赵铁柱（图1）", workspace_labels)
+        self.assertIn("角色｜郝秀兰（图9）", workspace_labels)
+        role_images = {
+            node["title"]
+            for node in workspace["nodes"]
+            if node["type"] == "image"
+        }
+        self.assertIn("角色｜赵铁柱（图1）", role_images)
+        self.assertIn("角色｜郝秀兰（图9）", role_images)
 
     def test_episode_read_removes_references_to_deleted_nodes(self):
         payload = self._payload()

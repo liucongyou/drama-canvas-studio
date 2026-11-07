@@ -3022,6 +3022,16 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const textSize = {width: p.textW || cardSize.width, height: p.textH || cardSize.height};
   const size = isText ? (dragSize ? {width: dragSize.w, height: dragSize.h} : textSize) : cardSize;
   const cardStyle = {width: size.width, height: size.height};
+  const cardMenuButtonCount = isText
+    ? (readOnly ? 2 : 4)
+    : mediaViewerAction && !mediaMissing
+      ? (readOnly ? 2 : 4)
+      : (readOnly ? 1 : 3);
+  const cardMenuBasis = cardMenuButtonCount * 22 + Math.max(0, cardMenuButtonCount - 1) * 4;
+  const cardMenuMaxScale = Math.max(
+    0.1,
+    Math.min(4, (size.width - 10) / cardMenuBasis),
+  );
   const videoFullscreenRatio = videoIntrinsicRatio > 0
     ? videoIntrinsicRatio
     : rm && Number(rm[1]) > 0 && Number(rm[2]) > 0
@@ -3237,7 +3247,10 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
       </div>
       <div
         className={`canvas-media-card${isText ? ' is-text-card' : ''}${isText && editingText ? ' is-text-editing' : ''}${localDragOver ? ' is-local-drop-target' : ''}`}
-        style={cardStyle}
+        style={{
+          ...cardStyle,
+          '--card-menu-max-scale': String(cardMenuMaxScale),
+        } as CSSProperties}
         onDragEnter={(event) => {
           if (isText || !Array.from(event.dataTransfer.types || []).includes('Files')) return;
           event.preventDefault();

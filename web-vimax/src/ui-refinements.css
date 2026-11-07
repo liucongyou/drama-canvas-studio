@@ -1892,13 +1892,13 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 /* 图上快捷菜单（hover 显现） */
 .canvas-media-card-menu{
   position:absolute;
-  top:9px;
-  right:9px;
+  top:5px;
+  right:5px;
   display:flex;
   gap:4px;
   /* React Flow scales the whole card. Without counter-scaling, a 22px button is
      only a few real pixels at the project's usual 10-20% canvas zoom. */
-  transform:scale(var(--card-ui-scale,1));
+  transform:scale(min(var(--card-ui-scale,1),var(--card-menu-max-scale,1)));
   transform-origin:top right;
   opacity:0;
   transition:opacity .15s;

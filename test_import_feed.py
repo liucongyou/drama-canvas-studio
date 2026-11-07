@@ -1465,6 +1465,64 @@ class ImportFeedContractTests(unittest.TestCase):
             ],
         )
 
+    def test_same_episode_reimport_remaps_shared_image_refs_to_existing_nodes(self):
+        feed = {
+            "title": "共享资产重导 · 第01集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [{
+                "code": "图1",
+                "name": "赵铁柱（角色立绘）",
+                "raw": "赵铁柱。",
+                "canvas": {"kind": "character", "name": "赵铁柱"},
+            }],
+            "segments": [{
+                "no": 1,
+                "name": "段1",
+                "raw": "@角色｜赵铁柱（图1）站在门口。",
+                "shots": [],
+            }],
+        }
+        first = import_feed.build_payload(feed)
+        image = next(node for node in first["nodes"] if node["type"] == "image")
+        video = next(node for node in first["nodes"] if node["type"] == "video")
+        image_id = image["id"]
+        video["metadata"]["params"]["refs"] = [{
+            "nodeId": image_id,
+            "label": image["title"],
+        }]
+        first["connections"] = [{
+            "id": "edge-shared-image",
+            "fromNodeId": image_id,
+            "toNodeId": video["id"],
+        }]
+        incoming = import_feed.build_payload(feed)
+        incoming_image = next(
+            node for node in incoming["nodes"]
+            if node["type"] == "image"
+        )
+        self.assertNotEqual(incoming_image["id"], image_id)
+
+        merged = import_feed.merge_payload_by_episode(first, incoming)
+        merged_video = next(
+            node for node in merged["nodes"]
+            if node["type"] == "video"
+        )
+        refs = merged_video["metadata"]["params"]["refs"]
+        node_ids = {node["id"] for node in merged["nodes"]}
+
+        self.assertIn(image_id, node_ids)
+        self.assertEqual(
+            [ref["nodeId"] for ref in refs],
+            [image_id],
+        )
+        self.assertTrue(
+            any(
+                edge["fromNodeId"] == image_id
+                and edge["toNodeId"] == merged_video["id"]
+                for edge in merged["connections"]
+            )
+        )
+
     def test_second_episode_carries_only_mentioned_shared_assets_and_links(self):
         first = import_feed.build_payload({
             "title": "铁西硬汉 · 第01集",
