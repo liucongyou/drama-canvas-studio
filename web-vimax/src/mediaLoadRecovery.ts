@@ -22,6 +22,12 @@ export function isTransientMediaError(error?: unknown): boolean {
     || name === 'NotSupportedError' || name === 'NetworkError';
 }
 
+export function shouldIgnorePlaybackInterruption(error?: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const name = String((error as {name?: unknown}).name || '');
+  return name === 'AbortError';
+}
+
 export function cacheBustedMediaUrl(
   url: string,
   attempt: number,

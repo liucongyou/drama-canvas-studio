@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest';
 import {
   cacheBustedMediaUrl,
   isTransientMediaError,
+  shouldIgnorePlaybackInterruption,
   shouldMarkMediaMissing,
   shouldRetryMediaLoad,
 } from './mediaLoadRecovery';
@@ -31,5 +32,11 @@ describe('media load recovery', () => {
       .toBe('/uploads/a.mp4?token=abc&__media_retry=1');
     expect(cacheBustedMediaUrl('data:image/png;base64,aaa', 1))
       .toBe('data:image/png;base64,aaa');
+  });
+
+  it('treats play promise AbortError as a normal pause interruption', () => {
+    expect(shouldIgnorePlaybackInterruption({name: 'AbortError'})).toBe(true);
+    expect(shouldIgnorePlaybackInterruption({name: 'NotSupportedError'})).toBe(false);
+    expect(shouldIgnorePlaybackInterruption(null)).toBe(false);
   });
 });

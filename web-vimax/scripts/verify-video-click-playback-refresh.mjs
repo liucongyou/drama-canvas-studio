@@ -3,6 +3,7 @@ import puppeteer from 'puppeteer-core';
 const base = (process.env.CANVAS_BASE || 'http://127.0.0.1:8890').replace(/\/$/, '');
 const projectId = process.env.PROJECT_ID || 'gk6woLnGjh998UeNwvhqYG';
 const episodeId = process.env.EPISODE_ID || 'EP010';
+const sessionToken = process.env.CANVAS_SESSION_TOKEN || '';
 
 const browser = await puppeteer.launch({
   executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -15,6 +16,17 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 try {
   const page = await browser.newPage();
   await page.setViewport({width: 1600, height: 1000});
+  if (sessionToken) {
+    const host = new URL(base).hostname;
+    await page.setCookie({
+      name: 'canvas_session',
+      value: sessionToken,
+      domain: host,
+      path: '/',
+      secure: base.startsWith('https://'),
+      httpOnly: true,
+    });
+  }
   const pageErrors = [];
   const consoleErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
@@ -90,11 +102,44 @@ try {
     };
   });
 
+  const rapidRounds = [];
+  for (let round = 0; round < 8; round += 1) {
+    const toggle = await page.$eval(
+      '.react-flow__node-media:has(video.canvas-media-preview.is-video) .canvas-video-center-play',
+      (element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          x: rect.x + rect.width / 2,
+          y: rect.y + rect.height / 2,
+        };
+      },
+    );
+    await page.mouse.move(toggle.x, toggle.y);
+    await page.mouse.click(toggle.x, toggle.y);
+    await sleep([20, 80, 180][round % 3]);
+    const state = await page.evaluate(() => {
+      const video = document.querySelector('.react-flow__node-media video.canvas-media-preview.is-video');
+      const card = video?.closest('.canvas-media-card');
+      const missing = card?.querySelector('.canvas-media-placeholder');
+      return {
+        paused: video instanceof HTMLVideoElement ? video.paused : null,
+        readyState: video instanceof HTMLVideoElement ? video.readyState : null,
+        missing: Boolean(missing),
+        placeholderText: missing?.textContent || '',
+      };
+    });
+    rapidRounds.push(state);
+    if (state.missing || state.placeholderText.includes('媒体文件丢失')) {
+      throw new Error(`rapid playback round ${round} was misclassified as missing media`);
+    }
+  }
+
   const result = {
     projectId,
     episodeId,
     clickState,
     playbackState,
+    rapidRounds,
     pageErrors,
     consoleErrors: consoleErrors.filter((item) => (
       !item.includes('favicon')

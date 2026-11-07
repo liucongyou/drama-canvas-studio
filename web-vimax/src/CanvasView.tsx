@@ -145,7 +145,10 @@ import {
   inheritModelParams,
   migrateUnavailableModelParams,
 } from './modelParamInheritance';
-import {isTransientMediaError} from './mediaLoadRecovery';
+import {
+  isTransientMediaError,
+  shouldIgnorePlaybackInterruption,
+} from './mediaLoadRecovery';
 import {
   activeProviderGroup,
   favoriteModelsForProvider,
@@ -2734,8 +2737,11 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     video.preload = 'auto';
     if (video.paused) {
       if (video.readyState === HTMLMediaElement.HAVE_NOTHING) video.load();
-      void video.play().catch(() => {
+      void video.play().catch((error) => {
         setVideoPlaying(false);
+        if (shouldIgnorePlaybackInterruption(error)) {
+          return;
+        }
         handleMediaLoadError();
       });
     } else {
