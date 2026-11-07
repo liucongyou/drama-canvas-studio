@@ -115,7 +115,7 @@ class CanvasProjectionTests(unittest.TestCase):
             0.5,
         )
 
-    def test_episode_read_returns_only_current_episode_nodes(self):
+    def test_episode_read_combines_episode_nodes_with_project_assets(self):
         project_id = canvas_store.create_project("projection", self._payload())
         workspace = canvas_store.get_project_workspace_nodes(
             project_id,
@@ -123,8 +123,14 @@ class CanvasProjectionTests(unittest.TestCase):
         )
         self.assertEqual(
             [node["id"] for node in workspace["nodes"]],
-            ["image-1", "video-1"],
+            ["image-1", "video-1", "image-2"],
         )
+        image_2 = next(
+            node for node in workspace["nodes"]
+            if node["id"] == "image-2"
+        )
+        self.assertTrue(image_2["metadata"]["projectAsset"])
+        self.assertTrue(image_2["metadata"]["sharedAcrossEpisodes"])
         self.assertEqual(
             [edge["id"] for edge in workspace["connections"]],
             ["edge-1"],
@@ -441,7 +447,7 @@ class CanvasProjectionTests(unittest.TestCase):
 
         self.assertEqual(
             [node["id"] for node in workspace["nodes"]],
-            ["image-1", "video-1"],
+            ["image-1", "video-1", "image-2"],
         )
         self.assertEqual(ep001["nodeIds"], ["image-1", "video-1"])
         self.assertEqual(ep001["videoNodeIds"], ["video-1"])
@@ -476,28 +482,36 @@ class CanvasProjectionTests(unittest.TestCase):
             )["nodeIds"],
         )
 
-    def test_node_moved_to_other_episode_is_absent_from_original_episode(self):
+    def test_project_assets_remain_visible_after_projection_owner_changes(self):
         project_id = canvas_store.create_project(
             "projection-ownership-move",
             self._payload(),
         )
-        node = canvas_store.get_projection_node(project_id, "image-1")
-        node["metadata"]["episodeId"] = "EP002"
+        video = canvas_store.get_projection_node(project_id, "video-1")
+        video["metadata"]["episodeId"] = "EP002"
         canvas_store.update_project_nodes(
             project_id,
-            [node],
+            [video],
             episode_id="EP002",
         )
 
         ep001 = canvas_store.get_project_workspace_nodes(project_id, "EP001")
         ep002 = canvas_store.get_project_workspace_nodes(project_id, "EP002")
 
-        self.assertNotIn(
+        self.assertIn(
             "image-1",
             {item["id"] for item in ep001["nodes"]},
         )
         self.assertIn(
             "image-1",
+            {item["id"] for item in ep002["nodes"]},
+        )
+        self.assertNotIn(
+            "video-1",
+            {item["id"] for item in ep001["nodes"]},
+        )
+        self.assertIn(
+            "video-1",
             {item["id"] for item in ep002["nodes"]},
         )
 

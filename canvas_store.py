@@ -2446,10 +2446,9 @@ def get_project_workspace_nodes(project_id, episode_id=None):
             nodes.append(node)
     if normalized_episode:
         nodes.extend(
-            _workspace_referenced_shared_nodes(
+            _workspace_project_assets(
                 con,
                 project_id,
-                normalized_episode,
                 nodes,
             )
         )
@@ -2602,45 +2601,32 @@ def _collect_payload_uploads(payload, filenames):
             _collect_metadata_uploads(node.get("metadata"), filenames)
 
 
-def _workspace_referenced_shared_nodes(con, project_id, episode_id, nodes):
-    """Resolve shared assets used by the current episode's generation contract.
+def _workspace_project_assets(con, project_id, nodes):
+    """Return project-wide image/audio assets for any episode workspace.
 
-    Node ownership stays exclusive in the projection table. Images and audio
-    can still be referenced by videos in several episodes, so workspace reads
-    must include those stable assets independently of their ownership row.
+    Assets are project-scoped. Only narrative/generation nodes (text, video,
+    notes) are episode-scoped. Depending on reference edges to surface an asset
+    makes reimports fragile and can hide valid assets when prompt/ref
+    projection is being repaired.
     """
-    referenced = set()
-    for node in nodes:
-        if not isinstance(node, dict) or str(node.get("type") or "") != "video":
-            continue
-        metadata = node.get("metadata")
-        metadata = metadata if isinstance(metadata, dict) else {}
-        params = metadata.get("params")
-        params = params if isinstance(params, dict) else {}
-        for key in ("refs", "voiceRefs"):
-            for collection in (params.get(key), metadata.get(key)):
-                for item in collection or []:
-                    if isinstance(item, dict) and item.get("nodeId"):
-                        referenced.add(str(item["nodeId"]))
-        for key in ("voiceRef",):
-            item = params.get(key) or metadata.get(key)
-            if isinstance(item, dict) and item.get("nodeId"):
-                referenced.add(str(item["nodeId"]))
-
     visible_ids = {
         str(node.get("id"))
         for node in nodes
         if isinstance(node, dict) and node.get("id")
     }
-    wanted = sorted(referenced - visible_ids)
-    if not wanted:
-        return []
-    placeholders = ",".join("?" for _ in wanted)
+    if not visible_ids:
+        placeholders = ""
+        params = (project_id,)
+    else:
+        placeholders = " AND node_id NOT IN (" + ",".join(
+            "?" for _ in visible_ids
+        ) + ")"
+        params = (project_id, *sorted(visible_ids))
     rows = con.execute(
         f"SELECT node_json FROM canvas_projection_nodes "
-        f"WHERE project_id=? AND node_id IN ({placeholders}) "
-        f"AND node_type IN ('image','audio') ORDER BY rowid",
-        (project_id, *wanted),
+        f"WHERE project_id=? AND node_type IN ('image','audio')"
+        f"{placeholders} ORDER BY rowid",
+        params,
     ).fetchall()
     shared = []
     for row in rows:
@@ -2655,6 +2641,7 @@ def _workspace_referenced_shared_nodes(con, project_id, episode_id, nodes):
             metadata = {}
             node["metadata"] = metadata
         metadata["sharedAcrossEpisodes"] = True
+        metadata["projectAsset"] = True
         shared.append(node)
     return shared
 
