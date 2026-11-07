@@ -117,6 +117,44 @@ class MediaVersionTests(unittest.TestCase):
         self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
         self.assertEqual(meta["params"]["activeVersionId"], "video:task-new")
 
+    def test_version_selection_accepts_signed_projection_by_stable_id(self):
+        meta = {
+            "content": "/uploads/v2.mp4",
+            "status": "done",
+            "source": {"type": "generated"},
+            "params": {
+                "mediaVersions": [
+                    {
+                        "versionId": "video:task-old",
+                        "url": "/uploads/v1.mp4",
+                        "sourceType": "generated",
+                    },
+                    {
+                        "versionId": "video:task-new",
+                        "url": "/uploads/v2.mp4",
+                        "sourceType": "generated",
+                    },
+                ],
+                "mediaVersionIndex": 0,
+                "activeVersionId": "video:task-old",
+            },
+        }
+
+        server.merge_node_metadata(meta, {
+            "content": "https://bucket.tos-cn-beijing.volces.com/v2.mp4?signature=temporary",
+            "status": "done",
+            "source": {"type": "generated"},
+            "params": {
+                "mediaVersionIndex": 1,
+                "activeVersionId": "video:task-new",
+            },
+            "_mediaVersionSelection": True,
+        })
+
+        self.assertEqual(meta["content"], "/uploads/v2.mp4")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
+        self.assertEqual(meta["params"]["activeVersionId"], "video:task-new")
+
     def test_local_upload_can_append_a_media_version(self):
         meta = {
             "content": "/uploads/generated.png",

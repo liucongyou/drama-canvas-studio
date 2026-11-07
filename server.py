@@ -518,7 +518,7 @@ def _public_share_payload(share, project):
             "canWrite": can_write,
             "readOnly": not can_write,
         },
-        "project": project,
+        "project": project_project_media_urls(project),
     }
 
 
@@ -1981,12 +1981,37 @@ def merge_node_metadata(meta, incoming, generation_active=False):
         if isinstance(item, dict) and item.get("url")
     }
     requested_content = str((incoming or {}).get("content") or "")
+    requested_params = (incoming or {}).get("params")
+    requested_version_id = (
+        str(requested_params.get("activeVersionId") or "").strip()
+        if isinstance(requested_params, dict)
+        else ""
+    )
+    requested_signed_url = bool(
+        re.match(
+            r"^https?://[^/]+\.tos-[^/]+\.volces\.com/",
+            requested_content,
+            flags=re.IGNORECASE,
+        )
+    )
+    current_version_ids = {
+        str(item.get("versionId") or "")
+        for item in current_versions
+        if isinstance(item, dict) and item.get("versionId")
+    }
     media_version_selection = bool(
         explicit_media_version_selection
         and
         isinstance((incoming or {}).get("source"), dict)
         and requested_content
-        and requested_content in current_version_urls
+        and (
+            requested_content in current_version_urls
+            or (
+                requested_version_id
+                and requested_version_id in current_version_ids
+            )
+            or (requested_version_id and requested_signed_url)
+        )
     )
     for key, value in (incoming or {}).items():
         if key in {"_mediaImport", "_mediaVersionSelection"}:
@@ -2033,7 +2058,14 @@ def merge_node_metadata(meta, incoming, generation_active=False):
                         index
                         for index, item in enumerate(versions)
                         if str(item.get("versionId") or "") == requested_version_id
-                        and str(item.get("url") or "").strip() == requested_content
+                        and (
+                            not requested_content
+                            or requested_signed_url
+                            or str(item.get("url") or "").strip()
+                            == requested_content
+                            or str(item.get("url") or "").strip()
+                            == str(meta.get("content") or "").strip()
+                        )
                     ),
                     -1,
                 )
@@ -2984,7 +3016,21 @@ def project_workspace_nodes(project_id, workspace):
         )
         for node in workspace["nodes"]
     ]
+    for node in workspace["nodes"]:
+        media_storage.project_node_media_url(node)
     return workspace
+
+
+def project_project_media_urls(project):
+    """Resolve private object-store receipts to fresh browser URLs on read."""
+    if not isinstance(project, dict):
+        return project
+    payload = project.get("payload")
+    if not isinstance(payload, dict):
+        return project
+    for node in payload.get("nodes") or []:
+        media_storage.project_node_media_url(node)
+    return project
 
 
 def project_generation_node_state(node, latest_task):
@@ -7001,6 +7047,8 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     if not workspace:
                         return self._send(404, {"error": "项目不存在"})
+                    for node in workspace.get("nodes") or []:
+                        media_storage.project_node_media_url(node)
                     return self._send(200, workspace)
                 if resource == "notes":
                     query = urllib.parse.parse_qs(parsed.query)
@@ -7410,7 +7458,7 @@ class Handler(BaseHTTPRequestHandler):
             proj = canvas_repository.repository.get_project(pid)
             if not proj:
                 return self._send(404, {"error": "项目不存在"})
-            return self._send(200, proj)
+            return self._send(200, project_project_media_urls(proj))
         # 未知的 /api、/uploads 必须回 404 JSON —— 不能被下面的 SPA 回退吃掉返回 index.html
         # （老问题：上传文件 404 时前端拿到 200+text/html，图片永远显示不出来）
         if not (path.startswith("/api/") or path.startswith("/uploads/")):

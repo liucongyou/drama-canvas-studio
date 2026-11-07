@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
 import media_storage
@@ -75,6 +76,107 @@ class MediaStorageTests(unittest.TestCase):
             url = media_storage.public_url(descriptor)
         self.assertIn("tos-cn-beijing.volces.com", url)
         sign.assert_called_once()
+
+    def test_tos_node_read_projects_fresh_public_url(self):
+        media_storage.clear_playback_url_cache()
+        node = {
+            "id": "video-1",
+            "type": "video",
+            "metadata": {
+                "content": "/uploads/video.mp4",
+                "storage": {
+                    "status": "stored",
+                    "provider": "tos",
+                    "bucket": "media-bucket",
+                    "key": "drama-canvas/video.mp4",
+                },
+                "params": {
+                    "mediaVersions": [{
+                        "versionId": "video:task-1",
+                        "url": "/uploads/video.mp4",
+                        "storage": {
+                            "status": "stored",
+                            "provider": "tos",
+                            "bucket": "media-bucket",
+                            "key": "drama-canvas/video.mp4",
+                        },
+                    }],
+                },
+            },
+        }
+        with mock.patch.object(
+            media_storage,
+            "public_url",
+            return_value="https://media-bucket.tos-cn-beijing.volces.com/video?signature=fresh",
+        ) as sign:
+            projected = media_storage.project_node_media_url(node)
+        self.assertEqual(
+            projected,
+            "https://media-bucket.tos-cn-beijing.volces.com/video?signature=fresh",
+        )
+        self.assertEqual(node["metadata"]["content"], projected)
+        self.assertEqual(
+            node["metadata"]["storage"]["key"],
+            "drama-canvas/video.mp4",
+        )
+        self.assertEqual(
+            node["metadata"]["params"]["mediaVersions"][0]["url"],
+            projected,
+        )
+        sign.assert_called_once()
+
+        with mock.patch.object(
+            media_storage,
+            "public_url",
+            return_value="https://media-bucket.tos-cn-beijing.volces.com/video?signature=second",
+        ) as second_sign:
+            repeated = media_storage.project_node_media_url({
+                "metadata": {
+                    "content": "/uploads/video.mp4",
+                    "storage": {
+                        "status": "stored",
+                        "provider": "tos",
+                        "bucket": "media-bucket",
+                        "key": "drama-canvas/video.mp4",
+                    },
+                },
+            })
+        self.assertEqual(repeated, projected)
+        second_sign.assert_not_called()
+
+    def test_concurrent_tos_reads_share_one_signature(self):
+        media_storage.clear_playback_url_cache()
+
+        def project():
+            return media_storage.project_node_media_url({
+                "metadata": {
+                    "content": "/uploads/video.mp4",
+                    "storage": {
+                        "status": "stored",
+                        "provider": "tos",
+                        "bucket": "media-bucket",
+                        "key": "drama-canvas/video.mp4",
+                    },
+                },
+            })
+
+        with (
+            mock.patch.object(
+                media_storage,
+                "public_url",
+                return_value=(
+                    "https://media-bucket.tos-cn-beijing.volces.com/video"
+                    "?signature=stable"
+                ),
+            ) as public_url,
+            ThreadPoolExecutor(max_workers=8) as executor,
+        ):
+            results = list(executor.map(lambda _: project(), range(8)))
+        self.assertEqual(len(results), 8)
+        self.assertEqual(set(results), {
+            "https://media-bucket.tos-cn-beijing.volces.com/video?signature=stable",
+        })
+        self.assertEqual(public_url.call_count, 1)
 
     def test_oss_upload_and_signed_url(self):
         config = {

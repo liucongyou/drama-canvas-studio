@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
+import threading
+import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -23,6 +25,15 @@ _HASH_EXECUTOR = ThreadPoolExecutor(
     max_workers=max(1, int(os.environ.get("CANVAS_STORAGE_HASH_WORKERS", "2"))),
     thread_name_prefix="media-hash",
 )
+_PLAYBACK_URL_TTL_SECONDS = max(
+    60,
+    min(
+        604800,
+        int(os.environ.get("CANVAS_PLAYBACK_URL_TTL_SECONDS", "21600")),
+    ),
+)
+_PLAYBACK_URL_CACHE: dict[tuple[str, ...], tuple[float, str]] = {}
+_PLAYBACK_URL_CACHE_LOCK = threading.Lock()
 
 
 def _config() -> dict[str, Any]:
@@ -488,6 +499,134 @@ def public_url_with_config(
             raise MediaStorageError("七牛云缺少 public_domain")
         return f"{origin}/{urllib.parse.quote(key)}"
     raise MediaStorageError(f"不支持的存储对象：{provider}")
+
+
+def _playback_cache_key(storage: dict[str, Any]) -> tuple[str, ...]:
+    provider = str(storage.get("provider") or "").strip().lower()
+    profile = provider_catalog.storage_profile_config(provider) or _config()
+    credential_fingerprint = hashlib.sha256(
+        str(profile.get("access_key") or "").encode("utf-8")
+    ).hexdigest()[:16]
+    return (
+        tenant_context.current_tenant_id(),
+        provider,
+        str(storage.get("bucket") or ""),
+        str(storage.get("key") or ""),
+        str(profile.get("endpoint") or ""),
+        credential_fingerprint,
+        str(_PLAYBACK_URL_TTL_SECONDS),
+    )
+
+
+def _cached_public_url(storage: dict[str, Any]) -> str:
+    """Mint a stable playback URL for this process without persisting it."""
+    key = _playback_cache_key(storage)
+    now = time.monotonic()
+    with _PLAYBACK_URL_CACHE_LOCK:
+        cached = _PLAYBACK_URL_CACHE.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+        if cached:
+            _PLAYBACK_URL_CACHE.pop(key, None)
+        # Pre-signing is local computation. Holding this lock guarantees two
+        # concurrent canvas reads cannot observe different URLs and reload the
+        # same video twice.
+        url = public_url(storage, expires=_PLAYBACK_URL_TTL_SECONDS)
+        if not url:
+            return ""
+        # Renew well before the object-store signature expires so a canvas that
+        # stays open does not repeatedly reload its videos.
+        cache_seconds = max(
+            30,
+            _PLAYBACK_URL_TTL_SECONDS
+            - min(300, _PLAYBACK_URL_TTL_SECONDS // 10),
+        )
+        if len(_PLAYBACK_URL_CACHE) >= 2048:
+            expired = [
+                cache_key
+                for cache_key, (expires_at, _) in _PLAYBACK_URL_CACHE.items()
+                if expires_at <= now
+            ]
+            for cache_key in expired:
+                _PLAYBACK_URL_CACHE.pop(cache_key, None)
+            if len(_PLAYBACK_URL_CACHE) >= 2048:
+                oldest = min(
+                    _PLAYBACK_URL_CACHE,
+                    key=lambda item: _PLAYBACK_URL_CACHE[item][0],
+                )
+                _PLAYBACK_URL_CACHE.pop(oldest, None)
+        _PLAYBACK_URL_CACHE[key] = (now + cache_seconds, url)
+    return url
+
+
+def clear_playback_url_cache() -> None:
+    with _PLAYBACK_URL_CACHE_LOCK:
+        _PLAYBACK_URL_CACHE.clear()
+
+
+def _stored_descriptor(value: Any) -> dict[str, Any] | None:
+    if (
+        isinstance(value, dict)
+        and value.get("status") == "stored"
+        and value.get("provider")
+        and value.get("key")
+    ):
+        return value
+    return None
+
+
+def project_node_media_url(node: dict[str, Any]) -> str:
+    """Project durable object-store receipts into response-only playback URLs.
+
+    The database keeps stable bucket/key receipts. The API response uses a
+    short-lived cached signature so polling does not change the video URL and
+    trigger a reload on every reconciliation.
+    """
+    if not isinstance(node, dict):
+        return ""
+    meta = node.get("metadata")
+    if not isinstance(meta, dict):
+        return ""
+    durable_content = str(meta.get("content") or "")
+    storage = _stored_descriptor(meta.get("storage"))
+
+    def projection(descriptor, fallback=""):
+        descriptor = _stored_descriptor(descriptor)
+        if not descriptor:
+            return fallback
+        try:
+            return _cached_public_url(descriptor) or fallback
+        except Exception as exc:
+            meta["storageError"] = str(exc)
+            return fallback
+
+    projected_content = projection(storage, durable_content)
+    if projected_content:
+        meta["content"] = projected_content
+
+    params = meta.get("params")
+    if isinstance(params, dict):
+        for list_name in ("mediaVersions", "videoVersions"):
+            versions = params.get(list_name)
+            if not isinstance(versions, list):
+                continue
+            for version in versions:
+                if not isinstance(version, dict):
+                    continue
+                version_storage = _stored_descriptor(version.get("storage"))
+                if (
+                    not version_storage
+                    and storage
+                    and str(version.get("url") or "") == durable_content
+                ):
+                    version_storage = storage
+                version_url = projection(
+                    version_storage,
+                    str(version.get("url") or ""),
+                )
+                if version_url:
+                    version["url"] = version_url
+    return str(meta.get("content") or projected_content)
 
 
 def ensure_local(
