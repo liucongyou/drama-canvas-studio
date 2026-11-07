@@ -107,8 +107,8 @@ try {
       const video = document.querySelector('.react-flow__node-media video.canvas-media-preview.is-video');
       return video instanceof HTMLVideoElement && video.currentTime > 0.05;
     },
-    {timeout: 8_000},
-  ).catch(() => {});
+    {timeout: 20_000, polling: 50},
+  );
   await page.mouse.move(playButton.x, playButton.y);
   await page.mouse.click(playButton.x, playButton.y);
   await sleep(120);

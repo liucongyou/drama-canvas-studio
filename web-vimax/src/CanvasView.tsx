@@ -3463,7 +3463,14 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                         // Codec may not allow seeking yet; playback still works.
                       }
                     }}
-                    onPlaying={() => setVideoFrameReady(true)}
+                    onPlaying={() => {
+                      const video = videoRef.current;
+                      if (video && typeof video.requestVideoFrameCallback === 'function') {
+                        video.requestVideoFrameCallback(() => setVideoFrameReady(true));
+                      } else {
+                        setVideoFrameReady(true);
+                      }
+                    }}
                     onError={handleMediaLoadError}
                     onDurationChange={(event) => {
                       setVideoDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);

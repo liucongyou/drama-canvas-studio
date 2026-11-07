@@ -49,7 +49,8 @@ describe('video cover loading state', () => {
     expect(canvas).toMatch(
       /!videoFrameReady && !videoCoverUrl && videoCoverUnavailable[\s\S]*canvas-video-cover-fallback/,
     );
-    expect(canvas).toMatch(/onPlaying=\{\(\) => setVideoFrameReady\(true\)\}/);
+    expect(canvas).toMatch(/onPlaying=\{\(\) => \{/);
+    expect(canvas).toMatch(/requestVideoFrameCallback\(\(\) => setVideoFrameReady\(true\)\)/);
   });
 
   it('keeps video controls above every cover layer', () => {
