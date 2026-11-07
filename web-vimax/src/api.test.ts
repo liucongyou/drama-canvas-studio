@@ -981,7 +981,7 @@ describe('api request recovery', () => {
     expect(nodes[0].refIds ?? []).toEqual([]);
   });
 
-  it('keeps referenced shared audio while isolating episodes', async () => {
+  it('keeps project media assets visible while isolating episode videos', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       id: 'project-shared-audio',
       title: '共享音频',
@@ -1052,8 +1052,10 @@ describe('api request recovery', () => {
     const nodes = await getCanvasMediaNodes('project-shared-audio', 'EP001');
 
     expect(nodes.map((node) => node.id).sort()).toEqual([
+      'audio-ep002',
       'audio-shared',
       'image-ep001',
+      'image-ep002',
       'video-ep001',
     ]);
   });
@@ -1384,6 +1386,93 @@ describe('api request recovery', () => {
     expect(nodes[0].params?.mediaVersions).toEqual([
       {url: '/uploads/generated-old.jpg'},
       {url: '/uploads/generated-new.jpg'},
+    ]);
+  });
+
+  it('keeps project image and audio assets when reading one episode', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('/workspace-index')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          id: 'project-assets',
+          title: '项目资产',
+          revision: 1,
+          projectMeta: {},
+          episodes: [{
+            id: 'EP001',
+            title: '第01集',
+            nodeIds: ['video-1', 'text-1'],
+            videoNodeIds: ['video-1'],
+          }],
+          episodeViewports: {},
+        }), {
+          status: 200,
+          headers: {'Content-Type': 'application/json'},
+        }));
+      }
+      if (String(url).includes('/workspace-nodes')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          episodeId: 'EP001',
+          episode: {
+            id: 'EP001',
+            title: '第01集',
+            nodeIds: ['video-1', 'text-1'],
+            videoNodeIds: ['video-1'],
+          },
+          nodes: [
+            {
+              id: 'video-1',
+              type: 'video',
+              title: '段1',
+              metadata: {prompt: '视频', params: {ratio: '9:16'}},
+            },
+            {
+              id: 'text-1',
+              type: 'text',
+              title: '文本',
+              metadata: {prompt: '文本'},
+            },
+            {
+              id: 'role-other',
+              type: 'image',
+              title: '角色｜复用（图1）',
+              metadata: {
+                content: '/uploads/role.jpg',
+                params: {ratio: '16:9'},
+              },
+            },
+            {
+              id: 'audio-other',
+              type: 'audio',
+              title: '音频｜复用（图1）',
+              metadata: {
+                content: '/uploads/role.mp3',
+                params: {},
+              },
+            },
+          ],
+          connections: [],
+          layouts: {},
+          notes: [],
+        }), {
+          status: 200,
+          headers: {'Content-Type': 'application/json'},
+        }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({
+        tasks: [],
+        notes: [],
+      }), {
+        status: 200,
+        headers: {'Content-Type': 'application/json'},
+      }));
+    }));
+
+    const workspace = await getCanvasWorkspace('project-assets', 'EP001');
+    expect(workspace.mediaNodes.map((node) => node.id).sort()).toEqual([
+      'audio-other',
+      'role-other',
+      'text-1',
+      'video-1',
     ]);
   });
 

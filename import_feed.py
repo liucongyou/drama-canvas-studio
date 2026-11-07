@@ -3041,18 +3041,24 @@ def bind_shared_assets_for_episode(payload, episode_id):
         ]
         deduped_refs = []
         seen_ref_labels = set()
+        seen_ref_identities = set()
         seen_ref_ids = set()
         for ref in refs:
             label = str(ref.get("label") or "") if isinstance(ref, dict) else ""
             node_id = str(ref.get("nodeId") or "") if isinstance(ref, dict) else ""
+            identity = _asset_title_base(label).split("·", 1)[0] if label else ""
             if node_id and node_id in seen_ref_ids:
                 continue
             if label and label in seen_ref_labels:
+                continue
+            if identity and identity in seen_ref_identities:
                 continue
             if node_id:
                 seen_ref_ids.add(node_id)
             if label:
                 seen_ref_labels.add(label)
+            if identity:
+                seen_ref_identities.add(identity)
             deduped_refs.append(ref)
         refs = deduped_refs
         deduped_voices = []

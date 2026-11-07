@@ -1967,7 +1967,11 @@ export async function getCanvasMediaNodes(
     (proj.payload.episodeImports || []).flatMap((group) => group.nodeIds || []),
   );
   const nodes = allowedIds
-    ? allNodes.filter((node) => allowedIds.has(node.id))
+    ? allNodes.filter((node) => (
+        node.type === 'image'
+        || node.type === 'audio'
+        || allowedIds.has(node.id)
+      ))
     : allNodes;
   // 连线数据源：项目 connections（fromNodeId=资产图/音色 → toNodeId=视频/音频消费节点）
   const nodeIds = new Set(nodes.map((node) => node.id));
