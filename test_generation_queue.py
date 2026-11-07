@@ -2633,6 +2633,17 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(node["metadata"]["status"], "done")
         self.assertEqual(node["metadata"]["content"], "/uploads/video.mp4")
         self.assertEqual(queued[0][2], "/uploads/video.mp4")
+        params = node["metadata"]["params"]
+        self.assertEqual(
+            params["activeVersionId"],
+            "video:provider-video-1",
+        )
+        self.assertEqual(params["mediaVersionIndex"], 0)
+        self.assertEqual(params["videoVersionIndex"], 0)
+        self.assertEqual(
+            params["mediaVersions"][-1]["providerResultUrl"],
+            "https://provider.example/video.mp4",
+        )
         canvas_store.finish_generation_task(
             queued_task["id"],
             status="succeeded",
@@ -2762,6 +2773,194 @@ class GenerationQueueTests(unittest.TestCase):
         self.assertEqual(updates["content"], "/uploads/video.mp4")
         self.assertEqual(updates["storage"], storage)
         self.assertFalse(updates["finalizePending"])
+
+    def test_video_finalize_updates_the_matching_task_version(self):
+        project_id = canvas_store.create_project("video-finalize-version")
+        node_id = "video-version"
+        node = {
+            "id": node_id,
+            "type": "video",
+            "title": "段13",
+            "metadata": {
+                "prompt": "test",
+                "status": "done",
+                "content": "/uploads/new.mp4",
+                "params": {
+                    "mediaVersions": [
+                        {
+                            "versionId": "video:old-task",
+                            "taskId": "old-task",
+                            "url": "/uploads/old.mp4",
+                        },
+                        {
+                            "versionId": "video:new-task",
+                            "taskId": "new-task",
+                            "url": "/uploads/new.mp4",
+                            "providerResultUrl": "https://provider.example/new.mp4",
+                        },
+                    ],
+                    "videoVersions": [
+                        {
+                            "versionId": "video:old-task",
+                            "taskId": "old-task",
+                            "url": "/uploads/old.mp4",
+                        },
+                        {
+                            "versionId": "video:new-task",
+                            "taskId": "new-task",
+                            "url": "/uploads/new.mp4",
+                            "providerResultUrl": "https://provider.example/new.mp4",
+                        },
+                    ],
+                    "activeVersionId": "video:new-task",
+                    "mediaVersionIndex": 1,
+                    "videoVersionIndex": 1,
+                },
+                "storage": {},
+            },
+        }
+        canvas_store.update_project(
+            project_id,
+            payload={"nodes": [node], "connections": [], "episodeImports": []},
+        )
+        storage = {
+            "status": "stored",
+            "provider": "tos",
+            "bucket": "drama-originals",
+            "key": "drama-canvas/video/new.mp4",
+            "originalBytes": True,
+        }
+        with (
+            patch.object(server, "_run_in_tenant", side_effect=lambda _tenant, _slug, fn: fn()),
+            patch.object(server, "persist_generated_media", return_value="/uploads/new.mp4"),
+            patch.object(server, "validate_generated_video", return_value={"duration": 8}),
+            patch.object(server, "ensure_video_thumbnail", return_value=""),
+            patch.object(
+                server.provider_catalog,
+                "storage_config",
+                return_value={
+                    "enabled": True,
+                    "provider": "tos",
+                    "auto_persist_videos": True,
+                },
+            ),
+            patch.object(
+                server.media_storage,
+                "persist_local_url",
+                return_value=storage,
+            ),
+            patch.object(
+                server.threading,
+                "Thread",
+                side_effect=lambda **kw: type(
+                    "T", (), {"start": lambda self: kw["target"](*kw.get("args", ()))}
+                )(),
+            ),
+        ):
+            server.queue_generated_video_finalize(
+                project_id,
+                node_id,
+                "/uploads/new.mp4",
+                {"id": "ark"},
+                {"id": "video-model", "remoteModel": "video-remote"},
+                "new-task",
+                "2026-11-07T13:02:06Z",
+            )
+        saved = canvas_store.get_project(project_id)
+        saved_node = saved["payload"]["nodes"][0]
+        meta = saved_node["metadata"]
+        versions = meta["params"]["mediaVersions"]
+        new_version = next(v for v in versions if v["taskId"] == "new-task")
+        old_version = next(v for v in versions if v["taskId"] == "old-task")
+        self.assertEqual(new_version["storage"], storage)
+        self.assertEqual(new_version["url"], "/uploads/new.mp4")
+        self.assertNotIn("storage", old_version)
+        self.assertEqual(meta["params"]["activeVersionId"], "video:new-task")
+
+    def test_recover_downloaded_video_sets_active_version_and_provider_receipt(self):
+        project_id = canvas_store.create_project("recover-video-version")
+        node_id = "recover-video"
+        node = {
+            "id": node_id,
+            "type": "video",
+            "title": "段13",
+            "metadata": {
+                "prompt": "test",
+                "status": "generating",
+                "params": {
+                    "mediaVersions": [
+                        {
+                            "versionId": "video:old",
+                            "taskId": "old",
+                            "url": "/uploads/old.mp4",
+                        },
+                    ],
+                    "videoVersions": [
+                        {
+                            "versionId": "video:old",
+                            "taskId": "old",
+                            "url": "/uploads/old.mp4",
+                        },
+                    ],
+                    "activeVersionId": "video:old",
+                    "mediaVersionIndex": 0,
+                    "videoVersionIndex": 0,
+                },
+            },
+        }
+        canvas_store.update_project(
+            project_id,
+            payload={"nodes": [node], "connections": [], "episodeImports": []},
+        )
+        task = canvas_store.create_generation_task(
+            project_id,
+            node_id,
+            kind="video",
+            provider="ark",
+            model="video-model",
+            client_operation_id="recover-video-operation",
+        )
+        task = canvas_store.finish_generation_task(
+            task["id"],
+            status="succeeded",
+            phase="已完成",
+            provider_task_id="new",
+            provider_result_url="https://provider.example/new.mp4",
+            local_result_url="/uploads/new.mp4",
+            delivery_status="materializing",
+        )
+        canvas_store.update_generation_task(
+            task["id"],
+            provider_finished_at="2026-11-07T13:02:06Z",
+        )
+        task = canvas_store.get_generation_task(task["id"])
+        with patch.object(
+            server.provider_client,
+            "local_upload_path",
+            return_value="/tmp/new.mp4",
+        ):
+            self.assertTrue(
+                server._recover_persisted_result_to_canvas(
+                    project_id,
+                    node_id,
+                    task,
+                )
+            )
+        saved = canvas_store.get_project(project_id)
+        saved_node = saved["payload"]["nodes"][0]
+        meta = saved_node["metadata"]
+        params = meta["params"]
+        new_version = next(
+            version
+            for version in params["mediaVersions"]
+            if version["taskId"] == "new"
+        )
+        self.assertEqual(meta["content"], "/uploads/new.mp4")
+        self.assertEqual(meta["providerResultUrl"], "https://provider.example/new.mp4")
+        self.assertEqual(new_version["providerResultUrl"], "https://provider.example/new.mp4")
+        self.assertEqual(params["activeVersionId"], "video:new")
+        self.assertEqual(params["mediaVersionIndex"], 1)
+        self.assertEqual(params["videoVersionIndex"], 1)
 
     def test_video_finalize_tos_failure_keeps_video_successful(self):
         commit = []

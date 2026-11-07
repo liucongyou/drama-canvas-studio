@@ -1447,7 +1447,8 @@ def queue_generated_video_finalize(
                                     or version.get("url")
                                     or ""
                                 )
-                                version["url"] = stored_url
+                                if str(updates["storage"].get("url") or "").strip():
+                                    version["url"] = stored_url
                                 version["storage"] = updates["storage"]
                             video_versions = (
                                 (meta.get("params") or {}).get("videoVersions")
@@ -1466,7 +1467,8 @@ def queue_generated_video_finalize(
                                     or version.get("url")
                                     or ""
                                 )
-                                version["url"] = stored_url
+                                if str(updates["storage"].get("url") or "").strip():
+                                    version["url"] = stored_url
                                 version["storage"] = updates["storage"]
                             meta["content"] = stored_url
                             meta["storage"] = updates["storage"]
@@ -3402,6 +3404,7 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
         "_paramsPatch": {
             "mediaVersions": meta["params"].get("mediaVersions", []),
             "mediaVersionIndex": meta["params"].get("mediaVersionIndex", 0),
+            "activeVersionId": meta["params"].get("activeVersionId", ""),
             "videoVersions": meta["params"].get("videoVersions", []),
             "videoVersionIndex": meta["params"].get("videoVersionIndex", 0),
             **({"thumbUrl": video_thumb_url} if video_thumb_url else {}),
@@ -3527,6 +3530,7 @@ def _recover_persisted_result_to_canvas(project_id, node_id, task):
         "_paramsPatch": {
             "mediaVersions": meta.get("params", {}).get("mediaVersions", []),
             "mediaVersionIndex": meta.get("params", {}).get("mediaVersionIndex", 0),
+            "activeVersionId": meta.get("params", {}).get("activeVersionId", ""),
             **(
                 {
                     "videoVersions": meta.get("params", {}).get("videoVersions", []),
@@ -10339,6 +10343,23 @@ class Handler(BaseHTTPRequestHandler):
                     str(result.get("taskId") or ""),
                     generated_at,
                 )
+                recorded_version_id = str(
+                    (meta.get("params") or {}).get("activeVersionId") or ""
+                )
+                if recorded_version_id:
+                    for version in (
+                        (meta.get("params") or {}).get("mediaVersions") or []
+                    ) + (
+                        (meta.get("params") or {}).get("videoVersions") or []
+                    ):
+                        if (
+                            isinstance(version, dict)
+                            and str(version.get("versionId") or "")
+                            == recorded_version_id
+                        ):
+                            version["providerResultUrl"] = str(
+                                provider_url or ""
+                            )
                 video_thumb_url = ensure_video_thumbnail(generated_url)
                 if video_thumb_url:
                     meta.setdefault("params", {})["thumbUrl"] = video_thumb_url
@@ -10527,6 +10548,7 @@ class Handler(BaseHTTPRequestHandler):
             generated_updates["_paramsPatch"] = {
                 "mediaVersions": meta.get("params", {}).get("mediaVersions", []),
                 "mediaVersionIndex": meta.get("params", {}).get("mediaVersionIndex", 0),
+                "activeVersionId": meta.get("params", {}).get("activeVersionId", ""),
                 **(
                     {
                         "videoVersions": meta.get("params", {}).get("videoVersions", []),
