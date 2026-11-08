@@ -10,6 +10,7 @@ export type RetryErrorKind =
 type RetryStatusError = Error & {
   status?: number;
   statusCode?: number;
+  code?: string;
 };
 
 export type WorkspaceRetryDecision = {
@@ -29,13 +30,18 @@ function numericStatus(error: unknown): number {
   return Number.isFinite(status) ? status : 0;
 }
 
-export function withRequestStatus(error: unknown, status: number): RetryStatusError {
+export function withRequestStatus(
+  error: unknown,
+  status: number,
+  code = '',
+): RetryStatusError {
   const next = (
     error instanceof Error
       ? error
       : new Error(String(error || `HTTP ${status}`))
   ) as RetryStatusError;
   next.status = status;
+  if (code) next.code = code;
   return next;
 }
 

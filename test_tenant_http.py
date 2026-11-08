@@ -121,6 +121,24 @@ class TenantHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b'"slug": "alpha"', body)
 
+    def test_http_server_ignores_only_expected_client_disconnects(self):
+        with patch.object(
+            server.ThreadingHTTPServer,
+            "handle_error",
+        ) as default_handler:
+            self.httpd.handle_error(object(), ("127.0.0.1", 1234))
+        default_handler.assert_called_once()
+
+        try:
+            raise ConnectionAbortedError(10053, "client cancelled")
+        except ConnectionAbortedError:
+            with patch.object(
+                server.ThreadingHTTPServer,
+                "handle_error",
+            ) as default_handler:
+                self.httpd.handle_error(object(), ("127.0.0.1", 1234))
+        default_handler.assert_not_called()
+
     def test_audit_and_metrics_are_tenant_scoped(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
@@ -175,6 +193,100 @@ class TenantHttpTests(unittest.TestCase):
             "\x1f" not in provider_id
             for provider_id in metrics["queue"]["providerActive"]
         ))
+
+    def test_generation_resolve_endpoint_is_atomic_and_idempotent(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        status, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "人工收口 HTTP 闭环"},
+        )
+        self.assertEqual(status, 200)
+        project_id = json.loads(body)["id"]
+        with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "node-http-resolve",
+                    "type": "video",
+                    "title": "段 HTTP",
+                    "metadata": {"status": "generating"},
+                }],
+                episode_id="EP001",
+            )
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-http-resolve",
+                kind="video",
+                provider="ark",
+                model="doubao-seedance-http-test",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="interrupted",
+                phase="结果待确认",
+                provider_task_id="provider-http-resolve",
+                delivery_status="pending",
+            )
+
+        status, _, body = self.request(
+            "POST",
+            f"/api/generation-tasks/{task['id']}/resolve",
+            "alpha.example.com",
+            cookie,
+            {"action": "confirm_failed"},
+            extra_headers={"User-Agent": "AtomicResolveHttpTest/1.0"},
+        )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["task"]["outcome"]["canResolve"])
+        self.assertEqual(payload["task"]["status"], "failed")
+        self.assertEqual(payload["task"]["phase"], "人工确认失败")
+
+        status, _, body = self.request(
+            "POST",
+            f"/api/generation-tasks/{task['id']}/resolve",
+            "alpha.example.com",
+            cookie,
+            {"action": "confirm_failed"},
+            extra_headers={"User-Agent": "AtomicResolveHttpTest/1.0"},
+        )
+        self.assertEqual(status, 409, body.decode("utf-8"))
+        self.assertEqual(json.loads(body)["code"], "TASK_OUTCOME_NOT_RESOLVABLE")
+
+        with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+            saved_task = canvas_store.get_generation_task(task["id"])
+            saved_node = canvas_store.get_projection_node(
+                project_id,
+                "node-http-resolve",
+            )
+            audits = canvas_store.list_audit_events(
+                project_id=project_id,
+                action="generation.resolve",
+            )["events"]
+        self.assertEqual(saved_task["status"], "failed")
+        self.assertEqual(saved_task["next_poll_at"], "")
+        self.assertEqual(
+            saved_node["metadata"]["providerTaskPhase"],
+            "人工确认失败",
+        )
+        self.assertEqual(len(audits), 1)
+        self.assertEqual(audits[0]["targetId"], task["id"])
+        self.assertEqual(audits[0]["actor"], "")
+        self.assertEqual(
+            audits[0]["details"]["userAgent"],
+            "AtomicResolveHttpTest/1.0",
+        )
 
     def test_stream_upload_accepts_real_media_bytes_and_rejects_fake_image(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
@@ -871,7 +983,7 @@ class TenantHttpTests(unittest.TestCase):
         self.assertEqual(saved["metadata"]["prompt"], "跨集共享更新")
         self.assertEqual(saved["metadata"]["episodeId"], "EP001")
 
-    def test_bulk_node_save_ignores_nodes_owned_by_another_episode(self):
+    def test_bulk_node_save_updates_shared_assets_without_reassigning_owner(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
         _, headers, _ = self.request(
@@ -923,7 +1035,7 @@ class TenantHttpTests(unittest.TestCase):
                 "nodes": [
                     {
                         **ep1_node,
-                        "metadata": {"prompt": "不应写入 EP001"},
+                        "metadata": {"prompt": "EP001 共享更新"},
                     },
                     {
                         **ep2_node,
@@ -951,7 +1063,8 @@ class TenantHttpTests(unittest.TestCase):
             item for item in ep2_workspace["nodes"]
             if item["id"] == ep2_node["id"]
         )
-        self.assertEqual(ep1_saved["metadata"]["prompt"], "EP001 原始")
+        self.assertEqual(ep1_saved["metadata"]["prompt"], "EP001 共享更新")
+        self.assertEqual(ep1_saved["metadata"]["episodeId"], "EP001")
         self.assertEqual(ep2_saved["metadata"]["prompt"], "EP002 已更新")
 
     def test_delete_node_rejects_active_generation(self):

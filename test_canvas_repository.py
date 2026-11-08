@@ -55,6 +55,42 @@ class CanvasRepositoryTests(unittest.TestCase):
         self.assertEqual(created["payload"]["connections"][0]["id"], "edge-1")
         self.assertEqual(created["payload"]["revision"], 1)
 
+    def test_workspace_nodes_returns_event_cursor_from_snapshot_boundary(self):
+        project_id, _created = self._create(payload={
+            "nodes": [{
+                "id": "node-cursor",
+                "type": "text",
+                "title": "Cursor",
+                "metadata": {"episodeId": "EP001"},
+            }],
+            "connections": [],
+            "episodeImports": [{
+                "id": "EP001",
+                "nodeIds": ["node-cursor"],
+                "videoNodeIds": [],
+            }],
+        })
+        with tenant_context.use_context(self.context):
+            first_event = canvas_store.append_event(
+                project_id,
+                "media.progress",
+                "node-cursor",
+                {"status": "running"},
+            )
+            workspace = canvas_store.get_project_workspace_nodes(
+                project_id,
+                "EP001",
+            )
+            second_event = canvas_store.append_event(
+                project_id,
+                "media",
+                "node-cursor",
+                {"status": "done"},
+            )
+
+        self.assertEqual(workspace["eventCursor"], first_event)
+        self.assertGreater(second_event, workspace["eventCursor"])
+
     def test_project_layout_update_serializes_filtered_positions(self):
         project_id, _created = self._create(payload={
             "nodes": [
@@ -188,11 +224,19 @@ class CanvasRepositoryTests(unittest.TestCase):
             episode_id="ep01",
             if_revision=current["revision"],
         )
-        self.assertEqual(viewport["zoom"], 0.8)
+        self.assertEqual(viewport["viewport"]["zoom"], 0.8)
+        self.assertFalse(viewport["unchanged"])
+        repeated = self.repo.save_viewport(
+            project_id,
+            {"x": -100, "y": 50, "zoom": 0.8},
+            episode_id="ep01",
+        )
+        self.assertTrue(repeated["unchanged"])
+        self.assertEqual(repeated["revision"], viewport["revision"])
         current = self.repo.get_project(project_id)
         self.assertEqual(
             current["payload"]["episodeViewports"]["EP01"],
-            viewport,
+            viewport["viewport"],
         )
         self.assertEqual(
             current["payload"]["nodes"][0]["metadata"]["prompt"],
@@ -201,8 +245,8 @@ class CanvasRepositoryTests(unittest.TestCase):
         current = self.repo.get_project(project_id)
         stale_revision = current["revision"]
         stale_payload = copy.deepcopy(current["payload"])
-        viewport["zoom"] = 0.7
-        stale_payload.setdefault("episodeViewports", {})["EP01"] = viewport
+        viewport["viewport"]["zoom"] = 0.7
+        stale_payload.setdefault("episodeViewports", {})["EP01"] = viewport["viewport"]
         canvas_store.update_project(
             project_id,
             payload=stale_payload,
@@ -243,6 +287,40 @@ class CanvasRepositoryTests(unittest.TestCase):
             self.assertEqual(
                 len([item for item in versions if item["kind"] == "manual"]),
                 1,
+            )
+
+    def test_snapshot_history_queries_do_not_require_temp_btree_sort(self):
+        project_id, _created = self._create()
+        with tenant_context.use_context(self.context):
+            for index in range(3):
+                current = self.repo.get_project(project_id)
+                current["payload"]["snapshotProbe"] = index
+                self.repo.create_version(project_id, f"历史版本 {index}")
+            con = canvas_store._connect()
+            payload_plan = con.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT revision,created_at,payload_json FROM canvas_snapshots "
+                "WHERE canvas_id=? ORDER BY revision DESC LIMIT ?",
+                (project_id, 30),
+            ).fetchall()
+            versions_plan = con.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT id,title,node_count,connection_count,revision,kind,created_at "
+                "FROM canvas_snapshots WHERE canvas_id=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (project_id, 30),
+            ).fetchall()
+            backfill_plan = con.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT created_at,payload_json FROM canvas_snapshots "
+                "WHERE canvas_id=? ORDER BY revision ASC",
+                (project_id,),
+            ).fetchall()
+            con.close()
+        for plan in (payload_plan, versions_plan, backfill_plan):
+            self.assertFalse(
+                any("USE TEMP B-TREE FOR ORDER BY" in str(row[-1]) for row in plan),
+                plan,
             )
 
     def test_restore_recovers_content_and_creates_pre_restore_protection(self):

@@ -1205,14 +1205,38 @@ _EVENT_SUBSCRIBERS: dict[str, list[queue.Queue]] = {}
 _EVENT_SUBSCRIBERS_LOCK = threading.Lock()
 
 
+def _project_event_episode_id(project_id, node_id):
+    """Resolve event scope from durable node ownership without guessing."""
+    node_id = str(node_id or "").strip()
+    if not node_id:
+        return ""
+    try:
+        row = store.get_projection_node(project_id, node_id)
+    except Exception:
+        return ""
+    if not isinstance(row, dict):
+        return ""
+    metadata = row.get("metadata")
+    return str(
+        row.get("episodeId")
+        or (metadata.get("episodeId") if isinstance(metadata, dict) else "")
+        or ""
+    ).strip().upper()
+
+
 def publish_project_event(project_id, kind, node_id="", payload=None):
     """事件先落库，再唤醒订阅者。
 
     只做内存广播是不够的：页面刷新、网络抖动、切项目都会断线一段时间，
     断线期间发生的变化必须能按 Last-Event-ID 补回来，否则卡片会永久停在旧状态。
     """
+    scoped_payload = dict(payload or {})
+    if node_id and not scoped_payload.get("episodeId"):
+        episode_id = _project_event_episode_id(project_id, node_id)
+        if episode_id:
+            scoped_payload["episodeId"] = episode_id
     try:
-        event_id = store.append_event(project_id, kind, node_id, payload)
+        event_id = store.append_event(project_id, kind, node_id, scoped_payload)
     except Exception as exc:
         print(f"[events] 写入事件失败：{exc}", file=sys.stderr)
         return 0
@@ -2207,7 +2231,7 @@ def _node_save_conflict(incoming, current, include_position=False):
     )
 
 
-def merge_node_metadata(meta, incoming, generation_active=False):
+def merge_node_metadata(meta, incoming, generation_active=False, node_type=""):
     """Merge editable client fields while generation result fields stay authoritative."""
     explicit_media_import = bool((incoming or {}).get("_mediaImport"))
     explicit_media_version_selection = bool(
@@ -2354,6 +2378,16 @@ def merge_node_metadata(meta, incoming, generation_active=False):
                 meta["providerResultUrl"] = str(
                     selected.get("providerResultUrl") or ""
                 )
+                selected_thumb = str(selected.get("thumbUrl") or "").strip()
+                selected_url = str(selected.get("url") or "").strip()
+                if not selected_thumb and selected_url.startswith("/uploads/"):
+                    selected_thumb = ensure_video_thumbnail(selected_url)
+                    if selected_thumb:
+                        selected["thumbUrl"] = selected_thumb
+                if selected_thumb and node_type == "video":
+                    params["thumbUrl"] = selected_thumb
+                elif node_type == "video":
+                    params.pop("thumbUrl", None)
             meta["params"] = params
             continue
         if (
@@ -2371,6 +2405,36 @@ def merge_node_metadata(meta, incoming, generation_active=False):
         ):
             continue
         meta[key] = value
+
+
+def workspace_media_availability(meta):
+    """Return backend-confirmed media availability for a node projection."""
+    if not isinstance(meta, dict):
+        return ""
+    content = str(meta.get("content") or "").strip()
+    if not content:
+        return ""
+    if content.startswith("/uploads/"):
+        try:
+            return (
+                "available"
+                if provider_client.local_upload_path(content)
+                else "missing"
+            )
+        except RuntimeError:
+            return "missing"
+    if content.startswith(("http://", "https://", "data:")):
+        # Signed provider URLs expire while TOS bytes remain. Establish the
+        # durable local/storage copy before calling a remote URL unavailable.
+        storage = meta.get("storage")
+        if (
+            isinstance(storage, dict)
+            and storage.get("status") == "stored"
+            and (storage.get("key") or storage.get("url"))
+        ):
+            return "available"
+        return "unknown"
+    return "missing"
 
 
 def apply_generation_input(node, body):
@@ -2744,6 +2808,7 @@ def _record_media_version(
     generated_at,
     storage=None,
     provider_result_url="",
+    thumb_url="",
 ):
     media_params = meta.setdefault("params", {})
     _normalize_media_versions(meta, kind)
@@ -2804,6 +2869,8 @@ def _record_media_version(
     }
     if isinstance(storage, dict):
         current_version["storage"] = storage
+    if str(thumb_url or "").strip():
+        current_version["thumbUrl"] = str(thumb_url).strip()
     versions.append(current_version)
     for offset, item in enumerate(versions):
         if not str(item.get("versionId") or "").strip():
@@ -2815,6 +2882,8 @@ def _record_media_version(
             )
     versions = versions[-MAX_MEDIA_VERSIONS:]
     media_params["mediaVersions"] = versions
+    if str(thumb_url or "").strip():
+        media_params["thumbUrl"] = str(thumb_url).strip()
     media_params["activeVersionId"] = str(
         current_version.get("versionId") or ""
     )
@@ -2833,8 +2902,21 @@ def _record_media_version(
     return versions
 
 
-def _record_video_version(meta, generated_url, task_id, generated_at):
-    return _record_media_version(meta, "video", generated_url, task_id, generated_at)
+def _record_video_version(
+    meta,
+    generated_url,
+    task_id,
+    generated_at,
+    thumb_url="",
+):
+    return _record_media_version(
+        meta,
+        "video",
+        generated_url,
+        task_id,
+        generated_at,
+        thumb_url=thumb_url,
+    )
 
 
 def _provider_task_phase(status, progress=None):
@@ -3267,6 +3349,52 @@ def project_workspace_nodes(project_id, workspace):
     ]
     for node in workspace["nodes"]:
         media_storage.project_node_media_url(node)
+        meta = node.get("metadata") if isinstance(node, dict) else None
+        availability = workspace_media_availability(meta)
+        if availability:
+            node.setdefault("metadata", {})["mediaAvailability"] = availability
+        # A broken historical version must not poison the active card. Fall
+        # back to the newest version whose durable storage/local bytes exist.
+        if availability == "missing" and isinstance(meta, dict):
+            params = meta.get("params")
+            params = params if isinstance(params, dict) else {}
+            versions = params.get("mediaVersions") or params.get("videoVersions") or []
+            durable_index = -1
+            durable_version = None
+            for index in range(len(versions) - 1, -1, -1):
+                version = versions[index]
+                if not isinstance(version, dict):
+                    continue
+                version_meta = {
+                    "content": str(version.get("url") or ""),
+                    "storage": version.get("storage"),
+                }
+                if workspace_media_availability(version_meta) == "available":
+                    durable_index = index
+                    durable_version = version
+                    break
+            if durable_version:
+                selected_url = media_storage.project_node_media_url({
+                    "metadata": {
+                        "content": str(durable_version.get("url") or ""),
+                        "storage": durable_version.get("storage"),
+                        "params": {},
+                    },
+                })
+                params["mediaVersionIndex"] = durable_index
+                if params.get("videoVersions"):
+                    params["videoVersionIndex"] = durable_index
+                params["activeVersionId"] = str(
+                    durable_version.get("versionId") or ""
+                )
+                meta["params"] = params
+                meta["content"] = selected_url or str(
+                    durable_version.get("url") or ""
+                )
+                meta["status"] = "done"
+                meta["mediaAvailability"] = "available"
+                meta["storage"] = durable_version.get("storage") or {}
+                meta["storageError"] = ""
     return workspace
 
 
@@ -3594,9 +3722,15 @@ def _finalize_resumed_video(project_id, node_id, result, provider, model):
             "供应商视频已完成，但本地文件尚未落盘；"
             "系统会保留原任务并在后续同步中重试，不会重新提交。"
         )
-    _record_video_version(meta, generated_url, task_id, generated_at)
-    validation = validate_generated_video(generated_url, (meta.get("params") or {}).get("duration"))
     video_thumb_url = ensure_video_thumbnail(generated_url)
+    _record_video_version(
+        meta,
+        generated_url,
+        task_id,
+        generated_at,
+        thumb_url=video_thumb_url,
+    )
+    validation = validate_generated_video(generated_url, (meta.get("params") or {}).get("duration"))
     versions = (meta.get("params") or {}).get("videoVersions") or []
     if versions:
         versions[-1]["actualDuration"] = validation.get("duration")
@@ -7617,6 +7751,12 @@ class Handler(BaseHTTPRequestHandler):
                         else "provider"
                     )
                 task["outcome"] = generation_outcome.task_outcome(task)
+                task["outcome"]["canResolve"] = (
+                    generation_outcome.can_manually_resolve_task(
+                        task,
+                        task["outcome"],
+                    )
+                )
                 task["leaseHealthy"] = bool(
                     task.get("status") in {"queued", "submitting", "running"}
                     and task.get("lease_expires_at")
@@ -8815,6 +8955,81 @@ class Handler(BaseHTTPRequestHandler):
             with GENERATION_QUEUE_CONDITION:
                 GENERATION_QUEUE_CONDITION.notify_all()
             return self._send(200, {"ok": True, "taskId": task_id})
+        m = re.match(r"^/api/generation-tasks/([^/]+)/resolve$", path)
+        if m:
+            task_id = unquote(m.group(1))
+            task = store.get_generation_task(task_id)
+            if not task:
+                return self._send(404, {"error": "任务不存在"})
+            outcome = generation_outcome.task_outcome(task)
+            if not generation_outcome.can_manually_resolve_task(task, outcome):
+                return self._send(409, {
+                    "error": "该任务当前不能人工确认失败",
+                    "code": "TASK_OUTCOME_NOT_RESOLVABLE",
+                    "outcome": outcome,
+                })
+            finished_at = store._now_iso()
+            node_updates = {
+                "status": "failed",
+                "lastError": (
+                    "原任务结果待确认，已由用户确认失败；"
+                    "可主动重新生成。"
+                ),
+                "providerTaskStatus": "failed",
+                "providerTaskPhase": "人工确认失败",
+                "generationFinishedAt": finished_at,
+            }
+            event_payload = _generation_terminal_event_payload(
+                task["node_id"],
+                node_updates,
+                task={"id": task_id, "status": "failed", "phase": "人工确认失败"},
+            )
+            resolution = store.resolve_generation_task_failed_atomic(
+                task_id,
+                expected_updated_at=task.get("updated_at") or "",
+                phase="人工确认失败",
+                error=(
+                    "用户已确认不再等待原任务结果；"
+                    "该任务不会自动重提，可主动重新生成。"
+                ),
+                node_updates=node_updates,
+                event_kind="media",
+                event_payload=event_payload,
+                audit_action="generation.resolve",
+                audit_actor=(self._current_session() or {}).get(
+                    "account_username",
+                    "",
+                ),
+                audit_details={
+                    "projectId": task.get("project_id"),
+                    "nodeId": task.get("node_id"),
+                    "kind": task.get("kind"),
+                    "action": "confirm_failed",
+                    "previousStatus": task.get("status"),
+                    "previousPhase": task.get("phase"),
+                    "providerTaskId": task.get("provider_task_id") or "",
+                    "reason": outcome.get("reason") or "",
+                },
+            )
+            if not resolution.get("resolved"):
+                return self._send(409, {
+                    "error": "任务状态已变化，请刷新后重试",
+                    "code": "TASK_RESOLUTION_CONFLICT",
+                    "reason": resolution.get("reason") or "",
+                })
+            resolved = resolution["task"]
+            _notify_project_event_subscribers(
+                task["project_id"],
+                resolution.get("eventId"),
+            )
+            resolved_outcome = generation_outcome.task_outcome(resolved)
+            resolved_outcome["canResolve"] = False
+            resolved["outcome"] = resolved_outcome
+            return self._send(200, {
+                "ok": True,
+                "taskId": task_id,
+                "task": resolved,
+            })
         return self._send(404, {"error": "not found"})
 
     def do_PUT(self):
@@ -9163,6 +9378,8 @@ class Handler(BaseHTTPRequestHandler):
             }
             conflicts = []
             save_updates = []
+            shared_asset_ids = set()
+            claim_shared_ids = set()
             created = 0
             persisted_node_count = 0
             current_revision = 0
@@ -9188,16 +9405,26 @@ class Handler(BaseHTTPRequestHandler):
                     store.get_episode_node_ids(pid, episode_id) or []
                 )
                 conflicts = []
+                shared_asset_ids = set()
+                claim_shared_ids = set()
                 for item in incoming:
                     if not isinstance(item, dict) or not item.get("id"):
                         continue
                     current = by_id.get(item["id"])
-                    # Shared references may be visible on the canvas, but a
-                    # save request is scoped to one episode. Never let a
-                    # cross-episode node hitchhike in the bulk payload and
-                    # either fail the whole save or change another episode.
                     if current and item["id"] not in episode_node_ids:
-                        continue
+                        # Provisional/imported assets may still have no owner.
+                        # Adopt those into the requesting episode; real shared
+                        # assets keep their original owner while their editable
+                        # content is updated as a project-level asset.
+                        current_episode = str(
+                            current.get("episodeId")
+                            or (current.get("metadata") or {}).get("episodeId")
+                            or ""
+                        ).strip().upper()
+                        if not current_episode:
+                            claim_shared_ids.add(item["id"])
+                        else:
+                            shared_asset_ids.add(item["id"])
                     if current and _node_save_conflict(
                         item,
                         current,
@@ -9226,7 +9453,11 @@ class Handler(BaseHTTPRequestHandler):
                         nid = item.get("id")
                         node = by_id.get(nid)
                         if node is not None and nid not in episode_node_ids:
-                            continue
+                            if (
+                                nid not in shared_asset_ids
+                                and nid not in claim_shared_ids
+                            ):
+                                continue
                         if node is None:
                             created_at = store._now_iso()
                             node = {
@@ -9245,12 +9476,17 @@ class Handler(BaseHTTPRequestHandler):
                             ):
                                 created_items.append(node)
                             continue
+                        if nid in claim_shared_ids:
+                            metadata = dict(item.get("metadata") or {})
+                            metadata["episodeId"] = episode_id
+                            item["metadata"] = metadata
                         if isinstance(item.get("metadata"), dict):
                             meta = node.setdefault("metadata", {})
                             merge_node_metadata(
                                 meta,
                                 item["metadata"],
                                 generation_active=nid in active_task_nodes,
+                                node_type=str(item.get("type") or node.get("type") or ""),
                             )
                         if "title" in item:
                             node["title"] = item["title"]
@@ -9303,12 +9539,39 @@ class Handler(BaseHTTPRequestHandler):
                             update["node"]
                             for update in save_updates
                         ]
-                        store.update_project_nodes(
-                            pid,
-                            remaining,
-                            episode_id=episode_id,
-                            if_revision=current_revision,
-                        )
+                        shared_updates = [
+                            update["node"]
+                            for update in save_updates
+                            if update["id"] in shared_asset_ids
+                        ]
+                        local_updates = [
+                            update["node"]
+                            for update in save_updates
+                            if update["id"] not in shared_asset_ids
+                        ]
+                        if shared_updates:
+                            shared_saved = store.update_project_nodes(
+                                pid,
+                                shared_updates,
+                                episode_id=episode_id,
+                                if_revision=current_revision,
+                                preserve_ownership=True,
+                            )
+                            current_revision = int(
+                                shared_saved.get("revision")
+                                or current_revision
+                            )
+                        if local_updates:
+                            local_saved = store.update_project_nodes(
+                                pid,
+                                local_updates,
+                                episode_id=episode_id,
+                                if_revision=current_revision,
+                            )
+                            current_revision = int(
+                                local_saved.get("revision")
+                                or current_revision
+                            )
                         persisted_node_count += len(remaining)
                         existing_updated_items.extend(remaining)
                     break
@@ -9402,6 +9665,7 @@ class Handler(BaseHTTPRequestHandler):
                 target,
                 incoming,
                 generation_active=nid in active_task_nodes,
+                node_type=str(node.get("type") or ""),
             )
 
         try:
@@ -10832,6 +11096,14 @@ class Handler(BaseHTTPRequestHandler):
                 video_thumb_url = ensure_video_thumbnail(generated_url)
                 if video_thumb_url:
                     meta.setdefault("params", {})["thumbUrl"] = video_thumb_url
+                    for version_key in ("mediaVersions", "videoVersions"):
+                        for version in (meta.get("params") or {}).get(version_key) or []:
+                            if (
+                                isinstance(version, dict)
+                                and str(version.get("versionId") or "")
+                                == recorded_version_id
+                            ):
+                                version["thumbUrl"] = video_thumb_url
                 meta["content"] = generated_url
                 meta["status"] = "done"
                 meta["lastNote"] = missing_note(missing)
@@ -11130,6 +11402,13 @@ class Handler(BaseHTTPRequestHandler):
 class CanvasHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 128
+
+    def handle_error(self, request, client_address):
+        """Keep expected client cancellations out of operational error logs."""
+        exc = sys.exc_info()[1]
+        if is_client_disconnect_error(exc):
+            return
+        super().handle_error(request, client_address)
 
 
 def _run_generation_task_worker(task_id, tenant_id, tenant_slug):

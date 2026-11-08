@@ -1,5 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import {
+  GENERATION_OWNED_MEDIA_PARAMS,
+  mediaPatchMetadataForStorage,
   preserveSelectedMediaVersion,
   type CanvasMediaNode,
 } from './api';
@@ -179,4 +181,86 @@ describe('preserveSelectedMediaVersion', () => {
     expect(merged.params?.activeVersionId).toBe('v2');
   });
 
+  it('keeps the poster bound when a video version selection is pending save', () => {
+    const local = node({
+      kind: 'video',
+      mediaUrl: '/uploads/v1.mp4',
+      thumbUrl: '/uploads/v1.jpg',
+      _mediaVersionSelection: true,
+      params: {
+        activeVersionId: 'v1',
+        mediaVersionIndex: 0,
+        mediaVersions: [
+          {versionId: 'v1', url: '/uploads/v1.mp4', thumbUrl: '/uploads/v1.jpg'},
+          {versionId: 'v2', url: '/uploads/v2.mp4', thumbUrl: '/uploads/v2.jpg'},
+        ],
+      },
+    });
+    const remote = node({
+      kind: 'video',
+      mediaUrl: '/uploads/v2.mp4',
+      thumbUrl: '/uploads/v2.jpg',
+      params: {
+        activeVersionId: 'v2',
+        mediaVersionIndex: 1,
+        mediaVersions: [
+          {versionId: 'v1', url: '/uploads/v1.mp4', thumbUrl: '/uploads/v1.jpg'},
+          {versionId: 'v2', url: '/uploads/v2.mp4', thumbUrl: '/uploads/v2.jpg'},
+        ],
+      },
+    });
+
+    const merged = preserveSelectedMediaVersion(local, remote);
+    expect(merged.mediaUrl).toBe('/uploads/v1.mp4');
+    expect(merged.thumbUrl).toBe('/uploads/v1.jpg');
+    expect(merged.params?.activeVersionId).toBe('v1');
+  });
+
+});
+
+
+describe('mediaPatchMetadataForStorage', () => {
+  it('sends the active version pointer while excluding generation-owned version lists', () => {
+    const selected = node({
+      mediaUrl: '/uploads/v2.jpg',
+      _mediaVersionSelection: true,
+      params: {
+        activeVersionId: 'v2',
+        mediaVersionIndex: 1,
+        mediaVersions: [
+          {versionId: 'v1', url: '/uploads/v1.jpg'},
+          {versionId: 'v2', url: '/uploads/v2.jpg'},
+        ],
+      },
+    });
+
+    const metadata = mediaPatchMetadataForStorage(selected);
+    expect(metadata._mediaVersionSelection).toBe(true);
+    expect(metadata.content).toBe('/uploads/v2.jpg');
+    expect(metadata.params).toMatchObject({
+      activeVersionId: 'v2',
+      mediaVersionIndex: 1,
+    });
+    expect(GENERATION_OWNED_MEDIA_PARAMS.has('mediaVersions')).toBe(true);
+  });
+
+  it('does not let an ordinary edit submit a stale version pointer', () => {
+    const selected = node({
+      mediaUrl: '/uploads/v2.jpg',
+      params: {
+        activeVersionId: 'v2',
+        mediaVersionIndex: 1,
+        mediaVersions: [
+          {versionId: 'v1', url: '/uploads/v1.jpg'},
+          {versionId: 'v2', url: '/uploads/v2.jpg'},
+        ],
+        ratio: '16:9',
+      },
+    });
+
+    const metadata = mediaPatchMetadataForStorage(selected);
+    expect(metadata._mediaVersionSelection).toBeUndefined();
+    expect(metadata.content).toBeUndefined();
+    expect(metadata.params).toMatchObject({ratio: '16:9'});
+  });
 });

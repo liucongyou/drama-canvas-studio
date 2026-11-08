@@ -67,7 +67,7 @@ describe('video cover loading state', () => {
       /onClick=\{\(event\) => \{[\s\S]{0,240}closest\('button, input, \.canvas-video-controls'\)[\s\S]{0,160}toggleVideoPlayback\(\)/,
     );
     expect(canvas).toMatch(
-      /className="canvas-video-center-play nodrag"[\s\S]{0,500}toggleVideoPlayback\(\)/,
+      /className="canvas-video-center-play nodrag"[\s\S]{0,600}toggleVideoPlayback\(\)/,
     );
   });
 });

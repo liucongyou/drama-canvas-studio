@@ -259,6 +259,61 @@ class MediaVersionTests(unittest.TestCase):
         self.assertEqual(params["mediaVersionIndex"], 1)
         self.assertEqual(params["videoVersionIndex"], 1)
 
+    def test_each_video_version_keeps_its_own_poster_after_selection(self):
+        meta = {
+            "content": "/uploads/old.mp4",
+            "status": "done",
+            "params": {},
+        }
+        server._record_video_version(
+            meta,
+            "/uploads/old.mp4",
+            "task-old",
+            "2026-11-08T01:00:00Z",
+            thumb_url="/uploads/old.jpg",
+        )
+        server._record_video_version(
+            meta,
+            "/uploads/new.mp4",
+            "task-new",
+            "2026-11-08T02:00:00Z",
+            thumb_url="/uploads/new.jpg",
+        )
+
+        versions = meta["params"]["videoVersions"]
+        self.assertEqual(
+            {item["taskId"]: item["thumbUrl"] for item in versions},
+            {
+                "task-old": "/uploads/old.jpg",
+                "task-new": "/uploads/new.jpg",
+            },
+        )
+
+        server.merge_node_metadata(
+            meta,
+            {
+                "content": "/uploads/old.mp4",
+                "source": {"type": "generated"},
+                "_mediaVersionSelection": True,
+                "params": {"activeVersionId": "video:task-old"},
+            },
+            node_type="video",
+        )
+
+        self.assertEqual(meta["content"], "/uploads/old.mp4")
+        self.assertEqual(meta["params"]["thumbUrl"], "/uploads/old.jpg")
+        self.assertEqual(
+            meta["params"]["activeVersionId"],
+            "video:task-old",
+        )
+        self.assertEqual(
+            {item["taskId"]: item["thumbUrl"] for item in meta["params"]["videoVersions"]},
+            {
+                "task-old": "/uploads/old.jpg",
+                "task-new": "/uploads/new.jpg",
+            },
+        )
+
     def test_recovery_receipt_updates_existing_version_without_duplicate(self):
         meta = {
             "content": "/uploads/old.png",

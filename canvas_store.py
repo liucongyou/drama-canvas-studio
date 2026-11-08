@@ -325,6 +325,14 @@ def _connect():
             "ON canvas_projection_edges(project_id, edge_id)"
             )
             con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_projection_edges_from "
+            "ON canvas_projection_edges(project_id, from_node_id)"
+            )
+            con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_projection_edges_to "
+            "ON canvas_projection_edges(project_id, to_node_id)"
+            )
+            con.execute(
             """CREATE TABLE IF NOT EXISTS canvas_projection_episodes(
                 project_id TEXT NOT NULL,
                 episode_id TEXT NOT NULL,
@@ -393,6 +401,17 @@ def _connect():
                 kind TEXT DEFAULT 'auto',
                 created_at TEXT
             )"""
+            )
+            # Historical backfills read large payloads ordered by revision.
+            # Without these indexes SQLite materializes a temp B-tree, which
+            # fails on Windows when the process temp directory is not writable.
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_canvas_snapshots_project_revision "
+                "ON canvas_snapshots(canvas_id, revision DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_canvas_snapshots_project_created "
+                "ON canvas_snapshots(canvas_id, created_at DESC)"
             )
             con.execute(
             """CREATE TABLE IF NOT EXISTS generation_tasks(
@@ -2505,9 +2524,21 @@ def get_project_workspace_index(project_id):
 
 
 def get_project_workspace_nodes(project_id, episode_id=None):
-    """Return current episode nodes and edges from relational projection."""
+    """Return current episode nodes and edges from relational projection.
+
+    ``eventCursor`` is captured before the projection rows are read. Events
+    through this id are therefore guaranteed to be represented by the returned
+    snapshot. Reading the cursor first may occasionally make the client apply
+    one harmless idempotent refresh, but it can never declare a concurrent
+    terminal event as already reflected when it is not.
+    """
     normalized_episode = str(episode_id or "").strip().upper()
     con = _connect()
+    event_row = con.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM canvas_events WHERE project_id=?",
+        (project_id,),
+    ).fetchone()
+    event_cursor = int(event_row[0] or 0) if event_row else 0
     if normalized_episode:
         episode_row = con.execute(
             "SELECT group_json,layout_json FROM canvas_projection_episodes "
@@ -2544,12 +2575,36 @@ def get_project_workspace_nodes(project_id, episode_id=None):
             continue
         if isinstance(node, dict):
             nodes.append(node)
+    node_ids = {str(node.get("id")) for node in nodes if node.get("id")}
+    if normalized_episode and node_ids:
+        placeholders = ",".join("?" for _ in node_ids)
+        edge_rows = con.execute(
+            "SELECT edge_json FROM canvas_projection_edges "
+            "WHERE project_id=? AND ("
+            f"from_node_id IN ({placeholders}) OR "
+            f"to_node_id IN ({placeholders})) ORDER BY rowid",
+            (project_id, *sorted(node_ids), *sorted(node_ids)),
+        ).fetchall()
+    else:
+        edge_rows = con.execute(
+            "SELECT edge_json FROM canvas_projection_edges WHERE project_id=? ORDER BY rowid",
+            (project_id,),
+        ).fetchall()
+    edges = []
+    for row in edge_rows:
+        try:
+            edge = json.loads(row[0])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(edge, dict):
+            edges.append(edge)
     if normalized_episode:
         nodes.extend(
             _workspace_referenced_project_assets(
                 con,
                 project_id,
                 nodes,
+                edges,
             )
         )
     sanitized = repair_workspace_dangling_references(nodes)
@@ -2567,29 +2622,22 @@ def get_project_workspace_nodes(project_id, episode_id=None):
             if value:
                 metadata[key] = import_feed.repair_angle_bracket_mentions(value)
     node_ids = {str(node.get("id")) for node in nodes if node.get("id")}
-    edge_rows = con.execute(
-        "SELECT edge_json FROM canvas_projection_edges WHERE project_id=? ORDER BY rowid",
-        (project_id,),
-    ).fetchall()
     con.close()
-    edges = []
-    for row in edge_rows:
-        try:
-            edge = json.loads(row[0])
-        except (TypeError, ValueError):
-            continue
+    edges = [
+        edge
+        for edge in edges
         if (
-            isinstance(edge, dict)
-            and str(edge.get("fromNodeId") or "") in node_ids
+            str(edge.get("fromNodeId") or "") in node_ids
             and str(edge.get("toNodeId") or "") in node_ids
-        ):
-            edges.append(edge)
+        )
+    ]
     return {
         "episodeId": normalized_episode or group.get("id") or "EP001",
         "episode": group,
         "nodes": nodes,
         "connections": edges,
         "layouts": layout if isinstance(layout, dict) else {},
+        "eventCursor": event_cursor,
         "referenceCleanup": {
             "removed": sanitized,
         },
@@ -2701,7 +2749,7 @@ def _collect_payload_uploads(payload, filenames):
             _collect_metadata_uploads(node.get("metadata"), filenames)
 
 
-def _workspace_referenced_project_assets(con, project_id, nodes):
+def _workspace_referenced_project_assets(con, project_id, nodes, edges=None):
     """Return shared project assets referenced by this episode's videos."""
     referenced = set()
     video_ids = set()
@@ -2722,16 +2770,23 @@ def _workspace_referenced_project_assets(con, project_id, nodes):
         item = params.get("voiceRef") or metadata.get("voiceRef")
         if isinstance(item, dict) and item.get("nodeId"):
             referenced.add(str(item["nodeId"]))
-    if video_ids:
+    if video_ids and edges is None:
         edge_rows = con.execute(
-            "SELECT edge_json FROM canvas_projection_edges WHERE project_id=?",
-            (project_id,),
+            "SELECT edge_json FROM canvas_projection_edges "
+            "WHERE project_id=? AND to_node_id IN ("
+            + ",".join("?" for _ in video_ids)
+            + ")",
+            (project_id, *sorted(video_ids)),
         ).fetchall()
+        edges = []
         for row in edge_rows:
             try:
                 edge = json.loads(row[0] or "{}")
             except (TypeError, ValueError):
                 continue
+            edges.append(edge)
+    if video_ids:
+        for edge in edges or []:
             if (
                 isinstance(edge, dict)
                 and str(edge.get("toNodeId") or "") in video_ids
@@ -3909,8 +3964,14 @@ def update_project_nodes(
     *,
     episode_id=None,
     if_revision=None,
+    preserve_ownership=False,
 ):
-    """Update existing node rows without serializing the complete project."""
+    """Update existing node rows without serializing the complete project.
+
+    ``preserve_ownership`` is used for project-level shared assets edited from
+    a referencing episode: content may change, but the asset's original episode
+    membership must not be reassigned.
+    """
     items = [
         item
         for item in (nodes or [])
@@ -3935,7 +3996,7 @@ def update_project_nodes(
         stamp = _now_iso()
         normalized_episode = str(episode_id or "").strip().upper()
         updated = 0
-        if normalized_episode:
+        if normalized_episode and not preserve_ownership:
             group_row = con.execute(
                 "SELECT 1 FROM canvas_projection_episodes "
                 "WHERE project_id=? AND episode_id=?",
@@ -3965,7 +4026,7 @@ def update_project_nodes(
         for item in items:
             metadata = item.get("metadata")
             metadata = dict(metadata) if isinstance(metadata, dict) else {}
-            if normalized_episode:
+            if normalized_episode and not preserve_ownership:
                 metadata_episode = str(metadata.get("episodeId") or "").strip().upper()
                 if metadata_episode and metadata_episode != normalized_episode:
                     raise ValueError(
@@ -3974,6 +4035,32 @@ def update_project_nodes(
                     )
                 metadata["episodeId"] = normalized_episode
                 item["metadata"] = metadata
+        existing_owners = {}
+        if preserve_ownership:
+            node_ids = [
+                str(item.get("id"))
+                for item in items
+                if item.get("id")
+            ]
+            if node_ids:
+                placeholders = ",".join("?" for _ in node_ids)
+                existing_owners = {
+                    str(node_id): str(owner or "").strip().upper()
+                    for node_id, owner in con.execute(
+                        "SELECT node_id, episode_id "
+                        "FROM canvas_projection_nodes "
+                        f"WHERE project_id=? AND node_id IN ({placeholders})",
+                        (project_id, *node_ids),
+                    )
+                }
+                for item in items:
+                    owner = existing_owners.get(str(item.get("id")))
+                    if not owner:
+                        continue
+                    metadata = dict(item.get("metadata") or {})
+                    metadata["episodeId"] = owner
+                    item["metadata"] = metadata
+                    item["episodeId"] = owner
             _asset_node_identity(
                 metadata,
                 node_type=str(item.get("type") or ""),
@@ -3996,7 +4083,7 @@ def update_project_nodes(
             con,
             project_id,
             existing_items,
-            episode_id=normalized_episode,
+            episode_id="" if preserve_ownership else normalized_episode,
             updated_at=stamp,
         )
         stats = refresh_project_projection_stats(con, project_id)
@@ -4878,6 +4965,18 @@ def commit_generation_terminal(
         if not node:
             result["reason"] = "node_not_found"
             return
+        node_metadata = node.get("metadata")
+        node_episode_id = str(
+            node.get("episodeId")
+            or (
+                node_metadata.get("episodeId")
+                if isinstance(node_metadata, dict)
+                else ""
+            )
+            or ""
+        ).strip().upper()
+        if isinstance(event_payload, dict) and node_episode_id:
+            event_payload.setdefault("episodeId", node_episode_id)
         meta = node.setdefault("metadata", {})
         pending = dict(node_updates or {})
         params_patch = pending.pop("_paramsPatch", None)
@@ -5080,7 +5179,7 @@ def reopen_generation_task_for_provider(
             "error=?,provider_task_id=?,delivery_status='pending',"
             "lease_owner='',lease_expires_at=NULL,finished_at='',updated_at=? "
             "WHERE id=? AND status='failed' "
-            "AND COALESCE(phase,'') NOT IN ('查询失败','生成失败') "
+            "AND COALESCE(phase,'') NOT IN ('查询失败','生成失败','人工确认失败') "
             "AND COALESCE(error,'') NOT LIKE '%供应商明确返回任务不存在%' "
             "AND COALESCE(error,'') NOT LIKE '%HTTP 404%' "
             "AND COALESCE(error,'') NOT LIKE '%供应商视频生成失败%' "
@@ -5099,6 +5198,224 @@ def reopen_generation_task_for_provider(
 
     _run_write_transaction(write)
     return get_generation_task(task_id) if reopened["value"] else None
+
+
+def _resolve_generation_task_failed_atomic(
+    task_id,
+    *,
+    expected_updated_at,
+    phase,
+    error,
+    node_updates=None,
+    event_kind="media",
+    event_payload=None,
+    audit_action="",
+    audit_actor="",
+    audit_details=None,
+):
+    """Close a task and commit its node, outbox event and audit together.
+
+    The task receipt, canvas projection and audit trail are one operator
+    action. Splitting them across separate transactions can leave a failed
+    task attached to a card that is still waiting, or leave a successful
+    close with no audit evidence. Every row below is therefore written on the
+    same SQLite transaction and rolls back together on any error.
+    """
+    result = {
+        "resolved": False,
+        "reason": "",
+        "task": None,
+        "eventId": 0,
+        "nodeWrittenAt": "",
+        "auditEventId": "",
+    }
+
+    def write(con):
+        row = con.execute(
+            "SELECT * FROM generation_tasks WHERE id=?",
+            (str(task_id or ""),),
+        ).fetchone()
+        columns = [
+            item[0]
+            for item in con.execute(
+                "SELECT * FROM generation_tasks LIMIT 0"
+            ).description
+        ]
+        current = dict(zip(columns, row)) if row else None
+        if not current:
+            result["reason"] = "task_not_found"
+            return
+        if str(current.get("updated_at") or "") != str(expected_updated_at or ""):
+            result["reason"] = "task_revision_conflict"
+            return
+        if str(current.get("status") or "") not in {"failed", "interrupted"}:
+            result["reason"] = "task_status_conflict"
+            return
+
+        project_id = str(current.get("project_id") or "")
+        node_id = str(current.get("node_id") or "")
+        payload = get_projection_payload(con, project_id)
+        if not isinstance(payload, dict):
+            result["reason"] = "project_not_found"
+            return
+        node = next(
+            (item for item in payload.get("nodes") or [] if item.get("id") == node_id),
+            None,
+        )
+        if not isinstance(node, dict):
+            result["reason"] = "node_not_found"
+            return
+
+        stamp = _now_iso()
+        updates = {
+            "status": "failed",
+            "phase": str(phase or "人工确认失败"),
+            "error": str(error or ""),
+            "delivery_status": "failed",
+            "next_poll_at": "",
+            "lease_owner": "",
+            "lease_expires_at": None,
+            "finished_at": stamp,
+            "updated_at": stamp,
+        }
+        cursor = con.execute(
+            "UPDATE generation_tasks SET "
+            + ",".join(f"{key}=?" for key in updates)
+            + " WHERE id=? AND updated_at=? "
+            "AND status IN ('failed','interrupted')",
+            (*updates.values(), str(task_id or ""), str(expected_updated_at or "")),
+        )
+        if cursor.rowcount != 1:
+            result["reason"] = "task_revision_conflict"
+            return
+
+        if isinstance(node_updates, dict) and node_updates:
+            meta = node.setdefault("metadata", {})
+            pending = dict(node_updates)
+            params_patch = pending.pop("_paramsPatch", None)
+            for key, value in pending.items():
+                if value is None:
+                    meta.pop(key, None)
+                else:
+                    meta[key] = value
+            if isinstance(params_patch, dict) and params_patch:
+                meta["params"] = {**(meta.get("params") or {}), **params_patch}
+            node["updatedAt"] = stamp
+            sync_projection_node(con, project_id, node, updated_at=stamp)
+
+        project_row = con.execute(
+            "SELECT revision FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if not project_row:
+            raise RuntimeError("人工确认失败时项目不存在")
+        current_revision = int(project_row[0] or 0)
+        new_revision = current_revision + 1
+        payload["revision"] = new_revision
+        payload["updatedAt"] = stamp
+        cursor = con.execute(
+            "UPDATE canvas_projects SET payload_json=?,revision=?,updated_at=?,"
+            "node_count=?,connection_count=?,episode_count=?,"
+            "failed_count=?,local_blocked_count=? WHERE id=? AND revision=?",
+            (
+                json.dumps(payload, ensure_ascii=False),
+                new_revision,
+                stamp,
+                *payload_stats(payload),
+                project_id,
+                current_revision,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RevisionConflictError("项目写入冲突，请重新读取后再试")
+
+        event_id = 0
+        if isinstance(event_payload, dict) and event_payload:
+            event_cursor = con.execute(
+                "INSERT INTO canvas_events(project_id,kind,node_id,payload_json,created_at) "
+                "VALUES(?,?,?,?,?)",
+                (
+                    project_id,
+                    str(event_kind or "media"),
+                    node_id,
+                    json.dumps(event_payload, ensure_ascii=False),
+                    stamp,
+                ),
+            )
+            event_id = int(event_cursor.lastrowid or 0)
+            if event_id > 0:
+                con.execute(
+                    "DELETE FROM canvas_events WHERE project_id=? AND id<=?",
+                    (project_id, event_id - 2000),
+                )
+
+        audit_event_id = ""
+        if audit_action:
+            audit_event_id = _insert_audit_event(
+                con,
+                audit_action,
+                actor=audit_actor,
+                target_type="generation_task",
+                target_id=task_id,
+                details=audit_details,
+            )
+
+        result.update({
+            "resolved": True,
+            "reason": "",
+            "task": {**current, **updates},
+            "eventId": event_id,
+            "nodeWrittenAt": stamp,
+            "auditEventId": audit_event_id,
+        })
+
+    _run_write_transaction(write)
+    return result
+
+
+def resolve_generation_task_failed_atomic(
+    task_id,
+    *,
+    expected_updated_at,
+    phase,
+    error,
+    node_updates,
+    event_kind="media",
+    event_payload=None,
+    audit_action="generation.resolve",
+    audit_actor="",
+    audit_details=None,
+):
+    """Atomically close a task, update its node, emit SSE and record audit."""
+    return _resolve_generation_task_failed_atomic(
+        task_id,
+        expected_updated_at=expected_updated_at,
+        phase=phase,
+        error=error,
+        node_updates=node_updates,
+        event_kind=event_kind,
+        event_payload=event_payload,
+        audit_action=audit_action,
+        audit_actor=audit_actor,
+        audit_details=audit_details,
+    )
+
+
+def resolve_generation_task_failed(
+    task_id,
+    *,
+    expected_updated_at,
+    phase,
+    error,
+):
+    """CAS-close only the task row for compatibility with existing callers."""
+    result = _resolve_generation_task_failed_atomic(
+        task_id,
+        expected_updated_at=expected_updated_at,
+        phase=phase,
+        error=error,
+    )
+    return result["task"] if result["resolved"] else None
 
 
 def claim_generation_task(task_id, owner, lease_seconds=45, allow_recover=False):
@@ -5947,7 +6264,7 @@ def _redact_audit_value(value):
     return value
 
 
-def record_audit_event(
+def _audit_event_values(
     action,
     *,
     actor="",
@@ -5957,7 +6274,6 @@ def record_audit_event(
     details=None,
 ):
     event_id = _rid(22)
-    con = None
     request_context = dict(_AUDIT_REQUEST_CONTEXT.get() or {})
     if "details" in request_context:
         request_context.pop("details", None)
@@ -5973,23 +6289,66 @@ def record_audit_event(
         }
     if request_context.get("requestId"):
         merged_details["requestId"] = request_context["requestId"]
+    return (
+        event_id,
+        tenant_context.current_tenant_id(),
+        str(actor or ""),
+        str(action or "")[:120],
+        str(target_type or "")[:80],
+        str(target_id or "")[:180],
+        str(status or "")[:32],
+        json.dumps(_redact_audit_value(merged_details), ensure_ascii=False)[:12000],
+        _now_iso(),
+    )
+
+
+def _insert_audit_event(
+    con,
+    action,
+    *,
+    actor="",
+    target_type="",
+    target_id="",
+    status="success",
+    details=None,
+):
+    values = _audit_event_values(
+        action,
+        actor=actor,
+        target_type=target_type,
+        target_id=target_id,
+        status=status,
+        details=details,
+    )
+    con.execute(
+        "INSERT INTO audit_events("
+        "id,tenant_id,actor,action,target_type,target_id,status,details_json,created_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?)",
+        values,
+    )
+    return str(values[0])
+
+
+def record_audit_event(
+    action,
+    *,
+    actor="",
+    target_type="",
+    target_id="",
+    status="success",
+    details=None,
+):
+    con = None
     try:
         con = _connect()
-        con.execute(
-            "INSERT INTO audit_events("
-            "id,tenant_id,actor,action,target_type,target_id,status,details_json,created_at"
-            ") VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                event_id,
-                tenant_context.current_tenant_id(),
-                str(actor or ""),
-                str(action or "")[:120],
-                str(target_type or "")[:80],
-                str(target_id or "")[:180],
-                str(status or "")[:32],
-                json.dumps(_redact_audit_value(merged_details), ensure_ascii=False)[:12000],
-                _now_iso(),
-            ),
+        event_id = _insert_audit_event(
+            con,
+            action,
+            actor=actor,
+            target_type=target_type,
+            target_id=target_id,
+            status=status,
+            details=details,
         )
         con.commit()
         return event_id
@@ -6341,7 +6700,7 @@ def list_snapshots(project_id, limit=50):
     rows = con.execute(
         "SELECT id,title,node_count,connection_count,revision,kind,created_at "
         "FROM canvas_snapshots WHERE canvas_id=? "
-        "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        "ORDER BY created_at DESC LIMIT ?",
         (project_id, max(1, min(int(limit or 50), 200))),
     ).fetchall()
     con.close()

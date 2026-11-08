@@ -74,11 +74,27 @@ try {
     await page.evaluate(() => {
       document.querySelector('.canvas-ep-list-rail')?.click();
     });
+    await page.waitForFunction(
+      () => Boolean(document.querySelector('.canvas-ep-list.is-open')),
+      {timeout: 10_000},
+    );
     await page.waitForSelector(
       `.canvas-ep-list.is-open .canvas-ep-row[data-episode-id="${episode}"]`,
       {timeout: 10_000},
     );
     const start = Date.now();
+    const alreadyActive = await page.evaluate((target) => (
+      [...document.querySelectorAll('.canvas-ep-row.is-active')]
+        .some((row) => row.dataset.episodeId === target)
+    ), episode);
+    if (alreadyActive) {
+      const state = await page.evaluate(() => ({
+        skeleton: Boolean(document.querySelector('.canvas-skeleton')),
+        rows: document.querySelectorAll('.canvas-ep-row').length,
+        nodes: document.querySelectorAll('.react-flow__node').length,
+      }));
+      return {episode, elapsedMs: 0, transient: state, rows: state.rows, nodes: state.nodes};
+    }
     await page.evaluate((target) => {
       const row = document.querySelector(
         `.canvas-ep-list.is-open .canvas-ep-row[data-episode-id="${target}"]`,
@@ -91,11 +107,17 @@ try {
       nodes: document.querySelectorAll('.react-flow__node').length,
     }));
     await page.waitForFunction(
-      (target) => (
-        [...document.querySelectorAll('.canvas-ep-row.is-active')]
-          .some((row) => row.dataset.episodeId === target)
-        && !document.querySelector('.canvas-skeleton')
-      ),
+      (target) => {
+        const active = [...document.querySelectorAll('.canvas-ep-row.is-active')]
+          .some((row) => row.dataset.episodeId === target);
+        const settled = performance
+          .getEntriesByType('mark')
+          .some((mark) => (
+            mark.name === 'canvas-episode-settled'
+            && String(mark.detail?.episode || '').toUpperCase() === target
+          ));
+        return active && settled && !document.querySelector('.canvas-skeleton');
+      },
       {timeout: 60_000},
       episode,
     );
@@ -119,28 +141,35 @@ try {
     timings[Math.min(timings.length - 1, Math.floor(timings.length * p))] || 0
   );
 
-  await page.evaluate(() => {
-    document.querySelector('.canvas-ep-list-rail')?.click();
-  });
-  await page.waitForSelector('.canvas-ep-list.is-open .canvas-ep-row', {
-    timeout: 10_000,
-  });
   const burstStartedAt = Date.now();
-  await page.evaluate((targets) => {
-    targets.forEach((target) => {
-      const row = document.querySelector(
-        `.canvas-ep-list.is-open .canvas-ep-row[data-episode-id="${target}"]`,
-      );
-      row?.querySelector('.canvas-ep-select')?.click();
+  for (const target of burst) {
+    await page.evaluate(() => {
+      const open = document.querySelector('.canvas-ep-list.is-open');
+      if (!open) document.querySelector('.canvas-ep-list-rail')?.click();
     });
-  }, burst);
+    await page.waitForSelector(
+      `.canvas-ep-list.is-open .canvas-ep-row[data-episode-id="${target}"]`,
+      {timeout: 10_000},
+    );
+    await page.evaluate((episode) => {
+      document.querySelector(
+        `.canvas-ep-list.is-open .canvas-ep-row[data-episode-id="${episode}"] .canvas-ep-select`,
+      )?.click();
+    }, target);
+  }
   const burstTarget = burst.at(-1);
   await page.waitForFunction(
-    (target) => (
-      [...document.querySelectorAll('.canvas-ep-row.is-active')]
-        .some((row) => row.dataset.episodeId === target)
-      && !document.querySelector('.canvas-skeleton')
-    ),
+    (target) => {
+      const active = [...document.querySelectorAll('.canvas-ep-row.is-active')]
+        .some((row) => row.dataset.episodeId === target);
+      const settled = performance
+        .getEntriesByType('mark')
+        .some((mark) => (
+          mark.name === 'canvas-episode-settled'
+          && String(mark.detail?.episode || '').toUpperCase() === target
+        ));
+      return active && settled && !document.querySelector('.canvas-skeleton');
+    },
     {timeout: 60_000},
     burstTarget,
   );
@@ -179,6 +208,13 @@ try {
       .map((row) => row.dataset.episodeId),
     rows: document.querySelectorAll('.canvas-ep-row').length,
     nodes: document.querySelectorAll('.react-flow__node').length,
+    edges: document.querySelectorAll('.react-flow__edge').length,
+    canvasWorkspaceLoaded: performance
+      .getEntriesByType('mark')
+      .some((mark) => mark.name === 'canvas-workspace-loaded'),
+    canvasEpisodeSettled: performance
+      .getEntriesByType('mark')
+      .some((mark) => mark.name === 'canvas-episode-settled'),
   }));
   const result = {
     firstNodeMs,
@@ -199,6 +235,13 @@ try {
   console.log(JSON.stringify(result, null, 2));
   if (result.skeletonFrames > 0) throw new Error('episode switch showed skeleton');
   if (result.finalState.rows < 2) throw new Error('episode list lost sibling rows');
+  if (!result.finalState.canvasWorkspaceLoaded) {
+    throw new Error('initial workspace load was superseded');
+  }
+  if (!result.finalState.canvasEpisodeSettled) {
+    throw new Error('explicit episode switches never settled');
+  }
+  if (result.finalState.edges < 1) throw new Error('canvas edges disappeared');
   if (result.workspaceIndexRequests > 1) {
     throw new Error('episode switches re-read workspace-index');
   }

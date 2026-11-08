@@ -417,6 +417,7 @@ describe('api request recovery', () => {
           : target.includes('/workspace-nodes')
             ? {
                 episodeId: 'EP001',
+                eventCursor: 73,
                 episode: {id: 'EP001', title: '第01集', nodeIds: ['video-1']},
                 nodes: [{
                   id: 'video-1',
@@ -478,6 +479,7 @@ describe('api request recovery', () => {
     const workspace = await getCanvasWorkspace('project-1', 'EP001');
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(workspace.eventCursor).toBe(73);
     expect(workspace.canvas).not.toHaveProperty('empty');
     expect(workspace.notes).toHaveLength(1);
     expect(workspace.canvas.meta.episodes[0]).toMatchObject({
@@ -540,6 +542,7 @@ describe('api request recovery', () => {
     expect(workspace.mediaNodes.map((node) => node.id)).toEqual(['image-1']);
     expect(calls.filter((url) => url.includes('/notes?episodeId=EP001'))).toHaveLength(1);
     expect(calls.filter((url) => url.includes('/api/generation-tasks'))).toHaveLength(1);
+    expect(calls.filter((url) => url.includes('/workspace-nodes'))).toHaveLength(1);
   });
 
   it('rejects an aborted workspace load instead of presenting it as an empty project', async () => {
@@ -2277,6 +2280,68 @@ describe('api request recovery', () => {
       'image:task-a',
       'image:task-b',
     ]);
+  });
+
+  it('keeps each video poster bound to its own version', () => {
+    const versions = mediaVersionList({
+      id: 'video-1',
+      kind: 'video',
+      title: '视频',
+      prompt: '',
+      mediaUrl: '/uploads/v2.mp4',
+      thumbUrl: '/uploads/v2.jpg',
+      status: 'done',
+      x: 0,
+      y: 0,
+      updatedAt: '2026-11-08T00:00:00Z',
+      params: {
+        mediaVersions: [
+          {
+            versionId: 'video:old',
+            url: '/uploads/v1.mp4',
+            thumbUrl: '/uploads/v1.jpg',
+          },
+          {
+            versionId: 'video:new',
+            url: '/uploads/v2.mp4',
+            thumbUrl: '/uploads/v2.jpg',
+          },
+        ],
+        mediaVersionIndex: 1,
+        activeVersionId: 'video:new',
+      },
+    });
+
+    expect(versions.map((version) => version.thumbUrl)).toEqual([
+      '/uploads/v1.jpg',
+      '/uploads/v2.jpg',
+    ]);
+  });
+
+  it('backfills only the active version with the legacy node poster', () => {
+    const versions = mediaVersionList({
+      id: 'video-legacy',
+      kind: 'video',
+      title: '视频',
+      prompt: '',
+      mediaUrl: '/uploads/current.mp4',
+      thumbUrl: '/uploads/current.jpg',
+      status: 'done',
+      x: 0,
+      y: 0,
+      updatedAt: '2026-11-08T00:00:00Z',
+      params: {
+        mediaVersions: [
+          {versionId: 'video:old', url: '/uploads/old.mp4'},
+          {versionId: 'video:current', url: '/uploads/current.mp4'},
+        ],
+        mediaVersionIndex: 1,
+        activeVersionId: 'video:current',
+      },
+    });
+
+    expect(versions[0].thumbUrl).toBe('');
+    expect(versions[1].thumbUrl).toBe('/uploads/current.jpg');
   });
 
   it('selects the version by the current media URL when activeVersionId is stale', () => {

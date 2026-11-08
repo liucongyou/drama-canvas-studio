@@ -1,6 +1,7 @@
 import puppeteer from 'puppeteer-core';
 
 const base = process.env.CANVAS_BASE || 'http://127.0.0.1:8892';
+const sessionToken = process.env.CANVAS_SESSION_TOKEN || '';
 const cases = [
   {
     name: 'portrait',
@@ -26,6 +27,17 @@ const verifyCase = async (browser, item) => {
   });
   page.on('pageerror', (error) => errors.push(error.message));
   await page.setViewport({width: 1680, height: 1050});
+  if (sessionToken) {
+    const url = new URL(base);
+    await page.setCookie({
+      name: 'canvas_session',
+      value: sessionToken,
+      domain: url.hostname,
+      path: '/',
+      secure: url.protocol === 'https:',
+      httpOnly: true,
+    });
+  }
   try {
     await page.goto(
     `${base}/?ep=${encodeURIComponent(episodeId)}#${encodeURIComponent(projectId)}`,

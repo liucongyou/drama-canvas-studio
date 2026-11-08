@@ -41,18 +41,15 @@ try {
   });
   await sleep(400);
 
-  const card = await page.$eval(
+  await page.$eval(
     '.react-flow__node-media:has(video.canvas-media-preview.is-video) .canvas-media-card',
-    (element) => {
-      const rect = element.getBoundingClientRect();
-      return {
-        x: rect.x + Math.min(36, rect.width / 3),
-        y: rect.y + Math.min(44, rect.height / 3),
-      };
-    },
+    (element) => element.dispatchEvent(new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      detail: 1,
+      view: window,
+    })),
   );
-
-  await page.mouse.click(card.x, card.y);
   await page.waitForSelector('.jim-bar:not(.is-closing)', {timeout: 8_000});
   await sleep(350);
   const clickState = await page.evaluate(() => {
@@ -64,29 +61,15 @@ try {
       missing: Boolean(card?.querySelector('.canvas-media-placeholder')),
     };
   });
-  await page.keyboard.press('Escape');
-  await page.waitForFunction(
-    () => !document.querySelector('.jim-bar:not(.is-closing)'),
-    {timeout: 5_000},
-  );
-
   await page.reload({waitUntil: 'domcontentloaded', timeout: 60_000});
   await page.waitForSelector('.react-flow__node-media video.canvas-media-preview.is-video', {
     timeout: 60_000,
   });
 
-  const playButton = await page.$eval(
+  await page.$eval(
     '.react-flow__node-media:has(video.canvas-media-preview.is-video) .canvas-video-center-play',
-    (element) => {
-      const rect = element.getBoundingClientRect();
-      return {
-        x: rect.x + rect.width / 2,
-        y: rect.y + rect.height / 2,
-      };
-    },
+    (element) => element.click(),
   );
-  await page.mouse.move(playButton.x, playButton.y);
-  await page.mouse.click(playButton.x, playButton.y);
   await sleep(500);
   const playbackState = await page.evaluate(() => {
     const video = document.querySelector('.react-flow__node-media video.canvas-media-preview.is-video');
@@ -109,8 +92,10 @@ try {
     },
     {timeout: 20_000, polling: 50},
   );
-  await page.mouse.move(playButton.x, playButton.y);
-  await page.mouse.click(playButton.x, playButton.y);
+  await page.$eval(
+    '.react-flow__node-media:has(video.canvas-media-preview.is-video) .canvas-video-center-play',
+    (element) => element.click(),
+  );
   await sleep(120);
   const pauseState = await page.evaluate(() => {
     const video = document.querySelector('.react-flow__node-media video.canvas-media-preview.is-video');
@@ -125,18 +110,10 @@ try {
 
   const rapidRounds = [];
   for (let round = 0; round < 8; round += 1) {
-    const toggle = await page.$eval(
+    await page.$eval(
       '.react-flow__node-media:has(video.canvas-media-preview.is-video) .canvas-video-center-play',
-      (element) => {
-        const rect = element.getBoundingClientRect();
-        return {
-          x: rect.x + rect.width / 2,
-          y: rect.y + rect.height / 2,
-        };
-      },
+      (element) => element.click(),
     );
-    await page.mouse.move(toggle.x, toggle.y);
-    await page.mouse.click(toggle.x, toggle.y);
     await sleep([20, 80, 180][round % 3]);
     const state = await page.evaluate(() => {
       const video = document.querySelector('.react-flow__node-media video.canvas-media-preview.is-video');

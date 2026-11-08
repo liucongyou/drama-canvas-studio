@@ -147,11 +147,10 @@ describe('canvas viewport persistence threshold', () => {
     expect(block).toContain('getGenerationTasks(sessionId, 80, currentEpisode).catch');
   });
 
-  it('does not guess an episode for payload-node prefetch without ?ep=', () => {
+  it('lets the indexed workspace issue one authoritative node request', () => {
     const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
-    expect(source).toMatch(
-      /const indexedNodesPromise = episodeKnownFromUrl && requestedEpisodeForNodes/,
-    );
+    expect(source).not.toContain('indexedNodesPromise');
+    expect(source).not.toContain('requestedEpisodeForNodes');
   });
 
   it('does not poll project JSON when no generation is active', () => {
@@ -209,7 +208,11 @@ describe('canvas viewport persistence threshold', () => {
       ),
     );
     expect(recoveryBlock).toContain('const resumed = visibilityRef.hidden && !hidden;');
-    expect(recoveryBlock).toContain('if (networkRef.offline) refreshAfterResume();');
+    expect(recoveryBlock).toContain('const wasOffline = networkRef.offline;');
+    expect(recoveryBlock).toContain('networkRef.offline = false;');
+    expect(recoveryBlock).toContain('if (wasOffline) {');
+    expect(recoveryBlock).toContain('refreshAfterResume();');
+    expect(recoveryBlock).toContain('retryMediaPatchesNow();');
     expect(recoveryBlock).not.toContain("window.addEventListener('focus'");
   });
 
@@ -252,9 +255,9 @@ describe('canvas viewport persistence threshold', () => {
       source.indexOf('// Explicit episode switches after the initial workspace paint.'),
       source.indexOf('// 拉取创作质量自评报告'),
     );
-    expect(block).toContain(
-      'if (!target || !active || target === active) return;',
-    );
+    expect(block).toContain('episodeSelectionDecision({');
+    expect(block).toContain('explicitSelection: explicitEpisodeSelectionRef.current,');
+    expect(block).toContain("if (decision !== 'load') return;");
     expect(block).toContain(
       'getCanvasEpisodeWorkspace(session, target, abort.signal)',
     );

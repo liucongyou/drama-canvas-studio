@@ -5,14 +5,15 @@ import {
   shouldIgnorePlaybackInterruption,
   shouldMarkMediaMissing,
   shouldRetryMediaLoad,
+  mediaMissingFromBackend,
 } from './mediaLoadRecovery';
 
 describe('media load recovery', () => {
-  it('retries a transient playback failure once before declaring loss', () => {
+  it('retries transient playback failures without guessing asset loss', () => {
     expect(shouldRetryMediaLoad(1, true)).toBe(true);
     expect(shouldMarkMediaMissing(1, false)).toBe(false);
     expect(shouldMarkMediaMissing(2, false)).toBe(false);
-    expect(shouldMarkMediaMissing(3, false)).toBe(true);
+    expect(shouldMarkMediaMissing(3, false)).toBe(false);
   });
 
   it('ignores transient browser/media errors after refresh', () => {
@@ -25,6 +26,13 @@ describe('media load recovery', () => {
   it('never retries without a source and marks backend-confirmed loss', () => {
     expect(shouldRetryMediaLoad(1, false)).toBe(false);
     expect(shouldMarkMediaMissing(1, true)).toBe(true);
+  });
+
+  it('only backend-confirmed missing state is authoritative', () => {
+    expect(mediaMissingFromBackend('missing')).toBe(true);
+    expect(mediaMissingFromBackend('available')).toBe(false);
+    expect(mediaMissingFromBackend('unknown')).toBe(false);
+    expect(mediaMissingFromBackend(undefined)).toBe(false);
   });
 
   it('adds a retry token without destroying signed query parameters', () => {

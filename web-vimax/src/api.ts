@@ -303,6 +303,8 @@ export type CanvasVideoVersion = {
   provider?: string;
   model?: string;
   providerResultUrl?: string;
+  /** Persisted poster for this exact video version. */
+  thumbUrl?: string;
   actualDuration?: number;
   validationStatus?: string;
   sourceType?: 'local' | 'generated' | string;
@@ -550,6 +552,7 @@ export type GenerationTask = {
     regenerate?: 'allowed' | 'confirm' | 'blocked' | string;
     reason?: string;
     requiresConfirmation?: boolean;
+    canResolve?: boolean;
     providerTaskId?: string;
     providerAccepted?: boolean;
   };
@@ -763,6 +766,7 @@ export function mediaVersionList(node: CanvasMediaNode): CanvasVideoVersion[] {
     versionId: version?.versionId
       || `${version?.taskId || version?.generatedAt || 'legacy'}:${version?.url || index}`,
     url: mediaSourceUrl(version?.url),
+    thumbUrl: mediaSourceUrl(version?.thumbUrl),
   })).filter((version) => {
     const url = version.url.trim();
     const versionId = String(version.versionId || '');
@@ -775,6 +779,10 @@ export function mediaVersionList(node: CanvasMediaNode): CanvasVideoVersion[] {
   const currentUrlIndex = currentUrl
     ? versions.findIndex((version) => version.url === currentUrl)
     : -1;
+  if (currentUrl && currentUrlIndex >= 0 && !versions[currentUrlIndex].thumbUrl) {
+    const currentThumb = mediaSourceUrl(node.thumbUrl);
+    if (currentThumb) versions[currentUrlIndex].thumbUrl = currentThumb;
+  }
   if (
     currentUrl
     && currentUrlIndex < 0
@@ -782,6 +790,7 @@ export function mediaVersionList(node: CanvasMediaNode): CanvasVideoVersion[] {
     versions.push({
       versionId: currentVersionId || `current:${currentUrl}`,
       url: currentUrl,
+      thumbUrl: mediaSourceUrl(node.thumbUrl),
     });
   }
   return versions;
@@ -846,6 +855,7 @@ export function preserveSelectedMediaVersion(
   return {
     ...merged,
     mediaUrl: local.mediaUrl,
+    thumbUrl: local.thumbUrl,
     params: {
       ...merged.params,
       activeVersionId: localParams.activeVersionId,
@@ -1072,6 +1082,7 @@ async function request<T>(
           : friendlyRequestError(response.status, raw, url),
       ),
       response.status,
+      code,
     );
   }
   return payload as T;
@@ -1386,6 +1397,15 @@ export async function cancelGenerationTask(taskId: string): Promise<{ok: boolean
   });
 }
 
+export async function resolveGenerationTask(
+  taskId: string,
+): Promise<{ok: boolean; taskId: string; task: GenerationTask}> {
+  return request(`/api/generation-tasks/${encodeURIComponent(taskId)}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify({action: 'confirm_failed'}),
+  });
+}
+
 export async function saveProviderConfig(provider: Record<string, unknown>): Promise<ModelCatalog> {
   return request('/api/providers', {method: 'POST', body: JSON.stringify({provider})});
 }
@@ -1551,6 +1571,7 @@ export type WorkspaceFacts = {
   canvas: Canvas | {empty: true};
   notes: CanvasNote[];
   mediaNodes: CanvasMediaNode[];
+  eventCursor: number;
   episodeViewports: Record<string, unknown>;
   activeEpisodeId: string | null;
   connections: Array<{
@@ -1569,6 +1590,7 @@ export type WorkspaceNodes = {
   connections: Array<{id?: string; fromNodeId: string; toNodeId: string; source?: string}>;
   layouts: Record<string, {x: number; y: number}>;
   notes?: CanvasNote[];
+  eventCursor?: number;
 };
 
 export async function getWorkspaceIndex(
@@ -1617,6 +1639,18 @@ export async function getWorkspaceMediaNodes(
   episodeId: string,
   signal?: AbortSignal,
 ): Promise<CanvasMediaNode[]> {
+  return (await getWorkspaceMediaNodeSnapshot(
+    sessionId,
+    episodeId,
+    signal,
+  )).nodes;
+}
+
+export async function getWorkspaceMediaNodeSnapshot(
+  sessionId: string,
+  episodeId: string,
+  signal?: AbortSignal,
+): Promise<{nodes: CanvasMediaNode[]; eventCursor: number}> {
   const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
   if (!normalizedEpisode) throw new Error('读取画布节点必须指定集号');
   const nodesPayload = await getWorkspaceNodes(
@@ -1662,11 +1696,15 @@ export async function getWorkspaceMediaNodes(
       extras: {},
     } as Payload,
   };
-  return getCanvasMediaNodes(
+  const nodes = await getCanvasMediaNodes(
     sessionId,
     normalizedEpisode,
     pseudoProject,
   );
+  return {
+    nodes,
+    eventCursor: Math.max(0, Number(nodesPayload.eventCursor) || 0),
+  };
 }
 
 export async function getWorkspaceFacts(
@@ -1959,6 +1997,13 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
     providerSubmittedAt: typeof m.providerSubmittedAt === 'string' ? m.providerSubmittedAt : undefined,
     providerResultUrl: typeof m.providerResultUrl === 'string' ? m.providerResultUrl : undefined,
     finalizePending: m.finalizePending === true,
+    mediaAvailability: (
+      m.mediaAvailability === 'available'
+      || m.mediaAvailability === 'missing'
+      || m.mediaAvailability === 'unknown'
+        ? m.mediaAvailability
+        : undefined
+    ),
     episodeId: typeof m.episodeId === 'string' ? m.episodeId : undefined,
     actualDuration: Number.isFinite(Number(m.actualDuration)) ? Number(m.actualDuration) : undefined,
     videoValidation: m.videoValidation && typeof m.videoValidation === 'object'
@@ -2274,7 +2319,7 @@ export async function saveCanvasMediaNodes(
   return result;
 }
 
-const GENERATION_OWNED_MEDIA_PARAMS = new Set([
+export const GENERATION_OWNED_MEDIA_PARAMS = new Set([
   'mediaVersions',
   'mediaVersionIndex',
   'videoVersions',
@@ -2329,7 +2374,7 @@ function editableMetadataForStorage(
   };
 }
 
-function mediaPatchMetadataForStorage(
+export function mediaPatchMetadataForStorage(
   node: CanvasMediaNode,
 ): Record<string, unknown> {
   const localImport = node._mediaImport === true;
@@ -2529,7 +2574,14 @@ export async function patchMediaNodesFields(
   nodes: CanvasMediaNode[],
   episodeId: string,
   options?: {keepalive?: boolean},
-): Promise<{ok: boolean}> {
+): Promise<{
+  ok: boolean;
+  updates?: Array<{
+    id: string;
+    updatedAt: string;
+    positionUpdatedAt?: string;
+  }>;
+}> {
   const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
   if (!normalizedEpisode) {
     throw new Error('保存节点必须指定所属集');
@@ -2545,19 +2597,18 @@ export async function patchMediaNodesFields(
       metadata: mediaPatchMetadataForStorage(node),
     })),
   };
-  await request(`/api/projects/${encodeURIComponent(sessionId)}/nodes`, {
+  return request(`/api/projects/${encodeURIComponent(sessionId)}/nodes`, {
     method: 'PUT',
     body: JSON.stringify(body),
     keepalive: options?.keepalive === true,
   });
-  return {ok: true};
 }
 
 export async function patchMediaNodeFields(
   sessionId: string,
   node: CanvasMediaNode,
   episodeId: string,
-): Promise<{ok: boolean}> {
+): ReturnType<typeof patchMediaNodesFields> {
   return patchMediaNodesFields(sessionId, [node], episodeId);
 }
 
@@ -2604,16 +2655,8 @@ async function getProjectionCanvasWorkspace(
   epId?: string | null,
   signal?: AbortSignal,
   workspaceIndexPromise?: Promise<WorkspaceProjectMeta>,
-  episodeKnownFromUrl = false,
-  prevalidatedNodesPromise?: Promise<WorkspaceNodes | null> | null,
 ): Promise<WorkspaceFacts> {
   const requestedEpisode = String(epId || '').trim().toUpperCase();
-  const earlyNodesPromise = prevalidatedNodesPromise
-    || (
-      episodeKnownFromUrl && requestedEpisode
-        ? getWorkspaceNodes(sessionId, requestedEpisode, signal)
-        : null
-    );
   const index = await (
     workspaceIndexPromise || getWorkspaceIndex(sessionId, signal)
   );
@@ -2645,15 +2688,13 @@ async function getProjectionCanvasWorkspace(
   ))
     ? preferredEpisode
     : String(episodes[0]?.id || 'EP001').toUpperCase();
-  // Render the graph first; task history is auxiliary and reconciles again
-  // through its own polling cadence.
-  const preloadedNodes = earlyNodesPromise
-    ? await earlyNodesPromise
-    : null;
-  const nodesPayload = (
-    preloadedNodes && currentEpisode === requestedEpisode
-      ? preloadedNodes
-      : await getWorkspaceNodes(sessionId, currentEpisode, signal)
+  // workspace-index is authoritative for the episode id. Read nodes exactly
+  // once after it resolves; a speculative URL-based read is not faster and
+  // duplicates the largest projection request on every initial page load.
+  const nodesPayload = await getWorkspaceNodes(
+    sessionId,
+    currentEpisode,
+    signal,
   );
   if (
     !nodesPayload
@@ -2723,6 +2764,7 @@ async function getProjectionCanvasWorkspace(
     canvas,
     notes,
     mediaNodes,
+    eventCursor: Math.max(0, Number(nodesPayload.eventCursor) || 0),
     episodeViewports: index.episodeViewports || {},
     activeEpisodeId: currentEpisode,
     tasks,
@@ -2735,12 +2777,11 @@ export async function getCanvasWorkspace(
   epId?: string | null,
   signal?: AbortSignal,
   workspaceIndexPromise?: Promise<WorkspaceProjectMeta>,
-  episodeKnownFromUrl = false,
-  prevalidatedNodesPromise?: Promise<WorkspaceNodes | null> | null,
 ): Promise<{
   canvas: Canvas | {empty: true};
   notes: CanvasNote[];
   mediaNodes: CanvasMediaNode[];
+  eventCursor: number;
   episodeViewports: Record<string, unknown>;
   activeEpisodeId: string | null;
   connections: Array<{
@@ -2757,8 +2798,6 @@ export async function getCanvasWorkspace(
       epId,
       signal,
       workspaceIndexPromise,
-      episodeKnownFromUrl,
-      prevalidatedNodesPromise,
     );
   }
 
@@ -2768,8 +2807,6 @@ export async function getCanvasWorkspace(
       epId,
       signal,
       workspaceIndexPromise,
-      episodeKnownFromUrl,
-      prevalidatedNodesPromise,
     );
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
@@ -2831,6 +2868,7 @@ export async function getCanvasWorkspace(
     canvas,
     notes,
     mediaNodes,
+    eventCursor: 0,
     episodeViewports: project?.payload?.episodeViewports || {},
     activeEpisodeId: currentEpisode,
     tasks,
@@ -2848,6 +2886,7 @@ export async function getCanvasEpisodeWorkspace(
   canvas: Canvas | {empty: true};
   notes: CanvasNote[];
   mediaNodes: CanvasMediaNode[];
+  eventCursor: number;
   activeEpisodeId: string;
   connections: Array<{
     id?: string;
@@ -2869,6 +2908,7 @@ export async function getCanvasEpisodeWorkspace(
       canvas: workspace.canvas,
       notes: workspace.notes,
       mediaNodes: workspace.mediaNodes,
+      eventCursor: workspace.eventCursor,
       activeEpisodeId: workspace.activeEpisodeId || normalizedEpisode,
       connections: workspace.connections,
       tasks: [],
@@ -2925,6 +2965,7 @@ export async function getCanvasEpisodeWorkspace(
     canvas,
     notes: Array.isArray(nodesPayload.notes) ? nodesPayload.notes : [],
     mediaNodes,
+    eventCursor: Math.max(0, Number(nodesPayload.eventCursor) || 0),
     activeEpisodeId: normalizedEpisode,
     connections: nodesPayload.connections,
     tasks,
@@ -2964,6 +3005,7 @@ export async function getSharedCanvasWorkspace(
   canvas: Canvas | {empty: true};
   notes: CanvasNote[];
   mediaNodes: CanvasMediaNode[];
+  eventCursor: number;
   connections: Array<{id?: string; fromNodeId: string; toNodeId: string}>;
 }> {
   const shareSession = shareWorkspaceSessionId(token);
@@ -2975,6 +3017,7 @@ export async function getSharedCanvasWorkspace(
     canvas: workspace.canvas,
     notes: workspace.notes,
     mediaNodes: workspace.mediaNodes,
+    eventCursor: workspace.eventCursor,
     connections: workspace.connections,
   };
 }

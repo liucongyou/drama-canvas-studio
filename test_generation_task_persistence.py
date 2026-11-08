@@ -138,6 +138,35 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(caught.exception.response["taskId"], "task-123")
         self.assertIn("database is locked", str(caught.exception))
 
+    def test_terminal_event_carries_durable_episode_scope(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("terminal-event-scope")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "episode-scoped-node",
+                    "type": "image",
+                    "title": "角色｜作用域",
+                    "metadata": {"status": "generating"},
+                }],
+                episode_id="EP002",
+            )
+            committed = canvas_store.commit_generation_terminal(
+                project_id,
+                "episode-scoped-node",
+                {"status": "done", "content": "/uploads/scoped.jpg"},
+                event_kind="media",
+                event_payload={"status": "done"},
+            )
+            events = canvas_store.list_events(
+                project_id,
+                int(committed["eventId"]) - 1,
+                1,
+            )
+
+        self.assertTrue(committed["committed"])
+        self.assertEqual(events[0]["payload"]["episodeId"], "EP002")
+
     def test_task_creation_without_task_id_is_uncertain(self):
         callback = mock.Mock()
 
@@ -351,6 +380,299 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(saved["status"], "interrupted")
         self.assertEqual(saved["phase"], "结果待确认")
         self.assertEqual(saved["provider_task_id"], "task-live-provider")
+
+    def test_manual_resolution_is_not_reopened_by_provider_journal(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("journal-manual-close")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "node-video",
+                    "type": "video",
+                    "title": "段6",
+                    "metadata": {"status": "generating"},
+                }],
+                episode_id="EP001",
+            )
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+                provider="agnes-ai",
+                model="agnes-video-2.5-flash",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="interrupted",
+                phase="结果待确认",
+                provider_task_id="provider-manual-close",
+                delivery_status="pending",
+            )
+            current = canvas_store.get_generation_task(task["id"])
+            resolved = canvas_store.resolve_generation_task_failed(
+                task["id"],
+                expected_updated_at=current["updated_at"],
+                phase="人工确认失败",
+                error="用户已确认不再等待原任务结果",
+            )
+            canvas_store.remember_provider_task(
+                task["id"],
+                "provider-manual-close",
+                project_id=project_id,
+                node_id="node-video",
+                provider="agnes-ai",
+                model="agnes-video-2.5-flash",
+            )
+            recovered = server.reconcile_provider_task_journal()
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertIsNotNone(resolved)
+        self.assertEqual(recovered, 0)
+        self.assertEqual(saved["status"], "failed")
+        self.assertEqual(saved["phase"], "人工确认失败")
+        self.assertEqual(saved["next_poll_at"], "")
+        self.assertEqual(saved["provider_task_id"], "provider-manual-close")
+
+    def test_manual_resolution_rejects_stale_revision_without_overwriting_late_success(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("manual-close-cas")
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="interrupted",
+                phase="结果待确认",
+                provider_task_id="provider-cas",
+                delivery_status="pending",
+            )
+            stale = canvas_store.get_generation_task(task["id"])
+            canvas_store.finish_generation_task(
+                task["id"],
+                status="succeeded",
+                phase="已完成",
+                delivery_status="ready",
+                local_result_url="/uploads/cas-result.mp4",
+            )
+
+            rejected = canvas_store.resolve_generation_task_failed(
+                task["id"],
+                expected_updated_at=stale["updated_at"],
+                phase="人工确认失败",
+                error="stale operator action",
+            )
+            saved = canvas_store.get_generation_task(task["id"])
+
+        self.assertIsNone(rejected)
+        self.assertEqual(saved["status"], "succeeded")
+        self.assertEqual(saved["local_result_url"], "/uploads/cas-result.mp4")
+        self.assertEqual(saved["phase"], "已完成")
+
+    def test_manual_resolution_atomic_commit_updates_task_node_event_and_audit(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("manual-resolve-atomic")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "node-atomic-video",
+                    "type": "video",
+                    "title": "段原子闭环",
+                    "metadata": {"status": "generating"},
+                }],
+                episode_id="EP001",
+            )
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-atomic-video",
+                kind="video",
+                provider="ark",
+                model="doubao-seedance-test",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="interrupted",
+                phase="结果待确认",
+                provider_task_id="provider-atomic-close",
+                delivery_status="pending",
+            )
+            current = canvas_store.get_generation_task(task["id"])
+            resolution = canvas_store.resolve_generation_task_failed_atomic(
+                task["id"],
+                expected_updated_at=current["updated_at"],
+                phase="人工确认失败",
+                error="用户已确认不再等待原任务结果",
+                node_updates={
+                    "status": "failed",
+                    "lastError": "人工确认失败",
+                    "providerTaskStatus": "failed",
+                    "providerTaskPhase": "人工确认失败",
+                },
+                event_payload={
+                    "nodeId": "node-atomic-video",
+                    "status": "failed",
+                    "taskId": task["id"],
+                    "taskPhase": "人工确认失败",
+                },
+                audit_actor="operator",
+                audit_details={
+                    "projectId": project_id,
+                    "nodeId": "node-atomic-video",
+                    "reason": "operator_confirmed_unknown",
+                },
+            )
+            saved_task = canvas_store.get_generation_task(task["id"])
+            saved_project = canvas_store.get_project(project_id)
+            saved_node = next(
+                item
+                for item in saved_project["payload"]["nodes"]
+                if item["id"] == "node-atomic-video"
+            )
+            events = canvas_store.list_events(project_id, 0, 20)
+            audit_page = canvas_store.list_audit_events(
+                project_id=project_id,
+                action="generation.resolve",
+            )
+            audits = audit_page["events"]
+
+        self.assertTrue(resolution["resolved"])
+        self.assertTrue(resolution["auditEventId"])
+        self.assertEqual(saved_task["status"], "failed")
+        self.assertEqual(saved_task["phase"], "人工确认失败")
+        self.assertEqual(saved_task["next_poll_at"], "")
+        self.assertEqual(saved_node["metadata"]["status"], "failed")
+        self.assertEqual(
+            saved_node["metadata"]["providerTaskPhase"],
+            "人工确认失败",
+        )
+        self.assertTrue(any(
+            event["nodeId"] == "node-atomic-video"
+            and event["payload"].get("taskPhase") == "人工确认失败"
+            for event in events
+        ))
+        self.assertTrue(any(
+            event["actor"] == "operator"
+            and event["targetId"] == task["id"]
+            for event in audits
+        ))
+
+    def test_manual_resolution_rolls_back_task_and_node_when_audit_fails(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("manual-resolve-rollback")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "node-atomic-rollback",
+                    "type": "video",
+                    "title": "段回滚",
+                    "metadata": {"status": "generating"},
+                }],
+                episode_id="EP001",
+            )
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-atomic-rollback",
+                kind="video",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="interrupted",
+                phase="结果待确认",
+                provider_task_id="provider-rollback",
+                delivery_status="pending",
+            )
+            current = canvas_store.get_generation_task(task["id"])
+            with patch.object(
+                canvas_store,
+                "_insert_audit_event",
+                side_effect=RuntimeError("audit unavailable"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "audit unavailable"):
+                    canvas_store.resolve_generation_task_failed_atomic(
+                        task["id"],
+                        expected_updated_at=current["updated_at"],
+                        phase="人工确认失败",
+                        error="operator close",
+                        node_updates={
+                            "status": "failed",
+                            "providerTaskPhase": "人工确认失败",
+                        },
+                        event_payload={"status": "failed"},
+                        audit_details={"projectId": project_id},
+                    )
+            saved_task = canvas_store.get_generation_task(task["id"])
+            saved_project = canvas_store.get_project(project_id)
+            saved_node = next(
+                item
+                for item in saved_project["payload"]["nodes"]
+                if item["id"] == "node-atomic-rollback"
+            )
+            events = canvas_store.list_events(project_id, 0, 20)
+
+        self.assertEqual(saved_task["status"], "interrupted")
+        self.assertEqual(saved_task["phase"], "结果待确认")
+        self.assertEqual(saved_node["metadata"]["status"], "generating")
+        self.assertNotIn("providerTaskPhase", saved_node["metadata"])
+        self.assertFalse(any(
+            event["payload"].get("taskPhase") == "人工确认失败"
+            for event in events
+        ))
+
+    def test_manual_resolution_eligibility_requires_terminal_unknown_outcome(self):
+        cases = [
+            ({"status": "running", "phase": "生成中"}, False),
+            ({"status": "submitting", "phase": "提交供应商"}, False),
+            ({"status": "succeeded", "phase": "已完成"}, False),
+            ({
+                "status": "failed",
+                "phase": "生成失败",
+                "error": "提示词为空",
+            }, False),
+            ({
+                "status": "failed",
+                "phase": "生成失败",
+                "error": "供应商明确返回任务不存在",
+                "provider_task_id": "provider-dead",
+            }, False),
+            ({
+                "status": "interrupted",
+                "phase": "结果待确认",
+                "provider_task_id": "provider-unknown",
+                "error": "请求已发出，但没有任务号",
+            }, True),
+            ({
+                "status": "failed",
+                "phase": "任务异常",
+                "provider_task_id": "provider-failed",
+                "error": "网络连接中断",
+            }, False),
+            ({
+                "status": "interrupted",
+                "phase": "等待恢复",
+                "provider_task_id": "provider-waiting",
+                "delivery_status": "pending",
+            }, True),
+            ({
+                "status": "interrupted",
+                "phase": "结果待确认",
+                "provider_task_id": "provider-fetching",
+                "delivery_status": "materializing",
+            }, False),
+            ({
+                "status": "failed",
+                "phase": "人工确认失败",
+                "error": "用户已确认失败",
+            }, False),
+        ]
+
+        for task, expected in cases:
+            with self.subTest(task=task):
+                outcome = generation_outcome.task_outcome(task)
+                self.assertEqual(
+                    generation_outcome.can_manually_resolve_task(task, outcome),
+                    expected,
+                )
 
     def test_stale_failed_row_is_reopened_when_node_has_same_live_provider_task(self):
         with tenant_context.use_context(self.context):

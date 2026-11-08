@@ -1,5 +1,8 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
 
+type ApiModule = typeof import('./api');
+let apiModule: ApiModule | undefined;
+
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -9,7 +12,6 @@ afterEach(() => {
 
 describe('createMediaDownloadUrl', () => {
   it('keeps download tickets on the configured API host', async () => {
-    vi.resetModules();
     vi.stubGlobal('window', {
       __CANVAS_API_BASE__: 'https://api.example.com',
       location: {pathname: '/'},
@@ -23,9 +25,13 @@ describe('createMediaDownloadUrl', () => {
       headers: {'Content-Type': 'application/json'},
     }));
     vi.stubGlobal('fetch', fetchMock);
+    apiModule = await import('./api');
+    vi.stubGlobal('window', {
+      __CANVAS_API_BASE__: 'https://api.example.com',
+      location: {pathname: '/'},
+    });
 
-    const {createMediaDownloadUrl} = await import('./api');
-    await expect(createMediaDownloadUrl(
+    await expect(apiModule.createMediaDownloadUrl(
       'project-1',
       'node-1',
       'video:task-1',

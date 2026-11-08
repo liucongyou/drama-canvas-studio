@@ -111,8 +111,19 @@ import {
   Share2,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceFacts, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, preserveSelectedMediaVersion, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceMediaNodeSnapshot, getWorkspaceFacts, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, resolveGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, preserveSelectedMediaVersion, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {canvasEventId, eventBelongsToEpisode, readCanvasEventCursor, shouldProcessCanvasEvent, writeCanvasEventCursor} from './canvasEventCursor';
+import {createCanvasEventLifecycle} from './canvasEventLifecycle';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
+import {
+  episodeLoadDecision,
+  episodeSelectionDecision,
+  nextEpisodeRequest,
+  normalizeEpisodeId,
+  shouldPublishEpisodeLoad,
+  type EpisodeRequestActivity,
+} from './episodeLoadCoordinator';
+import {mergeEpisodeGraph} from './canvasEpisodeCatalog';
 import {
   createProjectVersion,
   getBudgetStatus,
@@ -128,6 +139,7 @@ import {
 import {useDialogFocusTrap} from './useDialogFocusTrap';
 import {dialog} from './GDialog';
 import {taskOutcomePresentation} from './taskOutcomePresentation';
+import {manualTaskResolutionAvailable} from './manualTaskResolution';
 import {qualityFailureDetails, qualityFailureSummary} from './qualityReportPresentation';
 import {
   generationDurationLabel,
@@ -161,6 +173,7 @@ import {canvasHeaderStats, formatCanvasDuration} from './canvasStats';
 import {sortFlowNodesForEntry, sortMediaNodesForEntry} from './canvasEntryOrder';
 import {
   cacheBustedMediaUrl,
+  mediaMissingFromBackend,
   shouldMarkMediaMissing,
   shouldRetryMediaLoad,
 } from './mediaLoadRecovery';
@@ -208,6 +221,11 @@ import {
   type CanvasVisibleBounds,
 } from './canvasViewport';
 import {workspaceRetryDecision} from './requestRetry';
+import {
+  isMediaSaveConflict,
+  mediaSaveRetryDecision,
+  rebaseLocalMediaNode,
+} from './mediaSaveCoordinator';
 import {mediaDownloadFilename} from './mediaDownloadName';
 import {
   canvasUploadKind,
@@ -248,6 +266,13 @@ const dragPointer = (event: MouseEvent | TouchEvent): {x: number; y: number} => 
 const SHOT_ROW = 400;
 
 type PreviewPlacement = {left: number; top?: number; bottom?: number};
+
+type MediaSaveConflict = {
+  message: string;
+  nodeIds: string[];
+  localNodes: CanvasMediaNode[];
+  remoteNodes: CanvasMediaNode[];
+};
 
 function previewPlacement(
   rect: DOMRect,
@@ -1776,7 +1801,7 @@ type MediaNodeData = {
   ) => Promise<void>;
   suppressNodeOpen: () => void;
   isNodeOpenSuppressed: () => boolean;
-  onMediaAvailability?: (nodeId: string, availability: 'available' | 'missing') => void;
+  onMediaAvailability?: (nodeId: string, availability: 'missing') => void;
   onRecoverMedia?: (nodeId: string) => void;
 };
 
@@ -2407,6 +2432,8 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const [localDragOver, setLocalDragOver] = useState(false);
   const [mediaLoadFailed, setMediaLoadFailed] = useState(false);
   const [mediaLoadFailureCount, setMediaLoadFailureCount] = useState(0);
+  const mediaAvailabilityRef = useRef(node.mediaAvailability);
+  mediaAvailabilityRef.current = node.mediaAvailability;
   const [mediaRetryUrl, setMediaRetryUrl] = useState('');
   const [mediaLoaded, setMediaLoaded] = useState(false);
   const [videoSourceReady, setVideoSourceReady] = useState(false);
@@ -2553,10 +2580,15 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     setAudioDuration(0);
     setAudioCurrentTime(0);
     setAudioWaveBars(AUDIO_WAVE_BARS);
+    setMediaLoadFailed(false);
+    setMediaLoadFailureCount(0);
+    setMediaRetryUrl('');
   }, [node.mediaUrl]);
   useEffect(() => {
-    setMediaLoadFailed(node.mediaAvailability === 'missing');
-    setMediaLoadFailureCount(node.mediaAvailability === 'missing' ? 2 : 0);
+    setMediaLoadFailed(mediaMissingFromBackend(node.mediaAvailability));
+    setMediaLoadFailureCount(
+      mediaMissingFromBackend(node.mediaAvailability) ? 2 : 0,
+    );
     setMediaRetryUrl('');
   }, [node.id, node.mediaUrl, node.mediaAvailability]);
   const handleMediaLoadError = (event?: SyntheticEvent<HTMLMediaElement>) => {
@@ -2576,23 +2608,27 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
       setMediaRetryUrl(cacheBustedMediaUrl(node.mediaUrl || '', failures));
       return;
     }
+    if (!mediaMissingFromBackend(mediaAvailabilityRef.current)) {
+      // A browser error is not backend confirmation. The server owns whether
+      // stored bytes exist; until workspace-nodes says "missing", keep the
+      // state as a recoverable load failure instead of branding the asset lost.
+      setMediaLoadFailed(false);
+      return;
+    }
     if (shouldMarkMediaMissing(
       failures,
-      node.mediaAvailability === 'missing',
+      true,
     )) {
       setMediaLoadFailed(true);
-      if (node.mediaAvailability !== 'missing') {
-        onMediaAvailability?.(node.id, 'missing');
-      }
+      onMediaAvailability?.(node.id, 'missing');
     }
   };
   const handleMediaLoadSuccess = () => {
     setMediaLoadFailed(false);
     setMediaLoadFailureCount(0);
     setMediaRetryUrl('');
-    if (node.mediaAvailability !== 'available') {
-      onMediaAvailability?.(node.id, 'available');
-    }
+    // Availability is backend-owned. A successful browser load is useful UI
+    // evidence but must not start a client-side availability state machine.
   };
   useEffect(() => {
     setMediaLoaded(false);
@@ -2889,7 +2925,8 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const busy = generationVisualState.busy;
   const resumableInBackground = generationVisualState.resumableInBackground;
   const generationFailed = generationVisualState.failed;
-  const mediaMissing = !isText && !!node.mediaUrl && mediaLoadFailed;
+  const mediaMissing = !isText
+    && mediaMissingFromBackend(node.mediaAvailability);
   const videoCoverVisible = node.kind === 'video'
     && Boolean(videoCoverUrl)
     && !videoFrameReady;
@@ -2978,6 +3015,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
       node.id,
       {
         mediaUrl: version.url,
+        thumbUrl: version.thumbUrl || undefined,
         actualDuration: version.actualDuration ?? node.actualDuration,
         storage: version.storage,
         providerResultUrl: version.providerResultUrl,
@@ -8399,6 +8437,8 @@ function CanvasViewInner({
   }, []);
   const [helpOpen, setHelpOpen] = useState(false);
   const [taskCenterOpen, setTaskCenterOpen] = useState(false);
+  const taskCenterOpenRef = useRef(taskCenterOpen);
+  taskCenterOpenRef.current = taskCenterOpen;
   const [generationTasks, setGenerationTasks] = useState<GenerationTask[]>([]);
   const taskLoadGenerationRef = useRef(0);
   const activeGenerationTaskCount = taskCenterOpen
@@ -8469,6 +8509,10 @@ function CanvasViewInner({
   const [promptSegment, setPromptSegment] = useState<CanvasSegment | null>(null);
   const [saveError, setSaveError] = useState('');
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [saveRetryAttempt, setSaveRetryAttempt] = useState(0);
+  const [saveRetryPending, setSaveRetryPending] = useState(false);
+  const [mediaSaveConflict, setMediaSaveConflict] = useState<MediaSaveConflict | null>(null);
+  const mediaSaveConflictRef = useRef<MediaSaveConflict | null>(null);
   const pendingSavesRef = useRef(0);
   const syncChannelRef = useRef<BroadcastChannel | null>(null);
   const modelFallbackNoticeRef = useRef('');
@@ -8512,6 +8556,11 @@ function CanvasViewInner({
       return null;
     }
   });
+  // The initial workspace request owns the first rendered episode. Without an
+  // explicit user selection, currentEp changing from null to a default value
+  // must not be mistaken for an episode-switch command.
+  const explicitEpisodeSelectionRef = useRef(false);
+  const episodeSelectionSessionRef = useRef(session);
   useEffect(() => {
     if (!currentEp) return;
     try {
@@ -8770,6 +8819,7 @@ function CanvasViewInner({
       setEpisodeCreateOpen(false);
       setEpisodeDraftTitle('');
       setToast(`${fmtEp(result.episode.id)}已创建`);
+      explicitEpisodeSelectionRef.current = true;
       setCurrentEp(result.episode.id);
     } catch (error) {
       setEpisodeCreateError(error instanceof Error ? error.message : '创建集数失败');
@@ -8794,6 +8844,7 @@ function CanvasViewInner({
       setToast(`${fmtEp(episodeId)}已删除`);
       const remaining = canvas?.meta.episodes.filter((episode) => episode.ep_id !== episodeId) || [];
       if (currentEp === episodeId) {
+        explicitEpisodeSelectionRef.current = true;
         setCurrentEp(remaining[0]?.ep_id || null);
       }
       setCanvas((prev) => prev ? {
@@ -9184,6 +9235,7 @@ function CanvasViewInner({
     // flushViewportNow reads activeWorkspaceEpisodeRef; deferring this until
     // after setCurrentEp can attach the old coordinates to the new episode.
     flushViewportNow();
+    explicitEpisodeSelectionRef.current = true;
     setCurrentEp(episodeId);
     // Keep the old scope until the target episode shell is loaded. Setting it
     // here causes onMove/fitView from the leaving canvas to be saved as the
@@ -9362,6 +9414,8 @@ function CanvasViewInner({
   // 事件流是否在线：在线时轮询降级成兜底对账，离线时恢复 1.5s 的密集轮询。
   const [eventsConnected, setEventsConnected] = useState(false);
   const mediaNodesRef = useRef<CanvasMediaNode[]>([]);
+  const currentEpRef = useRef(currentEp);
+  currentEpRef.current = currentEp;
   const workspaceRefreshInFlightRef = useRef<Promise<void> | null>(null);
   const workspaceRefreshQueuedRef = useRef(false);
   const workspaceRetryAttemptRef = useRef(0);
@@ -9370,7 +9424,14 @@ function CanvasViewInner({
   const workspaceScopeRef = useRef({session, episode: currentEp});
   workspaceScopeRef.current = {session, episode: currentEp};
   const workspaceReadyAtRef = useRef(0);
+  // Highest event id already represented by an applied workspace snapshot.
+  // This boundary prevents durable SSE replay from waking another projection
+  // read immediately after first paint.
+  const workspaceEventCursorRef = useRef(0);
+  const workspaceEventCursorReadyRef = useRef(false);
+  const workspaceEventWakeRef = useRef<(() => void) | null>(null);
   const workspaceLoadEpochRef = useRef(0);
+  const episodeRequestRef = useRef<EpisodeRequestActivity | null>(null);
   const optimisticGenerationStartsRef = useRef<Map<string, OptimisticGenerationSubmission>>(new Map());
   /**
    * 提交中的节点（同步锁）。
@@ -9583,6 +9644,9 @@ function CanvasViewInner({
   const pendingMediaPatchesRef = useRef<Map<string, CanvasMediaNode>>(new Map());
   const pendingMediaNodeSavesRef = useRef<Map<string, CanvasMediaNode>>(new Map());
   const pendingPositionSavesRef = useRef<Map<string, {x: number; y: number; seq: number}>>(new Map());
+  const mediaPatchSaveInFlightRef = useRef(false);
+  const mediaPatchRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mediaPatchRetryAttemptRef = useRef(0);
   const positionMutationSeqRef = useRef(0);
   const broadcastMediaChange = useCallback((nodeIds: string[]) => {
     if (!syncChannelRef.current || nodeIds.length === 0) return;
@@ -9644,6 +9708,179 @@ function CanvasViewInner({
       });
     mediaBatchSaveInFlightRef.current = task;
   }, [beginSave, broadcastMediaChange, currentEp, finishSave, readOnly, session, setToast]);
+
+  const mediaPatchFlushRef = useRef<() => void>(() => {});
+  const clearMediaPatchRetry = useCallback(() => {
+    if (mediaPatchRetryTimerRef.current !== null) {
+      clearTimeout(mediaPatchRetryTimerRef.current);
+      mediaPatchRetryTimerRef.current = null;
+    }
+    mediaPatchRetryAttemptRef.current = 0;
+    setSaveRetryAttempt(0);
+    setSaveRetryPending(false);
+  }, []);
+  const scheduleMediaPatchFlush = useCallback((delayMs: number) => {
+    if (mediaPatchRetryTimerRef.current !== null) {
+      clearTimeout(mediaPatchRetryTimerRef.current);
+    }
+    mediaPatchRetryTimerRef.current = setTimeout(() => {
+      mediaPatchRetryTimerRef.current = null;
+      mediaPatchFlushRef.current();
+    }, Math.max(0, delayMs));
+  }, []);
+  const applyMediaPatchRevisions = useCallback((updates: Array<{
+    id: string;
+    updatedAt: string;
+    positionUpdatedAt?: string;
+  }> | undefined) => {
+    if (!updates?.length) return;
+    const byId = new Map(updates.map((update) => [update.id, update]));
+    setMediaNodes((prev) => prev.map((node) => {
+      const update = byId.get(node.id);
+      if (!update) return node;
+      return {
+        ...node,
+        updatedAt: update.updatedAt || node.updatedAt,
+        positionUpdatedAt: update.positionUpdatedAt || node.positionUpdatedAt,
+        // A version-selection lock belongs to the save it protects. Hold it
+        // while another edit is queued, then release it once the accepted
+        // backend revision is authoritative.
+        ...(!pendingMediaPatchesRef.current.has(node.id)
+          ? {_mediaVersionSelection: undefined}
+          : {}),
+      };
+    }));
+  }, []);
+  const saveMediaPatches = useCallback(async (snapshots: CanvasMediaNode[]) => {
+    if (readOnly || mediaPatchSaveInFlightRef.current || snapshots.length === 0) return;
+    if (!currentEp) {
+      for (const snapshot of snapshots) {
+        pendingMediaPatchesRef.current.set(snapshot.id, snapshot);
+      }
+      setSaveError('画布尚未绑定集数，暂不能保存节点');
+      return;
+    }
+    mediaPatchSaveInFlightRef.current = true;
+    beginSave();
+    clearSaveError();
+    try {
+      const result = await patchMediaNodesFields(session, snapshots, currentEp);
+      applyMediaPatchRevisions(result.updates);
+      clearMediaPatchRetry();
+      finishSave(true);
+      broadcastMediaChange(snapshots.map((snapshot) => snapshot.id));
+    } catch (error) {
+      finishSave(false);
+      const message = error instanceof Error ? error.message : String(error);
+      if (isMediaSaveConflict(error)) {
+        clearMediaPatchRetry();
+        const changedIds = snapshots.map((snapshot) => snapshot.id);
+        let remote: CanvasMediaNode[] = [];
+        try {
+          const remoteNodes = await getCanvasMediaNodes(session, currentEp);
+          const remoteById = new Map(remoteNodes.map((node) => [node.id, node]));
+          remote = changedIds.flatMap((id) => {
+            const node = remoteById.get(id);
+            return node ? [node] : [];
+          });
+        } catch {
+          remote = [];
+        }
+        const latestById = new Map(mediaNodesRef.current.map((node) => [node.id, node]));
+        const local = changedIds.flatMap((id) => {
+          const node = latestById.get(id);
+          return node ? [node] : [];
+        });
+        const conflict = {message, nodeIds: changedIds, localNodes: local, remoteNodes: remote};
+        mediaSaveConflictRef.current = conflict;
+        setMediaSaveConflict(conflict);
+        setSaveError(`${message}。本地编辑仍保留，请选择处理方式。`);
+        return;
+      }
+      for (const snapshot of snapshots) {
+        if (!pendingMediaPatchesRef.current.has(snapshot.id)) {
+          pendingMediaPatchesRef.current.set(snapshot.id, snapshot);
+        }
+      }
+      const attempt = mediaPatchRetryAttemptRef.current + 1;
+      mediaPatchRetryAttemptRef.current = attempt;
+      setSaveRetryAttempt(attempt);
+      const decision = mediaSaveRetryDecision({
+        error,
+        attempt,
+        online: typeof navigator === 'undefined' ? true : navigator.onLine,
+      });
+      if (decision.retry) {
+        setSaveRetryPending(true);
+        setSaveError(`${message}。本地编辑已保留，将在 ${Math.round(decision.delayMs / 1000)} 秒后自动重试。`);
+        scheduleMediaPatchFlush(decision.delayMs);
+      } else if (decision.kind === 'offline') {
+        setSaveRetryPending(true);
+        setSaveError(`${message}。本地编辑已保留，网络恢复后自动同步。`);
+      } else {
+        clearMediaPatchRetry();
+        setSaveError(`${message}。本地编辑仍保留，请手动重试。`);
+      }
+    } finally {
+      mediaPatchSaveInFlightRef.current = false;
+      if (
+        pendingMediaPatchesRef.current.size > 0
+        && mediaPatchRetryTimerRef.current === null
+        && !mediaSaveConflictRef.current
+        && navigator.onLine
+      ) {
+        scheduleMediaPatchFlush(80);
+      }
+    }
+  }, [applyMediaPatchRevisions, beginSave, broadcastMediaChange, clearMediaPatchRetry, currentEp, finishSave, readOnly, scheduleMediaPatchFlush, session, setMediaSaveConflict, setSaveError, setSaveRetryAttempt, setSaveRetryPending]);
+  const flushMediaPatches = useCallback(() => {
+    if (readOnly || mediaPatchSaveInFlightRef.current || mediaSaveConflictRef.current) return;
+    const snapshots = [...pendingMediaPatchesRef.current.values()];
+    pendingMediaPatchesRef.current.clear();
+    if (snapshots.length === 0) return;
+    void saveMediaPatches(snapshots);
+  }, [readOnly, saveMediaPatches]);
+  mediaPatchFlushRef.current = flushMediaPatches;
+
+  const retryMediaPatchesNow = useCallback(() => {
+    clearMediaPatchRetry();
+    flushMediaPatches();
+  }, [clearMediaPatchRetry, flushMediaPatches]);
+  const overwriteWithLocalMediaConflict = useCallback(() => {
+    const conflict = mediaSaveConflictRef.current;
+    if (!conflict || !currentEp) return;
+    const remoteById = new Map(conflict.remoteNodes.map((node) => [node.id, node]));
+    const latestById = new Map(mediaNodesRef.current.map((node) => [node.id, node]));
+    const snapshots = conflict.nodeIds.flatMap((id) => {
+      const local = latestById.get(id) || conflict.localNodes.find((node) => node.id === id);
+      if (!local) return [];
+      const remote = remoteById.get(id);
+      return [remote ? rebaseLocalMediaNode(local, remote) : local];
+    });
+    mediaSaveConflictRef.current = null;
+    setMediaSaveConflict(null);
+    for (const snapshot of snapshots) pendingMediaPatchesRef.current.set(snapshot.id, snapshot);
+    clearSaveError();
+    retryMediaPatchesNow();
+    setToast('正在用本地版本重新保存');
+  }, [clearSaveError, currentEp, retryMediaPatchesNow, setToast]);
+  const acceptRemoteMediaConflict = useCallback(() => {
+    const conflict = mediaSaveConflictRef.current;
+    if (!conflict) return;
+    const remoteById = new Map(conflict.remoteNodes.map((node) => [node.id, node]));
+    const replacedIds = new Set(conflict.nodeIds);
+    setMediaNodes((prev) => prev.map((node) => {
+      if (!replacedIds.has(node.id)) return node;
+      const remote = remoteById.get(node.id);
+      return remote ? {...node, ...remote, x: node.x, y: node.y} : node;
+    }));
+    for (const id of conflict.nodeIds) pendingMediaPatchesRef.current.delete(id);
+    mediaSaveConflictRef.current = null;
+    setMediaSaveConflict(null);
+    clearMediaPatchRetry();
+    clearSaveError();
+    setToast('已载入服务器版本');
+  }, [clearMediaPatchRetry, clearSaveError, setToast]);
 
   const deleteMediaNodePersistently = useCallback(async (id: string) => {
     if (readOnly) return;
@@ -10084,6 +10321,12 @@ function CanvasViewInner({
     return () => window.clearTimeout(timer);
   }, [loading, canvas]);
   useEffect(() => {
+    // A new session starts a new ownership boundary. Keep a quick user click
+    // between the render and this effect from being reset on the same session.
+    if (episodeSelectionSessionRef.current !== session) {
+      episodeSelectionSessionRef.current = session;
+      explicitEpisodeSelectionRef.current = false;
+    }
     viewportUserInteractingRef.current = false;
     setLoading(true);
     setLoadingSlow(false);
@@ -10114,6 +10357,8 @@ function CanvasViewInner({
     terminalRefreshRef.current = '';
     terminalSnapshotPrimedRef.current = false;
     workspaceReadyAtRef.current = 0;
+    workspaceEventCursorReadyRef.current = false;
+    workspaceEventWakeRef.current = null;
     workspaceRefreshQueuedRef.current = false;
     workspaceRefreshInFlightRef.current = null;
     savedLayoutScopeRef.current = '';
@@ -10125,6 +10370,7 @@ function CanvasViewInner({
           notes: noteList,
           mediaNodes: mediaList,
           connections: projectConnections,
+          eventCursor,
         }) => {
           if (loadEpoch !== workspaceLoadEpochRef.current) return;
           if ('empty' in data) {
@@ -10148,6 +10394,12 @@ function CanvasViewInner({
           setDataReady(true);
           setLoading(false);
           workspaceReadyAtRef.current = performance.now();
+          workspaceEventCursorRef.current = Math.max(
+            workspaceEventCursorRef.current,
+            Number(eventCursor) || 0,
+          );
+          workspaceEventCursorReadyRef.current = true;
+          workspaceEventWakeRef.current?.();
         })
         .catch((loadError: unknown) => {
           if (loadEpoch !== workspaceLoadEpochRef.current) return;
@@ -10165,29 +10417,14 @@ function CanvasViewInner({
     const workspaceTimeout = window.setTimeout(() => {
       workspaceAbort.abort();
     }, 20_000);
-    const episodeKnownFromUrl = Boolean(
-      new URLSearchParams(window.location.search).get('ep'),
-    );
     const workspaceIndexPromise = getWorkspaceIndex(
       session,
       workspaceAbort.signal,
     );
-    const requestedEpisodeForNodes = String(currentEp || '')
-      .trim()
-      .toUpperCase();
-    // Only preload when the URL explicitly names an episode. Without ?ep=,
-    // currentEp may be stale local memory from another project; guessing EP001
-    // here causes an extra workspace-nodes request and then a second request
-    // after workspace-index corrects the active episode.
-    const indexedNodesPromise = episodeKnownFromUrl && requestedEpisodeForNodes
-      ? getWorkspaceNodes(
-          session,
-          requestedEpisodeForNodes,
-          workspaceAbort.signal,
-        ).catch(() => null)
-      : null;
+    let workspaceIndexResult: WorkspaceProjectMeta | null = null;
     workspaceIndexPromise
       .then((index) => {
+        workspaceIndexResult = index;
         if (loadEpoch !== workspaceLoadEpochRef.current) return;
         const shellStartedAt = performance.now();
         const requestedEpisode = String(currentEp || '').trim().toUpperCase();
@@ -10224,8 +10461,6 @@ function CanvasViewInner({
       currentEp,
       workspaceAbort.signal,
       workspaceIndexPromise,
-      episodeKnownFromUrl,
-      indexedNodesPromise,
     )
       .then(({
         canvas: data,
@@ -10234,6 +10469,7 @@ function CanvasViewInner({
         episodeViewports,
         activeEpisodeId,
         connections: projectConnections,
+        eventCursor,
       }) => {
         if (loadEpoch !== workspaceLoadEpochRef.current) return;
         const startedAt = workspaceLoadStartedAtRef.current;
@@ -10269,7 +10505,16 @@ function CanvasViewInner({
         if ('empty' in data) {
           setCanvas(null);
         } else {
-          setCanvas(data);
+          const indexedEpisodes = Array.isArray(
+            workspaceIndexResult?.episodes,
+          )
+            ? workspaceIndexResult.episodes
+            : [];
+          setCanvas(mergeEpisodeGraph(
+            data,
+            indexedEpisodes,
+            data.meta.episodes,
+          ));
         }
         startTransition(() => {
           setNotes(noteList);
@@ -10288,6 +10533,12 @@ function CanvasViewInner({
         setDataReady(true);
         setLoading(false);
         workspaceReadyAtRef.current = performance.now();
+        workspaceEventCursorRef.current = Math.max(
+          workspaceEventCursorRef.current,
+          Number(eventCursor) || 0,
+        );
+        workspaceEventCursorReadyRef.current = true;
+        workspaceEventWakeRef.current?.();
         requestAnimationFrame(() => {
           performance.mark('canvas-layout-settled', {
             detail: {episode: normalizedActiveEpisode},
@@ -10334,11 +10585,19 @@ function CanvasViewInner({
   // activeWorkspaceEpisodeRef, so the `target === active` guard prevents the
   // first render from reloading the same workspace.
   useEffect(() => {
-    const target = String(currentEp || '').trim().toUpperCase();
-    const active = String(activeWorkspaceEpisodeRef.current || '').trim().toUpperCase();
-    if (!target || !active || target === active) return;
+    const target = normalizeEpisodeId(currentEp);
+    const active = normalizeEpisodeId(activeWorkspaceEpisodeRef.current);
+    const decision = episodeSelectionDecision({
+      explicitSelection: explicitEpisodeSelectionRef.current,
+      target,
+      active,
+      current: target,
+    });
+    if (decision !== 'load') return;
     const epoch = workspaceLoadEpochRef.current + 1;
     workspaceLoadEpochRef.current = epoch;
+    const request = nextEpisodeRequest(episodeRequestRef.current, target);
+    episodeRequestRef.current = request;
     const abort = new AbortController();
     // Keep the current graph painted while the target episode loads. Clearing
     // it created the large skeleton frame seen on every episode switch.
@@ -10347,6 +10606,12 @@ function CanvasViewInner({
     taskLoadGenerationRef.current += 1;
     getCanvasEpisodeWorkspace(session, target, abort.signal)
       .then((workspace) => {
+        if (!request || !shouldPublishEpisodeLoad({
+          requestEpoch: request.requestEpoch,
+          latestEpoch: episodeRequestRef.current?.requestEpoch || 0,
+          target,
+          current: episodeRequestRef.current?.target,
+        })) return;
         if (epoch !== workspaceLoadEpochRef.current) return;
         const loadedEpisode = String(
           workspace.activeEpisodeId || target,
@@ -10393,19 +10658,31 @@ function CanvasViewInner({
         setDataReady(true);
         setLoading(false);
         workspaceReadyAtRef.current = performance.now();
+        workspaceEventCursorRef.current = Math.max(
+          workspaceEventCursorRef.current,
+          Number(workspace.eventCursor) || 0,
+        );
+        workspaceEventCursorReadyRef.current = true;
+        workspaceEventWakeRef.current?.();
       })
       .catch((error: unknown) => {
-        if (epoch !== workspaceLoadEpochRef.current) return;
         const aborted = error instanceof DOMException && error.name === 'AbortError';
+        if (!request || !shouldPublishEpisodeLoad({
+          requestEpoch: request.requestEpoch,
+          latestEpoch: episodeRequestRef.current?.requestEpoch || 0,
+          target,
+          current: episodeRequestRef.current?.target,
+          aborted,
+        })) return;
+        if (epoch !== workspaceLoadEpochRef.current) return;
         setError(
           aborted
             ? '画布加载超时，项目数据未丢失。请重新加载或稍后再试。'
             : error instanceof Error ? error.message : String(error),
         );
-        // The old episode is still painted. Restore the selector scope so
-        // retrying the failed target does not write into the wrong episode.
-        activeWorkspaceEpisodeRef.current = active;
-        setCurrentEp(active);
+        // Keep the requested episode selected. Reverting the selector moves the
+        // user to a different episode while the visible graph is still old,
+        // which makes subsequent saves target the wrong scope.
         setLoading(false);
       });
     return () => abort.abort();
@@ -10598,6 +10875,13 @@ function CanvasViewInner({
     options?: {persist?: boolean; mediaVersionSelection?: boolean},
   ) => {
     if (readOnly && options?.persist !== false) return;
+    if (
+      options?.persist !== false
+      && mediaSaveConflictRef.current?.nodeIds.includes(id)
+    ) {
+      setToast('该节点有未解决的保存冲突，请先在顶部保存状态中选择保留哪一个版本');
+      return;
+    }
     const previousNode = mediaNodesRef.current.find((node) => node.id === id);
     const onlyMetadata = !('x' in patch) && !('y' in patch);
     if (previousNode && !onlyMetadata) {
@@ -10647,7 +10931,14 @@ function CanvasViewInner({
         // params 是嵌套对象：必须基于"最新 state"做读-改-写。
         // 旧写法 `{...p, [key]: value}` 在同一轮连发两次 patch（选比例会同时写 ratio + size）时
         // 第二次用的是旧快照，把第一次写的 ratio 覆盖掉 → 比例永远不生效、卡片尺寸不变。
-        const merged: CanvasMediaNode = {...n, ...patch, updatedAt: new Date().toISOString()};
+        const merged = {
+          ...n,
+          ...patch,
+          ...(options?.mediaVersionSelection
+            ? {_mediaVersionSelection: true as const}
+            : {}),
+          updatedAt: new Date().toISOString(),
+        } as CanvasMediaNode;
         merged.params = {...(n.params || {}), ...(patch.params || {})};
         changed = merged;
         return merged;
@@ -10670,73 +10961,27 @@ function CanvasViewInner({
           const snapshot = (
             options?.mediaVersionSelection
             || pending?._mediaVersionSelection
+            || (changed as CanvasMediaNode)._mediaVersionSelection
           )
             ? {...(changed as CanvasMediaNode), _mediaVersionSelection: true}
             : changed as CanvasMediaNode;
           pendingMediaPatchesRef.current.set(id, snapshot);
           if (mediaSaveTimer.current) clearTimeout(mediaSaveTimer.current);
-          mediaSaveTimer.current = setTimeout(() => {
-            const snapshots = [...pendingMediaPatchesRef.current.values()];
-            pendingMediaPatchesRef.current.clear();
-            if (snapshots.length === 0) return;
-            beginSave();
-            clearSaveError();
-            if (!currentEp) {
-              finishSave(false);
-              setSaveError('画布尚未绑定集数，暂不能保存节点');
-              return;
-            }
-            void patchMediaNodesFields(session, snapshots, currentEp)
-              .then(() => {
-                finishSave(true);
-                broadcastMediaChange(snapshots.map((snapshot) => snapshot.id));
-              })
-              .catch((error) => {
-                const message = error instanceof Error ? error.message : String(error);
-                const conflict = message.includes('另一个标签页');
-                if (!conflict) {
-                  for (const snapshot of snapshots) {
-                    if (!pendingMediaPatchesRef.current.has(snapshot.id)) {
-                      pendingMediaPatchesRef.current.set(snapshot.id, snapshot);
-                    }
-                  }
-                } else {
-                  const changedIds = new Set(snapshots.map((snapshot) => snapshot.id));
-                  void getCanvasMediaNodes(session, currentEp)
-                    .then((remoteNodes) => {
-                      const byId = new Map(remoteNodes.map((item) => [item.id, item]));
-                      setMediaNodes((prev) => prev.map((item) => (
-                        changedIds.has(item.id)
-                          ? (() => {
-                              const remote = byId.get(item.id);
-                              if (!remote) return item;
-                              return {
-                                ...item,
-                                ...remote,
-                                ...preserveSelectedMediaVersion(item, remote),
-                              };
-                            })()
-                          : item
-                      )));
-                    })
-                    .catch(() => {});
-                  setToast(message);
-                }
-                finishSave(false);
-                setSaveError(message);
-              });
-          }, 600);
+            mediaSaveTimer.current = setTimeout(() => {
+              mediaSaveTimer.current = null;
+              flushMediaPatches();
+            }, 600);
         } else {
           persistMediaPositions(next);
         }
       }
       return next;
     });
-  }, [beginSave, broadcastMediaChange, currentEp, finishSave, persistMediaNodes, persistMediaPositions, session, setToast]);
+  }, [flushMediaPatches, persistMediaNodes, persistMediaPositions]);
 
   const updateMediaAvailability = useCallback((
     nodeId: string,
-    availability: 'available' | 'missing',
+    availability: 'missing',
   ) => {
     setMediaNodes((prev) => {
       let changed = false;
@@ -10950,8 +11195,11 @@ function CanvasViewInner({
         return;
       }
       void patchMediaNodesFields(session, snapshots, currentEp, {keepalive: true}).catch(() => {
-        // Navigation is already underway; recovery on the next edit is preferable
-        // to blocking the page unload with an alert.
+        for (const snapshot of snapshots) {
+          if (!pendingMediaPatchesRef.current.has(snapshot.id)) {
+            pendingMediaPatchesRef.current.set(snapshot.id, snapshot);
+          }
+        }
       });
     };
     const onVisibilityChange = () => {
@@ -10964,6 +11212,13 @@ function CanvasViewInner({
       window.removeEventListener('pagehide', flushPendingMediaPatches);
     };
   }, [currentEp, session]);
+
+  useEffect(() => () => {
+    if (mediaPatchRetryTimerRef.current !== null) {
+      clearTimeout(mediaPatchRetryTimerRef.current);
+      mediaPatchRetryTimerRef.current = null;
+    }
+  }, []);
 
   // 级联避让：同一坐标反复插入会把新节点完全叠在上一个下面（表现为"点了没反应"）。
   // 已占用则沿对角线让位，直到 50 次兜底。
@@ -11556,27 +11811,30 @@ function CanvasViewInner({
     let source: EventSource | null = null;
     let disposed = false;
     let terminalRefreshTimer: number | null = null;
-    let reconnectTimer: number | null = null;
-    let reconnectAttempts = 0;
+    let eventLifecycle: ReturnType<typeof createCanvasEventLifecycle> | null = null;
 
-    const refreshCurrentEpisodeFacts = async () => {
-      if (!currentEp) return;
+    const refreshCurrentEpisodeFacts = async (): Promise<number | null> => {
+      if (!currentEpRef.current) return null;
       if (readOnly) {
-        const workspace = await getSharedCanvasWorkspace(session, currentEp);
-        if (disposed) return;
+        const workspace = await getSharedCanvasWorkspace(
+          session,
+          currentEpRef.current,
+        );
+        if (disposed) return null;
         if (!('empty' in workspace.canvas)) setCanvas(workspace.canvas);
         setNotes(workspace.notes);
         setMediaNodes(workspace.mediaNodes);
         projectConnectionsRef.current = workspace.connections;
-        return;
+        return workspace.eventCursor;
       }
-      const [remoteNodes, tasks] = await Promise.all([
-        getWorkspaceMediaNodes(session, currentEp),
-        taskCenterOpen
-          ? getGenerationTasks(session, 80, currentEp).catch(() => null)
+      const [snapshot, tasks] = await Promise.all([
+        getWorkspaceMediaNodeSnapshot(session, currentEpRef.current),
+        taskCenterOpenRef.current
+          ? getGenerationTasks(session, 80, currentEpRef.current).catch(() => null)
           : Promise.resolve(null),
       ]);
-      if (disposed) return;
+      if (disposed) return null;
+      const remoteNodes = snapshot.nodes;
       const localById = new Map(
         mediaNodesRef.current.map((node) => [node.id, node]),
       );
@@ -11602,9 +11860,10 @@ function CanvasViewInner({
         taskLoadGenerationRef.current += 1;
         setGenerationTasks(tasks);
       }
+      return snapshot.eventCursor;
     };
 
-    const refreshAfterTerminalEvent = () => {
+    const refreshAfterTerminalEvent = (eventId: number) => {
       if (terminalRefreshTimer !== null) {
         window.clearTimeout(terminalRefreshTimer);
       }
@@ -11614,29 +11873,51 @@ function CanvasViewInner({
         // Events wake the client; persisted task/node projections remain the
         // sole authority for both the card and Task Center. Re-read only the
         // current episode's compact projections instead of the full workspace.
-        void refreshCurrentEpisodeFacts().catch(() => {});
+        void refreshCurrentEpisodeFacts().then((snapshotCursor) => {
+          if (snapshotCursor === null) return;
+          workspaceEventCursorRef.current = Math.max(
+            workspaceEventCursorRef.current,
+            eventId,
+            snapshotCursor,
+          );
+          if (eventId > 0) writeCanvasEventCursor(session, eventId);
+          writeCanvasEventCursor(session, snapshotCursor);
+        }).catch(() => {});
       }, 120);
     };
 
-    const applyEvent = (raw: string) => {
+    const applyEvent = (event: MessageEvent<string>) => {
+      const raw = event.data;
       let data: Record<string, unknown>;
       try {
         data = JSON.parse(raw) as Record<string, unknown>;
       } catch {
         return;
       }
-      if (typeof data.eventId === 'number' && data.eventId > 0) {
-        try {
-          window.localStorage.setItem(
-            projectCursorStorageKey(session),
-            String(data.eventId),
-          );
-        } catch {
-          // Event replay still works through the current EventSource.
-        }
+      const eventId = canvasEventId(event, data);
+      if (!workspaceEventCursorReadyRef.current) return;
+      if (!shouldProcessCanvasEvent(
+        eventId,
+        workspaceEventCursorRef.current,
+      )) {
+        if (eventId > 0) writeCanvasEventCursor(session, eventId);
+        return;
       }
       const nodeId = typeof data.nodeId === 'string' ? data.nodeId : '';
-      if (!nodeId) return;
+      if (!nodeId) {
+        if (eventId > 0) writeCanvasEventCursor(session, eventId);
+        return;
+      }
+      if (!eventBelongsToEpisode(data, currentEpRef.current || '')) {
+        if (eventId > 0) {
+          workspaceEventCursorRef.current = Math.max(
+            workspaceEventCursorRef.current,
+            eventId,
+          );
+          writeCanvasEventCursor(session, eventId);
+        }
+        return;
+      }
       const eventStatus = String(data.status ?? data.taskStatus ?? '').toLowerCase();
       const local = mediaNodesRef.current.find((node) => node.id === nodeId);
       const isProgressEvent = (
@@ -11672,6 +11953,13 @@ function CanvasViewInner({
             updateMediaNode(nodeId, patch, {persist: false});
           }
         }
+        if (eventId > 0) {
+          workspaceEventCursorRef.current = Math.max(
+            workspaceEventCursorRef.current,
+            eventId,
+          );
+          writeCanvasEventCursor(session, eventId);
+        }
         // Progress is display data and is not a terminal reconciliation signal.
         // Reading workspace facts for every provider tick creates a request
         // storm during batch generation.
@@ -11680,19 +11968,11 @@ function CanvasViewInner({
       // SSE is only a notification that the backend state changed. Routing its
       // payload into card/task state would make the event stream a second
       // frontend-side state machine. Re-read both projections instead.
-      refreshAfterTerminalEvent();
+      refreshAfterTerminalEvent(eventId);
     };
 
-    const open = () => {
+    const open = (since: number) => {
       if (disposed) return;
-      let since = 0;
-      try {
-        since = Number(
-          window.localStorage.getItem(projectCursorStorageKey(session)) || 0,
-        ) || 0;
-      } catch {
-        since = 0;
-      }
       const sharedToken = shareTokenInPath(window.location.pathname);
       source = new EventSource(
         sharedToken
@@ -11703,7 +11983,7 @@ function CanvasViewInner({
       );
       source.onopen = () => {
         if (disposed) return;
-        reconnectAttempts = 0;
+        eventLifecycle?.connected();
         setEventsConnected(true);
         // A successful SSE connection carries a replay cursor and projected
         // node data. The initial workspace is already authoritative; forcing
@@ -11714,35 +11994,46 @@ function CanvasViewInner({
         setEventsConnected(false);
         source?.close();
         source = null;
-        if (reconnectTimer !== null) return;
-        const delay = Math.min(30_000, 1_000 * (2 ** reconnectAttempts));
-        reconnectAttempts += 1;
-        reconnectTimer = window.setTimeout(() => {
-          reconnectTimer = null;
-          open();
-          void refreshCurrentEpisodeFacts().catch(() => {});
-        }, delay);
+        eventLifecycle?.reconnect();
       };
-      source.addEventListener('media', (event) => applyEvent((event as MessageEvent<string>).data));
-      source.addEventListener('media.progress', (event) => applyEvent((event as MessageEvent<string>).data));
+      source.addEventListener('media', (event) => applyEvent(event as MessageEvent<string>));
+      source.addEventListener('media.progress', (event) => applyEvent(event as MessageEvent<string>));
     };
 
-    open();
+    eventLifecycle = createCanvasEventLifecycle({
+      hasSnapshotCursor: () => workspaceEventCursorReadyRef.current,
+      snapshotCursor: () => Math.max(
+        workspaceEventCursorRef.current,
+        readCanvasEventCursor(session),
+      ),
+      connect: open,
+      refreshFallback: () => {
+        void refreshCurrentEpisodeFacts().catch(() => {});
+      },
+      clearTimer: (timer) => window.clearTimeout(timer),
+      setTimer: (callback, delay) => window.setTimeout(
+        callback,
+        delay,
+      ) as unknown as ReturnType<typeof globalThis.setTimeout>,
+    });
+    workspaceEventWakeRef.current = eventLifecycle.startWhenReady;
+    eventLifecycle.startWhenReady();
     return () => {
       disposed = true;
+      if (workspaceEventWakeRef.current === eventLifecycle?.startWhenReady) {
+        workspaceEventWakeRef.current = null;
+      }
       if (terminalRefreshTimer !== null) {
         window.clearTimeout(terminalRefreshTimer);
         terminalRefreshTimer = null;
       }
-      if (reconnectTimer !== null) {
-        window.clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
+      eventLifecycle?.dispose();
+      eventLifecycle = null;
       setEventsConnected(false);
       source?.close();
       source = null;
     };
-  }, [session, currentEp, readOnly, taskCenterOpen, updateMediaNode]);
+  }, [session, readOnly, updateMediaNode]);
 
   useEffect(() => {
     let lastRefreshAt = 0;
@@ -11764,8 +12055,14 @@ function CanvasViewInner({
       if (resumed) refreshAfterResume();
     };
     const onOnline = () => {
-      if (networkRef.offline) refreshAfterResume();
+      const wasOffline = networkRef.offline;
       networkRef.offline = false;
+      if (wasOffline) {
+        refreshAfterResume();
+        if (pendingMediaPatchesRef.current.size > 0 && !mediaSaveConflictRef.current) {
+          retryMediaPatchesNow();
+        }
+      }
     };
     const onOffline = () => {
       networkRef.offline = true;
@@ -11778,7 +12075,7 @@ function CanvasViewInner({
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
     };
-  }, [refreshWorkspaceFacts]);
+  }, [refreshWorkspaceFacts, retryMediaPatchesNow]);
   useEffect(() => () => {
     if (workspaceRetryTimerRef.current !== null) {
       window.clearTimeout(workspaceRetryTimerRef.current);
@@ -16573,8 +16870,12 @@ function CanvasViewInner({
     return () => window.removeEventListener('keydown', onKey);
   }, [navigateLightbox, zoomTarget]);
 
-  const syncLabel = saveState === 'error' || saveError
-    ? '保存失败'
+  const syncLabel = mediaSaveConflict
+    ? '保存冲突'
+    : saveRetryPending
+      ? `待重试 ${saveRetryAttempt}`
+      : saveState === 'error' || saveError
+        ? '保存失败'
     : saveState === 'saving' || savingShot !== null
       ? '保存中…'
       : dirtyShots.size > 0
@@ -16610,7 +16911,7 @@ function CanvasViewInner({
           <div ref={statusMenuRef} className="canvas-menu-wrap">
             <button
               type="button"
-              className={`canvas-status-trigger ${openMenu === 'status' ? 'is-open' : ''} ${saveState === 'error' || saveError ? 'is-error' : dirtyShots.size > 0 ? 'is-dirty' : ''}`}
+              className={`canvas-status-trigger ${openMenu === 'status' ? 'is-open' : ''} ${mediaSaveConflict || saveState === 'error' || saveError ? 'is-error' : saveRetryPending || dirtyShots.size > 0 ? 'is-dirty' : ''}`}
               onClick={() => setOpenMenu(openMenu === 'status' ? null : 'status')}
               title="保存、生产进度与挂接检查"
             >
@@ -16624,6 +16925,21 @@ function CanvasViewInner({
               <div className="canvas-header-menu canvas-status-menu">
                 <div className="canvas-status-menu-head">画布状态</div>
                 <div className="canvas-status-row"><span>自动保存</span><strong>{syncLabel}</strong></div>
+                {mediaSaveConflict && (
+                  <div className="canvas-save-conflict" role="alert">
+                    <strong>此节点已在另一个页面被修改</strong>
+                    <span>你的当前内容仍保留在输入框中。请选择要保留的版本。</span>
+                    <div>
+                      <button type="button" onClick={overwriteWithLocalMediaConflict}>保留我的</button>
+                      <button type="button" onClick={acceptRemoteMediaConflict}>载入服务器版本</button>
+                    </div>
+                  </div>
+                )}
+                {saveRetryPending && !mediaSaveConflict && (
+                  <button type="button" className="canvas-status-check" onClick={retryMediaPatchesNow}>
+                    本地编辑已保留 · 立即重试
+                  </button>
+                )}
                 <div className="canvas-status-row"><span>生产统计</span><strong>{canvas && canvas.shots.length > 0 ? `${effectiveSegments.length} 段 · ${canvas.shots.length} 镜头 · ${canvas.shots.filter((s) => s.clip_url).length} 已出片` : '暂无分镜'}</strong></div>
                 <div className="canvas-status-row"><span>完成率</span><strong>{completionPercent}%</strong></div>
                 <div className="canvas-status-row"><span>关键帧</span><strong>{canvas ? canvas.shots.filter((s) => s.keyframe_url).length : 0}</strong></div>
@@ -18283,6 +18599,7 @@ function CanvasViewInner({
                       statusLabel,
                       canRegenerate,
                     } = taskOutcomePresentation(task);
+                    const canResolveManually = manualTaskResolutionAvailable(task);
                     return (
                       <article
                         key={task.id}
@@ -18352,6 +18669,28 @@ function CanvasViewInner({
                                 })
                                 .catch((error) => setToast(error instanceof Error ? error.message : '取消任务失败'));
                             }}>取消排队</button>
+                          )}
+                          {canResolveManually && (
+                            <button type="button" onClick={() => {
+                              if (!window.confirm('确认原任务不会再返回结果，并将它标记为失败？此操作允许重新生成。')) return;
+                              void resolveGenerationTask(task.id)
+                                .then((result) => {
+                                  setGenerationTasks((prev) => prev.map((item) => (
+                                    item.id === task.id ? result.task : item
+                                  )));
+                                  setGenerationBusyIds((prev) => {
+                                    if (!prev.has(task.node_id)) return prev;
+                                    const next = new Set(prev);
+                                    next.delete(task.node_id);
+                                    return next;
+                                  });
+                                  void refreshWorkspaceFactsRef.current().catch(() => {});
+                                  setToast('任务已人工确认失败，现在可以重新生成');
+                                })
+                                .catch((error) => setToast(
+                                  error instanceof Error ? error.message : '任务确认失败',
+                                ));
+                            }}>确认失败</button>
                           )}
                           {node && canRegenerate && (
                             <button type="button" className="is-retry" onClick={() => {

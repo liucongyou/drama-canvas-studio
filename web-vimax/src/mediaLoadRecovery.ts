@@ -11,8 +11,11 @@ export function shouldMarkMediaMissing(
   failures: number,
   serverConfirmedMissing: boolean,
 ): boolean {
-  return serverConfirmedMissing
-    || failures > MEDIA_RETRY_LIMIT;
+  return serverConfirmedMissing;
+}
+
+export function mediaMissingFromBackend(serverAvailability: unknown): boolean {
+  return String(serverAvailability || '').trim().toLowerCase() === 'missing';
 }
 
 export function isTransientMediaError(error?: unknown): boolean {

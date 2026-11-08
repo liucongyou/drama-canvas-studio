@@ -436,6 +436,52 @@ class ProviderDiscoveryTests(unittest.TestCase):
                 )
                 self.assertEqual(saved_provider["icon"], "")
 
+    def test_save_config_retries_transient_replace_permission_error(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+            os.environ,
+            {"CANVAS_TENANT_DATA_ROOT": root, "CANVAS_MULTI_TENANT": "1"},
+        ), tenant_context.use_tenant("alpha", "alpha"):
+            path = provider_catalog._local_config_path()
+            original_replace = provider_catalog.os.replace
+            calls = []
+
+            def flaky_replace(source, destination):
+                calls.append((source, destination))
+                if len(calls) < 3:
+                    raise PermissionError(13, "file is temporarily busy", destination)
+                return original_replace(source, destination)
+
+            with patch.object(provider_catalog.os, "replace", side_effect=flaky_replace):
+                provider_catalog.save_config(self.config)
+
+            self.assertEqual(len(calls), 3)
+            providers = provider_catalog.load_config(migrate=False)["providers"]
+            self.assertIn("demo", [provider["id"] for provider in providers])
+            self.assertFalse(
+                any(name.endswith(".tmp") for name in os.listdir(os.path.dirname(path))),
+            )
+
+    def test_save_config_does_not_retry_permanent_permission_error(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+            os.environ,
+            {"CANVAS_TENANT_DATA_ROOT": root, "CANVAS_MULTI_TENANT": "1"},
+        ), tenant_context.use_tenant("alpha", "alpha"):
+            path = provider_catalog._local_config_path()
+            calls = []
+
+            def denied_replace(_source, destination):
+                calls.append(destination)
+                raise PermissionError(13, "access denied", destination)
+
+            with patch.object(provider_catalog.os, "replace", side_effect=denied_replace):
+                with self.assertRaises(PermissionError):
+                    provider_catalog.save_config(self.config)
+
+            self.assertEqual(len(calls), 6)
+            self.assertFalse(
+                any(name.endswith(".tmp") for name in os.listdir(os.path.dirname(path))),
+            )
+
     def test_relay_image_migration_repairs_legacy_parameters(self):
         with tempfile.TemporaryDirectory() as root, patch.dict(
             os.environ,

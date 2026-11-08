@@ -3,6 +3,7 @@
 - 审计日期：2026-11-08
 - 审计对象：`drama-canvas-studio`（前端 `web-vimax`，后端 `server.py` / `canvas_store.py` / `media_storage.py`）
 - 审计方式：全量代码走查 + 线上生产库只读统计 + 本地 API 基准 + 版本/任务数据抽样 + 现有测试核对
+- 最新回验：2026-11-08 晚，完成历史版本刷新持久化修复、启动迁移索引修复和三集项目压力复测
 - 关联记录：`docs/reports/2026-11-02-system-optimization-audit.md`（结构与磁盘类问题，本次只引用不复述）
 
 > 一句话结论：**核心链路（生成、保存、幂等、队列、版本）比多数同类画布产品扎实，但系统正在被"全量项目 JSON + 事件全量重读"拖慢；同时跨集资产所有权、冲突保存、超时任务三处存在静默数据丢失/卡死的真实风险。**
@@ -31,6 +32,48 @@
 | P3 | 9 | 加固项与长期结构债 |
 
 > 说明：P0 不是"系统不可用"，而是"用户数据/付费结果可能丢，且用户当时看不出来"。
+
+---
+
+## 0.3 2026-11-08 晚修复与复测结果
+
+### 已闭环
+
+| 项目 | 根因 | 修复与证据 |
+|---|---|---|
+| 图片历史版本刷新后回退 | 版本选择只写入待保存快照，没有同步写入节点当前状态；后续画布对账先把界面换回旧版，最终 PUT 也只提交旧版 | 版本选择锁覆盖节点状态与待保存快照，并在后端确认新 revision 后释放。浏览器回归实测：`2/3` → 切到 `3/3` → 刷新仍为 `3/3`；PUT 载荷带 `_mediaVersionSelection`，后端节点 `activeVersionId=image:v3`、`mediaVersionIndex=2`、`content=第三版 URL` |
+| 启动时两处历史回填报 `unable to open database file` | SQLite 为历史查询创建临时 B-tree，Windows 当前临时目录不可写 | 增加 `canvas_snapshots(canvas_id, revision DESC)` 与 `created_at DESC` 索引，历史查询计划不再依赖 `TEMP B-TREE`；重启后两条迁移失败均消失 |
+| 历史版本测试误报 | 断连测试被插入另一测试方法，方法体被截断 | 恢复原测试并拆出独立用例，定向后端测试 `20 passed` |
+
+### 三集项目只读压力复测
+
+项目：`RyFNSHbwwgMX3ZtvwTxx0q`（3 集、57 节点）。全程未触发生成或供应商付费请求。
+
+| 指标 | 结果 |
+|---|---:|
+| 首节点 | 2,636 ms（单次冷样本） |
+| 切集 P50 | 720 ms |
+| 切集 P95 | 1,283 ms |
+| 快速连续切换 | 725 ms |
+| 切集骨架闪烁 | 0 |
+| 静止帧平均 / P95 | 16.67 / 16.70 ms |
+| 32 ms 以上长帧 | 0 |
+| 最终状态 | EP001，28 节点 / 103 连线 |
+| workspace-index 请求 | 1 |
+| 页面错误 | 0 |
+
+### 回归与构建
+
+- 前端：71 个文件，666 tests passed
+- 类型检查：`npm run typecheck` 与 `npm run typecheck:canvas` 均 0 错误
+- 后端定向：`test_canvas_repository.py`、`test_tenant_http.py`、`test_media_versions.py`、`test_generation_task_persistence.py`、`test_provider_discovery.py`，共 178 passed / 24 subtests passed
+- 构建：成功；主 JS 569.49 KB（gzip 168.93 KB），主 CSS 600.95 KB（gzip 99.92 KB）
+- 说明：首次构建失败为 Windows 系统临时目录里 esbuild 清理文件 `Access is denied`；改用仓内临时目录后完整构建成功，不是源码编译失败
+
+### 仍未标绿
+
+- AUTH 边界与线上部署必须另行验证，不能由本地 8890/8891 结果替代。
+- 跨集资产生命周期、生成任务外部供应商终态、视口独立行写入仍需后续阶段专项验证。
 
 ---
 

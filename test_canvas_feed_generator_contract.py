@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,25 @@ SKILL_ROOT = (
     / "short-drama-director"
 )
 GENERATOR = SKILL_ROOT / "scripts" / "build_board_lite.py"
+
+
+def run_python(args, *, timeout=60):
+    """Run a child Python process with deterministic UTF-8 pipe encoding."""
+    env = os.environ.copy()
+    env.update({
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    })
+    return subprocess.run(
+        [sys.executable, *args],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=timeout,
+        env=env,
+    )
 
 
 class CanvasFeedGeneratorContractTests(unittest.TestCase):
@@ -54,9 +74,8 @@ class CanvasFeedGeneratorContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "board.html"
             feed_path = Path(tmp) / "feed.json"
-            result = subprocess.run(
+            result = run_python(
                 [
-                    sys.executable,
                     str(GENERATOR),
                     str(source),
                     "--out",
@@ -64,11 +83,6 @@ class CanvasFeedGeneratorContractTests(unittest.TestCase):
                     "--export-json",
                     str(feed_path),
                 ],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=60,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             feed = json.loads(feed_path.read_text(encoding="utf-8"))
@@ -147,13 +161,8 @@ class CanvasFeedGeneratorContractTests(unittest.TestCase):
         )
 
     def test_generator_self_test_passes(self):
-        result = subprocess.run(
-            [sys.executable, str(GENERATOR), "--self-test"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=60,
+        result = run_python(
+            [str(GENERATOR), "--self-test"],
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("self-test PASSED", result.stdout)
@@ -197,13 +206,8 @@ feed = build_board_lite.enrich_canvas_contract({{
 }})
 print(json.dumps(feed, ensure_ascii=False))
 """.format(skill_root=str(SKILL_ROOT))
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=60,
+        result = run_python(
+            ["-c", script],
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         feed = json.loads(result.stdout)
@@ -261,13 +265,8 @@ feed = build_board_lite.enrich_canvas_contract({{
 }})
 print(json.dumps(feed, ensure_ascii=False))
 """.format(skill_root=str(SKILL_ROOT))
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=60,
+        result = run_python(
+            ["-c", script],
         )
         self.assertEqual(result.returncode, 0, (result.stdout or "") + (result.stderr or ""))
         feed = json.loads(result.stdout)

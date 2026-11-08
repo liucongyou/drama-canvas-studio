@@ -19,6 +19,7 @@ LOCAL_VALIDATION_MARKERS = (
 TERMINAL_PROVIDER_FAILURE_PHASES = frozenset({
     "查询失败",
     "生成失败",
+    "人工确认失败",
 })
 
 TERMINAL_PROVIDER_FAILURE_MARKERS = (
@@ -312,3 +313,38 @@ def task_outcome(task: dict[str, Any] | None) -> dict[str, Any]:
         "providerAccepted": accepted,
         "retentionExpiresAt": retention_expires_at,
     }
+
+
+def can_manually_resolve_task(
+    task: dict[str, Any] | None,
+    outcome: dict[str, Any] | None = None,
+) -> bool:
+    """Whether an operator may close an unresolved paid task as failed."""
+    if not task:
+        return False
+    status = _text(task.get("status")).lower()
+    phase = _text(task.get("phase"))
+    if status != "interrupted" or phase == "人工确认失败":
+        return False
+    if is_local_validation_error(task.get("error")):
+        return False
+    if is_provider_terminal_failure(task):
+        # The provider already supplied a definitive failure. The task is
+        # closed and only needs normal regeneration confirmation.
+        return False
+    projected = outcome if isinstance(outcome, dict) else task_outcome(task)
+    if (
+        _text(projected.get("phase")) == "fetching"
+        and (
+            _text(task.get("delivery_status")).lower() == "materializing"
+            or bool(_text(task.get("local_result_url")))
+        )
+    ):
+        # A paid provider result is already being downloaded/materialized.
+        # Manual failure here would orphan a result the user has paid for.
+        return False
+    # Interrupted means the local worker no longer owns the task. The explicit
+    # user action is the bounded escape hatch when provider reconciliation
+    # never yields a terminal receipt. CAS in the store still protects a late
+    # successful result from being overwritten.
+    return True
