@@ -111,7 +111,7 @@ import {
   Share2,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, preserveSelectedMediaVersion, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceFacts, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, preserveSelectedMediaVersion, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -6374,6 +6374,16 @@ function DeleteDialog({targets, mediaNodes, notes, onCancel, onConfirm}: {
     const mn = mediaNodes.find((x) => x.id === t.id.slice(MEDIA_PREFIX.length));
     return mn ? KIND_LABEL[mn.kind] : '媒体';
   };
+  const activeMedia = targets.filter((target) => {
+    if (!target.id.startsWith(MEDIA_PREFIX)) return false;
+    const node = mediaNodes.find((item) => item.id === target.id.slice(MEDIA_PREFIX.length));
+    return node ? mediaGenerationVisualState({
+      status: node.status,
+      mediaUrl: node.mediaUrl || '',
+      generationBusy: node.status === 'generating',
+      finalizePending: node.finalizePending,
+    }).busy : false;
+  });
   return (
     <div className="canvas-help-backdrop" onClick={onCancel}>
       <div ref={dialogRef} tabIndex={-1} className="canvas-arrange" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
@@ -6382,6 +6392,11 @@ function DeleteDialog({targets, mediaNodes, notes, onCancel, onConfirm}: {
           <button type="button" className="canvas-inspector-close" onClick={onCancel} aria-label="关闭"><X size={15} strokeWidth={2} aria-hidden="true" /></button>
         </header>
         <p className="canvas-arrange-hint">共 {targets.length} 项，可取消勾选保留不想删的：</p>
+        {activeMedia.length > 0 && (
+          <p className="canvas-arrange-hint is-del" role="alert">
+            {activeMedia.map(labelOf).join('、')} 仍在生成，不能删除；请等待完成或先取消任务。
+          </p>
+        )}
         <div className="canvas-delete-list">
           {targets.map((t) => (
             <button
@@ -6406,7 +6421,7 @@ function DeleteDialog({targets, mediaNodes, notes, onCancel, onConfirm}: {
           <button
             type="button"
             className="is-del"
-            disabled={checked.size === 0}
+            disabled={checked.size === 0 || activeMedia.some((target) => checked.has(target.id))}
             onClick={() => onConfirm([...checked])}
           >删除 {checked.size} 项</button>
         </footer>
@@ -9405,7 +9420,7 @@ function CanvasViewInner({
       if (!scope.episode) {
         throw new Error('画布尚未绑定集数，无法同步');
       }
-      const workspace = await getCanvasWorkspace(scope.session, scope.episode);
+      const workspace = await getWorkspaceFacts(scope.session, scope.episode);
       if (loadEpoch !== workspaceLoadEpochRef.current) return;
       const activeScope = workspaceScopeRef.current;
       if (!workspaceScopeMatches(scope, activeScope)) return;
@@ -9421,6 +9436,7 @@ function CanvasViewInner({
         taskCenterOpen ? workspace.tasks : prev
       ));
       if (!('empty' in workspace.canvas)) setCanvas(workspace.canvas);
+      setNotes(workspace.notes);
       setMediaNodes(workspace.mediaNodes.map((remote) => {
         const local = localById.get(remote.id);
         // Workspace reconciliation updates generation-owned facts only. The
@@ -9441,7 +9457,9 @@ function CanvasViewInner({
           ...preserveSelectedMediaVersion(local, remote),
           x: local.x,
           y: local.y,
-          updatedAt: remote.updatedAt || local.updatedAt,
+          updatedAt: local._mediaVersionSelection
+            ? local.updatedAt
+            : (remote.updatedAt || local.updatedAt),
           positionUpdatedAt: local.positionUpdatedAt,
         };
       }));
@@ -10688,7 +10706,17 @@ function CanvasViewInner({
                     .then((remoteNodes) => {
                       const byId = new Map(remoteNodes.map((item) => [item.id, item]));
                       setMediaNodes((prev) => prev.map((item) => (
-                        changedIds.has(item.id) ? (byId.get(item.id) || item) : item
+                        changedIds.has(item.id)
+                          ? (() => {
+                              const remote = byId.get(item.id);
+                              if (!remote) return item;
+                              return {
+                                ...item,
+                                ...remote,
+                                ...preserveSelectedMediaVersion(item, remote),
+                              };
+                            })()
+                          : item
                       )));
                     })
                     .catch(() => {});
@@ -10735,7 +10763,7 @@ function CanvasViewInner({
           }
           return;
         }
-        const remoteNodes = await getCanvasMediaNodes(session, currentEp);
+        const remoteNodes = await getWorkspaceMediaNodes(session, currentEp);
         const remote = remoteNodes.find((node) => node.id === nodeId);
         if (remote) {
           setMediaNodes((prev) => prev.map(
@@ -11377,10 +11405,37 @@ function CanvasViewInner({
     // 删除是可撤销操作，明确告诉用户，避免误删后以为找不回来
     setToast('已删除节点，Ctrl+Z 可撤销');
   }, [deleteMediaNodePersistently, dropRefsForPairs, pushHistory, readOnly, setToast]);
+  const requestDeleteTargets = useCallback((targets: {id: string; type: string}[]) => {
+    const blocked = targets.filter((target) => {
+      if (target.type !== 'media' || !target.id.startsWith(MEDIA_PREFIX)) return false;
+      const node = mediaNodesRef.current.find((item) => item.id === target.id.slice(MEDIA_PREFIX.length));
+      return !!node && mediaGenerationVisualState({
+        status: node.status,
+        mediaUrl: node.mediaUrl || '',
+        generationBusy: node.status === 'generating',
+        finalizePending: node.finalizePending,
+      }).busy;
+    });
+    if (blocked.length > 0) {
+      setToast('生成中的节点不能删除；请等待完成或先取消任务');
+      return;
+    }
+    setDeleteTargets(targets);
+  }, [setToast]);
   // 卡片上的删除入口（✕ / ⋯菜单）同样先弹确认框，与 Del 键行为一致
   const requestDeleteMediaNode = useCallback((id: string) => {
     if (readOnly) {
       setToast('只读分享不能删除节点');
+      return;
+    }
+    const node = mediaNodesRef.current.find((item) => item.id === id);
+    if (node && mediaGenerationVisualState({
+      status: node.status,
+      mediaUrl: node.mediaUrl || '',
+      generationBusy: node.status === 'generating',
+      finalizePending: node.finalizePending,
+    }).busy) {
+      setToast('生成中的节点不能删除；请等待完成或先取消任务');
       return;
     }
     setDeleteTargets([{id: `${MEDIA_PREFIX}${id}`, type: 'media'}]);
@@ -11417,7 +11472,7 @@ function CanvasViewInner({
   // image/video invisible for 12 seconds.
   //
   // 但「快速兜底」不必等于「每 1.5 秒拉一次全量项目 JSON」：每次轮询走的是
-  // getCanvasMediaNodes → getProject，400 节点项目单次约几百 KB，生成期间每秒
+  // getWorkspaceMediaNodes → workspace-nodes，不再在轮询时读取全量项目 JSON。
   // 一次全量解析是画布卡顿的主要来源之一。SSE 在线时事件已经能在毫秒级把节点
   // 推过来，轮询退到 4s 只作为「事件丢了」的兜底，结果最多晚 4 秒可见（仍远低于
   // 原先担心的 12 秒）；SSE 断开时维持 1.5s 的密集对账。
@@ -11438,7 +11493,7 @@ function CanvasViewInner({
       if (!currentEp) return;
       syncing = true;
       try {
-        const remoteNodes = await getCanvasMediaNodes(session, currentEp);
+        const remoteNodes = await getWorkspaceMediaNodes(session, currentEp);
         if (!alive) return;
         const remoteCompleted = remoteNodes.some(
           (node) => node.status === 'done',
@@ -11516,7 +11571,7 @@ function CanvasViewInner({
         return;
       }
       const [remoteNodes, tasks] = await Promise.all([
-        getCanvasMediaNodes(session, currentEp),
+        getWorkspaceMediaNodes(session, currentEp),
         taskCenterOpen
           ? getGenerationTasks(session, 80, currentEp).catch(() => null)
           : Promise.resolve(null),
@@ -11535,7 +11590,9 @@ function CanvasViewInner({
           x: local.x,
           y: local.y,
           positionUpdatedAt: local.positionUpdatedAt,
-          updatedAt: remote.updatedAt || local.updatedAt,
+          updatedAt: local._mediaVersionSelection
+            ? local.updatedAt
+            : (remote.updatedAt || local.updatedAt),
           mediaAvailability: remote.mediaUrl === local.mediaUrl
             ? local.mediaAvailability
             : 'unknown',
@@ -11580,6 +11637,46 @@ function CanvasViewInner({
       }
       const nodeId = typeof data.nodeId === 'string' ? data.nodeId : '';
       if (!nodeId) return;
+      const eventStatus = String(data.status ?? data.taskStatus ?? '').toLowerCase();
+      const local = mediaNodesRef.current.find((node) => node.id === nodeId);
+      const isProgressEvent = (
+        eventStatus === 'running'
+        || eventStatus === 'in_progress'
+        || eventStatus === 'retrying'
+      ) && ![
+        'done',
+        'succeeded',
+        'success',
+        'completed',
+        'failed',
+        'error',
+        'cancelled',
+        'canceled',
+        'interrupted',
+      ].includes(eventStatus);
+      if (isProgressEvent) {
+        if (local) {
+          const patch: Partial<CanvasMediaNode> = {};
+          for (const [key, value] of Object.entries({
+            providerTaskStatus: data.providerTaskStatus,
+            providerTaskPhase: data.providerTaskPhase,
+            providerTaskProgress: data.providerTaskProgress,
+            providerTaskProgressChangedAt: data.providerTaskProgressChangedAt,
+            lastError: data.error ?? data.lastError,
+          })) {
+            if (typeof value === 'string' || typeof value === 'number') {
+              (patch as Record<string, unknown>)[key] = value;
+            }
+          }
+          if (Object.keys(patch).length > 0) {
+            updateMediaNode(nodeId, patch, {persist: false});
+          }
+        }
+        // Progress is display data and is not a terminal reconciliation signal.
+        // Reading workspace facts for every provider tick creates a request
+        // storm during batch generation.
+        return;
+      }
       // SSE is only a notification that the backend state changed. Routing its
       // payload into card/task state would make the event stream a second
       // frontend-side state machine. Re-read both projections instead.
@@ -11645,7 +11742,7 @@ function CanvasViewInner({
       source?.close();
       source = null;
     };
-  }, [session, currentEp, readOnly, taskCenterOpen]);
+  }, [session, currentEp, readOnly, taskCenterOpen, updateMediaNode]);
 
   useEffect(() => {
     let lastRefreshAt = 0;
@@ -12635,7 +12732,20 @@ function CanvasViewInner({
   const deleteNodesByIds = useCallback((ids: string[]) => {
     const noteIds = ids.filter((id) => id.startsWith(NOTE_PREFIX)).map((id) => id.slice(NOTE_PREFIX.length));
     const mediaIds = ids.filter((id) => id.startsWith(MEDIA_PREFIX)).map((id) => id.slice(MEDIA_PREFIX.length));
-    const total = noteIds.length + mediaIds.length;
+    const blockedMedia = new Set(mediaNodesRef.current
+      .filter((node) => mediaIds.includes(node.id))
+      .filter((node) => mediaGenerationVisualState({
+        status: node.status,
+        mediaUrl: node.mediaUrl || '',
+        generationBusy: node.status === 'generating',
+        finalizePending: node.finalizePending,
+      }).busy)
+      .map((node) => node.id));
+    const deletableMediaIds = mediaIds.filter((id) => !blockedMedia.has(id));
+    if (blockedMedia.size > 0) {
+      setToast('生成中的节点不能删除；请等待完成或先取消任务');
+    }
+    const total = noteIds.length + deletableMediaIds.length;
     if (total === 0) return 0;
     pushHistory(userEdgesRef.current, notesRef.current);
     // Deleted media must be removable from the server but restorable locally by
@@ -12650,8 +12760,8 @@ function CanvasViewInner({
         return next;
       });
     }
-    if (mediaIds.length > 0) {
-      const drop = new Set(mediaIds);
+    if (deletableMediaIds.length > 0) {
+      const drop = new Set(deletableMediaIds);
       const droppedPairs: {src: string; tgt: string}[] = [];
       for (const other of mediaNodesRef.current) {
         if (drop.has(other.id)) continue;
@@ -12665,7 +12775,7 @@ function CanvasViewInner({
       setMediaNodes((prev) => {
         return prev.filter((n) => !drop.has(n.id));
       });
-      mediaIds.forEach((id) => {
+      deletableMediaIds.forEach((id) => {
         queueMediaDelete(id);
         const mediaId = MEDIA_PREFIX + id;
         setUserEdges((prev) => prev.filter((edge) => edge.source !== mediaId && edge.target !== mediaId));
@@ -14570,7 +14680,7 @@ function CanvasViewInner({
       if (key === 'delete' || key === 'backspace') {
         const sel = rf.getNodes().filter((node) => node.selected && (node.type === 'media' || node.type === 'note'));
         if (sel.length > 0) {
-          setDeleteTargets(sel.map((node) => ({id: node.id, type: node.type ?? 'media'})));
+          requestDeleteTargets(sel.map((node) => ({id: node.id, type: node.type ?? 'media'})));
           event.preventDefault();
         }
         return;
@@ -14961,7 +15071,9 @@ function CanvasViewInner({
               ...preserveSelectedMediaVersion(local, remote),
               x: local.x,
               y: local.y,
-              updatedAt: remote.updatedAt || local.updatedAt,
+              updatedAt: local._mediaVersionSelection
+                ? local.updatedAt
+                : (remote.updatedAt || local.updatedAt),
               positionUpdatedAt: local.positionUpdatedAt,
             };
           }));
@@ -17460,7 +17572,7 @@ function CanvasViewInner({
                 <button
                   type="button"
                   className="is-danger"
-                  onClick={() => setDeleteTargets(rf.getNodes().filter((n) => n.selected && (n.id.startsWith(MEDIA_PREFIX) || n.id.startsWith(NOTE_PREFIX))).map((n) => ({id: n.id, type: n.id.startsWith(NOTE_PREFIX) ? 'note' : 'media'})))}
+                  onClick={() => requestDeleteTargets(rf.getNodes().filter((n) => n.selected && (n.id.startsWith(MEDIA_PREFIX) || n.id.startsWith(NOTE_PREFIX))).map((n) => ({id: n.id, type: n.id.startsWith(NOTE_PREFIX) ? 'note' : 'media'})))}
                   title="删除选中的卡片（弹窗确认）"
                   aria-label="删除"
                 >
@@ -17919,7 +18031,7 @@ function CanvasViewInner({
                       </>
                     );
                   })()}
-                  <button type="button" onClick={() => { setDeleteTargets(contextMenu.selIds!.map((id) => ({id, type: id.startsWith(NOTE_PREFIX) ? 'note' : 'media'}))); setContextMenu(null); }}><Trash2 size={13} strokeWidth={1.9} aria-hidden="true" />删除…（{contextMenu.selIds.length} 项）</button>
+                  <button type="button" onClick={() => { requestDeleteTargets(contextMenu.selIds!.map((id) => ({id, type: id.startsWith(NOTE_PREFIX) ? 'note' : 'media'}))); setContextMenu(null); }}><Trash2 size={13} strokeWidth={1.9} aria-hidden="true" />删除…（{contextMenu.selIds.length} 项）</button>
                   <button type="button" onClick={() => { const n = cutSelectedNodes(); if (n > 0) setToast(`已剪切 ${n} 个节点，Ctrl+V 粘贴`); setContextMenu(null); }}><Scissors size={13} strokeWidth={1.9} aria-hidden="true" />剪切（Ctrl+X）</button>
                   <button type="button" onClick={() => { copySelectionFromMenu(); setContextMenu(null); }}><Copy size={13} strokeWidth={1.9} aria-hidden="true" />复制（Ctrl+C）</button>
                   <button type="button" onClick={() => { pasteNodesFromMenu(); setContextMenu(null); }}><ClipboardList size={13} strokeWidth={1.9} aria-hidden="true" />粘贴（Ctrl+V）</button>
@@ -17981,7 +18093,7 @@ function CanvasViewInner({
                     <button type="button" onClick={() => { pasteNodesFromMenu(); setContextMenu(null); }}><ClipboardList size={13} strokeWidth={1.9} aria-hidden="true" />粘贴（Ctrl+V）</button>
                     <button type="button" onClick={() => { setNodeZOrder([contextMenu!.nodeId!], 'front'); setContextMenu(null); }}><ArrowUpToLine size={13} strokeWidth={1.9} aria-hidden="true" />置于顶层</button>
                     <button type="button" onClick={() => { setNodeZOrder([contextMenu!.nodeId!], 'back'); setContextMenu(null); }}><ArrowDownToLine size={13} strokeWidth={1.9} aria-hidden="true" />置于底层</button>
-                    <button type="button" onClick={() => { setDeleteTargets([{id: contextMenu!.nodeId!, type: 'media'}]); setContextMenu(null); }}><Trash2 size={13} strokeWidth={1.9} aria-hidden="true" />删除…</button>
+                    <button type="button" onClick={() => { requestDeleteTargets([{id: contextMenu!.nodeId!, type: 'media'}]); setContextMenu(null); }}><Trash2 size={13} strokeWidth={1.9} aria-hidden="true" />删除…</button>
                   </>
                 );
               })()}

@@ -9550,6 +9550,13 @@ class Handler(BaseHTTPRequestHandler):
             proj = store.get_project(pid)
             if not proj:
                 return self._send(404, {"error": "项目不存在"})
+            active_task = store.get_active_generation_task_for_node(pid, nid)
+            if active_task:
+                return self._send(409, {
+                    "error": "节点仍有生成任务在运行，请完成或取消后再删除",
+                    "code": "NODE_GENERATION_ACTIVE",
+                    "taskId": active_task.get("id") or "",
+                })
             payload = proj["payload"]
             nodes = payload.get("nodes", [])
             deleted_node = next((n for n in nodes if n.get("id") == nid), None)
@@ -9620,6 +9627,17 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/projects/([^/]+)$", path)
         if m:
             deleted_id = unquote(m.group(1))
+            active_tasks = [
+                task
+                for task in store.list_generation_tasks(deleted_id, 300)
+                if task.get("status") in {"queued", "submitting", "running"}
+            ]
+            if active_tasks:
+                return self._send(409, {
+                    "error": "项目仍有生成任务在运行，请完成或取消后再删除",
+                    "code": "PROJECT_GENERATION_ACTIVE",
+                    "activeTasks": len(active_tasks),
+                })
             store.delete_project(deleted_id)
             store.record_audit_event(
                 "project.delete",

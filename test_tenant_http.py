@@ -954,6 +954,73 @@ class TenantHttpTests(unittest.TestCase):
         self.assertEqual(ep1_saved["metadata"]["prompt"], "EP001 原始")
         self.assertEqual(ep2_saved["metadata"]["prompt"], "EP002 已更新")
 
+    def test_delete_node_rejects_active_generation(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        _, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "生成中删除拦截测试"},
+        )
+        pid = json.loads(body)["id"]
+        node = {
+            "id": "generating-delete-node",
+            "type": "video",
+            "title": "生成中视频",
+            "metadata": {
+                "prompt": "生成中",
+                "status": "generating",
+                "episodeId": "EP001",
+            },
+        }
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes",
+            "alpha.example.com",
+            cookie,
+            {"nodes": [node], "episodeId": "EP001"},
+        )
+        self.assertEqual(status, 200)
+        with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+            task = server.store.create_generation_task(
+                pid,
+                node["id"],
+                title=node["title"],
+                kind="video",
+                episode_id="EP001",
+            )
+            server.store.update_generation_task(task["id"], status="running")
+        status, _, body = self.request(
+            "DELETE",
+            f"/api/projects/{pid}/nodes/{node['id']}",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 409, body.decode("utf-8"))
+        self.assertEqual(json.loads(body)["code"], "NODE_GENERATION_ACTIVE")
+        status, _, _ = self.request(
+            "DELETE",
+            f"/api/projects/{pid}",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 409)
+        with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+            server.store.update_generation_task(
+                task["id"],
+                status="failed",
+                phase="失败",
+                finished_at=server.store._now_iso(),
+            )
+
     def test_manual_connections_persist_without_overwriting_automatic_edges(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)

@@ -1547,6 +1547,21 @@ export type WorkspaceProjectMeta = {
   episodeViewports: Record<string, unknown>;
 };
 
+export type WorkspaceFacts = {
+  canvas: Canvas | {empty: true};
+  notes: CanvasNote[];
+  mediaNodes: CanvasMediaNode[];
+  episodeViewports: Record<string, unknown>;
+  activeEpisodeId: string | null;
+  connections: Array<{
+    id?: string;
+    fromNodeId: string;
+    toNodeId: string;
+    source?: string;
+  }>;
+  tasks: GenerationTask[];
+};
+
 export type WorkspaceNodes = {
   episodeId: string;
   episode: Record<string, unknown>;
@@ -1651,6 +1666,18 @@ export async function getWorkspaceMediaNodes(
     sessionId,
     normalizedEpisode,
     pseudoProject,
+  );
+}
+
+export async function getWorkspaceFacts(
+  sessionId: string,
+  episodeId: string,
+  signal?: AbortSignal,
+): Promise<WorkspaceFacts> {
+  return getProjectionCanvasWorkspace(
+    sessionId,
+    episodeId,
+    signal,
   );
 }
 
@@ -2579,20 +2606,7 @@ async function getProjectionCanvasWorkspace(
   workspaceIndexPromise?: Promise<WorkspaceProjectMeta>,
   episodeKnownFromUrl = false,
   prevalidatedNodesPromise?: Promise<WorkspaceNodes | null> | null,
-): Promise<{
-  canvas: Canvas | {empty: true};
-  notes: CanvasNote[];
-  mediaNodes: CanvasMediaNode[];
-  episodeViewports: Record<string, unknown>;
-  activeEpisodeId: string | null;
-  connections: Array<{
-    id?: string;
-    fromNodeId: string;
-    toNodeId: string;
-    source?: string;
-  }>;
-  tasks: GenerationTask[];
-}> {
+): Promise<WorkspaceFacts> {
   const requestedEpisode = String(epId || '').trim().toUpperCase();
   const earlyNodesPromise = prevalidatedNodesPromise
     || (
