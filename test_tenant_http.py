@@ -817,7 +817,7 @@ class TenantHttpTests(unittest.TestCase):
             headers.get("Content-Disposition", ""),
         )
 
-    def test_node_save_rejects_wrong_episode(self):
+    def test_node_save_allows_shared_asset_edit_without_changing_ownership(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
         _, headers, _ = self.request(
@@ -850,27 +850,26 @@ class TenantHttpTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
 
-        status, _, error_body = self.request(
+        status, _, body = self.request(
             "PUT",
             f"/api/projects/{pid}/nodes/{node['id']}",
             "alpha.example.com",
             cookie,
             {
-                "metadata": {"prompt": "错误集"},
+                "metadata": {"prompt": "跨集共享更新"},
                 "episodeId": "EP002",
             },
         )
 
-        self.assertEqual(status, 409)
-        payload = json.loads(error_body)
-        self.assertEqual(payload["code"], "NODE_EPISODE_MISMATCH")
-        workspace = None
+        self.assertEqual(status, 200, body.decode("utf-8"))
         with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
             workspace = server.store.get_project_workspace_nodes(pid, "EP001")
-        self.assertIn(
-            node["id"],
-            {item["id"] for item in workspace["nodes"]},
+        saved = next(
+            item for item in workspace["nodes"]
+            if item["id"] == node["id"]
         )
+        self.assertEqual(saved["metadata"]["prompt"], "跨集共享更新")
+        self.assertEqual(saved["metadata"]["episodeId"], "EP001")
 
     def test_bulk_node_save_ignores_nodes_owned_by_another_episode(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")

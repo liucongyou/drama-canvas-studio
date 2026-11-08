@@ -9391,17 +9391,6 @@ class Handler(BaseHTTPRequestHandler):
             or (node.get("metadata") or {}).get("episodeId")
             or ""
         ).strip().upper()
-        if (
-            requested_episode
-            and node_episode
-            and requested_episode != node_episode
-        ):
-            return self._send(409, {
-                "error": (
-                    f"节点属于 {node_episode}，不能在 {requested_episode} 保存"
-                ),
-                "code": "NODE_EPISODE_MISMATCH",
-            })
         active_task_nodes = {
             task.get("node_id")
             for task in store.list_generation_tasks(pid, 300)
@@ -9418,7 +9407,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             update_result = store.patch_project_node_atomic(
                 pid,
-                requested_episode or node_episode,
+                node_episode or requested_episode,
                 nid,
                 {
                     "_baseUpdatedAt": body.get("baseUpdatedAt"),

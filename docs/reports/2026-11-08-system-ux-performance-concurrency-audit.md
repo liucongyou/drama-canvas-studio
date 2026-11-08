@@ -1,0 +1,553 @@
+# 戏剧画布工作台 · 体验 / 性能 / 并发 / 流程审计报告
+
+- 审计日期：2026-11-08
+- 审计对象：`drama-canvas-studio`（前端 `web-vimax`，后端 `server.py` / `canvas_store.py` / `media_storage.py`）
+- 审计方式：全量代码走查 + 线上生产库只读统计 + 本地 API 基准 + 版本/任务数据抽样 + 现有测试核对
+- 关联记录：`docs/reports/2026-11-02-system-optimization-audit.md`（结构与磁盘类问题，本次只引用不复述）
+
+> 一句话结论：**核心链路（生成、保存、幂等、队列、版本）比多数同类画布产品扎实，但系统正在被"全量项目 JSON + 事件全量重读"拖慢；同时跨集资产所有权、冲突保存、超时任务三处存在静默数据丢失/卡死的真实风险。**
+
+---
+
+## 0. 结论摘要
+
+### 0.1 本次最需要先处理的 5 件事
+
+| 编号 | 问题 | 级别 | 后果 |
+|---|---|---|---|
+| AUD-01 | 跨集引用资产的编辑、版本切换被后端静默跳过 | **P0** | 用户以为改了，刷新后还原；多集项目很容易踩中 |
+| AUD-02 | 生成中仍可删除节点/项目 | **P0** | 任务继续跑、继续计费，结果无法写回该节点 |
+| AUD-03 | 保存冲突时前端直接回滚本地编辑 | **P0** | 另一个标签页一保存，本页刚写的提示词消失 |
+| AUD-04 | 每个 SSE 事件都触发一次全量项目重读 | **P1** | 批量生成时请求/解析量成倍放大，画布卡顿 |
+| AUD-05 | 生成轮询仍读全量项目 JSON（最大 1.8MB） | **P1** | 4 秒一次全量解析，多集项目浪费约 6 倍数据 |
+
+### 0.2 分级统计
+
+| 级别 | 数量 | 说明 |
+|---|---|---|
+| P0 | 3 | 静默数据丢失 / 已付费结果丢失 |
+| P1 | 7 | 明显性能放大、任务卡死、版本封面错误等 |
+| P2 | 10 | 体验、扩展性、运维与可维护性问题 |
+| P3 | 9 | 加固项与长期结构债 |
+
+> 说明：P0 不是"系统不可用"，而是"用户数据/付费结果可能丢，且用户当时看不出来"。
+
+---
+
+## 1. 实测基线
+
+### 1.1 生产数据（owner 租户，只读统计）
+
+| 指标 | 数值 |
+|---|---|
+| 项目数 | 8 |
+| 节点数 | 369（19 个集） |
+| 数据库体积 | 140.2 MB |
+| 快照 | 240 条 / 81.6 MB（占数据库 58%） |
+| 上传目录 | 778 MB（owner 722 MB + 其他租户 56 MB） |
+| 生成任务 | 435 条：成功 299 / 失败 97 / 中断 39 |
+| 任务失败率 | **22.3%** |
+| 最大项目 | 158 节点 / 1.82 MB payload / revision 13,275 |
+| 单集节点字节 | 约 179–304 KB（同一项目全量 1.77 MB） |
+
+### 1.2 任务耗时（成功任务）
+
+| 类型 | 样本 | P50 | P90 | 最大值 |
+|---|---|---|---|---|
+| 图片 | 118 | 0.8 分钟 | 7.9 分钟 | 505.7 分钟 |
+| 视频 | 146 | 2.5 分钟 | 5.0 分钟 | 9,114 分钟（约 6.3 天） |
+| 音频 | 35 | 0.3 分钟 | 0.3 分钟 | 0.8 分钟 |
+
+长尾任务不是"供应商慢"这么简单：最长记录是任务在较晚一次对账时才被写成成功，期间卡片可能长期停在生成中/待确认。
+
+### 1.3 接口与前端体积（本地 8890 实测）
+
+| 请求 | 响应 | 耗时 |
+|---|---|---|
+| `/api/projects`（411 个项目） | 136 KB | 34 ms |
+| 全量项目 `/api/projects/{id}` | 796 KB | 53 ms |
+| `/workspace-index` | 18 KB | 26 ms |
+| `/workspace-nodes?episodeId=EP001` | 134 KB | 106 ms |
+| 首屏 JS（gzip） | 约 377 KB | — |
+| 首屏 CSS（gzip） | 约 100 KB | — |
+
+全量项目 gzip 后约 103 KB（796 KB → 103 KB），但 **JSON 解析仍是 796 KB / 线上 1.8 MB 的完整对象**。
+
+### 1.4 代码体量
+
+- `CanvasView.tsx`：18,164 行，单组件约 129 个 `useState`、97 个 `useEffect`、153 个 `useCallback`。
+- 前端 CSS 产物约 600 KB；`styles.css` + `ui-refinements.css` 合计约 780 KB 源文件。
+- 前端 60 个测试文件、后端 44 个测试文件；其中大量是"读源码字符串"的契约测试（例如 `mediaVersionControls.test.ts` 只断言 JSX 字符串）。
+
+---
+
+## 2. P0：静默丢失类问题（建议 1–2 天内修）
+
+### AUD-01 跨集引用资产：编辑与版本切换被后端静默跳过（P0）
+
+**现象**
+
+在 EP007 里能看到 EP001 的角色/道具资产（通过连线/引用进入当前画布）。用户改它的提示词、切它的历史版本，界面会立即变化，但保存接口不会落库，刷新后恢复原样；没有任何报错。
+
+**证据**
+
+- 服务端批量保存：节点存在但不在当前集的所有权集合时直接 `continue`，不报错、不返回冲突：
+  - [server.py](../../server.py#L9199)（冲突检查跳过）
+  - [server.py](../../server.py#L9228)（写入跳过）
+- 所有权按 `canvas_projection_nodes.episode_id` 单值判断：[canvas_store.py](../../canvas_store.py#L5716)
+- 前端在组装媒体节点时计算了 `ownedIds`，但**从未使用**：[api.ts](../../web-vimax/src/api.ts#L1998)
+- 线上项目 `sj80hnySZfp26Jh1mY2wvC` 的 EP007 中有 **12 个**来自 EP001/EP002 的引用资产（如 `node-xhp8oems0bm8-1156db3c`，EP001 所有，在 EP007 被引用 8 次）。
+
+**影响**
+
+- 提示词、参数、版本选择、媒体替换都可能"看起来成功、实际没保存"。
+- 这类资产通常是角色/场景母版，改错会污染后续生成；用户很难定位。
+- 与本次已修复的"1/3 版本切换"叠加时，会表现成"版本切了又回去"。
+
+**建议**
+
+二选一，必须显式：
+
+1. **推荐：允许项目级资产从任意集编辑**。服务端对"节点存在但不在本集"的情况不要静默跳过，改为按节点所有权落库（因为资产本来就是项目级共享）。
+2. 若不希望跨集编辑：前端给这类卡片加"其他集资产（只读）"状态，禁用编辑/版本/删除，并给出"定位到所属集"入口。
+
+同时补一条回归测试：EP-A 的资产从 EP-B 打开，修改后刷新必须保留。
+
+---
+
+### AUD-02 生成中仍可删除节点/项目，付费结果可能丢失（P0）
+
+**现象**
+
+卡片处于"生成中/结果待确认"时，删除按钮和 `Del` 仍然可用。删除后服务端会移除节点，但后台生成线程仍在跑；供应商完成后需要把结果写回节点，此时节点已不存在。
+
+**证据**
+
+- 删除入口没有检查 `busy` / 活跃任务：[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L11359)
+- 服务端节点删除只清理 payload/连线/引用，不检查该节点是否有活跃任务：[server.py](../../server.py#L9558)
+- 生成结果写回以节点存在为前提（`node_not_found` 分支），节点被删后无法落盘。
+- 线上有 14 条"结果待确认"任务，说明该状态真实存在。
+
+**影响**
+
+- 用户已经付费的供应商结果无法写回卡片（任务行可能保留本地结果，但画布不可见，需人工恢复）。
+- 画布删除 → 撤销虽然能恢复节点，但无法恢复已经结束的供应商结果。
+
+**建议**
+
+- 前端：有活跃生成任务的节点禁止删除（或弹窗明确"任务仍在跑，删除将丢弃结果"并二次确认）。
+- 服务端：`DELETE /nodes/{id}` 检查活跃任务；若有则返回 409，或先取消任务再删。
+- 项目删除同理：有运行中任务时至少提示"仍在生成，删除会丢失结果"。
+
+---
+
+### AUD-03 保存冲突时前端直接覆盖本地编辑（P0）
+
+**现象**
+
+A 标签页改提示词，B 标签页也改同一节点。A 的保存先到，B 的保存返回 409；B 的前端收到 409 后重新拉取服务端节点并**整块替换本地节点**，只弹一条 toast。B 刚写的文字没有进入任何草稿。
+
+**证据**
+
+- 服务端冲突返回 409：`NODE_EDIT_CONFLICT`，[server.py](../../server.py#L9217)
+- 前端冲突分支：重新拉取远程节点并 `setMediaNodes` 替换，[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L10696)
+- toast 只提示"另一个标签页已更新此节点…请刷新后再编辑"，没有保留本地内容。
+
+**影响**
+
+- 多标签页/多人同时编辑时，较晚保存的一方静默丢字。
+- 提示词通常较长，用户很难凭记忆恢复。
+
+**建议**
+
+- 冲突时不要立即替换本地节点；进入"冲突态"：展示服务端版本/本地版本差异，提供"保留我的 / 使用对方的 / 合并"。
+- 至少保留本地草稿在输入框中并给出"未保存"标记，用户可复制后再刷新。
+- 版本切换/参数修改同样适用（目前冲突后也会被覆盖）。
+
+---
+
+## 3. P1：性能、任务闭环与版本正确性
+
+### AUD-04 每个 SSE 事件都触发一次全量项目重读（P1）
+
+**现象**
+
+SSE 收到 `media.progress`（生成进度）或 `media` 事件后，前端只做 120 ms 去抖，然后调用 `getCanvasMediaNodes`；该函数实际拉取**整个项目 JSON**（线上最大 1.82 MB），再在客户端过滤当前集。
+
+**证据**
+
+- 事件回调不区分事件类型，所有事件都走 `refreshAfterTerminalEvent()`：[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L11616)
+- 120 ms 后调用 `refreshCurrentEpisodeFacts`：[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L11602)
+- 内部 `getCanvasMediaNodes(session, currentEp)`：[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L11554)
+- `getCanvasMediaNodes` 内部 `getProject()` 取全量：[api.ts](../../web-vimax/src/api.ts#L1954)
+
+**规模证据**
+
+- 主项目 6 天产生 1,916 条事件（`media` 1,465 + `media.progress` 565）。
+- 按每条事件一次 1.82 MB 未压缩 JSON 估计，约 **3.4 GB** 解析量（gzip 后约 0.4–0.6 GB）。
+- 批量生成 10 个任务时，进度事件约每 3 秒/任务，去抖后仍可能每 300–1000 ms 触发一次全量读取。
+
+**建议**
+
+- `media.progress` 不触发工作区重读：进度已经在事件 payload 里，直接更新对应节点即可；或最多按 1–2 秒合并一次。
+- 只对终态事件（done/failed/interrupted）做一次轻量对账。
+- 复用现有 `workspaceRefreshInFlightRef` 做单飞（in-flight）保护，避免并发重复请求。
+- 把对账接口换成 `/workspace-nodes?episodeId=...`（约 300 KB，而不是 1.8 MB）。
+
+---
+
+### AUD-05 生成轮询仍读全量项目 JSON（P1）
+
+**现象**
+
+生成期间的兜底轮询 `syncTerminalState` 每 4 秒（SSE 在线）或 1.5 秒（SSE 断开）调用 `getCanvasMediaNodes`，即每次拉全量项目。节点完成后还会再调一次 `getCanvas`，又是全量项目。
+
+**证据**
+
+- 轮询间隔与调用：[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L11442)、[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L11459)
+- 完成后刷新画布：`getCanvas(session, currentEp)`，[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L11508)
+- `getCanvas` 无快照时也走 `getProject()`：[api.ts](../../web-vimax/src/api.ts#L1686)
+
+**数据对比**
+
+- 项目全量：1.77 MB（节点 1.69 MB + 连线 83 KB）。
+- 单集节点：约 179–304 KB；当前项目 8 集，轮询只关心 1 集。
+
+**影响**
+
+- 生成期间主线程解析 1.8 MB JSON + 重建画布，配合 AUD-04 会明显掉帧。
+- 移动端/弱网更明显。
+
+**建议**
+
+- 轮询只取当前集：`/workspace-nodes?episodeId=...`；把任务状态合并到同一响应。
+- 完成时不要重复拉全量：用同一份 workspace-nodes 更新节点，必要时再按需拉 canvas 元数据。
+- 为 GET 加 ETag/If-None-Match 或短 TTL 缓存，未变化直接 304。
+
+---
+
+### AUD-06 图片没有缩略图，2K 原图直接进卡片（P1）
+
+**现象**
+
+卡片（约 280×300）直接加载生成原图。线上图片平均 1.32 MB、最大 4.65 MB；2048×1152 图片解码后约 9.4 MB 内存。默认 fitView 会把整集卡片都放进视口，懒加载失效，首屏一次加载整集图片。
+
+**证据**
+
+- `LazyCanvasImage` 的 `src` 就是 `node.mediaUrl`：[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L3385)
+- 只有视频有 `thumbUrl` 封面；图片没有缩略图链路（`media_storage.py` 只处理视频封面）。
+- 线上 80 张图片：平均 1.32 MB / 中位 0.48 MB / 最大 4.65 MB。
+
+**估算**
+
+- 单集 20 张图 ≈ 26 MB 原始下载；解码内存 ≈ 190 MB（按 9.4 MB/张）。
+- 4K 图或大批量 fitView 时更高。
+
+**建议**
+
+- 服务端为图片生成 480/960 px WebP 缩略图（首次生成或 TOS 转存时顺带做），卡片用 `srcset`，灯箱/下载用原图。
+- 或在 `/uploads` 代理层按宽度参数实时缩略（带缓存）。
+- 同时给 `<img>` 设置 `decoding="async"`（已有）和合适的 `sizes`。
+
+---
+
+### AUD-07 "结果待确认"任务无限挂起，缺少闭环（P1）
+
+**现象**
+
+供应商请求超时/断连后任务被标记 `interrupted` + `结果待确认`。后台过期扫描只处理 `queued/submitting/running`，不处理 `interrupted`；也没有"标记为失败/放弃"的接口。线上有 14 条该状态任务，其中一条节点从 2026-11-03 起一直显示"结果待确认"。
+
+**证据**
+
+- 过期扫描只查三种活跃状态：[canvas_store.py](../../canvas_store.py#L5362)
+- "不确定任务"守卫：有 `provider_task_id` 且无本地结果时，阻止重新提交：[server.py](../../server.py#L3152)
+- 只有取消排队任务的接口（`status != queued` 直接 409）：[server.py](../../server.py#L8796)
+- 线上：节点 `node-2r0waa90j7zt-ceece3db`，`status=error`、`phase=结果待确认`、`providerTaskStatus=uncertain`，自 11-03 未闭环。
+
+**影响**
+
+- 卡片可能永远显示"结果待确认"，用户不知道还能不能重新生成。
+- 若该任务带供应商任务号，守卫会一直阻止重新生成，形成死锁（需人工改库）。
+- 任务中心里 39 条 interrupted 长期占位。
+
+**建议**
+
+- 增加"结果待确认"任务的 TTL（例如 2 小时）与人工闭环接口：`POST /tasks/{id}/resolve`（mark failed / adopt result）。
+- UI 在卡片/任务中心给"确认失败并允许重新生成"按钮。
+- 对无供应商任务号的 uncertain 任务直接自动转 failed，不必无限等待。
+
+---
+
+### AUD-08 视频切换历史版本后封面仍是最新版（P1）
+
+**现象**
+
+视频节点的 `thumbUrl` 是节点级字段，不是版本级。切到旧版本时 `selectMediaVersion` 只清空内存里的 `videoCoverUrl`，紧接着 effect 又从 `node.thumbUrl` 把旧封面设回来；用户看到旧版本的视频内容配着最新版的封面，直到点击播放。
+
+**证据**
+
+- 切换版本不更新 `thumbUrl`：[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L2957)
+- effect 在 `mediaUrl` 变化时仍优先使用持久化 `thumbUrl`：[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L2604)
+- 线上 36 个视频节点有多个版本，但只有一个 `thumbUrl`。
+
+**建议**
+
+- 版本对象增加 `thumbUrl`（生成时逐版本保存）；或切换时若版本不是最新版，清空 `thumbUrl` 并让视频元素重新抽帧。
+- 抽帧时用 `preload="metadata"` + 跳转，而不是 `preload="auto"` 全量下载。
+
+---
+
+### AUD-09 保存失败不会自动重试，"断网自动同步"文案不成立（P1）
+
+**现象**
+
+保存失败（非冲突）时，快照被放回 `pendingMediaPatchesRef`，但没有定时器重试；只有下一次编辑或页面隐藏/关闭时才 flush。网络恢复事件只刷新工作区事实，不 flush 待保存补丁。顶部却提示"这期间的操作不会丢失，恢复后会自动同步"。
+
+**证据**
+
+- 失败后重新入队但不调度：[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L10697)
+- 只有 `visibilitychange(hidden)` / `pagehide` 才 flush：[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L10929)
+- `online` 只调用 `refreshWorkspaceFacts`：[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L11721)
+- 文案承诺自动同步：[networkStatus.ts](../../web-vimax/src/networkStatus.ts#L23)
+
+**影响**
+
+- 弱网/代理抖动后，用户看到"保存失败"但继续编辑；若不再次编辑就关闭标签页，可能丢失最后一次修改。
+- 用户会相信"自动同步"而不再手动确认。
+
+**建议**
+
+- 失败补丁进入指数退避重试队列（1s/2s/5s/15s，上限 1 分钟），`online` 与 `visibilitychange(visible)` 立即触发一次。
+- 在保存状态里显示"待重试（第 N 次）"，并提供"立即重试"。
+- 修正文案，或真正实现自动同步。
+
+---
+
+### AUD-10 保存连线是整包重写；视口每帧 setState；输入每个键重建全画布（P1/P2）
+
+这三处是同一类"局部操作触发全局重算"：
+
+1. **连线保存整包写**：`PUT /connections` 读取全量项目、修改 connections 后 `store.update_project` 整包序列化（1.8 MB），[server.py](../../server.py#L8942)。每次加/删/撤销连线都写全量。
+2. **视口每帧 setState**：React Flow 的 `onViewportChange` 每帧 `setCanvasViewport(next)`，[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L17235)。CanvasView 有 129 个 state、18k 行，平移/缩放时整棵树参与协调；`updateLargeCanvasViewport` 对 ≤400 节点是 no-op，但状态更新照常发生。
+3. **提示词每个键重建 flowNodes**：输入框 `onChange` 立即 `onChange(node.id, {prompt})`，[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L5213) → `setMediaNodes` → `flowNodes` useMemo 重建（[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L15396)）→ 所有节点的 memo 比较 + React Flow 节点重建。158 节点时每次按键约 O(n) 分配。
+
+**建议**
+
+- 连线改为只写 `canvas_projection_edges` 的增量（像节点位置/节点字段一样），不要整包。
+- 视口改为非受控 `defaultViewport` + 手势结束时 `setViewport`，或至少 rAF 节流到 100–150 ms 一次。
+- 提示词用本地 draft，失焦/600 ms 防抖后再写全局 state；输入期间只更新弹窗。
+- 对 400+ 节点和 100+ 节点分别做一次基准，设定帧率/长任务预算。
+
+---
+
+## 4. P2/P3：体验、扩展性、运维与结构债
+
+| 编号 | 问题 | 级别 | 证据 / 影响 | 建议 |
+|---|---|---|---|---|
+| AUD-11 | 项目切换器无搜索/分页/虚拟化，411 个项目全量渲染 | P2 | [main.tsx](../../web-vimax/src/main.tsx#L799)；本地 411 个项目、136 KB 列表 | 加搜索、最近项目、分页/虚拟列表 |
+| AUD-12 | 批量生成串行提交，无进度/取消/防重复点击 | P2 | [CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L8320)；158 项时确认后长时间无反馈 | 并发上限 + 进度条 + 取消 + 提交锁 |
+| AUD-13 | 每个 SSE 连接占一个后端线程，无连接上限 | P2 | `ThreadingHTTPServer` + SSE 长循环：[server.py](../../server.py#L11123)、[server.py](../../server.py#L6935) | 改用事件驱动/异步网关，或限制单租户连接数 |
+| AUD-14 | 项目快照 30 份/项目、无压缩/差分，占库 58% | P2 | [canvas_store.py](../../canvas_store.py#L6494)、[canvas_store.py](../../canvas_store.py#L6618)；线上 81.6 MB | 压缩/差分快照、按字节/年龄淘汰 |
+| AUD-15 | 删除项目/节点不清理 uploads 与 TOS 对象 | P2 | [canvas_store.py](../../canvas_store.py#L3382)；线上 uploads 778 MB | 引用计数 GC + TOS 生命周期规则 |
+| AUD-16 | 失败任务无行动入口（充值/换模型/重试） | P2 | 97 条失败；20 条 AccountOverdue；错误映射只有文字：[api.ts](../../web-vimax/src/api.ts#L654) | 错误卡片带"去充值/换模型/重新生成"按钮 |
+| AUD-17 | 版本箭头 15×16 px、菜单 20 px，触控目标过小 | P2 | [ui-refinements.css](../../web-vimax/src/ui-refinements.css#L3128) | 触控/窄屏下 ≥32–44 px 命中区 |
+| AUD-18 | 无客户端错误遥测，线上 Bug 只能靠用户截图 | P2 | [ErrorBoundary.tsx](../../web-vimax/src/ErrorBoundary.tsx#L87) 仅 console | 增加前端错误上报（带 projectId/nodeId/版本） |
+| AUD-19 | 未分配集的节点不可见、不可管理 | P2 | 线上 16 个 `__UNASSIGNED__` 节点；当前集过滤后不出现：[api.ts](../../web-vimax/src/api.ts#L1974) | 项目级"未分配资产"入口，或自动归集到默认集 |
+| AUD-29 | 历史版本只有 `‹ 1/3 ›`，无缩略图/时间/差异，只能盲点 | P2 | 版本导航 JSX：[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L3856)；弹窗内没有版本列表 | 版本选择改为带缩略图/生成时间/尺寸的弹出列表，标出当前版 |
+| AUD-20 | 事件表按全局 ID 跨度保留，不是按项目条数 | P3 | [canvas_store.py](../../canvas_store.py#L3480)；多项目并发时可能误删某项目的补发事件 | 按项目 `ORDER BY id DESC LIMIT 2000` 保留 |
+| AUD-21 | 队列条件锁内做数据库查询/更新；无 FIFO 公平性 | P3 | [server.py](../../server.py#L1077) | 锁外取任务状态、锁内只做计数；增加公平队列 |
+| AUD-22 | 重复提交生成 23 条"重复提交已忽略"任务行 | P3 | 线上 23 条；单节点最多 10 条 | 重复提交直接返回现有任务，不落新行 |
+| AUD-23 | 无 CSP / X-Frame-Options / X-Content-Type-Options | P3 | Nginx vhost 仅有 Cache-Control | 加安全响应头与 CSP（先 report-only） |
+| AUD-24 | 批量生成使用 `crypto.randomUUID()` 无降级 | P3 | [CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L8321)；非安全上下文会抛错 | 复用 `newOperationId` 的 fallback |
+| AUD-25 | 项目切换只 replaceState，浏览器后退无法回上一项目；无节点级深链 | P3 | [main.tsx](../../web-vimax/src/main.tsx#L250) | 使用 pushState + popstate，支持 `?node=` |
+| AUD-26 | Python HTTP/1.0，无 keep-alive；Nginx 未配 upstream keepalive | P3 | `BaseHTTPRequestHandler` 默认；vhost 只有 `proxy_http_version 1.1` | 提升到 HTTP/1.1 或启用 upstream keepalive |
+| AUD-27 | CanvasView 单体 + 停用代码 + CSS 覆盖层 | P3 | 18k 行、129 state；`if (true) return` 停用段卡/资产组（[CanvasView.tsx](../../web-vimax/src/CanvasView.tsx#L15443)） | 按画布/弹窗/生成/版本拆模块，清理死代码与重复 CSS |
+| AUD-28 | 大量源码字符串契约测试，缺行为型 E2E | P3 | 60 个前端测试；`mediaVersionControls.test.ts` 只匹配源码字符串 | 增加 Playwright 关键链路：加载→编辑→生成→版本→刷新 |
+
+---
+
+## 5. 操作流程走查（按用户旅程）
+
+| 步骤 | 当前体验 | 主要问题 | 关联 |
+|---|---|---|---|
+| 打开项目 | 首屏用 workspace-index + workspace-nodes，速度尚可；fitView 后整集图片一起加载 | 首屏图片流量/解码内存大 | AUD-06 |
+| 切换项目 | 项目下拉全量渲染，无搜索 | 项目多时难找；列表越长越慢 | AUD-11 |
+| 切换集 | 会清空画布重新加载，有 loading/慢加载提示 | 无每集缓存，来回切重复拉取 | AUD-05 |
+| 编辑提示词 | 输入即时进全局 state，600 ms 后保存 | 每键重建画布；保存失败不自动重试 | AUD-09/AUD-10 |
+| 编辑跨集资产 | 看起来可编辑，实际保存被丢弃 | 静默数据丢失 | AUD-01 |
+| 保存冲突 | 只弹 toast，本地内容被服务端覆盖 | 多标签页丢字 | AUD-03 |
+| 单张生成 | 有模型/费用确认；排队和进度可见 | 失败后缺行动入口；uncertain 任务无闭环 | AUD-07/AUD-16 |
+| 批量生成 | 有费用预估和依赖检查；串行提交 | 无进度/取消，双击可重复提交 | AUD-12 |
+| 生成中删除 | 允许删除，任务继续跑 | 付费结果可能丢失 | AUD-02 |
+| 版本切换 | 图片重复 URL 已修复；视频封面仍错；只有 `‹ 1/3 ›` 箭头 | 旧版视频配新版封面；多版本只能盲点 | AUD-08/AUD-29 |
+| 下载/导出 | 版本级下载、批量下载、文件名精简 | 基本可用 | — |
+| 撤销/重做 | 节点删除、连线、备注、位置都有快照 | 版本切换本身不可撤销 | — |
+| 网络异常 | 顶部提示"自动同步" | 实际不会自动 flush | AUD-09 |
+| 只读分享 | 隐藏写操作，独立事件流 | 版本历史入口也隐藏（只读模式看不到历史） | — |
+
+---
+
+## 6. 并发与一致性专项
+
+### 6.1 做得好的部分
+
+- 节点保存使用 `baseUpdatedAt` + revision 乐观锁，冲突显式返回 409。
+- 生成提交有 `clientOperationId` 幂等键，丢失响应后重试不会重复扣费。
+- 供应商不确定结果有"不自动重提"守卫。
+- 生成队列有全局/租户/供应商/模型四层并发限制；租约 + 心跳防止任务被两个 worker 同时跑。
+- 广播通道只通知"节点变了"，不直接传状态，避免双状态机。
+- 页面隐藏/关闭时用 keepalive 补保存。
+
+### 6.2 仍需处理的并发风险
+
+1. **SSE 唤醒风暴**：progress 事件 × 全量重读（AUD-04），批量生成时最容易复现。
+2. **SSE 线程模型**：每个打开的画布标签页占一个后端线程，租户 32 并发限制只约束生成，不约束 SSE（AUD-13）。
+3. **冲突覆盖**：409 后本地编辑直接丢（AUD-03）。
+4. **跨集写入边界**：所有权按单集判断，但资产是项目级共享（AUD-01）。
+5. **任务生命周期**：interrupted/uncertain 不进入过期扫描（AUD-07），重复提交产生垃圾任务行（AUD-22）。
+6. **事件补发**：全局 ID 跨度保留可能让某个项目的事件被提前删掉（AUD-20）；好在轮询能兜底。
+7. **队列公平性**：condition 广播无 FIFO，长时间排队任务可能被后来者插队（AUD-21）。
+
+---
+
+## 7. 性能专项测算
+
+### 7.1 请求放大
+
+| 场景 | 单次数据 | 频率 | 估算 |
+|---|---|---|---|
+| 生成中轮询（SSE 在线） | 1.82 MB 全量 | 4 s | 27 MB/min 未压缩 JSON |
+| 生成中轮询（SSE 断开） | 1.82 MB | 1.5 s | 73 MB/min |
+| SSE 事件唤醒 | 1.82 MB | 每个事件（120 ms 去抖） | 主项目 6 天 1,916 次 ≈ 3.4 GB |
+| 完成时额外刷新 | 1.82 MB | 每次完成 | 与轮询叠加 |
+| 连线保存 | 1.82 MB 写入 | 每次加/删线 | DB/快照写放大 |
+
+> gzip 后网络字节约降为 1/8–1/10，但浏览器仍要解析完整 JSON；服务端也要重建完整 payload。
+
+### 7.2 图片内存
+
+- 线上图片平均 1.32 MB、最大 4.65 MB；2048×1152 解码约 9.4 MB（按 4 字节/像素估算）。
+- 单集 20 张图 ≈ 26 MB 下载 + 约 190 MB 解码内存；fitView 会同时触发。
+- 目前没有图片缩略图，只有视频封面。
+
+### 7.3 前端主线程
+
+- 每个按键 → setMediaNodes → flowNodes 重建 → React Flow 节点重建。
+- 每帧 viewport → setCanvasViewport → 18k 行组件 re-render。
+- 每 120 ms 事件刷新 → setMediaNodes → 同上。
+
+### 7.4 建议目标
+
+| 指标 | 目标 |
+|---|---|
+| 单次轮询 payload | ≤ 350 KB（单集） |
+| SSE 触发重读 | 终态才触发；合并 ≥ 500 ms |
+| 首屏图片 | 缩略图 ≤ 100 KB/张 |
+| 50 卡画布解码内存 | < 500 MB |
+| 100 节点平移/缩放 | ≥ 50 FPS |
+| 提示词输入 | 不触发全画布重建 |
+
+---
+
+## 8. 可靠性与运维
+
+| 项 | 现状 | 风险 | 建议 |
+|---|---|---|---|
+| 数据库 | 140 MB，WAL，投影表 + 快照 | 快照占 58%；长期增长 | 压缩/差分/按字节保留 |
+| 备份 | 目录内有手工 `.bak` | 目录内有手工 .bak，未见自动化备份/恢复演练配置 | 定时备份 + 校验 + 异机保存 |
+| 上传文件 | 778 MB，无 GC | 删除项目/节点后残留 | 引用计数 GC + TOS 生命周期 |
+| 生成任务 | 435 条，无归档 | 长期增长；重复行 | 归档/清理策略 |
+| 监控 | `/api/metrics` 有基础计数 | 无前端错误/慢请求上报 | 增加指标与告警（失败率、队列、SSE 连接数） |
+| 安全头 | 仅 Cache-Control | 缺 CSP/X-Frame | 加安全响应头 |
+| 静态资源 | 指纹文件名 + immutable | 手工原地替换会被缓存 | 只允许新文件名发布（本次热修已遵守） |
+
+---
+
+## 9. 建议的修复路线
+
+### Phase 1（1–2 天，先止血）
+
+1. AUD-01 跨集资产：只读标记或允许跨集写入（二选一，不能静默）。
+2. AUD-02 生成中删除：前后端双重拦截。
+3. AUD-03 冲突保存：保留本地草稿 + 差异/选择。
+4. AUD-04/05：progress 事件不再全量重读；轮询改 `workspace-nodes`；单飞去重。
+5. AUD-07：uncertain/interrupted 任务 TTL + 闭环接口。
+6. AUD-08：版本级视频封面或切版本时重新抽帧。
+
+### Phase 2（约 1 周）
+
+7. 图片缩略图与 `srcset`（AUD-06）。
+8. 保存失败自动重试 + 在线 flush（AUD-09）。
+9. 视口非受控/节流 + 提示词本地草稿（AUD-10）。
+10. 批量生成进度/取消/提交锁（AUD-12）。
+11. 项目搜索/分页（AUD-11）。
+12. 快照压缩/保留 + 上传 GC（AUD-14/15）。
+
+### Phase 3（2–4 周）
+
+13. SSE 连接模型与租户连接上限（AUD-13）。
+14. 客户端错误遥测 + 关键链路 Playwright E2E（AUD-18/28）。
+15. 安全头/CSP、HTTP keep-alive（AUD-23/26）。
+16. CanvasView 拆分与死代码/CSS 清理（AUD-27）。
+
+---
+
+## 10. 验收清单（修完后逐项打勾）
+
+- [ ] 跨集资产在 EP-B 修改后刷新仍保留（或明确只读）。
+- [ ] 生成中删除节点/项目被阻止或二次确认。
+- [ ] 两个标签页同时改同一节点：后保存方能看到差异并选择保留。
+- [ ] 批量生成 20 项期间，主线程不出现 >200 ms 长任务。
+- [ ] 生成中轮询响应 ≤ 350 KB（单集）。
+- [ ] SSE progress 事件不触发全量项目读取。
+- [ ] 图片卡片首屏加载 ≤ 100 KB/张，灯箱仍是原图。
+- [ ] 切视频旧版本后封面与内容一致。
+- [ ] 断网 30 秒再恢复，最后一条编辑在 10 秒内自动保存。
+- [ ] uncertain 任务 2 小时内自动转失败或可人工闭环。
+- [ ] 删除项目后 uploads/TOS 无孤儿文件。
+- [ ] 快照体积/数量有上限，DB 不再线性膨胀。
+- [ ] 项目切换器可搜索，500 个项目仍可用。
+- [ ] 线上前端错误可在后台按 projectId/nodeId 检索。
+
+---
+
+## 11. 本次审计的局限
+
+- 未在真实浏览器里做 100+ 节点、4K 图片、弱网/多标签页的压力回放（本环境 Chrome 无法启动），性能数字来自代码路径、生产数据与 API 基准推算；建议在下一轮用 Playwright + Performance 面板复核。
+- 生产库为只读抽样，未覆盖所有租户；失败率/长尾任务以 owner 租户为准。
+- 未做安全渗透测试；安全部分只覆盖响应头、缓存、上传与路径穿越的静态检查。
+
+---
+
+## 附录 A：关键证据索引
+
+| 主题 | 位置 |
+|---|---|
+| 跨集写入跳过 | `server.py:9199`、`server.py:9228` |
+| 所有权单集判断 | `canvas_store.py:5716` |
+| 未使用的 ownedIds | `web-vimax/src/api.ts:1998` |
+| SSE 全量重读 | `web-vimax/src/CanvasView.tsx:11553`、`:11616` |
+| 生成轮询 | `web-vimax/src/CanvasView.tsx:11442`、`:11459` |
+| 全量项目读取 | `web-vimax/src/api.ts:1954`、`:1686` |
+| 冲突覆盖 | `web-vimax/src/CanvasView.tsx:10696`、`server.py:9217` |
+| 生成中删除 | `web-vimax/src/CanvasView.tsx:11359`、`server.py:9558` |
+| 不确定任务 | `server.py:3152`、`canvas_store.py:5362`、`server.py:8796` |
+| 视频封面 | `web-vimax/src/CanvasView.tsx:2604`、`:2957` |
+| 图片无缩略图 | `web-vimax/src/CanvasView.tsx:3388` |
+| 视口每帧 | `web-vimax/src/CanvasView.tsx:17235` |
+| 提示词每键 | `web-vimax/src/CanvasView.tsx:5213` |
+| 连线整包写 | `server.py:8942` |
+| 快照保留 | `canvas_store.py:6494`、`:6618` |
+| 上传不清理 | `canvas_store.py:3382` |
+| 事件保留 | `canvas_store.py:3480` |
+| SSE 线程 | `server.py:11123`、`server.py:6935` |
+| 队列锁内 DB | `server.py:1077` |
+| 项目列表全量 | `web-vimax/src/main.tsx:799` |
+| 批量串行 | `web-vimax/src/CanvasView.tsx:8320` |
+| 触控尺寸 | `web-vimax/src/ui-refinements.css:3128` |
+| 无遥测 | `web-vimax/src/ErrorBoundary.tsx:87` |
+
+## 附录 B：本轮已修复（不计入待办）
+
+- **版本历史切换卡在 1/3（已完成代码修复）**：报告初稿把 `resolveMediaVersionIndex` 写成“已部署”，但提交历史和线上入口都不存在。本次把重复 URL 消歧逻辑真正接入版本列表和刷新合并，并新增行为测试。
+- **跨集共享资产编辑（待本次修复）**：AUD-01 的“单节点编辑跨集共享资产”确实成立，修复方向是保持原所属集不变，只更新项目级节点内容。

@@ -111,7 +111,7 @@ import {
   Share2,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, preserveSelectedMediaVersion, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
 import {
   createProjectVersion,
@@ -9427,8 +9427,6 @@ function CanvasViewInner({
         // debounced prompt/refs editor may still hold a newer local value than
         // the server snapshot; replacing the whole node would silently undo it.
         if (!local) return remote;
-        const remoteParams = remote.params || {};
-        const localParams = local.params || {};
         const availability = remote.mediaUrl === local.mediaUrl
           ? local.mediaAvailability
           : 'unknown';
@@ -9440,23 +9438,7 @@ function CanvasViewInner({
           ...local,
           ...remote,
           ...(availability ? {mediaAvailability: availability} : {mediaAvailability: undefined}),
-          prompt: local.prompt,
-          params: {
-            ...remoteParams,
-            ...localParams,
-            ...(remoteParams.mediaVersions
-              ? {
-                  mediaVersions: remoteParams.mediaVersions,
-                  mediaVersionIndex: remoteParams.mediaVersionIndex,
-                }
-              : {}),
-            ...(remoteParams.videoVersions
-              ? {
-                  videoVersions: remoteParams.videoVersions,
-                  videoVersionIndex: remoteParams.videoVersionIndex,
-                }
-              : {}),
-          },
+          ...preserveSelectedMediaVersion(local, remote),
           x: local.x,
           y: local.y,
           updatedAt: remote.updatedAt || local.updatedAt,
@@ -11466,7 +11448,6 @@ function CanvasViewInner({
           const next = remoteNodes.map((remote) => {
             const local = prev.find((node) => node.id === remote.id);
             if (!local) return remote;
-            const remoteParams = remote.params || {};
             const sameGenerationState = (
               local.status === remote.status
               && local.mediaUrl === remote.mediaUrl
@@ -11480,23 +11461,7 @@ function CanvasViewInner({
             return {
               ...local,
               ...remote,
-              prompt: local.prompt,
-              params: {
-                ...remoteParams,
-                ...(local.params || {}),
-                ...(remoteParams.mediaVersions
-                  ? {
-                      mediaVersions: remoteParams.mediaVersions,
-                      mediaVersionIndex: remoteParams.mediaVersionIndex,
-                    }
-                  : {}),
-                ...(remoteParams.videoVersions
-                  ? {
-                      videoVersions: remoteParams.videoVersions,
-                      videoVersionIndex: remoteParams.videoVersionIndex,
-                    }
-                  : {}),
-              },
+              ...preserveSelectedMediaVersion(local, remote),
               x: local.x,
               y: local.y,
               positionUpdatedAt: local.positionUpdatedAt,
@@ -11563,27 +11528,10 @@ function CanvasViewInner({
       setMediaNodes(remoteNodes.map((remote) => {
         const local = localById.get(remote.id);
         if (!local) return remote;
-        const remoteParams = remote.params || {};
         return {
           ...local,
           ...remote,
-          prompt: local.prompt,
-          params: {
-            ...remoteParams,
-            ...(local.params || {}),
-            ...(remoteParams.mediaVersions
-              ? {
-                  mediaVersions: remoteParams.mediaVersions,
-                  mediaVersionIndex: remoteParams.mediaVersionIndex,
-                }
-              : {}),
-            ...(remoteParams.videoVersions
-              ? {
-                  videoVersions: remoteParams.videoVersions,
-                  videoVersionIndex: remoteParams.videoVersionIndex,
-                }
-              : {}),
-          },
+          ...preserveSelectedMediaVersion(local, remote),
           x: local.x,
           y: local.y,
           positionUpdatedAt: local.positionUpdatedAt,
@@ -15007,28 +14955,10 @@ function CanvasViewInner({
           setMediaNodes((prev) => prev.map((local) => {
             const remote = remoteById.get(local.id);
             if (!remote) return local;
-            const remoteParams = remote.params || {};
-            const localParams = local.params || {};
             return {
               ...local,
               ...remote,
-              prompt: local.prompt,
-              params: {
-                ...remoteParams,
-                ...localParams,
-                ...(remoteParams.mediaVersions
-                  ? {
-                      mediaVersions: remoteParams.mediaVersions,
-                      mediaVersionIndex: remoteParams.mediaVersionIndex,
-                    }
-                  : {}),
-                ...(remoteParams.videoVersions
-                  ? {
-                      videoVersions: remoteParams.videoVersions,
-                      videoVersionIndex: remoteParams.videoVersionIndex,
-                    }
-                  : {}),
-              },
+              ...preserveSelectedMediaVersion(local, remote),
               x: local.x,
               y: local.y,
               updatedAt: remote.updatedAt || local.updatedAt,

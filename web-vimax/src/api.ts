@@ -801,6 +801,62 @@ export function activeMediaVersionIndex(
   );
 }
 
+/**
+ * Apply an explicit version selection without letting its old prompt pointer
+ * overwrite the active media pointer during concurrent workspace refresh.
+ */
+export function preserveSelectedMediaVersion(
+  local: CanvasMediaNode,
+  remote: CanvasMediaNode,
+): Partial<CanvasMediaNode> {
+  const localParams = local.params || {};
+  const remoteParams = remote.params || {};
+  const locallySelected = local._mediaVersionSelection === true;
+  const localCurrentIndex = activeMediaVersionIndex(local);
+  const remoteCurrentIndex = activeMediaVersionIndex(remote);
+  const currentIndex = locallySelected
+    ? localCurrentIndex
+    : remoteCurrentIndex;
+  const merged: Partial<CanvasMediaNode> = {
+    prompt: local.prompt,
+    params: {
+      ...remoteParams,
+      ...localParams,
+      ...(remoteParams.mediaVersions
+        ? {
+            mediaVersions: remoteParams.mediaVersions,
+            mediaVersionIndex: currentIndex,
+            activeVersionId: locallySelected
+              ? localParams.activeVersionId
+              : remoteParams.activeVersionId,
+          }
+        : {}),
+      ...(remoteParams.videoVersions
+        ? {
+            videoVersions: remoteParams.videoVersions,
+            videoVersionIndex: currentIndex,
+            activeVersionId: locallySelected
+              ? localParams.activeVersionId
+              : remoteParams.activeVersionId,
+          }
+        : {}),
+    },
+  };
+  if (!locallySelected) return merged;
+  return {
+    ...merged,
+    mediaUrl: local.mediaUrl,
+    params: {
+      ...merged.params,
+      activeVersionId: localParams.activeVersionId,
+    },
+    actualDuration: local.actualDuration,
+    storage: local.storage,
+    providerResultUrl: local.providerResultUrl,
+    source: local.source,
+  };
+}
+
 export type QualityReportDimension = {
   score: number;
   weight: number;

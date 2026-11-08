@@ -65,6 +65,6 @@ describe('generation error presentation', () => {
     expect(source).toContain(
       'modal uses the same current node state as the cards',
     );
-    expect(source).toContain('mediaVersions: remoteParams.mediaVersions');
+    expect(source).toContain('preserveSelectedMediaVersion(local, remote)');
   });
 });
