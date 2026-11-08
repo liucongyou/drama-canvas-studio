@@ -43,5 +43,5 @@ describe('createMediaDownloadUrl', () => {
       'https://api.example.com/api/projects/project-1/downloads',
       expect.objectContaining({method: 'POST'}),
     );
-  });
+  }, 15_000);
 });

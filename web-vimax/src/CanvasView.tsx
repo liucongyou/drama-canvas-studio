@@ -176,6 +176,7 @@ import {
   mediaMissingFromBackend,
   shouldMarkMediaMissing,
   shouldRetryMediaLoad,
+  shouldAnalyzeAudioWaveform,
 } from './mediaLoadRecovery';
 import {
   promptMentionMatches,
@@ -211,6 +212,7 @@ import {
   selectEpisodeViewport,
   selectCanvasViewport,
   terminalTaskSignature,
+  terminalMediaSnapshotSignature,
   viewportForCanvasBounds,
   viewportLoadBounds,
   validRestoredViewport,
@@ -2714,7 +2716,12 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     setVideoSourceReady(true);
   }, [videoPlaying]);
   useEffect(() => {
-    if (node.kind !== 'audio' || !node.mediaUrl || node.mediaUrl.startsWith('data:')) return;
+    const audioUrl = String(node.mediaUrl || '');
+    if (
+      node.kind !== 'audio'
+      || !audioUrl
+      || !shouldAnalyzeAudioWaveform(audioUrl, node.mediaAvailability)
+    ) return;
     if (node.source?.type === 'local' && Number(node.source.size || 0) > 16 * 1024 * 1024) {
       setAudioWaveBars(AUDIO_WAVE_BARS);
       return;
@@ -2730,7 +2737,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
         // Older WebViews may transition to closed between the state check and close().
       });
     };
-    void fetch(node.mediaUrl, {credentials: 'include', cache: 'force-cache', signal: controller.signal})
+    void fetch(audioUrl, {credentials: 'include', cache: 'force-cache', signal: controller.signal})
       .then((response) => response.arrayBuffer())
       .then(async (buffer) => {
         const AudioContextCtor = window.AudioContext || (window as unknown as {webkitAudioContext?: typeof AudioContext}).webkitAudioContext;
@@ -2762,7 +2769,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
       controller.abort();
       closeContext();
     };
-  }, [node.kind, node.mediaUrl]);
+  }, [node.kind, node.mediaAvailability, node.mediaUrl]);
   const toggleVideoPlayback = () => {
     const video = videoRef.current;
     if (!video) return;
@@ -9168,7 +9175,8 @@ function CanvasViewInner({
       clearTimeout(viewportSaveTimer.current);
       viewportSaveTimer.current = null;
     }
-    const viewport = viewportRef.current;
+    const viewport = validRestoredViewport(viewportRef.current);
+    if (!viewport) return;
     const viewportEpisode = activeWorkspaceEpisodeRef.current || currentEp;
     if (!viewportEpisode) return;
     const snapshotKey = `${session}:${viewportEpisode}`;
@@ -11743,6 +11751,9 @@ function CanvasViewInner({
     if (!hasGeneratingMedia && activeGenerationTaskCount === 0) return;
     let alive = true;
     let syncing = false;
+    let reconciledTerminalSignature = terminalMediaSnapshotSignature(
+      mediaNodesRef.current,
+    );
     const syncTerminalState = async () => {
       if (syncing) return;
       if (!currentEp) return;
@@ -11750,9 +11761,13 @@ function CanvasViewInner({
       try {
         const remoteNodes = await getWorkspaceMediaNodes(session, currentEp);
         if (!alive) return;
-        const remoteCompleted = remoteNodes.some(
-          (node) => node.status === 'done',
+        const remoteTerminalSignature = terminalMediaSnapshotSignature(
+          remoteNodes,
         );
+        const terminalMediaChanged = (
+          remoteTerminalSignature !== reconciledTerminalSignature
+        );
+        reconciledTerminalSignature = remoteTerminalSignature;
         setMediaNodes((prev) => {
           let changed = false;
           const next = remoteNodes.map((remote) => {
@@ -11779,7 +11794,7 @@ function CanvasViewInner({
           });
           return changed ? next : prev;
         });
-        if (remoteCompleted) {
+        if (remoteTerminalSignature && terminalMediaChanged) {
           const refreshed = await getCanvas(session, currentEp);
           if (alive && !('empty' in refreshed)) setCanvas(refreshed);
         }
@@ -16013,17 +16028,36 @@ function CanvasViewInner({
       });
     });
 
-    const placed = sortFlowNodesForEntry(out.map((node) => {
+    const safeNodes = out.flatMap((node) => {
+      const x = Number(node.position?.x);
+      const y = Number(node.position?.y);
+      const width = Number(node.initialWidth ?? node.width ?? 0);
+      const height = Number(node.initialHeight ?? node.height ?? 0);
+      if (
+        !Number.isFinite(x)
+        || !Number.isFinite(y)
+        || !Number.isFinite(width)
+        || !Number.isFinite(height)
+        || width <= 0
+        || height <= 0
+      ) return [];
+      const normalized = {
+        ...node,
+        position: {x, y},
+        initialWidth: width,
+        initialHeight: height,
+      };
       // 资产卡子节点始终用组内自动排布位置（跟随分组框拖动），不恢复单独位置
-      if (node.parentId && node.type !== 'segment') return node;
+      if (node.parentId && node.type !== 'segment') return [normalized];
       // 媒体卡片位置以载荷 mn.x/mn.y 为准（拖动时同步回 mn，见 onNodeDragStop），
       // 不走 positionRef——否则 localStorage 历史残留的"单列位置"会覆盖载荷多列布局
       // （切集排序乱的根因：剧集页签点「第01集」后 21 张卡堆成 x≈0 一列）。
-      if (node.type === 'media') return node;
+      if (node.type === 'media') return [normalized];
       // 分段卡：恢复用户手动拖拽保存的位置
       const saved = positionRef.current[node.id];
-      return saved ? {...node, position: saved} : node;
-    }));
+      return [saved ? {...normalized, position: saved} : normalized];
+    });
+    const placed = sortFlowNodesForEntry(safeNodes);
     return placed;
   }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, mediaById, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasVisibleBounds, largeCanvasOverview, editNode?.id, recoverMissingMedia, readOnly]);
   const renderedEdges = useMemo(() => {
@@ -16168,7 +16202,12 @@ function CanvasViewInner({
       minY = Math.min(minY, mn.y);
       maxY = Math.max(maxY, mn.y + _m.h + 44);
     });
-    if (!isFinite(minX)) return;
+    if (
+      !Number.isFinite(minX)
+      || !Number.isFinite(minY)
+      || !Number.isFinite(maxX)
+      || !Number.isFinite(maxY)
+    ) return;
     const bounds = {x: minX, y: minY, width: Math.max(100, maxX - minX), height: Math.max(100, maxY - minY)};
     // First-entry fitting must land at its final viewport immediately. The old
     // implementation fitted once, then animated a second fit 350ms later, while
@@ -17591,8 +17630,10 @@ function CanvasViewInner({
             className={`canvas-flow ${draggingNode ? 'is-node-dragging' : ''} ${connecting ? 'is-connecting' : ''} ${selectedCount >= 2 ? 'has-multi-selection' : ''} ${edgesHidden ? 'is-edges-hidden' : ''}`}
             viewport={canvasViewport}
             onViewportChange={(next) => {
-              viewportRef.current = next;
-              setCanvasViewport(next);
+              const valid = validRestoredViewport(next);
+              if (!valid) return;
+              viewportRef.current = valid;
+              setCanvasViewport(valid);
               // React Flow updates the local viewport every frame; persistence
               // is coalesced on gesture end instead of hitting the database.
             }}

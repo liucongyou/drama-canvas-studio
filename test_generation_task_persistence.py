@@ -306,6 +306,93 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertNotEqual(replacement["id"], original["id"])
         self.assertIn("new-model", replacement["request_json"])
 
+    def test_deletion_guard_blocks_paid_but_unclosed_outcomes(self):
+        cases = [
+            {
+                "id": "active",
+                "status": "running",
+                "delivery_status": "pending",
+            },
+            {
+                "id": "interrupted-with-provider-id",
+                "status": "interrupted",
+                "phase": "结果待确认",
+                "provider_task_id": "provider-still-live",
+                "delivery_status": "pending",
+            },
+            {
+                "id": "interrupted-with-provider-id-and-failed-delivery",
+                "status": "interrupted",
+                "phase": "结果待确认",
+                "provider_task_id": "provider-still-live-after-local-failure",
+                "delivery_status": "failed",
+            },
+            {
+                "id": "fetching",
+                "status": "succeeded",
+                "delivery_status": "materializing",
+                "provider_task_id": "provider-fetching",
+            },
+            {
+                "id": "provider-url-not-local",
+                "status": "succeeded",
+                "delivery_status": "ready",
+                "provider_task_id": "provider-saved",
+                "provider_result_url": "https://provider.example/result.png",
+                "local_result_url": "",
+            },
+        ]
+        for task in cases:
+            with self.subTest(task=task["id"]):
+                self.assertTrue(generation_outcome.task_blocks_node_deletion(task))
+
+    def test_deletion_guard_allows_only_settled_or_safely_failed_outcomes(self):
+        cases = [
+            {
+                "id": "ready",
+                "status": "succeeded",
+                "delivery_status": "ready",
+                "provider_task_id": "provider-ready",
+                "provider_result_url": "https://provider.example/result.png",
+                "local_result_url": "https://tos.example/result.png",
+            },
+            {
+                "id": "provider-confirmed-failure",
+                "status": "failed",
+                "phase": "生成失败",
+                "provider_task_id": "provider-terminal-failure",
+                "delivery_status": "failed",
+            },
+            {
+                "id": "failed-before-provider-acceptance",
+                "status": "failed",
+                "phase": "提交失败",
+                "delivery_status": "failed",
+            },
+            {
+                "id": "rejected-before-acceptance",
+                "status": "failed",
+                "phase": "参数校验失败",
+                "delivery_status": "failed",
+            },
+            {
+                "id": "legacy-default-pending-without-provider",
+                "status": "failed",
+                "phase": "参数校验失败",
+                "delivery_status": "pending",
+            },
+            {
+                "id": "manual-resolution",
+                "status": "failed",
+                "phase": "人工确认失败",
+                "provider_task_id": "provider-manual",
+                "delivery_status": "failed",
+            },
+        ]
+        for task in cases:
+            with self.subTest(task=task["id"]):
+                self.assertFalse(generation_outcome.task_blocks_node_deletion(task))
+
     def test_success_with_pending_delivery_is_not_reported_ready(self):
         outcome = generation_outcome.task_outcome({
             "status": "succeeded",
@@ -4107,6 +4194,8 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
                 provider_task_id="provider-delivery-pending",
                 local_result_url="/uploads/pending.mp4",
                 delivery_status="pending",
+                delivery_attempts=7,
+                delivery_next_attempt_at="2099-01-01T00:00:00.000Z",
             )
             upload_dir = Path(self.context.upload_dir)
             upload_dir.mkdir(parents=True, exist_ok=True)
@@ -4132,11 +4221,135 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(recovered, 1)
         self.assertEqual(saved["status"], "succeeded")
         self.assertEqual(saved["delivery_status"], "ready")
+        self.assertEqual(saved["delivery_attempts"], 0)
+        self.assertEqual(saved["delivery_next_attempt_at"], "")
         self.assertEqual(
             [item["url"] for item in versions],
             ["/uploads/pending.mp4"],
         )
 
+    def test_paid_url_delivery_retries_back_off_and_reset_after_success(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("delivery-backoff")
+            project = canvas_store.get_project(project_id)
+            project["payload"]["nodes"] = [{
+                "id": "node-video",
+                "type": "video",
+                "title": "段1",
+                "metadata": {"status": "error", "params": {}},
+            }]
+            canvas_store.update_project(project_id, payload=project["payload"])
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-video",
+                kind="video",
+                provider="new-apl",
+                model="004-sd2.0",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="interrupted",
+                phase="结果下载中",
+                provider_task_id="provider-delivery-backoff",
+                provider_result_url="https://provider.example/expired.mp4",
+                delivery_status="pending",
+            )
+
+            with patch.object(
+                server,
+                "persist_generated_media",
+                side_effect=RuntimeError("HTTP 403"),
+            ) as failed_download:
+                first = server.reconcile_pending_generation_deliveries()
+                second = server.reconcile_pending_generation_deliveries()
+
+            deferred = canvas_store.get_generation_task(task["id"])
+            self.assertEqual(first, 0)
+            self.assertEqual(second, 0)
+            self.assertEqual(failed_download.call_count, 1)
+            self.assertEqual(deferred["delivery_attempts"], 1)
+            self.assertNotEqual(deferred["delivery_next_attempt_at"], "")
+
+            canvas_store.update_generation_task(
+                task["id"],
+                delivery_next_attempt_at="2000-01-01T00:00:00.000Z",
+            )
+            upload_dir = Path(self.context.upload_dir)
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            (upload_dir / "restored.mp4").write_bytes(b"restored-video")
+            with patch.object(
+                server,
+                "persist_generated_media",
+                return_value="/uploads/restored.mp4",
+            ) as recovered_download:
+                third = server.reconcile_pending_generation_deliveries()
+
+            recovered_task = canvas_store.get_generation_task(task["id"])
+
+        self.assertEqual(third, 1)
+        self.assertEqual(recovered_download.call_count, 1)
+        self.assertEqual(recovered_task["delivery_status"], "ready")
+        self.assertEqual(recovered_task["delivery_attempts"], 0)
+        self.assertEqual(recovered_task["delivery_next_attempt_at"], "")
+
+    def test_local_delivery_claim_is_single_owner(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("local-claim")
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-local",
+                kind="video",
+                provider="new-apl",
+                model="004-sd2.0",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="interrupted",
+                local_result_url="/uploads/local-claim.mp4",
+                delivery_status="pending",
+                delivery_next_attempt_at="2099-01-01T00:00:00.000Z",
+            )
+            first = canvas_store.claim_local_delivery(task["id"])
+            second = canvas_store.claim_local_delivery(task["id"])
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(first["delivery_status"], "materializing")
+
+    def test_local_delivery_claim_skips_missing_local_file_without_redownload(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("local-missing")
+            project = canvas_store.get_project(project_id)
+            project["payload"]["nodes"] = [{
+                "id": "node-audio",
+                "type": "audio",
+                "title": "音色",
+                "metadata": {"status": "done", "params": {}},
+            }]
+            canvas_store.update_project(project_id, payload=project["payload"])
+            task = canvas_store.create_generation_task(
+                project_id,
+                "node-audio",
+                kind="audio",
+                provider="aliyun_bailian",
+                model="cosyvoice-v3-5-flash",
+            )
+            canvas_store.update_generation_task(
+                task["id"],
+                status="interrupted",
+                local_result_url="/uploads/historical-missing.mp3",
+                delivery_status="pending",
+            )
+            with patch.object(
+                server,
+                "persist_generated_media",
+                side_effect=AssertionError("must not redownload a missing local result"),
+            ) as download:
+                result = server.reconcile_pending_generation_deliveries()
+            saved = canvas_store.get_generation_task(task["id"])
+        self.assertEqual(result, 0)
+        download.assert_not_called()
+        self.assertEqual(saved["delivery_status"], "materializing")
+        self.assertEqual(saved["phase"], "本地文件缺失")
     def test_failure_chain_queries_same_task_and_recovers_after_restart(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("failure-chain")

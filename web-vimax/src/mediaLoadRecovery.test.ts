@@ -5,6 +5,7 @@ import {
   shouldIgnorePlaybackInterruption,
   shouldMarkMediaMissing,
   shouldRetryMediaLoad,
+  shouldAnalyzeAudioWaveform,
   mediaMissingFromBackend,
 } from './mediaLoadRecovery';
 
@@ -33,6 +34,14 @@ describe('media load recovery', () => {
     expect(mediaMissingFromBackend('available')).toBe(false);
     expect(mediaMissingFromBackend('unknown')).toBe(false);
     expect(mediaMissingFromBackend(undefined)).toBe(false);
+  });
+
+  it('does not fetch waveform bytes for backend-confirmed missing audio', () => {
+    expect(shouldAnalyzeAudioWaveform('/uploads/a.mp3', 'missing')).toBe(false);
+    expect(shouldAnalyzeAudioWaveform('/uploads/a.mp3', 'available')).toBe(true);
+    expect(shouldAnalyzeAudioWaveform('', 'available')).toBe(false);
+    expect(shouldAnalyzeAudioWaveform('data:audio/mp3;base64,AA==', 'available'))
+      .toBe(false);
   });
 
   it('adds a retry token without destroying signed query parameters', () => {

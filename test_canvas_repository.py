@@ -218,11 +218,33 @@ class CanvasRepositoryTests(unittest.TestCase):
             if_revision=current["revision"],
         )
         current = self.repo.get_project(project_id)
+        db = canvas_store._connect()
+        try:
+            payload_before_viewport = db.execute(
+                "SELECT payload_json FROM canvas_projects WHERE id=?",
+                (project_id,),
+            ).fetchone()[0]
+        finally:
+            db.close()
+        snapshots_before_viewport = self.repo.list_versions(project_id)
         viewport = self.repo.save_viewport(
             project_id,
             {"x": -100, "y": 50, "zoom": 0.8},
             episode_id="ep01",
             if_revision=current["revision"],
+        )
+        db = canvas_store._connect()
+        try:
+            payload_after_viewport = db.execute(
+                "SELECT payload_json FROM canvas_projects WHERE id=?",
+                (project_id,),
+            ).fetchone()[0]
+        finally:
+            db.close()
+        self.assertEqual(payload_after_viewport, payload_before_viewport)
+        self.assertEqual(
+            self.repo.list_versions(project_id),
+            snapshots_before_viewport,
         )
         self.assertEqual(viewport["viewport"]["zoom"], 0.8)
         self.assertFalse(viewport["unchanged"])
@@ -318,6 +340,27 @@ class CanvasRepositoryTests(unittest.TestCase):
             ).fetchall()
             con.close()
         for plan in (payload_plan, versions_plan, backfill_plan):
+            self.assertFalse(
+                any("USE TEMP B-TREE FOR ORDER BY" in str(row[-1]) for row in plan),
+                plan,
+            )
+
+    def test_project_list_queries_do_not_require_temp_btree_sort(self):
+        self._create()
+        with tenant_context.use_context(self.context):
+            con = canvas_store._connect()
+            list_plan = con.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT id,title,revision,updated_at FROM canvas_projects "
+                "ORDER BY updated_at DESC"
+            ).fetchall()
+            summary_plan = con.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT id,title,revision,updated_at,node_count,connection_count "
+                "FROM canvas_projects ORDER BY updated_at DESC"
+            ).fetchall()
+            con.close()
+        for plan in (list_plan, summary_plan):
             self.assertFalse(
                 any("USE TEMP B-TREE FOR ORDER BY" in str(row[-1]) for row in plan),
                 plan,

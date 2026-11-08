@@ -9,6 +9,7 @@ import {
   selectEpisodeViewport,
   selectCanvasViewport,
   terminalTaskSignature,
+  terminalMediaSnapshotSignature,
   episodeIdFromWorkspace,
   shouldPersistViewport,
   shouldSaveViewport,
@@ -34,6 +35,20 @@ describe('restored canvas viewport validation', () => {
     expect(validRestoredViewport({x: 0, y: 0, zoom: 0})).toBeNull();
     expect(validRestoredViewport({x: 0, y: 0, zoom: 20})).toBeNull();
     expect(validRestoredViewport({x: 'bad', y: 0, zoom: 1})).toBeNull();
+    expect(validRestoredViewport({x: 0, y: null, zoom: 1})).toBeNull();
+    expect(validRestoredViewport({x: 0, y: '1', zoom: 1})).toBeNull();
+    expect(validRestoredViewport({x: NaN, y: 0, zoom: 1})).toBeNull();
+    expect(validRestoredViewport({x: 0, y: Infinity, zoom: 1})).toBeNull();
+    expect(validRestoredViewport({x: 0, y: 0, zoom: -Infinity})).toBeNull();
+  });
+
+  it('does not overwrite an episode view with an invalid runtime frame', () => {
+    const current = {EP001: {x: 10, y: 20, zoom: 0.8}};
+    expect(mergeEpisodeViewport(
+      current,
+      'EP001',
+      {x: 0, y: null as unknown as number, zoom: 1},
+    )).toEqual(current);
   });
 });
 
@@ -467,5 +482,70 @@ describe('large canvas viewport', () => {
     );
     expect(viewport.zoom).toBeLessThan(0.5);
     expect(viewport.zoom).toBeCloseTo(Math.min(969 * 0.7 / 2400, 807 * 0.7 / 2400), 4);
+  });
+
+  it('returns a safe viewport for non-finite bounds instead of propagating NaN', () => {
+    expect(viewportForCanvasBounds(
+      {x: 0, y: 0, width: Infinity, height: 100},
+      969,
+      807,
+    )).toEqual({x: 0, y: 0, zoom: 1});
+  });
+});
+
+
+describe('terminal media full-canvas refresh boundary', () => {
+  it('keeps an unchanged completed episode from triggering project JSON reads', () => {
+    const nodes = [{
+      id: 'video-1',
+      status: 'done' as const,
+      mediaUrl: '/uploads/video-1.mp4',
+      generationFinishedAt: '2026-11-08T10:00:00.000Z',
+      params: {
+        mediaVersions: [{
+          versionId: 'version-1',
+          taskId: 'task-1',
+          url: '/uploads/video-1.mp4',
+          generatedAt: '2026-11-08T10:00:00.000Z',
+        }],
+      },
+    }];
+    expect(terminalMediaSnapshotSignature(nodes))
+      .toBe(terminalMediaSnapshotSignature(structuredClone(nodes)));
+  });
+
+  it('detects a completed node and a newly appended media version', () => {
+    const before = terminalMediaSnapshotSignature([]);
+    const completed = terminalMediaSnapshotSignature([{
+      id: 'video-1',
+      status: 'done',
+      mediaUrl: '/uploads/v1.mp4',
+      generationFinishedAt: '2026-11-08T10:00:00.000Z',
+    }]);
+    const withHistory = terminalMediaSnapshotSignature([{
+      id: 'video-1',
+      status: 'done',
+      mediaUrl: '/uploads/v2.mp4',
+      generationFinishedAt: '2026-11-08T10:05:00.000Z',
+      params: {
+        mediaVersions: [
+          {versionId: 'version-1', url: '/uploads/v1.mp4'},
+          {versionId: 'version-2', url: '/uploads/v2.mp4'},
+        ],
+      },
+    }]);
+    expect(completed).not.toBe(before);
+    expect(withHistory).not.toBe(completed);
+  });
+
+  it('ignores transient progress fields on a completed card', () => {
+    const node = {
+      id: 'image-1',
+      status: 'done' as const,
+      mediaUrl: '/uploads/image-1.png',
+      generationFinishedAt: '2026-11-08T09:00:00.000Z',
+    };
+    expect(terminalMediaSnapshotSignature([node]))
+      .toBe(terminalMediaSnapshotSignature([{...node}]));
   });
 });

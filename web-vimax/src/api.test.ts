@@ -202,6 +202,11 @@ describe('api request recovery', () => {
       {x: 0, y: 0, zoom: 1},
       '',
     )).rejects.toThrow('保存视口必须指定所属集');
+    await expect(saveCanvasEpisodeViewport(
+      'project-1',
+      {x: 0, y: null as unknown as number, zoom: 1},
+      'EP001',
+    )).rejects.toThrow('保存视口的 x、y、zoom 必须是有效数字');
     await expect(getCanvasMediaNodes('project-1', '')).rejects.toThrow(
       '读取画布节点必须指定集号',
     );

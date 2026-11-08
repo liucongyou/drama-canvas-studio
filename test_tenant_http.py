@@ -1129,10 +1129,108 @@ class TenantHttpTests(unittest.TestCase):
         with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
             server.store.update_generation_task(
                 task["id"],
-                status="failed",
-                phase="失败",
+                status="interrupted",
+                phase="结果待确认",
+                provider_task_id="provider-delete-protection",
+                delivery_status="pending",
                 finished_at=server.store._now_iso(),
             )
+        status, _, body = self.request(
+            "DELETE",
+            f"/api/projects/{pid}/nodes/{node['id']}",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 409, body.decode("utf-8"))
+        self.assertEqual(json.loads(body)["code"], "NODE_GENERATION_ACTIVE")
+        status, _, body = self.request(
+            "DELETE",
+            f"/api/projects/{pid}",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 409, body.decode("utf-8"))
+        self.assertEqual(json.loads(body)["code"], "PROJECT_GENERATION_ACTIVE")
+        self.assertGreaterEqual(json.loads(body)["activeTasks"], 1)
+
+    def test_project_delete_guard_scans_beyond_the_first_300_tasks(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        _, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "删除保护截断回归"},
+        )
+        pid = json.loads(body)["id"]
+        with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+            protected = server.store.create_generation_task(
+                pid,
+                "old-paid-node",
+                title="旧付费结果",
+                kind="image",
+                episode_id="EP001",
+            )
+            server.store.update_generation_task(
+                protected["id"],
+                status="interrupted",
+                phase="结果待确认",
+                provider_task_id="provider-beyond-300",
+                delivery_status="pending",
+            )
+            # Use the real table contract in one transaction. Calling the
+            # public create API 305 times spins up a connection and write lock
+            # per row, making this regression artificially take minutes.
+            db = server.store._connect()
+            try:
+                now = server.store._now_iso()
+                db.executemany(
+                    "INSERT INTO generation_tasks("
+                    "id,project_id,node_id,episode_id,title,kind,status,phase,"
+                    "progress,attempt,estimated_cost,cost_currency,error,"
+                    "created_at,updated_at,delivery_status,request_json"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [
+                        (
+                            f"terminal-task-{index:03d}",
+                            pid,
+                            f"terminal-node-{index}",
+                            "EP001",
+                            f"终态{index}",
+                            "image",
+                            "failed",
+                            "参数校验失败",
+                            0,
+                            1,
+                            0,
+                            "",
+                            "参数校验失败",
+                            now,
+                            now,
+                            "failed",
+                            "{}",
+                        )
+                        for index in range(305)
+                    ],
+                )
+                db.commit()
+            finally:
+                db.close()
+        status, _, body = self.request(
+            "DELETE",
+            f"/api/projects/{pid}",
+            "alpha.example.com",
+            cookie,
+        )
+        self.assertEqual(status, 409, body.decode("utf-8"))
+        self.assertEqual(json.loads(body)["code"], "PROJECT_GENERATION_ACTIVE")
 
     def test_manual_connections_persist_without_overwriting_automatic_edges(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")

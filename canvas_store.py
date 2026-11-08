@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 
 import tenant_context
+import generation_outcome
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "canvas.db")
 
@@ -217,6 +218,13 @@ def _connect():
                 failed_count INTEGER DEFAULT 0,
                 local_blocked_count INTEGER DEFAULT 0
             )"""
+            )
+            # Project switching and every boot-time backfill enumerate projects
+            # in updated-at order. Keep that path independent of SQLite's temp
+            # files; Windows hosts may expose an unwritable TEMP directory.
+            con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_projects_updated "
+            "ON canvas_projects(updated_at DESC)"
             )
             con.execute(
             """CREATE TABLE IF NOT EXISTS canvas_meta(
@@ -446,6 +454,7 @@ def _connect():
                 heartbeat_at TEXT,
                 delivery_status TEXT DEFAULT 'pending',
                 delivery_attempts INTEGER DEFAULT 0,
+                delivery_next_attempt_at TEXT DEFAULT '',
                 result_ready_at TEXT,
                 progress_updated_at TEXT DEFAULT '',
                 next_poll_at TEXT DEFAULT ''
@@ -579,6 +588,10 @@ def _connect():
             if "delivery_attempts" not in task_columns:
                 con.execute(
                     "ALTER TABLE generation_tasks ADD COLUMN delivery_attempts INTEGER DEFAULT 0"
+                )
+            if "delivery_next_attempt_at" not in task_columns:
+                con.execute(
+                    "ALTER TABLE generation_tasks ADD COLUMN delivery_next_attempt_at TEXT DEFAULT ''"
                 )
             if "result_ready_at" not in task_columns:
                 con.execute(
@@ -3456,7 +3469,7 @@ _TASK_FIELDS = {
     "local_result_url", "provider_result_url",
     "request_json", "client_operation_id", "lease_owner", "lease_expires_at",
     "heartbeat_at", "delivery_status", "delivery_attempts", "result_ready_at",
-    "progress_updated_at", "next_poll_at",
+    "delivery_next_attempt_at", "progress_updated_at", "next_poll_at",
 }
 
 _ACTIVE_TASK_STATUSES = {"queued", "submitting", "running"}
@@ -4884,6 +4897,9 @@ def commit_generation_terminal(
                 "succeeded", "failed", "interrupted", "cancelled",
             }:
                 effective_task_updates["next_poll_at"] = ""
+            if str(effective_task_updates.get("delivery_status") or "") == "ready":
+                effective_task_updates["delivery_attempts"] = 0
+                effective_task_updates["delivery_next_attempt_at"] = ""
             if effective_lease_owner is not None:
                 owner = str(effective_lease_owner or "")
                 if (
@@ -6094,8 +6110,17 @@ def list_materializing_image_tasks(limit=100):
     return [dict(zip(columns, row)) for row in rows]
 
 
+def _task_blocks_deletion(task):
+    return generation_outcome.task_blocks_node_deletion(task)
+
+
 def get_active_generation_task_for_node(project_id, node_id):
-    """Return a truly active task for one node, never a terminal duplicate."""
+    """Return an unpaid/unsettled task that must block node deletion.
+
+    "active" here means financially safe to delete, not merely HTTP in-flight.
+    An interrupted provider task, a pending durable delivery, or a provider
+    result URL that has not reached local storage are all unresolved outcomes.
+    """
     if not project_id or not node_id:
         return None
     con = _connect()
@@ -6105,15 +6130,49 @@ def get_active_generation_task_for_node(project_id, node_id):
             "SELECT * FROM generation_tasks LIMIT 0"
         ).description
     ]
-    row = con.execute(
+    rows = con.execute(
         "SELECT * FROM generation_tasks "
         "WHERE project_id=? AND node_id=? "
-        "AND status IN ('queued','submitting','running') "
-        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        "ORDER BY created_at DESC, rowid DESC",
         (project_id, node_id),
-    ).fetchone()
+    ).fetchall()
     con.close()
-    return dict(zip(columns, row)) if row else None
+    for row in rows:
+        task = dict(zip(columns, row))
+        if _task_blocks_deletion(task):
+            return task
+    return None
+
+
+def list_generation_tasks_that_block_project_delete(project_id):
+    """Return all unsettled tasks at the database boundary, without truncation."""
+    if not project_id:
+        return []
+    con = _connect()
+    columns = [
+        item[0]
+        for item in con.execute(
+            "SELECT * FROM generation_tasks LIMIT 0"
+        ).description
+    ]
+    rows = con.execute(
+        "SELECT * FROM generation_tasks "
+        "WHERE project_id=? "
+        "AND ("
+        "status IN ('queued','submitting','running') "
+        "OR COALESCE(delivery_status,'pending') IN ('pending','materializing') "
+        "OR COALESCE(provider_task_id,'')!='' "
+        "OR COALESCE(provider_result_url,'')!='' "
+        "OR status='interrupted' "
+        ") "
+        "ORDER BY created_at DESC, updated_at DESC, rowid DESC",
+        (project_id,),
+    ).fetchall()
+    con.close()
+    return [
+        task for task in (dict(zip(columns, row)) for row in rows)
+        if _task_blocks_deletion(task)
+    ]
 
 
 def list_resumable_video_tasks(limit=300):
@@ -6180,19 +6239,92 @@ def backfill_generation_task_episode_ids():
     return updated
 
 
-def list_delivery_pending_tasks(limit=100):
+def list_delivery_pending_tasks(limit=100, now=None):
+    """Return delivery candidates, including network retries that are due now.
+
+    Rows without a local upload are separated from local projections so a
+    network backoff can never delay a result that is already on disk.
+    """
     con = _connect()
     columns = [item[0] for item in con.execute("SELECT * FROM generation_tasks LIMIT 0").description]
+    current = str(now or _now_iso())
     rows = con.execute(
         "SELECT * FROM generation_tasks "
         "WHERE status IN ('running','interrupted','succeeded') "
         "AND delivery_status IN ('pending','materializing') "
+        "AND ("
+        "COALESCE(local_result_url,'')!='' "
+        "OR COALESCE(delivery_next_attempt_at,'')='' "
+        "OR delivery_next_attempt_at<=? "
+        ") "
         "ORDER BY updated_at DESC LIMIT ?",
-        (max(1, min(int(limit or 100), 500)),),
+        (current, max(1, min(int(limit or 100), 500))),
     ).fetchall()
     con.close()
     return [dict(zip(columns, row)) for row in rows]
 
+
+def claim_delivery_retry(task_id, delay_seconds, *, now=None):
+    """Atomically reserve one paid-result delivery attempt.
+
+    Claiming before provider I/O prevents a crashed worker from immediately
+    re-downloading the same expired URL on the next reconcile tick. A retry can
+    only be claimed when its persisted backoff is due.
+    """
+    if not task_id:
+        return None
+    delay = max(1, min(int(delay_seconds or 1), 30 * 60))
+    current_dt = (
+        datetime.fromisoformat(str(now).replace("Z", "+00:00"))
+        if now
+        else datetime.now(timezone.utc)
+    )
+    current = current_dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    next_attempt = (
+        current_dt + timedelta(seconds=delay)
+    ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    def write(con):
+        cur = con.execute(
+            "UPDATE generation_tasks SET "
+            "delivery_attempts=COALESCE(delivery_attempts,0)+1,"
+            "delivery_next_attempt_at=?,updated_at=? "
+            "WHERE id=? "
+            "AND delivery_status IN ('pending','materializing') "
+            "AND COALESCE(local_result_url,'')='' "
+            "AND ("
+            "COALESCE(delivery_next_attempt_at,'')='' "
+            "OR delivery_next_attempt_at<=?"
+            ")",
+            (next_attempt, current, task_id, current),
+        )
+        return cur.rowcount == 1
+
+    if not _run_write_transaction(write):
+        return None
+    return get_generation_task(task_id)
+
+
+def claim_local_delivery(task_id, *, now=None):
+    """Atomically reserve one durable local result for canvas projection."""
+    if not task_id:
+        return None
+    current = str(now or _now_iso())
+
+    def write(con):
+        cur = con.execute(
+            "UPDATE generation_tasks SET "
+            "delivery_status='materializing',updated_at=? "
+            "WHERE id=? "
+            "AND delivery_status='pending' "
+            "AND COALESCE(local_result_url,'')!=''",
+            (current, task_id),
+        )
+        return cur.rowcount == 1
+
+    if not _run_write_transaction(write):
+        return None
+    return get_generation_task(task_id)
 
 def list_runtime_reconcile_tasks(limit=200):
     """Return only task rows that a periodic reconciler may need to inspect."""

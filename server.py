@@ -1910,6 +1910,81 @@ def ensure_video_thumbnail(url):
             pass
 
 
+def _video_thumbnail_is_usable(url):
+    raw = str(url or "").strip()
+    if not raw.startswith("/uploads/"):
+        return False
+    path = os.path.join(_upload_dir(), raw[len("/uploads/"):])
+    return os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+def rebuild_video_thumbnail_metadata(meta):
+    """Return a corrected params patch for current and historical video versions.
+
+    A persisted ``thumbUrl`` is not proof that its file still exists. Check the
+    bytes before trusting it, and keep each local history version paired with
+    its own cover so switching versions cannot leave the previous poster on the
+    card while the new video loads.
+    """
+    if not isinstance(meta, dict):
+        return {}
+    params = meta.get("params") if isinstance(meta.get("params"), dict) else {}
+    current_url = str(meta.get("content") or "").strip()
+    versions_key = "mediaVersions"
+    versions = params.get(versions_key)
+    if not isinstance(versions, list) or not versions:
+        versions_key = "videoVersions"
+        versions = params.get(versions_key)
+    if not isinstance(versions, list):
+        versions = []
+
+    patched_versions = []
+    versions_changed = False
+    for item in versions:
+        if not isinstance(item, dict):
+            patched_versions.append(item)
+            continue
+        version = dict(item)
+        url = str(version.get("url") or "").strip()
+        thumb = str(version.get("thumbUrl") or "").strip()
+        if url.startswith("/uploads/") and not _video_thumbnail_is_usable(thumb):
+            generated = ensure_video_thumbnail(url)
+            if generated:
+                version["thumbUrl"] = generated
+                versions_changed = True
+        patched_versions.append(version)
+
+    patch = {}
+    if versions_changed:
+        patch[versions_key] = patched_versions
+
+    current_thumb = str(params.get("thumbUrl") or "").strip()
+    selected = next(
+        (
+            item for item in patched_versions
+            if isinstance(item, dict)
+            and str(item.get("url") or "").strip() == current_url
+            and str(item.get("thumbUrl") or "").strip()
+        ),
+        None,
+    )
+    next_thumb = (
+        str(selected.get("thumbUrl") or "").strip()
+        if selected else current_thumb
+    )
+    if (
+        current_url.startswith("/uploads/")
+        and not _video_thumbnail_is_usable(next_thumb)
+    ):
+        next_thumb = ensure_video_thumbnail(current_url)
+    if current_url.startswith("/uploads/") and next_thumb:
+        if next_thumb != current_thumb:
+            patch["thumbUrl"] = next_thumb
+        elif current_thumb and not _video_thumbnail_is_usable(current_thumb):
+            patch["thumbUrl"] = next_thumb
+    return patch
+
+
 def backfill_generated_video_thumbnails():
     updated = 0
     for project_row in store.list_projects():
@@ -1919,18 +1994,11 @@ def backfill_generated_video_thumbnails():
         for node in project["payload"].get("nodes", []):
             if node.get("type") != "video":
                 continue
-            meta = node.get("metadata") or {}
-            params = meta.get("params") or {}
-            if params.get("thumbUrl"):
-                continue
-            url = str(meta.get("content") or "")
-            if not url.startswith("/uploads/"):
-                continue
-            thumb_url = ensure_video_thumbnail(url)
-            if not thumb_url:
+            patch = rebuild_video_thumbnail_metadata(node.get("metadata"))
+            if not patch:
                 continue
             commit_node_metadata(project["id"], node["id"], {
-                "_paramsPatch": {"thumbUrl": thumb_url},
+                "_paramsPatch": patch,
             })
             updated += 1
     if updated:
@@ -4138,22 +4206,48 @@ def reconcile_pending_generation_deliveries():
     same provider result. It never submits a new provider task.
     """
     recovered = 0
-    for task in store.list_delivery_pending_tasks(200):
+    for pending_task in store.list_delivery_pending_tasks(200):
+        task = pending_task
         local_url = str(task.get("local_result_url") or "").strip()
         project_id = str(task.get("project_id") or "")
         node_id = str(task.get("node_id") or "")
         if not project_id or not node_id:
             continue
-        if not local_url.startswith("/uploads/"):
+        if local_url.startswith("/uploads/"):
+            task = store.claim_local_delivery(str(task.get("id") or ""))
+            if not task:
+                continue
+        else:
             provider_url = str(task.get("provider_result_url") or "").strip()
             if not provider_url:
                 continue
+            attempts = max(0, int(task.get("delivery_attempts") or 0))
+            delay_seconds = min(30 * 60, 30 * (4 ** attempts))
+            claimed = store.claim_delivery_retry(
+                str(task.get("id") or ""),
+                delay_seconds,
+            )
+            if not claimed:
+                # Another reconciler won the claim, or backoff is not due yet.
+                continue
+            task = claimed
+            provider = {}
+            model = {}
             try:
                 provider, model, _ = provider_catalog.resolve_model(
                     task.get("provider"),
                     task.get("model"),
                     str(task.get("kind") or ""),
                 )
+            except Exception as exc:
+                # Deleted/renamed model profiles must not block recovery of an
+                # already-paid result URL. The URL is the durable receipt.
+                print(
+                    f"[generation-delivery] model profile unavailable: "
+                    f"task={task.get('id')} error={exc}",
+                    file=sys.stderr,
+                )
+            try:
                 local_url = persist_generated_media(
                     provider_url,
                     ".mp4" if task.get("kind") == "video" else ".png",
@@ -4163,20 +4257,23 @@ def reconcile_pending_generation_deliveries():
             except Exception as exc:
                 print(
                     f"[generation-delivery] redownload deferred: "
-                    f"task={task.get('id')} error={exc}",
+                    f"task={task.get('id')} attempt={task.get('delivery_attempts')} "
+                    f"next={task.get('delivery_next_attempt_at')} error={exc}",
                     file=sys.stderr,
                 )
                 continue
             if not local_url.startswith("/uploads/"):
                 continue
-            task = {
-                **task,
-                "local_result_url": local_url,
-                "delivery_status": "pending",
-            }
+            task = store.update_generation_task(
+                str(task.get("id") or ""),
+                local_result_url=local_url,
+                delivery_status="pending",
+            ) or {**task, "local_result_url": local_url}
         try:
             if _recover_persisted_result_to_canvas(project_id, node_id, task):
-                recovered += 1
+                saved_task = store.get_generation_task(str(task.get("id") or ""))
+                if saved_task and str(saved_task.get("status") or "") == "succeeded":
+                    recovered += 1
         except Exception as exc:
             print(
                 f"[generation-delivery] deferred: task={task.get('id')} error={exc}",
@@ -9891,11 +9988,9 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/projects/([^/]+)$", path)
         if m:
             deleted_id = unquote(m.group(1))
-            active_tasks = [
-                task
-                for task in store.list_generation_tasks(deleted_id, 300)
-                if task.get("status") in {"queued", "submitting", "running"}
-            ]
+            active_tasks = store.list_generation_tasks_that_block_project_delete(
+                deleted_id,
+            )
             if active_tasks:
                 return self._send(409, {
                     "error": "项目仍有生成任务在运行，请完成或取消后再删除",

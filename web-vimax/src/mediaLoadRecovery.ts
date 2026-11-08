@@ -18,6 +18,14 @@ export function mediaMissingFromBackend(serverAvailability: unknown): boolean {
   return String(serverAvailability || '').trim().toLowerCase() === 'missing';
 }
 
+export function shouldAnalyzeAudioWaveform(
+  mediaUrl: string,
+  serverAvailability: unknown,
+): boolean {
+  return Boolean(mediaUrl) && !mediaUrl.startsWith('data:')
+    && !mediaMissingFromBackend(serverAvailability);
+}
+
 export function isTransientMediaError(error?: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const name = String((error as {name?: unknown}).name || '');

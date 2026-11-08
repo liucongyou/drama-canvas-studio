@@ -11,6 +11,7 @@ import {
   type AuditEventPage,
   type AuditEventQuery,
 } from './auditQuery';
+import {validRestoredViewport} from './canvasViewport';
 
 declare global {
   interface Window {
@@ -2490,6 +2491,10 @@ export async function saveCanvasEpisodeViewport(
   if (!normalizedEpisode) {
     throw new Error('保存视口必须指定所属集');
   }
+  const validViewport = validRestoredViewport(viewport);
+  if (!validViewport) {
+    throw new Error('保存视口的 x、y、zoom 必须是有效数字');
+  }
   return request<{
     ok: boolean;
     viewport: {x: number; y: number; zoom: number};
@@ -2497,7 +2502,7 @@ export async function saveCanvasEpisodeViewport(
   }>(`/api/projects/${encodeURIComponent(sessionId)}/viewport`, {
     method: 'PUT',
     body: JSON.stringify({
-      viewport,
+      viewport: validViewport,
       episodeId: normalizedEpisode,
     }),
     keepalive: options?.keepalive === true,

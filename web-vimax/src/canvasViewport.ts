@@ -43,6 +43,52 @@ export function terminalTaskSignature(tasks: TerminalTask[]): string {
 
 export type EpisodeViewportMap = Record<string, CanvasViewport>;
 
+export type TerminalMediaSnapshotNode = {
+  id: string;
+  status?: string;
+  mediaUrl?: string;
+  generationFinishedAt?: string;
+  params?: {
+    mediaVersions?: Array<{
+      versionId?: string;
+      taskId?: string;
+      generatedAt?: string;
+      url?: string;
+    }>;
+  };
+};
+
+/**
+ * A terminal workspace read is only necessary when the graph's media identity
+ * changed. The compact poll already updates every card field, so repeatedly
+ * reloading the project JSON merely because one old node is done turns a 4s
+ * heartbeat into an unbounded full-canvas read loop.
+ */
+export function terminalMediaSnapshotSignature(
+  nodes: TerminalMediaSnapshotNode[],
+): string {
+  return nodes
+    .filter((node) => node.status === 'done')
+    .map((node) => {
+      const versions = Array.isArray(node.params?.mediaVersions)
+        ? node.params.mediaVersions
+        : [];
+      const latestVersion = versions[versions.length - 1];
+      return [
+        node.id,
+        node.mediaUrl || '',
+        node.generationFinishedAt || '',
+        latestVersion?.versionId || '',
+        latestVersion?.taskId || '',
+        latestVersion?.generatedAt || '',
+        latestVersion?.url || '',
+      ].join(':');
+    })
+    .sort()
+    .join('|');
+}
+
+
 export type CanvasVisibleBounds = {
   x1: number;
   y1: number;
@@ -57,15 +103,39 @@ export type CanvasBounds = {
   height: number;
 };
 
+export function isFiniteCanvasBounds(value: unknown): value is CanvasBounds {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<CanvasBounds>;
+  return (
+    typeof candidate.x === 'number'
+    && typeof candidate.y === 'number'
+    && typeof candidate.width === 'number'
+    && typeof candidate.height === 'number'
+    && Number.isFinite(candidate.x)
+    && Number.isFinite(candidate.y)
+    && Number.isFinite(candidate.width)
+    && Number.isFinite(candidate.height)
+    && candidate.width > 0
+    && candidate.height > 0
+  );
+}
+
 export function validRestoredViewport(
   value: unknown,
 ): CanvasViewport | null {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Partial<CanvasViewport>;
-  const x = Number(candidate.x);
-  const y = Number(candidate.y);
-  const zoom = Number(candidate.zoom);
-  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom)) {
+  const {x, y, zoom} = candidate;
+  // Number(null) is 0 and Number('1') is 1. Accepting either here lets a
+  // malformed React Flow callback or stale cache become a plausible viewport.
+  if (
+    typeof x !== 'number'
+    || typeof y !== 'number'
+    || typeof zoom !== 'number'
+    || !Number.isFinite(x)
+    || !Number.isFinite(y)
+    || !Number.isFinite(zoom)
+  ) {
     return null;
   }
   if (zoom < CANVAS_RESTORE_MIN_ZOOM || zoom > CANVAS_RESTORE_MAX_ZOOM) {
@@ -98,10 +168,12 @@ export function mergeEpisodeViewport(
     if (valid) next[key] = valid;
   });
   const scope = String(episodeId || '').trim().toUpperCase();
+  const normalized = validRestoredViewport(viewport);
+  if (!normalized) return next;
   if (scope) {
-    next[scope] = validRestoredViewport(viewport) || viewport;
+    next[scope] = normalized;
   } else if (projectId) {
-    next[projectId] = validRestoredViewport(viewport) || viewport;
+    next[projectId] = normalized;
   }
   return next;
 }
@@ -237,6 +309,9 @@ export function viewportForCanvasBounds(
     maxZoom?: number;
   } = {},
 ): CanvasViewport {
+  if (!isFiniteCanvasBounds(bounds)) {
+    return {x: 0, y: 0, zoom: 1};
+  }
   const width = Math.max(1, viewportWidth);
   const height = Math.max(1, viewportHeight);
   const padding = Math.max(0, Math.min(0.35, options.padding ?? 0.15));

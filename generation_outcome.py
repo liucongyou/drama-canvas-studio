@@ -40,6 +40,51 @@ def is_local_validation_error(message: Any) -> bool:
     return any(marker in text for marker in LOCAL_VALIDATION_MARKERS)
 
 
+_UNSETTLED_ACTIVE_STATUSES = frozenset({"queued", "submitting", "running"})
+_UNSETTLED_DELIVERY_STATUSES = frozenset({"pending", "materializing"})
+
+
+def task_blocks_node_deletion(task: dict[str, Any] | None) -> bool:
+    """Return whether deleting this task's node could orphan paid work.
+
+    This is deliberately an allow-only-on-proof rule. Active work, an
+    interrupted worker whose provider request may be live, a fetched provider
+    result awaiting durable storage, or a provider URL not yet written to the
+    local node all block deletion. A provider-confirmed terminal failure or a
+    non-local-validation failure before acceptance is safe to discard.
+    """
+    if not task:
+        return False
+    status = _text(task.get("status")).lower()
+    phase = _text(task.get("phase"))
+    delivery_status = _text(task.get("delivery_status")).lower()
+    # Legacy rows were created with the schema default `pending` even after a
+    # pre-submit rejection or a safe terminal task. That default is not proof a
+    # result is still outstanding; explicit fetching/materializing is.
+    if delivery_status == "pending" and status not in _UNSETTLED_ACTIVE_STATUSES:
+        delivery_status = ""
+    provider_task_id = _text(task.get("provider_task_id"))
+    provider_result_url = _text(task.get("provider_result_url"))
+    local_result_url = _text(task.get("local_result_url"))
+    if status in _UNSETTLED_ACTIVE_STATUSES:
+        return True
+    if phase == "人工确认失败":
+        return False
+    if delivery_status in _UNSETTLED_DELIVERY_STATUSES:
+        return True
+    if provider_task_id and not local_result_url:
+        if is_provider_terminal_failure(task):
+            return False
+        return _provider_reported_live(task) or _provider_submission_may_be_live(task)
+    if provider_result_url and not local_result_url:
+        return True
+    if status == "interrupted" and _provider_submission_may_be_live(task):
+        return not is_provider_terminal_failure(task)
+    if status in {"succeeded", "failed", "interrupted", "cancelled"}:
+        return False
+    return True
+
+
 def is_provider_terminal_failure(task: dict[str, Any] | None) -> bool:
     """Return true only for a supplier-confirmed terminal failure.
 
