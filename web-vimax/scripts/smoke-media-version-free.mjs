@@ -201,6 +201,9 @@ try {
       await sleep(450);
       const position = await page.$eval(count, (button) => {
         const rect = button.getBoundingClientRect();
+        const footer = button.closest('.canvas-media-foot');
+        const status = footer?.querySelector('.canvas-media-foot-text');
+        const statusRect = status?.getBoundingClientRect();
         return {
           x: rect.left + rect.width / 2,
           y: rect.top + rect.height / 2,
@@ -214,10 +217,17 @@ try {
             && rect.top >= 0
             && rect.right <= window.innerWidth
             && rect.bottom <= window.innerHeight,
+          statusHistoryOverlap: statusRect
+            ? Math.max(0, Math.min(statusRect.right, rect.right) - Math.max(statusRect.left, rect.left))
+              * Math.max(0, Math.min(statusRect.bottom, rect.bottom) - Math.max(statusRect.top, rect.top))
+            : 0,
         };
       });
       if (!position.visible) {
         throw new Error(`${label} 版本按钮不在视口：${JSON.stringify(position)}`);
+      }
+      if (position.statusHistoryOverlap > 1) {
+        throw new Error(`${label} 状态与历史控件重叠：${JSON.stringify(position)}`);
       }
       await page.mouse.click(position.x, position.y);
       await page.waitForSelector(

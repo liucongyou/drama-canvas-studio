@@ -1909,9 +1909,9 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 .canvas-media-card-menu button:hover{background:rgba(93,98,233,.34);border-color:#5d62e9;color:#fff}
 .canvas-media-card-menu button.is-del:hover{background:color-mix(in srgb, var(--v-danger) 32%);border-color:var(--v-danger)}
 /* 卡片底部信息条 */
-.canvas-media-foot{display:flex;align-items:center;gap:7px;padding:0 4px;min-width:0}
+.canvas-media-foot{display:flex;flex-wrap:wrap;align-items:center;gap:6px 7px;padding:0 4px;min-width:0}
 .canvas-media-foot-ico{width:18px;height:18px;border-radius:6px;background:#22262e;color:#8b93a3;display:inline-flex;align-items:center;justify-content:center;font-size:10px;flex:none}
-.canvas-media-foot-text{display:flex;flex-direction:column;min-width:0;flex:1;line-height:1.3}
+.canvas-media-foot-text{display:flex;flex:1 1 112px;flex-direction:column;min-width:0;max-width:100%;line-height:1.3}
 .canvas-media-foot-main{font-size:11.5px;color:#c9d1de;display:inline-flex;align-items:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .canvas-media-foot-sub{font-size:10px;color:#6f7a8d;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
 .canvas-media-foot-main.is-busy{color:var(--v-warn)}
@@ -3146,6 +3146,8 @@ html[data-theme='dark'][data-variant='immersive']{
 }
 .canvas-media-version-nav{
   flex:0 0 auto;
+  min-width:98px;
+  flex-basis:98px;
   height:30px;
   display:flex;
   align-items:center;
@@ -3160,6 +3162,7 @@ html[data-theme='dark'][data-variant='immersive']{
   position:relative;
   z-index:6;
   pointer-events:auto;
+  touch-action:manipulation;
 }
 .canvas-media-version-nav button{
   width:30px;

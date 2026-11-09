@@ -24,6 +24,9 @@ describe('media version controls', () => {
     expect(source).toMatch(/const onCanvasPointerDownCapture = useCallback/);
     expect(source).toMatch(/pendingMediaVersionPointerRef\.current = \{/);
     expect(source).toMatch(/selectMediaVersionFromCardRef\.current\(node,/);
+    expect(source).toMatch(
+      /target\?\.closest\('\.canvas-media-version-nav'\)\)\s*\{[\s\S]{0,350}event\.stopPropagation\(\);/,
+    );
   });
 
   it('keeps the version control above the card surface', () => {
@@ -44,6 +47,29 @@ describe('media version controls', () => {
     expect(source).toContain('role="menuitemradio"');
     expect(source).toMatch(/versionIntentRef\.current = \{nodeId: node\.id, index\}/);
     expect(source).toMatch(/setVersionMenuOpen\(false\);\s+versionIntentRef\.current/);
+    expect(source).toMatch(
+      /aria-label="打开历史版本列表"[\s\S]{0,600}event\.preventDefault\(\);/,
+    );
+  });
+
+  it('reserves a non-overlapping footer row for status and history controls', () => {
+    const foot = css.slice(
+      css.indexOf('.canvas-media-foot{'),
+      css.indexOf('.canvas-media-foot-ico{'),
+    );
+    expect(foot).toContain('flex-wrap:wrap');
+    const text = css.slice(
+      css.indexOf('.canvas-media-foot-text{'),
+      css.indexOf('.canvas-media-foot-main{'),
+    );
+    expect(text).toContain('flex:1 1 112px');
+    expect(text).toContain('max-width:100%');
+    const nav = css.slice(
+      css.indexOf('.canvas-media-version-nav{'),
+      css.indexOf('.canvas-media-version-nav button{'),
+    );
+    expect(nav).toContain('min-width:98px');
+    expect(nav).toContain('flex-basis:98px');
   });
 
   it('closes history on blank space, Escape, wheel, and keeps it exclusive with More', () => {

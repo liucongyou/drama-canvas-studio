@@ -4025,10 +4025,14 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
               title="查看历史版本"
               onClick={(event) => {
                 event.stopPropagation();
+                event.preventDefault();
                 setMenu(false);
                 setVersionMenuOpen((open) => !open);
               }}
-              onPointerDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                event.preventDefault();
+              }}
             >
               {currentMediaVersionIndex + 1}/{mediaVersions.length}
             </button>
@@ -14629,6 +14633,12 @@ function CanvasViewInner({
         button: versionButton,
         direction: versionButton.getAttribute('aria-label') === '上一个生成版本' ? -1 : 1,
       };
+      return;
+    }
+    if (target?.closest('.canvas-media-version-nav')) {
+      // The counter opens history. Stop the canvas/node gesture here too,
+      // otherwise React Flow may capture the pointer before click fires.
+      event.stopPropagation();
       return;
     }
     if (!target?.closest('.react-flow__node')) return;
