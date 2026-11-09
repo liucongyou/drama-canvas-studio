@@ -19,8 +19,11 @@ describe('media version controls', () => {
     expect(source).toMatch(
       /className="nodrag"\s+aria-label="下一个生成版本"/s,
     );
-    expect(source.match(/onPointerDown=\{\(event\) => event\.stopPropagation\(\)\}/g)?.length ?? 0)
-      .toBeGreaterThanOrEqual(2);
+    expect(source).toContain('.canvas-media-version-nav button[aria-label="上一个生成版本"]');
+    expect(source).toContain('.canvas-media-version-nav button[aria-label="下一个生成版本"]');
+    expect(source).toMatch(/const onCanvasPointerDownCapture = useCallback/);
+    expect(source).toMatch(/pendingMediaVersionPointerRef\.current = \{/);
+    expect(source).toMatch(/selectMediaVersionFromCardRef\.current\(node,/);
   });
 
   it('keeps the version control above the card surface', () => {

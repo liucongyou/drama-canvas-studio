@@ -105,4 +105,86 @@ describe('media version selection coordinator', () => {
 
     expect(sent).toEqual(['good']);
   });
+
+  it('drains an intent queued during the final sender microtask', async () => {
+    const coordinator = new MediaVersionSelectionCoordinator<string>();
+    const sent: string[] = [];
+
+    const first = coordinator.request('image-1', 'v1', async (value) => {
+      sent.push(value);
+      queueMicrotask(() => {
+        void coordinator.request('image-1', 'v2', async (next) => {
+          sent.push(next);
+        });
+      });
+    });
+
+    await first;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(sent).toEqual(['v1', 'v2']);
+  });
+
+  it('can start a new drain after the previous drain completed', async () => {
+    const coordinator = new MediaVersionSelectionCoordinator<string>();
+    const sent: string[] = [];
+
+    await coordinator.request('image-1', 'v1', async (value) => {
+      sent.push(value);
+    });
+    await coordinator.request('image-1', 'v2', async (value) => {
+      sent.push(value);
+    });
+
+    expect(sent).toEqual(['v1', 'v2']);
+  });
+
+  it('does not let an older intent overwrite a newer queued sender', async () => {
+    const coordinator = new MediaVersionSelectionCoordinator<string>();
+    const gate = deferred();
+    const sent: string[] = [];
+
+    const first = coordinator.request('image-1', 'v1', async () => {
+      await gate.promise;
+    });
+    void coordinator.request('image-1', 'v2-old', async (value) => {
+      sent.push(`old:${value}`);
+    });
+    void coordinator.request('image-1', 'v3-new', async (value) => {
+      sent.push(`new:${value}`);
+    });
+
+    gate.resolve();
+    await first;
+
+    expect(sent).toEqual(['new:v3-new']);
+  });
+
+  it('distinguishes an obsolescent response from the newest intent', async () => {
+    const coordinator = new MediaVersionSelectionCoordinator<string>();
+    const gate = deferred();
+
+    const first = coordinator.request('image-1', 'v1', async () => {
+      await gate.promise;
+    });
+    expect(coordinator.isNewest('image-1', 'v1')).toBe(true);
+    void coordinator.request('image-1', 'v2', async () => {});
+    expect(coordinator.isNewest('image-1', 'v1')).toBe(false);
+    expect(coordinator.isNewest('image-1', 'v2')).toBe(true);
+
+    gate.resolve();
+    await first;
+  });
+
+  it('keeps the final accepted pointer authoritative after older work drains', async () => {
+    const coordinator = new MediaVersionSelectionCoordinator<string>();
+    const first = coordinator.request('image-1', 'v1', async () => {});
+    void coordinator.request('image-1', 'v2', async () => {});
+    await first;
+
+    // `isNewest` answers the queue question; it cannot drive UI authority,
+    // because the final accepted pointer is no longer pending once drained.
+    expect(coordinator.isNewest('image-1', 'v2')).toBe(true);
+    expect(coordinator.isLatestRequested('image-1', 'v1')).toBe(false);
+    expect(coordinator.isLatestRequested('image-1', 'v2')).toBe(true);
+  });
 });

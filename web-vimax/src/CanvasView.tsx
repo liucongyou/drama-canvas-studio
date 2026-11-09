@@ -3005,13 +3005,33 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const mediaVersions = mediaVersionList(node);
   const currentMediaVersionIndex = activeMediaVersionIndex(node, mediaVersions);
   const versionIntentRef = useRef({nodeId: node.id, index: currentMediaVersionIndex});
-  if (versionIntentRef.current.nodeId !== node.id
-      || versionIntentRef.current.index !== currentMediaVersionIndex) {
+  const selectMediaVersionRef = useRef<(nextIndex: number) => void>(() => {});
+  // User navigation intent must not be reset by an older server snapshot.
+  // During rapid clicks, a late render otherwise changes click parity and the
+  // final request targets the previous version even though the label looks
+  // correct. Only a different card gets a fresh cursor.
+  if (versionIntentRef.current.nodeId !== node.id) {
     versionIntentRef.current = {
       nodeId: node.id,
       index: currentMediaVersionIndex,
     };
   }
+  useEffect(() => {
+    if (
+      versionIntentRef.current.nodeId !== node.id
+      || !node._mediaVersionSelection
+    ) {
+      return;
+    }
+    versionIntentRef.current = {
+      nodeId: node.id,
+      index: currentMediaVersionIndex,
+    };
+  }, [
+    currentMediaVersionIndex,
+    node.id,
+    node._mediaVersionSelection,
+  ]);
   const selectMediaVersion = async (nextIndex: number) => {
     const version = selectableMediaVersion(mediaVersions, nextIndex);
     if (!version) {
@@ -3033,6 +3053,9 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
       versionIntentRef.current = {nodeId: node.id, index: resolvedIndex};
     }
     await onSelectMediaVersion(node, versionId);
+  };
+  selectMediaVersionRef.current = (nextIndex: number) => {
+    void selectMediaVersion(nextIndex);
   };
   const cardModel = catalog?.models.find((item) =>
     item.enabled !== false
@@ -3892,11 +3915,15 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
               title="上一个生成版本"
               onClick={(event) => {
                 event.stopPropagation();
+                // Pointer gestures are handled once by the canvas capture
+                // handler before React Flow can take pointer capture. Keep
+                // this path for keyboard and assistive-technology clicks.
+                if (event.detail !== 0) return;
+                event.preventDefault();
                 const index = versionIntentRef.current.index - 1;
                 versionIntentRef.current = {nodeId: node.id, index};
-                selectMediaVersion(index);
+                selectMediaVersionRef.current(index);
               }}
-              onPointerDown={(event) => event.stopPropagation()}
             >
               <ChevronLeft size={10} strokeWidth={2.3} aria-hidden="true" />
             </button>
@@ -3908,11 +3935,12 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
               title="下一个生成版本"
               onClick={(event) => {
                 event.stopPropagation();
+                if (event.detail !== 0) return;
+                event.preventDefault();
                 const index = versionIntentRef.current.index + 1;
                 versionIntentRef.current = {nodeId: node.id, index};
-                selectMediaVersion(index);
+                selectMediaVersionRef.current(index);
               }}
-              onPointerDown={(event) => event.stopPropagation()}
             >
               <ChevronRight size={10} strokeWidth={2.3} aria-hidden="true" />
             </button>
@@ -9505,17 +9533,27 @@ function CanvasViewInner({
         // preserve an unsaved prompt/params draft and screen position, but it
         // must never override the backend status, media URL or generation
         // result. This removes the old "不确定提示先出现、图片后到" race.
+        const preserveSelection = preserveSelectedMediaVersion(local, remote);
+        const confirmedVersionSelection = (
+          local._mediaVersionSelection === true
+          && String(local.params?.activeVersionId || '').trim() !== ''
+          && String(local.params?.activeVersionId || '').trim()
+            === String(remote.params?.activeVersionId || '').trim()
+        );
         return {
           ...local,
           ...remote,
           ...(availability ? {mediaAvailability: availability} : {mediaAvailability: undefined}),
-          ...preserveSelectedMediaVersion(local, remote),
+          ...preserveSelection,
           x: local.x,
           y: local.y,
           updatedAt: local._mediaVersionSelection
             ? local.updatedAt
             : (remote.updatedAt || local.updatedAt),
           positionUpdatedAt: local.positionUpdatedAt,
+          ...(confirmedVersionSelection
+            ? {_mediaVersionSelection: undefined}
+            : {}),
         };
       }));
       projectConnectionsRef.current = workspace.connections;
@@ -9641,6 +9679,16 @@ function CanvasViewInner({
   const mediaVersionSelectionRef = useRef(
     new MediaVersionSelectionCoordinator<string>(),
   );
+  const pendingMediaVersionPointerRef = useRef<{
+    pointerId: number;
+    button: HTMLElement;
+    direction: -1 | 1;
+  } | null>(null);
+  const mediaVersionNavigationIntentRef = useRef<Map<string, number>>(new Map());
+  const selectMediaVersionFromCardRef = useRef<(
+    target: CanvasMediaNode,
+    versionId: string,
+  ) => Promise<void>>(async () => {});
   const mediaPatchSaveInFlightRef = useRef(false);
   const mediaPatchRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaPatchRetryAttemptRef = useRef(0);
@@ -11098,6 +11146,35 @@ function CanvasViewInner({
       setToast('画布尚未绑定集数，暂不能切换生成版本');
       return;
     }
+    const current = mediaNodesRef.current.find((node) => node.id === target.id) || target;
+    const versions = mediaVersionList(current);
+    const selectedIndex = versions.findIndex(
+      (version) => String(version.versionId || '').trim() === versionId,
+    );
+    const selectedVersion = selectedIndex >= 0 ? versions[selectedIndex] : null;
+    if (!selectedVersion) {
+      setToast('该历史版本已不在当前版本列表中，请刷新后重试');
+      return;
+    }
+    // Apply the intent synchronously. Waiting for the network lets rapid
+    // clicks calculate their next target from a stale card.
+    setMediaNodes((prev) => prev.map((item) => {
+      if (item.id !== target.id) return item;
+      return {
+        ...item,
+        mediaUrl: selectedVersion.url,
+        thumbUrl: selectedVersion.thumbUrl,
+        mediaAvailability: selectedVersion.mediaAvailability || 'unknown',
+        _mediaVersionSelection: true,
+        params: {
+          ...(item.params || {}),
+          activeVersionId: versionId,
+          ...(item.params?.videoVersions
+            ? {videoVersionIndex: selectedIndex}
+            : {mediaVersionIndex: selectedIndex}),
+        },
+      };
+    }));
     await mediaVersionSelectionRef.current.request(
       target.id,
       versionId,
@@ -11109,12 +11186,29 @@ function CanvasViewInner({
             target.id,
             latestVersionId,
           );
+          if (result.versionId !== latestVersionId) {
+            throw new Error(
+              `历史版本切换未确认：请求 ${latestVersionId}，后端确认 ${result.versionId || '无'}`,
+            );
+          }
+          if (!mediaVersionSelectionRef.current.isLatestRequested(target.id, latestVersionId)) {
+            // A newer click is already queued. Rendering this older response
+            // would make the card briefly show the wrong version and can let a
+            // background refresh preserve that stale local pointer. Only the
+            // newest intent owns the visible node state.
+            return;
+          }
           const remote = result.node;
           setMediaNodes((prev) => prev.map((item) => item.id === target.id
             ? {
                 ...remote,
                 updatedAt: result.updatedAt || remote.updatedAt,
                 mediaAvailability: 'available',
+                // Keep the local selection lock until a later workspace
+                // snapshot confirms the same activeVersionId. Releasing it
+                // here allowed an older workspace response already in flight
+                // to repaint the previous version immediately after success.
+                _mediaVersionSelection: true,
               }
             : item));
           broadcastMediaChange([target.id]);
@@ -11124,11 +11218,29 @@ function CanvasViewInner({
           setToast(`已切换到历史版本 ${index + 1}/${mediaVersionList(remote).length}`);
         } catch (error) {
           setToast(error instanceof Error ? error.message : '切换历史版本失败');
+          // A failed request must not leave an optimistic pointer pretending
+          // that the server accepted it. Never let an older failure undo a
+          // newer intent that is still queued.
+          if (mediaVersionSelectionRef.current.isLatestRequested(target.id, latestVersionId)) {
+            try {
+              const remoteNodes = await getWorkspaceMediaNodes(session, currentEp);
+              const remote = remoteNodes.find((node) => node.id === target.id);
+              if (remote) {
+                setMediaNodes((prev) => prev.map((item) => (
+                  item.id === target.id ? remote : item
+                )));
+              }
+            } catch {
+              // The error toast remains authoritative; the next workspace
+              // reconciliation retries without dropping the node.
+            }
+          }
           throw error;
         }
       },
     );
   }, [currentEp, readOnly, session, setMediaNodes, setToast]);
+  selectMediaVersionFromCardRef.current = selectMediaVersionFromCard;
 
   const openNodeLocalUpload = useCallback((node: CanvasMediaNode) => {
     if (node.kind === 'text') return;
@@ -11840,10 +11952,17 @@ function CanvasViewInner({
       setMediaNodes(remoteNodes.map((remote) => {
         const local = localById.get(remote.id);
         if (!local) return remote;
+        const preserveSelection = preserveSelectedMediaVersion(local, remote);
+        const confirmedVersionSelection = (
+          local._mediaVersionSelection === true
+          && String(local.params?.activeVersionId || '').trim() !== ''
+          && String(local.params?.activeVersionId || '').trim()
+            === String(remote.params?.activeVersionId || '').trim()
+        );
         return {
           ...local,
           ...remote,
-          ...preserveSelectedMediaVersion(local, remote),
+          ...preserveSelection,
           x: local.x,
           y: local.y,
           positionUpdatedAt: local.positionUpdatedAt,
@@ -11853,6 +11972,9 @@ function CanvasViewInner({
           mediaAvailability: remote.mediaUrl === local.mediaUrl
             ? local.mediaAvailability
             : 'unknown',
+          ...(confirmedVersionSelection
+            ? {_mediaVersionSelection: undefined}
+            : {}),
         };
       }));
       if (tasks && !disposed) {
@@ -14320,12 +14442,67 @@ function CanvasViewInner({
   const onCanvasPointerDownCapture = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement | null;
+    const versionButton = target?.closest<HTMLButtonElement>(
+      '.canvas-media-version-nav button[aria-label="上一个生成版本"], .canvas-media-version-nav button[aria-label="下一个生成版本"]',
+    );
+    if (versionButton) {
+      // React Flow starts a node gesture during pointerdown and may capture the
+      // pointer before the button receives a real mouse click. Handle this one
+      // native control at the capture boundary so version navigation is a
+      // control interaction, never a card drag/click.
+      event.stopPropagation();
+      event.preventDefault();
+      pendingMediaVersionPointerRef.current = {
+        pointerId: event.pointerId,
+        button: versionButton,
+        direction: versionButton.getAttribute('aria-label') === '上一个生成版本' ? -1 : 1,
+      };
+      return;
+    }
     if (!target?.closest('.react-flow__node')) return;
     pointerSurfaceRef.current = event.currentTarget;
     dragPointerIdRef.current = event.pointerId;
   }, []);
 
   const onCanvasPointerRelease = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const versionIntent = pendingMediaVersionPointerRef.current;
+    if (versionIntent && versionIntent.pointerId === event.pointerId) {
+      pendingMediaVersionPointerRef.current = null;
+      event.stopPropagation();
+      event.preventDefault();
+      if (event.type === 'pointercancel' || !versionIntent.button.isConnected) return;
+      const rect = versionIntent.button.getBoundingClientRect();
+      if (
+        event.clientX < rect.left
+        || event.clientX > rect.right
+        || event.clientY < rect.top
+        || event.clientY > rect.bottom
+      ) {
+        return;
+      }
+      const flowNode = versionIntent.button.closest<HTMLElement>('.react-flow__node[data-id]');
+      const flowId = flowNode?.dataset.id || '';
+      const nodeId = flowId.startsWith(MEDIA_PREFIX) ? flowId.slice(MEDIA_PREFIX.length) : '';
+      const node = mediaNodesRef.current.find((item) => item.id === nodeId);
+      if (!node) return;
+      const versions = mediaVersionList(node);
+      const currentIndex = mediaVersionNavigationIntentRef.current.get(node.id)
+        ?? activeMediaVersionIndex(node, versions);
+      const nextIndex = currentIndex + versionIntent.direction;
+      const selected = selectableMediaVersion(versions, nextIndex);
+      if (!selected) {
+        setToast('该方向没有可切换的有效历史版本');
+        return;
+      }
+      const resolvedIndex = versions.findIndex(
+        (item) => String(item.versionId || '').trim() === String(selected.versionId || '').trim(),
+      );
+      if (resolvedIndex >= 0) {
+        mediaVersionNavigationIntentRef.current.set(node.id, resolvedIndex);
+      }
+      void selectMediaVersionFromCardRef.current(node, String(selected.versionId));
+      return;
+    }
     const surface = event.currentTarget;
     if (dragPointerIdRef.current === event.pointerId && surface.hasPointerCapture(event.pointerId)) {
       try {
@@ -14336,7 +14513,7 @@ function CanvasViewInner({
     }
     dragPointerIdRef.current = null;
     clearStuckDrag();
-  }, [clearStuckDrag]);
+  }, [clearStuckDrag, setToast]);
 
   // 框选结束后把整集框从选中里摘掉：它包住整列段卡，而框选是"碰到即选"，
   // 被捎上之后一拖就把整集内容全带走了——"框选几段批量摆放"因此失效。
@@ -15364,16 +15541,26 @@ function CanvasViewInner({
           setMediaNodes((prev) => prev.map((local) => {
             const remote = remoteById.get(local.id);
             if (!remote) return local;
+            const preserveSelection = preserveSelectedMediaVersion(local, remote);
+            const confirmedVersionSelection = (
+              local._mediaVersionSelection === true
+              && String(local.params?.activeVersionId || '').trim() !== ''
+              && String(local.params?.activeVersionId || '').trim()
+                === String(remote.params?.activeVersionId || '').trim()
+            );
             return {
               ...local,
               ...remote,
-              ...preserveSelectedMediaVersion(local, remote),
+              ...preserveSelection,
               x: local.x,
               y: local.y,
               updatedAt: local._mediaVersionSelection
                 ? local.updatedAt
                 : (remote.updatedAt || local.updatedAt),
               positionUpdatedAt: local.positionUpdatedAt,
+              ...(confirmedVersionSelection
+                ? {_mediaVersionSelection: undefined}
+                : {}),
             };
           }));
         })
