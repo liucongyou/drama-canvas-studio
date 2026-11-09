@@ -4596,15 +4596,23 @@ def patch_project_node_atomic(
             return None
         current_revision = int(project_row[0] or 0)
         row = con.execute(
-            "SELECT node_json FROM canvas_projection_nodes "
-            "WHERE project_id=? AND episode_id=? AND node_id=?",
-            (project_id, normalized_episode, node_id),
+            "SELECT node_json,episode_id FROM canvas_projection_nodes "
+            "WHERE project_id=? AND node_id=?",
+            (project_id, node_id),
         ).fetchone()
         if not row:
             return None
         source = json.loads(row[0] or "{}")
         if not isinstance(source, dict):
             return None
+        # Asset identity is project-wide. A shared asset may be displayed and
+        # edited from another episode, but its storage owner must remain the
+        # episode that created it. Using the viewed episode in the SQL WHERE
+        # caused cross-episode uploads/version switches to fail with a false
+        # 409 even though the node existed.
+        owner_episode = str(row[1] or "").strip().upper()
+        if not owner_episode:
+            owner_episode = normalized_episode
         incoming = patch_node if isinstance(patch_node, dict) else {}
         base_updated_at = str(incoming.get("_baseUpdatedAt") or "")
         if base_updated_at and str(source.get("updatedAt") or "") > base_updated_at:
@@ -4624,16 +4632,16 @@ def patch_project_node_atomic(
             source["position"] = incoming["position"]
         if "title" in incoming:
             source["title"] = incoming["title"]
-        source["episodeId"] = normalized_episode
-        source["metadata"]["episodeId"] = normalized_episode
+        source["episodeId"] = owner_episode
+        source["metadata"]["episodeId"] = owner_episode
         stamp = _now_iso()
         source["updatedAt"] = stamp
         changed = con.execute(
             "UPDATE canvas_projection_nodes SET episode_id=?,node_type=?,title=?,"
             "position_x=?,position_y=?,metadata_json=?,node_json=?,updated_at=? "
-            "WHERE project_id=? AND episode_id=? AND node_id=?",
+            "WHERE project_id=? AND node_id=?",
             (
-                normalized_episode,
+                owner_episode,
                 str(source.get("type") or "text"),
                 str(source.get("title") or ""),
                 float((source.get("position") or {}).get("x") or 0),
@@ -4642,7 +4650,6 @@ def patch_project_node_atomic(
                 json.dumps(source, ensure_ascii=False),
                 stamp,
                 project_id,
-                normalized_episode,
                 node_id,
             ),
         )
@@ -4690,7 +4697,7 @@ def patch_project_node_atomic(
         refresh_projection_episode_membership(
             con,
             project_id,
-            normalized_episode,
+            owner_episode,
             updated_at=stamp,
         )
         return source

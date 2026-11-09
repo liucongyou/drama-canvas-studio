@@ -569,7 +569,7 @@ class CanvasProjectionTests(unittest.TestCase):
             "atomic",
         )
 
-    def test_atomic_node_edit_targets_project_and_episode(self):
+    def test_atomic_node_edit_targets_project_and_preserves_owner(self):
         first_project = canvas_store.create_project(
             "projection-atomic-project-a",
             self._payload(),
@@ -599,10 +599,85 @@ class CanvasProjectionTests(unittest.TestCase):
         first_node = next(item for item in first["nodes"] if item["id"] == "image-1")
         second_node = next(item for item in second["nodes"] if item["id"] == "image-1")
 
-        self.assertIsNone(wrong_episode)
+        self.assertEqual(wrong_episode["episodeId"], "EP001")
+        self.assertEqual(wrong_episode["metadata"]["episodeId"], "EP001")
         self.assertEqual(right_project["metadata"]["prompt"], "second project")
-        self.assertEqual(first_node["metadata"]["prompt"], "角色")
+        self.assertEqual(first_node["metadata"]["prompt"], "wrong episode")
+        self.assertEqual(first_node["metadata"]["episodeId"], "EP001")
         self.assertEqual(second_node["metadata"]["prompt"], "second project")
+
+    def test_atomic_shared_asset_edit_from_referencing_episode_preserves_owner(self):
+        project_id = canvas_store.create_project(
+            "projection-shared-atomic-edit",
+            self._payload(),
+        )
+
+        saved = canvas_store.patch_project_node_atomic(
+            project_id,
+            "EP001",
+            "image-2",
+            {"metadata": {"prompt": "shared update"}},
+            merge_metadata=lambda target, incoming: target.update(incoming),
+        )
+
+        self.assertEqual(saved["metadata"]["prompt"], "shared update")
+        self.assertEqual(saved["episodeId"], "EP002")
+        self.assertEqual(saved["metadata"]["episodeId"], "EP002")
+        workspace = canvas_store.get_project_workspace_nodes(
+            project_id,
+            "EP002",
+        )
+        node = next(
+            item for item in workspace["nodes"]
+            if item["id"] == "image-2"
+        )
+        self.assertEqual(node["metadata"]["prompt"], "shared update")
+        self.assertEqual(node["metadata"]["episodeId"], "EP002")
+
+    def test_atomic_shared_asset_edit_still_rejects_stale_non_asset_fields(self):
+        project_id = canvas_store.create_project(
+            "projection-shared-atomic-conflict",
+            self._payload(),
+        )
+        stale = canvas_store.get_projection_node(project_id, "image-2")
+        stale_updated_at = "2026-01-01T00:00:00+00:00"
+
+        def mark_stale(con):
+            con.execute(
+                "UPDATE canvas_projection_nodes SET updated_at=?,node_json=? "
+                "WHERE project_id=? AND node_id=?",
+                (
+                    stale_updated_at,
+                    json.dumps({
+                        **stale,
+                        "updatedAt": stale_updated_at,
+                    }, ensure_ascii=False),
+                    project_id,
+                    "image-2",
+                ),
+            )
+
+        canvas_store._run_write_transaction(mark_stale)
+        stale["updatedAt"] = stale_updated_at
+        canvas_store.patch_project_node_atomic(
+            project_id,
+            "EP001",
+            "image-2",
+            {"metadata": {"prompt": "latest", "status": "done"}},
+            merge_metadata=lambda target, incoming: target.update(incoming),
+        )
+
+        with self.assertRaises(canvas_store.RevisionConflictError):
+            canvas_store.patch_project_node_atomic(
+                project_id,
+                "EP001",
+                "image-2",
+                {
+                    "_baseUpdatedAt": stale_updated_at,
+                    "metadata": {"prompt": "stale", "status": "failed"},
+                },
+                merge_metadata=lambda target, incoming: target.update(incoming),
+            )
 
     def test_same_node_id_in_two_projects_stays_isolated(self):
         first_project = canvas_store.create_project(

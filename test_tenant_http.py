@@ -983,6 +983,130 @@ class TenantHttpTests(unittest.TestCase):
         self.assertEqual(saved["metadata"]["prompt"], "跨集共享更新")
         self.assertEqual(saved["metadata"]["episodeId"], "EP001")
 
+    def test_local_upload_and_history_switch_work_from_another_episode(self):
+        tenant = tenant_registry.get_tenant_by_slug("alpha")
+        invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
+        _, headers, _ = self.request(
+            "GET",
+            f"/invite/{invite['token']}",
+            "alpha.example.com",
+        )
+        cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+        _, _, body = self.request(
+            "POST",
+            "/api/projects",
+            "alpha.example.com",
+            cookie,
+            {"title": "共享素材版本跨集测试"},
+        )
+        pid = json.loads(body)["id"]
+        upload_dir = Path(tenant_context.current_upload_dir())
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        first_name = "shared-first.png"
+        second_name = "shared-second.png"
+        image_bytes = b"\x89PNG\r\n\x1a\nshared-image"
+        (upload_dir / first_name).write_bytes(image_bytes)
+        (upload_dir / second_name).write_bytes(image_bytes + b"-v2")
+
+        node = {
+            "id": "shared-version-node",
+            "type": "image",
+            "title": "共享角色",
+            "metadata": {
+                "prompt": "共享角色",
+                "content": f"/uploads/{first_name}",
+                "status": "done",
+                "params": {
+                    "mediaVersions": [{
+                        "versionId": "image:first",
+                        "url": f"/uploads/{first_name}",
+                        "sourceType": "local",
+                    }],
+                    "mediaVersionIndex": 0,
+                    "activeVersionId": "image:first",
+                },
+            },
+        }
+        status, _, _ = self.request(
+            "PUT",
+            f"/api/projects/{pid}/nodes",
+            "alpha.example.com",
+            cookie,
+            {"nodes": [node], "episodeId": "EP002"},
+        )
+        self.assertEqual(status, 200)
+
+        with patch.object(
+            server.media_storage,
+            "_local_path",
+            return_value=str(upload_dir / second_name),
+        ):
+            status, _, body = self.request(
+                "POST",
+                f"/api/projects/{pid}/nodes/{node['id']}/local-version",
+                "alpha.example.com",
+                cookie,
+                {
+                    "episodeId": "EP001",
+                    "upload": {
+                        "url": f"/uploads/{second_name}",
+                        "sha256": "d" * 64,
+                        "fileName": second_name,
+                        "mime": "image/png",
+                        "size": 12,
+                    },
+                },
+            )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+        uploaded = json.loads(body)
+        self.assertEqual(uploaded["node"]["metadata"]["episodeId"], "EP002")
+        self.assertEqual(
+            uploaded["node"]["metadata"]["content"],
+            f"/uploads/{second_name}",
+        )
+        self.assertEqual(
+            uploaded["node"]["metadata"]["params"]["activeVersionId"],
+            "image:local:" + "d" * 32,
+        )
+
+        with patch.object(
+            server.media_storage,
+            "_local_path",
+            return_value=str(upload_dir / first_name),
+        ):
+            status, _, body = self.request(
+                "POST",
+                f"/api/projects/{pid}/nodes/{node['id']}/select-version",
+                "alpha.example.com",
+                cookie,
+                {"episodeId": "EP001", "versionId": "image:first"},
+            )
+        self.assertEqual(status, 200, body.decode("utf-8"))
+        selected = json.loads(body)
+        self.assertEqual(selected["node"]["metadata"]["episodeId"], "EP002")
+        self.assertEqual(
+            selected["node"]["metadata"]["content"],
+            f"/uploads/{first_name}",
+        )
+        self.assertEqual(
+            selected["node"]["metadata"]["params"]["activeVersionId"],
+            "image:first",
+        )
+
+        with tenant_context.use_tenant(tenant["id"], tenant["slug"]):
+            workspace = server.store.get_project_workspace_nodes(pid, "EP002")
+            raw_node = server.store.get_projection_node(pid, node["id"])
+        persisted = next(
+            item for item in workspace["nodes"]
+            if item["id"] == node["id"]
+        )
+        self.assertEqual(persisted["metadata"]["episodeId"], "EP002")
+        self.assertEqual(
+            persisted["metadata"]["params"]["activeVersionId"],
+            "image:first",
+        )
+        self.assertEqual(raw_node["metadata"]["episodeId"], "EP002")
+
     def test_bulk_node_save_updates_shared_assets_without_reassigning_owner(self):
         tenant = tenant_registry.get_tenant_by_slug("alpha")
         invite = tenant_registry.create_invite(tenant["id"], ttl_seconds=3600)
