@@ -820,7 +820,7 @@ export function selectableMediaVersion(
     const version = versions[normalized];
     if (
       version?.url
-      && version.mediaAvailability !== 'missing'
+      && version.mediaAvailability === 'available'
       && String(version.versionId || '').trim()
     ) {
       return version;

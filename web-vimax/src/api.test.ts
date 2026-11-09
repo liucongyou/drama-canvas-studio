@@ -2380,10 +2380,10 @@ describe('api request recovery', () => {
 
   it('skips a missing historical object without blocking later valid versions', () => {
     const versions = [
-      {versionId: 'image:v1', url: '/uploads/v1.png'},
-      {versionId: 'image:v2', url: '/uploads/v2.png'},
+      {versionId: 'image:v1', url: '/uploads/v1.png', mediaAvailability: 'available'},
+      {versionId: 'image:v2', url: '/uploads/v2.png', mediaAvailability: 'available'},
       {versionId: 'image:v3', url: '/uploads/v3.png', mediaAvailability: 'missing'},
-      {versionId: 'image:v4', url: '/uploads/v4.png'},
+      {versionId: 'image:v4', url: '/uploads/v4.png', mediaAvailability: 'available'},
     ];
 
     expect(selectableMediaVersion(versions, 1)?.versionId).toBe('image:v2');

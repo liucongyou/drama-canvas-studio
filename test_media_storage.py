@@ -248,6 +248,62 @@ class MediaStorageTests(unittest.TestCase):
         version = node["metadata"]["params"]["mediaVersions"][0]
         self.assertEqual(version["mediaAvailability"], "unknown")
 
+    def test_storage_receipt_keeps_local_history_available_after_local_cleanup(self):
+        node = {
+            "metadata": {
+                "content": "/uploads/current.png",
+                "params": {
+                    "mediaVersions": [{
+                        "versionId": "image:tos-backed",
+                        "url": "/uploads/generated-old.jpg",
+                        "storage": {
+                            "status": "stored",
+                            "provider": "tos",
+                            "bucket": "media-bucket",
+                            "key": "drama-canvas/image/generated-old.jpg",
+                        },
+                    }],
+                },
+            },
+        }
+        with (
+            mock.patch.object(
+                media_storage,
+                "public_url",
+                return_value="https://media-bucket.tos-cn-beijing.volces.com/generated-old.jpg?signature=fresh",
+            ),
+            mock.patch.object(
+                media_storage,
+                "_local_path",
+                side_effect=media_storage.MediaStorageError("本地素材不存在"),
+            ),
+        ):
+            media_storage.project_node_media_url(node)
+        version = node["metadata"]["params"]["mediaVersions"][0]
+        self.assertEqual(version["mediaAvailability"], "available")
+        self.assertIn("signature=fresh", version["url"])
+
+    def test_local_history_without_bytes_or_receipt_is_missing(self):
+        node = {
+            "metadata": {
+                "content": "/uploads/current.png",
+                "params": {
+                    "mediaVersions": [{
+                        "versionId": "image:gone",
+                        "url": "/uploads/generated-gone.jpg",
+                    }],
+                },
+            },
+        }
+        with mock.patch.object(
+            media_storage,
+            "_local_path",
+            side_effect=media_storage.MediaStorageError("本地素材不存在"),
+        ):
+            media_storage.project_node_media_url(node)
+        version = node["metadata"]["params"]["mediaVersions"][0]
+        self.assertEqual(version["mediaAvailability"], "missing")
+
     def test_storage_receipt_with_failed_projection_is_not_available(self):
         node = {
             "metadata": {

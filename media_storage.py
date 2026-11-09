@@ -700,18 +700,23 @@ def project_node_media_url(node: dict[str, Any]) -> str:
                 # A storage receipt is metadata, not proof that this read can
                 # produce a usable URL. Only a successful durable projection is
                 # authoritative; otherwise a bad credential or missing object
-                # would still render as an available historical version.
+                # would still render as an available historical version. A
+                # local-only legacy version is authoritative only when its file
+                # still exists in this tenant.
                 version_available = bool(
                     version_storage and version_url and not version_error
                 )
-                if version_available:
-                    pass
-                elif raw_version_url.startswith("/uploads/"):
+                if not version_available and raw_version_url.startswith("/uploads/"):
+                    # Older rows can point at a local file while retaining a
+                    # durable TOS receipt. The local file may have been cleaned
+                    # up, but the object is still the authoritative copy.
                     try:
                         _local_path(raw_version_url)
                         version_available = True
                     except MediaStorageError:
-                        version_available = False
+                        version_available = bool(
+                            version_storage and version_url and not version_error
+                        )
                 elif raw_version_url.startswith(("http://", "https://", "data:")):
                     # A freshly signed URL proves the durable object was readable
                     # by the signer. Legacy unsigned URLs without a descriptor are
