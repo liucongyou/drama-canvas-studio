@@ -648,6 +648,54 @@ def _descriptor_for_version(
     return None
 
 
+def resolve_version_media(
+    meta: dict[str, Any],
+    version: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str, str, str]:
+    """Resolve one version with the exact rules used by the API projection.
+
+    Returns ``(descriptor, display_url, error, availability)``. Workspace reads
+    and explicit version selection must both call this function; otherwise a
+    card can advertise a version as available while the write path rejects it.
+    """
+    meta = meta if isinstance(meta, dict) else {}
+    active_content = str(meta.get("content") or "").strip()
+    active_storage = _stored_descriptor(meta.get("storage"))
+    descriptor = _descriptor_for_version(
+        version,
+        active_storage=active_storage,
+        active_content=active_content,
+    )
+    raw_url = str(version.get("url") or "").strip()
+    display_url = raw_url
+    error = ""
+    if descriptor:
+        try:
+            display_url = _cached_public_url(descriptor) or raw_url
+        except Exception as exc:
+            error = str(exc)
+
+    available = bool(descriptor and display_url and not error)
+    if not available and raw_url.startswith("/uploads/"):
+        try:
+            _local_path(raw_url)
+            available = True
+        except MediaStorageError:
+            available = False
+    elif raw_url.startswith(("http://", "https://", "data:")):
+        available = available or bool(
+            display_url and display_url != raw_url
+        )
+
+    if available:
+        availability = "available"
+    elif raw_url.startswith(("http://", "https://")):
+        availability = "missing" if _signed_url_expired(raw_url) else "unknown"
+    else:
+        availability = "missing"
+    return descriptor, display_url, error, availability
+
+
 def project_node_media_url(node: dict[str, Any]) -> str:
     """Project durable object-store receipts into response-only playback URLs.
 
@@ -685,58 +733,13 @@ def project_node_media_url(node: dict[str, Any]) -> str:
             for version in versions:
                 if not isinstance(version, dict):
                     continue
-                version_storage = _descriptor_for_version(
-                    version,
-                    active_storage=storage,
-                    active_content=durable_content,
-                )
                 raw_version_url = str(version.get("url") or "")
-                version_url, version_error = projection(
-                    version_storage,
-                    raw_version_url,
+                version_storage, version_url, version_error, availability = (
+                    resolve_version_media(meta, version)
                 )
                 if version_url:
                     version["url"] = version_url
-                # A storage receipt is metadata, not proof that this read can
-                # produce a usable URL. Only a successful durable projection is
-                # authoritative; otherwise a bad credential or missing object
-                # would still render as an available historical version. A
-                # local-only legacy version is authoritative only when its file
-                # still exists in this tenant.
-                version_available = bool(
-                    version_storage and version_url and not version_error
-                )
-                if not version_available and raw_version_url.startswith("/uploads/"):
-                    # Older rows can point at a local file while retaining a
-                    # durable TOS receipt. The local file may have been cleaned
-                    # up, but the object is still the authoritative copy.
-                    try:
-                        _local_path(raw_version_url)
-                        version_available = True
-                    except MediaStorageError:
-                        version_available = bool(
-                            version_storage and version_url and not version_error
-                        )
-                elif raw_version_url.startswith(("http://", "https://", "data:")):
-                    # A freshly signed URL proves the durable object was readable
-                    # by the signer. Legacy unsigned URLs without a descriptor are
-                    # still usable candidates but cannot be called confirmed.
-                    version_available = version_available or bool(
-                        version_url and version_url != raw_version_url
-                    )
-                if version_available:
-                    version["mediaAvailability"] = "available"
-                elif raw_version_url.startswith(("http://", "https://")):
-                    # A signed provider URL without a durable storage receipt
-                    # cannot be recovered after expiry. Do not let the UI switch
-                    # the active card to a known-dead history entry.
-                    version["mediaAvailability"] = (
-                        "missing"
-                        if _signed_url_expired(raw_version_url)
-                        else "unknown"
-                    )
-                else:
-                    version["mediaAvailability"] = "missing"
+                version["mediaAvailability"] = availability
                 if active_id and str(version.get("versionId") or "").strip() == active_id:
                     version["active"] = True
 

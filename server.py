@@ -3068,21 +3068,13 @@ def _select_media_version(meta, node_type, version_id):
             status=404,
         )
     selected = dict(versions[selected_index])
-    version_projection = {
-        "metadata": {
-            "content": str(selected.get("url") or ""),
-            "storage": selected.get("storage"),
-            "params": {"mediaVersions": [selected]},
-        }
-    }
-    selected_url = media_storage.project_node_media_url(version_projection)
-    projected_version = (
-        version_projection["metadata"]["params"]["mediaVersions"][0]
+    version_storage, selected_url, _version_error, availability = (
+        media_storage.resolve_version_media(
+            meta,
+            selected,
+        )
     )
-    if (
-        not selected_url
-        or projected_version.get("mediaAvailability") == "missing"
-    ):
+    if not selected_url or availability != "available":
         raise MediaVersionError(
             "该历史版本的媒体文件已失效，不能切换到已丢失的素材",
             code="MEDIA_VERSION_MISSING",
@@ -3093,8 +3085,10 @@ def _select_media_version(meta, node_type, version_id):
     # durable URL is what the card should display; never store a signed URL into
     # current-version truth.
     durable_url = str(selected.get("url") or "").strip()
-    display_url = str(projected_version.get("url") or selected_url).strip()
+    display_url = str(selected_url or durable_url).strip()
     selected["url"] = durable_url
+    if version_storage:
+        selected["storage"] = dict(version_storage)
     selected["thumbUrl"] = str(selected.get("thumbUrl") or "").strip()
     if kind == "video" and not selected["thumbUrl"] and durable_url.startswith("/uploads/"):
         thumb = ensure_video_thumbnail(durable_url)

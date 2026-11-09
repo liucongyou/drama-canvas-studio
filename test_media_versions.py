@@ -467,6 +467,91 @@ class MediaVersionTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "MEDIA_VERSION_MISSING")
         self.assertEqual(meta, before)
 
+    def test_select_reuses_same_object_storage_receipt_and_persists_it(self):
+        descriptor = {
+            "status": "stored",
+            "provider": "tos",
+            "bucket": "media-bucket",
+            "key": "drama-canvas/image/shared.png",
+        }
+        stale_url = (
+            "https://media-bucket.tos-cn-beijing.volces.com/"
+            "drama-canvas/image/shared.png?X-Tos-Expires=1"
+        )
+        meta = {
+            "content": stale_url,
+            "status": "done",
+            "storage": dict(descriptor),
+            "params": {
+                "mediaVersions": [
+                    {
+                        "versionId": "image:same-object",
+                        "url": stale_url,
+                    },
+                    {
+                        "versionId": "image:current",
+                        "url": stale_url,
+                    },
+                ],
+                "activeVersionId": "image:current",
+                "mediaVersionIndex": 1,
+            },
+        }
+        fresh_url = (
+            "https://media-bucket.tos-cn-beijing.volces.com/"
+            "drama-canvas/image/shared.png?X-Tos-Expires=4102444800"
+        )
+        server.media_storage.clear_playback_url_cache()
+        with mock.patch.object(
+            server.media_storage,
+            "public_url",
+            return_value=fresh_url,
+        ):
+            selected = server._select_media_version(
+                meta,
+                "image",
+                "image:same-object",
+            )
+        self.assertEqual(selected["versionId"], "image:same-object")
+        self.assertEqual(selected["version"]["storage"], descriptor)
+        self.assertEqual(meta["params"]["activeVersionId"], "image:same-object")
+        self.assertEqual(meta["storage"], descriptor)
+        self.assertEqual(meta["content"], fresh_url)
+
+    def test_select_rejects_foreign_or_expired_history_without_storage_receipt(self):
+        meta = {
+            "content": "/uploads/current.png",
+            "status": "done",
+            "storage": {
+                "status": "stored",
+                "provider": "tos",
+                "bucket": "bucket",
+                "key": "current.png",
+            },
+            "params": {
+                "mediaVersions": [
+                    {
+                        "versionId": "image:foreign",
+                        "url": (
+                            "https://bucket.tos-cn-beijing.volces.com/"
+                            "foreign.png?X-Tos-Expires=4102444800"
+                        ),
+                    },
+                    {
+                        "versionId": "image:current",
+                        "url": "/uploads/current.png",
+                    },
+                ],
+                "activeVersionId": "image:current",
+                "mediaVersionIndex": 1,
+            },
+        }
+        before = dict(meta)
+        with self.assertRaises(server.MediaVersionError) as raised:
+            server._select_media_version(meta, "image", "image:foreign")
+        self.assertEqual(raised.exception.code, "MEDIA_VERSION_MISSING")
+        self.assertEqual(meta, before)
+
     def test_local_version_has_stable_id_and_becomes_active_reference(self):
         meta = {
             "content": "/uploads/generated.png",
