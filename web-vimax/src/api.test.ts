@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {AUTH_REQUIRED_EVENT, activeMediaVersionIndex, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getManagedTenantAudit, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, shareEventsUrl, shareMediaSourceUrl, shareWorkspaceSessionId, subscribeToEvents} from './api';
+import {AUTH_REQUIRED_EVENT, activeMediaVersionIndex, createCanvasEpisode, friendlyMediaError, generateCanvasNodeNow, getCanvas, getCanvasEpisodeWorkspace, getCanvasMediaNodes, getCanvasWorkspace, getManagedTenantAudit, getModelCatalog, getQualityReport, getSessions, getWorkspaceIndex, getWorkspaceMediaNodes, isLiveProviderGeneration, loginAccount, mediaVersionList, patchMediaNodesFields, projectCursorStorageKey, projectEventsUrl, saveCanvasEpisodeViewport, saveCanvasMediaNodes, saveCanvasMediaNodePositions, selectableMediaVersion, shareEventsUrl, shareMediaSourceUrl, shareWorkspaceSessionId, subscribeToEvents} from './api';
 
 describe('project event cursor', () => {
   it('reconnects SSE from the last rendered events for this project', () => {
@@ -2376,6 +2376,20 @@ describe('api request recovery', () => {
       'image:task-a',
       'image:task-b',
     ]);
+  });
+
+  it('skips a missing historical object without blocking later valid versions', () => {
+    const versions = [
+      {versionId: 'image:v1', url: '/uploads/v1.png'},
+      {versionId: 'image:v2', url: '/uploads/v2.png'},
+      {versionId: 'image:v3', url: '/uploads/v3.png', mediaAvailability: 'missing'},
+      {versionId: 'image:v4', url: '/uploads/v4.png'},
+    ];
+
+    expect(selectableMediaVersion(versions, 1)?.versionId).toBe('image:v2');
+    expect(selectableMediaVersion(versions, 2)?.versionId).toBe('image:v4');
+    expect(selectableMediaVersion(versions, 3)?.versionId).toBe('image:v4');
+    expect(selectableMediaVersion(versions, -2)?.versionId).toBe('image:v2');
   });
 
   it('keeps each video poster bound to its own version', () => {

@@ -809,12 +809,25 @@ export function selectableMediaVersion(
   nextIndex: number,
 ): CanvasVideoVersion | null {
   if (!Array.isArray(versions) || versions.length < 2) return null;
-  const normalized = (nextIndex + versions.length) % versions.length;
-  const version = versions[normalized];
-  if (!version?.url) return null;
-  if (version.mediaAvailability === 'missing') return null;
-  if (!String(version.versionId || '').trim()) return null;
-  return version;
+  if (!Number.isFinite(nextIndex)) return null;
+  const step = nextIndex < 0 ? -1 : 1;
+  let index = nextIndex;
+  // A single missing historical object must not make every version on that
+  // side unreachable. Skip only the invalid slot and keep the requested
+  // direction until we have visited the whole list.
+  for (let attempt = 0; attempt < versions.length; attempt += 1) {
+    const normalized = (index + versions.length) % versions.length;
+    const version = versions[normalized];
+    if (
+      version?.url
+      && version.mediaAvailability !== 'missing'
+      && String(version.versionId || '').trim()
+    ) {
+      return version;
+    }
+    index += step;
+  }
+  return null;
 }
 
 export function activeMediaVersionIndex(

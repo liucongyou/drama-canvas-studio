@@ -3023,6 +3023,15 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
       onToast?.('该历史版本缺少稳定版本 ID，请刷新后重试');
       return;
     }
+    // Keep the card's navigation cursor on the version that was actually
+    // selected. Otherwise a skipped missing slot leaves the cursor behind and
+    // the next click can repeatedly target the same unreachable direction.
+    const resolvedIndex = mediaVersions.findIndex(
+      (item) => String(item.versionId || '').trim() === versionId,
+    );
+    if (resolvedIndex >= 0) {
+      versionIntentRef.current = {nodeId: node.id, index: resolvedIndex};
+    }
     await onSelectMediaVersion(node, versionId);
   };
   const cardModel = catalog?.models.find((item) =>
