@@ -2252,6 +2252,97 @@ describe('api request recovery', () => {
     expect(requestBody.nodes[0].metadata.params.mediaVersions[0].url).toBe('/uploads/generated.png');
   });
 
+  it.each([
+    ['', '/uploads/local.png', '/uploads/local.png'],
+    ['http://127.0.0.1:8890', 'http://127.0.0.1:8890/uploads/local.png', '/uploads/local.png'],
+    ['https://yjapi.pduoduo.vip', 'https://yjapi.pduoduo.vip/uploads/local.png', '/uploads/local.png'],
+  ])('canonicalizes local-version upload receipts for %s', async (apiBase, uploadUrl, expectedUrl) => {
+    vi.resetModules();
+    vi.stubGlobal('window', apiBase ? {__CANVAS_API_BASE__: apiBase} : {});
+    const remoteApi = await import('./api');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      versionId: 'image:local:verified',
+      updatedAt: '2026-11-09T00:00:00Z',
+      node: {
+        id: 'image-1',
+        type: 'image',
+        title: '场景｜街头饭馆门前·母版（图36）',
+        position: {x: 0, y: 0},
+        updatedAt: '2026-11-09T00:00:00Z',
+        metadata: {
+          status: 'done',
+          content: '/uploads/local.png',
+          params: {
+            activeVersionId: 'image:local:verified',
+            mediaVersions: [{versionId: 'image:local:verified', url: '/uploads/local.png'}],
+          },
+        },
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await remoteApi.appendLocalMediaVersion('project-1', 'EP001', 'image-1', {
+      upload: {
+        url: uploadUrl,
+        fileName: 'local.png',
+        mime: 'image/png',
+        size: 42,
+        sha256: 'a'.repeat(64),
+      },
+    });
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(requestBody.episodeId).toBe('EP001');
+    expect(requestBody.upload.url).toBe(expectedUrl);
+    expect(requestBody).not.toHaveProperty('baseUpdatedAt');
+  });
+
+  it('does not couple version selection to a stale card revision', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      versionId: 'image:local:next',
+      updatedAt: '2026-11-09T00:00:01Z',
+      node: {
+        id: 'image-1',
+        type: 'image',
+        title: '图片',
+        position: {x: 0, y: 0},
+        updatedAt: '2026-11-09T00:00:01Z',
+        metadata: {
+          status: 'done',
+          content: '/uploads/next.png',
+          params: {
+            activeVersionId: 'image:local:next',
+            mediaVersions: [{versionId: 'image:local:next', url: '/uploads/next.png'}],
+          },
+        },
+      },
+    }), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const remoteApi = await import('./api');
+    await remoteApi.selectCanvasMediaVersion(
+      'project-1',
+      'EP001',
+      'image-1',
+      'image:local:next',
+    );
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(requestBody).toMatchObject({
+      episodeId: 'EP001',
+      versionId: 'image:local:next',
+    });
+    expect(requestBody).not.toHaveProperty('baseUpdatedAt');
+  });
+
   it('keeps distinct versions that share the same URL', () => {
     const versions = mediaVersionList({
       id: 'image-1',
@@ -2349,7 +2440,7 @@ describe('api request recovery', () => {
     expect(versions[1].thumbUrl).toBe('/uploads/current.jpg');
   });
 
-  it('selects the version by the current media URL when activeVersionId is stale', () => {
+  it('keeps the durable active version id authoritative over a stale media URL', () => {
     const node = {
       id: 'video-1',
       kind: 'video' as const,
@@ -2377,7 +2468,7 @@ describe('api request recovery', () => {
       },
     };
 
-    expect(activeMediaVersionIndex(node)).toBe(1);
+    expect(activeMediaVersionIndex(node)).toBe(0);
     expect(mediaVersionList(node)).toHaveLength(2);
   });
 });

@@ -144,6 +144,143 @@ class MediaStorageTests(unittest.TestCase):
         self.assertEqual(repeated, projected)
         second_sign.assert_not_called()
 
+    def test_legacy_tos_history_version_recovers_from_active_storage_receipt(self):
+        media_storage.clear_playback_url_cache()
+        descriptor = {
+            "status": "stored",
+            "provider": "tos",
+            "bucket": "media-bucket",
+            "key": "drama-canvas/image/stable.png",
+        }
+        node = {
+            "metadata": {
+                "content": (
+                    "https://media-bucket.tos-cn-beijing.volces.com/"
+                    "drama-canvas/image/stable.png?X-Tos-Expires=1"
+                ),
+                "storage": descriptor,
+                "params": {
+                    "activeVersionId": "image:task-1",
+                    "mediaVersions": [{
+                        "versionId": "image:task-1",
+                        "url": (
+                            "https://media-bucket.tos-cn-beijing.volces.com/"
+                            "drama-canvas/image/stable.png?X-Tos-Expires=1"
+                        ),
+                    }],
+                },
+            },
+        }
+        fresh = (
+            "https://media-bucket.tos-cn-beijing.volces.com/"
+            "drama-canvas/image/stable.png?X-Tos-Expires=999999"
+        )
+        with mock.patch.object(media_storage, "public_url", return_value=fresh):
+            media_storage.project_node_media_url(node)
+        version = node["metadata"]["params"]["mediaVersions"][0]
+        self.assertEqual(version["url"], fresh)
+        self.assertEqual(version["mediaAvailability"], "available")
+
+    def test_legacy_history_does_not_borrow_receipt_from_same_basename_on_other_host(self):
+        descriptor = {
+            "status": "stored",
+            "provider": "tos",
+            "bucket": "media-bucket",
+            "key": "drama-canvas/image/stable.png",
+        }
+        node = {
+            "metadata": {
+                "content": (
+                    "https://media-bucket.tos-cn-beijing.volces.com/"
+                    "drama-canvas/image/stable.png"
+                ),
+                "storage": descriptor,
+                "params": {
+                    "mediaVersions": [{
+                        "versionId": "image:unrelated",
+                        "url": "https://other-host.example/stable.png",
+                    }],
+                },
+            },
+        }
+        with mock.patch.object(media_storage, "public_url") as sign:
+            media_storage.project_node_media_url(node)
+        version = node["metadata"]["params"]["mediaVersions"][0]
+        self.assertNotIn("storage", version)
+        self.assertNotEqual(version["mediaAvailability"], "available")
+        sign.assert_called()
+
+    def test_history_version_without_durable_receipt_is_missing_when_signature_expired(self):
+        node = {
+            "metadata": {
+                "content": "",
+                "params": {
+                    "mediaVersions": [{
+                        "versionId": "image:legacy-1",
+                        "url": (
+                            "https://bucket.tos-cn-beijing.volces.com/"
+                            "image.png?X-Tos-Expires=1&X-Tos-Signature=dead"
+                        ),
+                    }],
+                },
+            },
+        }
+        media_storage.project_node_media_url(node)
+        version = node["metadata"]["params"]["mediaVersions"][0]
+        self.assertEqual(version["mediaAvailability"], "missing")
+
+    def test_history_version_with_future_tos_expiry_is_not_marked_missing(self):
+        node = {
+            "metadata": {
+                "content": "",
+                "params": {
+                    "mediaVersions": [{
+                        "versionId": "image:live-signature",
+                        "url": (
+                            "https://bucket.tos-cn-beijing.volces.com/"
+                            "image.png?X-Tos-Expires=4102444800"
+                        ),
+                    }],
+                },
+            },
+        }
+        media_storage.project_node_media_url(node)
+        version = node["metadata"]["params"]["mediaVersions"][0]
+        self.assertEqual(version["mediaAvailability"], "unknown")
+
+    def test_storage_receipt_with_failed_projection_is_not_available(self):
+        node = {
+            "metadata": {
+                "content": "/uploads/image.png",
+                "storage": {
+                    "status": "stored",
+                    "provider": "tos",
+                    "bucket": "media-bucket",
+                    "key": "drama-canvas/image.png",
+                },
+                "params": {
+                    "mediaVersions": [{
+                        "versionId": "image:task-1",
+                        "url": "/uploads/image.png",
+                        "storage": {
+                            "status": "stored",
+                            "provider": "tos",
+                            "bucket": "media-bucket",
+                            "key": "drama-canvas/image.png",
+                        },
+                    }],
+                },
+            },
+        }
+        with mock.patch.object(
+            media_storage,
+            "public_url",
+            side_effect=RuntimeError("signature failed"),
+        ):
+            media_storage.project_node_media_url(node)
+        version = node["metadata"]["params"]["mediaVersions"][0]
+        self.assertEqual(version["mediaAvailability"], "missing")
+
     def test_concurrent_tos_reads_share_one_signature(self):
         media_storage.clear_playback_url_cache()
 

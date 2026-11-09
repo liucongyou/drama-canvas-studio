@@ -10,11 +10,9 @@
 // 永远到不了后面的版本（线上图36 的现场）。
 //
 // 规则：
-//   1. 唯一 URL 命中 → 以文件为准（兼容历史版本 ID 错位的数据）；
-//   2. 多个 URL 命中 → 用 activeVersionId / mediaVersionIndex 消歧；
-//   3. 指针落在命中项之外 → 取最后一条命中项（与后端「最新同名项为当前版」一致），
-//      保证「下一版」总能继续往前走；
-//   4. 没有 URL 命中（例如 TOS 重新签名）→ 按保存的指针，最后回退到最新版。
+//   1. 有效 activeVersionId 是唯一权威，URL 和索引都不得覆盖它；
+//   2. 只有历史数据找不到有效 ID 时，才按 URL / 索引兼容；
+//   3. 仍无法定位时回退到最新版。
 
 export type MediaVersionLike = {
   versionId?: string;
@@ -32,6 +30,14 @@ export function resolveMediaVersionIndex(
   pointer: MediaVersionPointer = {},
 ): number {
   if (!versions.length) return 0;
+  const activeVersionId = String(pointer.activeVersionId || '').trim();
+  if (activeVersionId) {
+    const idIndex = versions.findIndex(
+      (version) => String(version.versionId || '').trim() === activeVersionId,
+    );
+    if (idIndex >= 0) return idIndex;
+  }
+
   const url = String(currentUrl || '').trim();
   const matchingIndexes: number[] = [];
   if (url) {
@@ -42,15 +48,8 @@ export function resolveMediaVersionIndex(
   if (matchingIndexes.length === 1) return matchingIndexes[0];
 
   const configured = Number(pointer.index ?? NaN);
-  const activeVersionId = String(pointer.activeVersionId || '').trim();
 
   if (matchingIndexes.length > 1) {
-    if (activeVersionId) {
-      const idIndex = versions.findIndex(
-        (version) => version.versionId === activeVersionId,
-      );
-      if (idIndex >= 0 && matchingIndexes.includes(idIndex)) return idIndex;
-    }
     if (Number.isFinite(configured)) {
       const index = Math.trunc(configured);
       if (index >= 0 && matchingIndexes.includes(index)) return index;

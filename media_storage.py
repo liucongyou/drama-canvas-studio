@@ -575,6 +575,79 @@ def _stored_descriptor(value: Any) -> dict[str, Any] | None:
     return None
 
 
+def _same_remote_object(left: str, right: str) -> bool:
+    """Match the same provider object without confusing equal basenames."""
+    try:
+        left_url = urllib.parse.urlsplit(str(left or "").strip())
+        right_url = urllib.parse.urlsplit(str(right or "").strip())
+    except ValueError:
+        return False
+    left_host = str(left_url.hostname or "").strip().lower()
+    right_host = str(right_url.hostname or "").strip().lower()
+    left_path = urllib.parse.unquote(left_url.path or "").strip("/")
+    right_path = urllib.parse.unquote(right_url.path or "").strip("/")
+    return bool(
+        left_host
+        and left_host == right_host
+        and left_path
+        and left_path == right_path
+    )
+
+
+def _signed_url_expired(url: str) -> bool:
+    """Return True only when a TOS signature carries a confirmed past expiry."""
+    try:
+        query = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(str(url or "").strip()).query,
+            keep_blank_values=True,
+        )
+    except ValueError:
+        return False
+    raw_expiry = next(
+        (
+            values[-1]
+            for key, values in query.items()
+            if str(key or "").strip().lower() == "x-tos-expires" and values
+        ),
+        "",
+    )
+    try:
+        expiry = int(float(str(raw_expiry).strip()))
+    except (TypeError, ValueError):
+        return False
+    # TOS uses Unix time. Be conservative for malformed legacy values: only a
+    # parsed timestamp in the past is a confirmed expiration.
+    return 0 < expiry < int(time.time())
+
+
+def _descriptor_for_version(
+    version: dict[str, Any],
+    *,
+    active_storage: dict[str, Any] | None,
+    active_content: str,
+) -> dict[str, Any] | None:
+    """Recover a durable descriptor for legacy versions that stored only a signed URL.
+
+    Older rows persisted a short-lived TOS URL in ``mediaVersions[].url`` and did
+    not copy ``storage`` onto the version. The active node content still usually
+    points at the same durable object/key. This narrowly recovers that case; it
+    never guesses a key from an arbitrary remote URL.
+    """
+    descriptor = _stored_descriptor(version.get("storage"))
+    if descriptor:
+        return descriptor
+    if not active_storage:
+        return None
+    version_url = str(version.get("url") or "").strip()
+    if not version_url:
+        return None
+    if version_url == active_content:
+        return active_storage
+    if _same_remote_object(active_content, version_url):
+        return active_storage
+    return None
+
+
 def project_node_media_url(node: dict[str, Any]) -> str:
     """Project durable object-store receipts into response-only playback URLs.
 
@@ -593,19 +666,18 @@ def project_node_media_url(node: dict[str, Any]) -> str:
     def projection(descriptor, fallback=""):
         descriptor = _stored_descriptor(descriptor)
         if not descriptor:
-            return fallback
+            return fallback, ""
         try:
-            return _cached_public_url(descriptor) or fallback
+            return (_cached_public_url(descriptor) or fallback), ""
         except Exception as exc:
-            meta["storageError"] = str(exc)
-            return fallback
+            return fallback, str(exc)
 
-    projected_content = projection(storage, durable_content)
-    if projected_content:
-        meta["content"] = projected_content
-
+    # Project versions first. Matching the current version against the original
+    # stable URL must happen before the node's content is replaced by a fresh
+    # signature, otherwise every read can make the active index look stale.
     params = meta.get("params")
     if isinstance(params, dict):
+        active_id = str(params.get("activeVersionId") or "").strip()
         for list_name in ("mediaVersions", "videoVersions"):
             versions = params.get(list_name)
             if not isinstance(versions, list):
@@ -613,20 +685,82 @@ def project_node_media_url(node: dict[str, Any]) -> str:
             for version in versions:
                 if not isinstance(version, dict):
                     continue
-                version_storage = _stored_descriptor(version.get("storage"))
-                if (
-                    not version_storage
-                    and storage
-                    and str(version.get("url") or "") == durable_content
-                ):
-                    version_storage = storage
-                version_url = projection(
+                version_storage = _descriptor_for_version(
+                    version,
+                    active_storage=storage,
+                    active_content=durable_content,
+                )
+                raw_version_url = str(version.get("url") or "")
+                version_url, version_error = projection(
                     version_storage,
-                    str(version.get("url") or ""),
+                    raw_version_url,
                 )
                 if version_url:
                     version["url"] = version_url
-    return str(meta.get("content") or projected_content)
+                # A storage receipt is metadata, not proof that this read can
+                # produce a usable URL. Only a successful durable projection is
+                # authoritative; otherwise a bad credential or missing object
+                # would still render as an available historical version.
+                version_available = bool(
+                    version_storage and version_url and not version_error
+                )
+                if version_available:
+                    pass
+                elif raw_version_url.startswith("/uploads/"):
+                    try:
+                        _local_path(raw_version_url)
+                        version_available = True
+                    except MediaStorageError:
+                        version_available = False
+                elif raw_version_url.startswith(("http://", "https://", "data:")):
+                    # A freshly signed URL proves the durable object was readable
+                    # by the signer. Legacy unsigned URLs without a descriptor are
+                    # still usable candidates but cannot be called confirmed.
+                    version_available = version_available or bool(
+                        version_url and version_url != raw_version_url
+                    )
+                if version_available:
+                    version["mediaAvailability"] = "available"
+                elif raw_version_url.startswith(("http://", "https://")):
+                    # A signed provider URL without a durable storage receipt
+                    # cannot be recovered after expiry. Do not let the UI switch
+                    # the active card to a known-dead history entry.
+                    version["mediaAvailability"] = (
+                        "missing"
+                        if _signed_url_expired(raw_version_url)
+                        else "unknown"
+                    )
+                else:
+                    version["mediaAvailability"] = "missing"
+                if active_id and str(version.get("versionId") or "").strip() == active_id:
+                    version["active"] = True
+
+    projected_content, content_error = projection(storage, durable_content)
+    if projected_content:
+        meta["content"] = projected_content
+    current_content = str(meta.get("content") or projected_content)
+    if current_content.startswith("/uploads/"):
+        try:
+            _local_path(current_content)
+            meta["mediaAvailability"] = "available"
+            meta.pop("storageError", None)
+        except MediaStorageError:
+            meta["mediaAvailability"] = "missing"
+    elif storage and projected_content and not content_error:
+        meta["mediaAvailability"] = "available"
+        meta.pop("storageError", None)
+    elif current_content.startswith("data:"):
+        meta["mediaAvailability"] = "available"
+        meta.pop("storageError", None)
+    elif current_content.startswith(("http://", "https://")):
+        meta["mediaAvailability"] = "missing" if content_error else "unknown"
+    elif current_content:
+        meta["mediaAvailability"] = "missing"
+    else:
+        meta["mediaAvailability"] = ""
+    if content_error:
+        meta["storageError"] = content_error
+    return current_content
 
 
 def ensure_local(

@@ -3,6 +3,17 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.09.01',
+    date: '2026-11-09',
+    title: '资产引用与历史版本链路修复',
+    releasedAt: '2026-11-09 12:00:00 +08:00',
+    changes: [
+      '资产引用改为以 assetId 和 seriesId|variantKey 为权威身份；旧 nodeId 指向错误资产时会按正确身份重新绑定，不再猜测或静默提交错误参考图。',
+      '重新导入和跨集复用时优先按稳定资产身份合并节点，不再因为显示名称变化或图号变化把同一资产拆开。',
+      '图片、音频和视频的历史版本以当前版本 ID 为唯一权威；本地素材上传与快速连续切换会串行处理，避免版本请求互相覆盖。',
+    ],
+  },
+  {
     version: '2026.11.05.06',
     date: '2026-11-05',
     title: '视频封面加载状态修复',

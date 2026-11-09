@@ -1,9 +1,55 @@
 import unittest
+from unittest import mock
 
 import server
 
 
 class MediaVersionTests(unittest.TestCase):
+    def test_active_reference_does_not_override_durable_id_from_content_url(self):
+        meta = {
+            "content": "/uploads/current-new.png",
+            "params": {
+                "activeVersionId": "image:stale-old",
+                "mediaVersions": [
+                    {
+                        "versionId": "image:stale-old",
+                        "url": "/uploads/wrong-old.png",
+                    },
+                    {
+                        "versionId": "image:current-new",
+                        "url": "/uploads/current-new.png",
+                    },
+                ],
+            },
+        }
+
+        active = server._active_media_version(meta)
+
+        self.assertEqual(active["versionId"], "image:stale-old")
+        self.assertEqual(server._active_reference_url(meta), "/uploads/wrong-old.png")
+
+    def test_active_reference_accepts_resigned_copy_of_same_object(self):
+        meta = {
+            "content": (
+                "https://bucket.tos-cn-beijing.volces.com/image/current.png"
+                "?X-Tos-Expires=4102444800&signature=fresh"
+            ),
+            "params": {
+                "activeVersionId": "image:current",
+                "mediaVersions": [{
+                    "versionId": "image:current",
+                    "url": (
+                        "https://bucket.tos-cn-beijing.volces.com/"
+                        "image/current.png?X-Tos-Expires=4102444800&signature=old"
+                    ),
+                }],
+            },
+        }
+
+        active = server._active_media_version(meta)
+
+        self.assertEqual(active["versionId"], "image:current")
+
     def test_explicit_selection_persists_and_rejects_unknown_url(self):
         meta = {
             "content": "/uploads/v1.png",
@@ -29,15 +75,35 @@ class MediaVersionTests(unittest.TestCase):
         self.assertEqual(meta["content"], "/uploads/v2.png")
         self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
 
-        server.merge_node_metadata(meta, {
-            "content": "/uploads/not-a-version.png",
+    def test_explicit_selection_uses_version_id_without_url_precondition(self):
+        meta = {
+            "content": "/uploads/stale-view.png",
+            "status": "done",
             "source": {"type": "generated"},
-            "params": {"mediaVersionIndex": 0},
+            "params": {
+                "activeVersionId": "image:first",
+                "mediaVersionIndex": 0,
+                "mediaVersions": [
+                    {"versionId": "image:first", "url": "/uploads/first.png"},
+                    {"versionId": "image:second", "url": "/uploads/second.png"},
+                ],
+            },
+        }
+
+        server.merge_node_metadata(meta, {
+            "content": "/uploads/stale-view.png",
+            "status": "done",
+            "source": {"type": "generated"},
+            "params": {
+                "activeVersionId": "image:second",
+                "mediaVersionIndex": 1,
+            },
             "_mediaVersionSelection": True,
         })
 
-        self.assertEqual(meta["content"], "/uploads/v2.png")
+        self.assertEqual(meta["params"]["activeVersionId"], "image:second")
         self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
+        self.assertEqual(meta["content"], "/uploads/second.png")
 
     def test_stale_save_without_explicit_selection_cannot_change_current_version(self):
         meta = {
@@ -65,7 +131,7 @@ class MediaVersionTests(unittest.TestCase):
         self.assertEqual(meta["content"], "/uploads/v2.png")
         self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
 
-    def test_version_selection_repairs_stale_active_id_by_content(self):
+    def test_version_selection_uses_active_id_without_content_override(self):
         meta = {
             "content": "/uploads/v2.mp4",
             "status": "done",
@@ -113,9 +179,9 @@ class MediaVersionTests(unittest.TestCase):
             "_mediaVersionSelection": True,
         })
 
-        self.assertEqual(meta["content"], "/uploads/v2.mp4")
-        self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
-        self.assertEqual(meta["params"]["activeVersionId"], "video:task-new")
+        self.assertEqual(meta["content"], "/uploads/v1.mp4")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 0)
+        self.assertEqual(meta["params"]["activeVersionId"], "video:task-old")
 
     def test_version_selection_accepts_signed_projection_by_stable_id(self):
         meta = {
@@ -341,6 +407,172 @@ class MediaVersionTests(unittest.TestCase):
             versions[0]["providerResultUrl"],
             "https://provider.example/result.png",
         )
+
+    def test_select_media_version_is_authoritative_and_rejects_missing(self):
+        meta = {
+            "content": "/uploads/current.png",
+            "status": "done",
+            "source": {"type": "generated"},
+            "storage": {"status": "stored", "provider": "tos", "bucket": "b", "key": "k/current"},
+            "params": {
+                "mediaVersions": [
+                    {
+                        "versionId": "image:old",
+                        "url": "/uploads/old.png",
+                        "sourceType": "generated",
+                    },
+                    {
+                        "versionId": "image:current",
+                        "url": "/uploads/current.png",
+                        "sourceType": "generated",
+                    },
+                ],
+                "activeVersionId": "image:current",
+                "mediaVersionIndex": 1,
+            },
+        }
+        with mock.patch.object(
+            server.media_storage,
+            "_local_path",
+            return_value="/tmp/old.png",
+        ):
+            selected = server._select_media_version(meta, "image", "image:old")
+        self.assertEqual(selected["versionId"], "image:old")
+        self.assertEqual(meta["content"], "/uploads/old.png")
+        self.assertEqual(meta["params"]["activeVersionId"], "image:old")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 0)
+
+        with self.assertRaisesRegex(server.MediaVersionError, "不存在"):
+            server._select_media_version(meta, "image", "image:not-found")
+
+    def test_select_media_version_does_not_overwrite_current_with_expired_history(self):
+        meta = {
+            "content": "/uploads/current.png",
+            "status": "done",
+            "params": {
+                "mediaVersions": [
+                    {
+                        "versionId": "image:expired",
+                        "url": "https://bucket.tos-cn-beijing.volces.com/old.png?X-Tos-Expires=1",
+                    },
+                    {"versionId": "image:current", "url": "/uploads/current.png"},
+                ],
+                "activeVersionId": "image:current",
+                "mediaVersionIndex": 1,
+            },
+        }
+        before = dict(meta)
+        with self.assertRaises(server.MediaVersionError) as raised:
+            server._select_media_version(meta, "image", "image:expired")
+        self.assertEqual(raised.exception.code, "MEDIA_VERSION_MISSING")
+        self.assertEqual(meta, before)
+
+    def test_local_version_has_stable_id_and_becomes_active_reference(self):
+        meta = {
+            "content": "/uploads/generated.png",
+            "status": "done",
+            "params": {"mediaVersions": [{"url": "/uploads/generated.png"}]},
+        }
+        upload = {
+            "url": "/uploads/local.png",
+            "sha256": "a" * 64,
+            "fileName": "local.png",
+            "mime": "image/png",
+            "size": 123,
+        }
+        with (
+            mock.patch.object(server.media_storage, "_local_path", return_value="/tmp/local.png"),
+            mock.patch.object(server.provider_client, "local_upload_path", return_value="/tmp/local.png"),
+        ):
+            version = server._append_local_media_version(meta, "image", upload)
+        self.assertEqual(version["versionId"], "image:local:" + "a" * 32)
+        self.assertEqual(meta["params"]["activeVersionId"], version["versionId"])
+        self.assertEqual(server._active_reference_url(meta), "/uploads/local.png")
+        self.assertEqual(
+            meta["params"]["mediaVersions"][-1]["versionId"],
+            version["versionId"],
+        )
+
+    def test_upload_receipt_name_fallback_is_persisted(self):
+        meta = {
+            "content": "/uploads/generated.png",
+            "params": {"mediaVersions": [{"url": "/uploads/generated.png"}]},
+        }
+        upload = {
+            "url": "/uploads/local.png",
+            "sha256": "c" * 64,
+            "name": "images_(7).png",
+            "mime": "image/png",
+            "size": 456,
+        }
+        with mock.patch.object(
+            server.media_storage,
+            "_local_path",
+            return_value="/tmp/local.png",
+        ):
+            version = server._append_local_media_version(meta, "image", upload)
+        self.assertEqual(version["fileName"], "images_(7).png")
+        self.assertEqual(meta["source"]["fileName"], "images_(7).png")
+
+    def test_active_version_id_wins_over_resigned_tos_url(self):
+        meta = {
+            "content": (
+                "https://bucket.tos-cn-beijing.volces.com/image.png"
+                "?X-Tos-Expires=4102444800"
+            ),
+            "params": {
+                "activeVersionId": "image:local:latest",
+                "mediaVersions": [
+                    {
+                        "versionId": "image:task-old",
+                        "url": "https://bucket.tos-cn-beijing.volces.com/old.png",
+                    },
+                    {
+                        "versionId": "image:local:latest",
+                        "url": "/uploads/latest.png",
+                        "sourceType": "local",
+                    },
+                ],
+            },
+        }
+        with mock.patch.object(
+            server.media_storage,
+            "_local_path",
+            return_value="/tmp/latest.png",
+        ):
+            active = server._active_media_version(meta)
+            reference = server._active_reference_url(meta)
+        self.assertEqual(active["versionId"], "image:local:latest")
+        self.assertEqual(reference, "/uploads/latest.png")
+
+    def test_reupload_same_sha_updates_one_local_version(self):
+        meta = {"content": "", "params": {"mediaVersions": []}}
+        upload = {
+            "url": "/uploads/local.png",
+            "sha256": "b" * 64,
+            "fileName": "local.png",
+            "mime": "image/png",
+            "size": 123,
+        }
+        with (
+            mock.patch.object(server.media_storage, "_local_path", return_value="/tmp/local.png"),
+            mock.patch.object(server.provider_client, "local_upload_path", return_value="/tmp/local.png"),
+        ):
+            first = server._append_local_media_version(meta, "image", upload)
+            second = server._append_local_media_version(meta, "image", upload)
+        versions = meta["params"]["mediaVersions"]
+        self.assertEqual(first["versionId"], second["versionId"])
+        self.assertEqual(len([item for item in versions if item["versionId"] == first["versionId"]]), 1)
+
+    def test_empty_version_list_cannot_select_an_arbitrary_current_url(self):
+        meta = {
+            "content": "/uploads/only-current.png",
+            "status": "done",
+            "params": {"mediaVersions": []},
+        }
+        with self.assertRaises(server.MediaVersionError) as raised:
+            server._select_media_version(meta, "image", "image:not-recorded")
+        self.assertEqual(raised.exception.code, "MEDIA_VERSION_NOT_FOUND")
 
 
 if __name__ == "__main__":

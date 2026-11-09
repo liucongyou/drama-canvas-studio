@@ -6,16 +6,15 @@ function version(versionId: string, url: string) {
 }
 
 describe('resolveMediaVersionIndex', () => {
-  it('follows the current file when every version has a distinct URL', () => {
+  it('follows the active version id even when content points at another URL', () => {
     const versions = [
       version('v0', '/uploads/a.jpg'),
       version('v1', '/uploads/b.jpg'),
     ];
-    // 旧指针指向 v0，但卡片实际显示 b.jpg：以文件为准。
     expect(resolveMediaVersionIndex('/uploads/b.jpg', versions, {
       activeVersionId: 'v0',
       index: 0,
-    })).toBe(1);
+    })).toBe(0);
   });
 
   it('uses the stored version id to disambiguate duplicate URLs', () => {
@@ -40,9 +39,8 @@ describe('resolveMediaVersionIndex', () => {
     })).toBe(0);
   });
 
-  it('does not get stuck at the first duplicate when the pointer is ahead', () => {
-    // 线上实例：第 0/1 版共用同一张图，第 2 版是后写的 TOS 原始图，
-    // 指针已到第 2 版但卡片文件仍是第 0/1 版的地址。
+  it('does not get stuck at the first duplicate when the durable pointer is ahead', () => {
+    // 在线版本第 0/1 共用同一张图，第 2 版是后写的 TOS 原始图。
     const versions = [
       version('v0', '/uploads/a.jpg'),
       version('v1', '/uploads/a.jpg'),
@@ -52,9 +50,8 @@ describe('resolveMediaVersionIndex', () => {
       activeVersionId: 'v2',
       index: 2,
     });
-    expect(current).toBe(1);
-    // 点「下一版」必须真的走到第 2 版，而不是又回到第 0 版。
-    expect((current + 1) % versions.length).toBe(2);
+    expect(current).toBe(2);
+    expect((current + 1) % versions.length).toBe(0);
   });
 
   it('keeps all identical-URL history entries addressable', () => {
@@ -70,7 +67,7 @@ describe('resolveMediaVersionIndex', () => {
     })).toBe(3);
   });
 
-  it('prefers a valid saved index over an unrelated active id on duplicate URLs', () => {
+  it('prefers a valid active id over an unrelated saved index', () => {
     const versions = [
       version('v0', '/uploads/a.jpg'),
       version('v1', '/uploads/a.jpg'),
@@ -79,7 +76,18 @@ describe('resolveMediaVersionIndex', () => {
     expect(resolveMediaVersionIndex('/uploads/a.jpg', versions, {
       activeVersionId: 'v2',
       index: 0,
-    })).toBe(0);
+    })).toBe(2);
+  });
+
+  it('uses legacy URL fallback only when the active id is not in the list', () => {
+    const versions = [
+      version('v0', '/uploads/a.jpg'),
+      version('v1', '/uploads/b.jpg'),
+    ];
+    expect(resolveMediaVersionIndex('/uploads/b.jpg', versions, {
+      activeVersionId: 'legacy:missing',
+      index: 0,
+    })).toBe(1);
   });
 
   it('trusts the stored index when the file URL is a freshly signed copy', () => {

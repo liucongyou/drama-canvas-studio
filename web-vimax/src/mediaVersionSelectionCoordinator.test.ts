@@ -1,0 +1,108 @@
+import {describe, expect, it} from 'vitest';
+import {MediaVersionSelectionCoordinator} from './mediaVersionSelectionCoordinator';
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return {promise, resolve};
+}
+
+describe('media version selection coordinator', () => {
+  it('serializes requests and coalesces rapid clicks to the newest intent', async () => {
+    const coordinator = new MediaVersionSelectionCoordinator<string>();
+    const gate = deferred();
+    const sent: Array<{value: string; sequence: number}> = [];
+
+    const result = coordinator.request('image-1', 'v1', async (value, sequence) => {
+      sent.push({value, sequence});
+      if (sequence === 1) await gate.promise;
+    });
+    void coordinator.request('image-1', 'v2', async () => {});
+    void coordinator.request('image-1', 'v3', async (value, sequence) => {
+      sent.push({value, sequence});
+    });
+
+    expect(sent).toEqual([{value: 'v1', sequence: 1}]);
+    gate.resolve();
+    await result;
+
+    expect(sent).toEqual([
+      {value: 'v1', sequence: 1},
+      {value: 'v3', sequence: 3},
+    ]);
+  });
+
+  it('queues different cards independently', async () => {
+    const coordinator = new MediaVersionSelectionCoordinator<string>();
+    const gate = deferred();
+    const sent: string[] = [];
+    const imageSender = async (value: string) => {
+      sent.push(`image-action:${value}`);
+      await gate.promise;
+    };
+    const videoSender = async (value: string) => {
+      sent.push(`video-action:${value}`);
+    };
+
+    const result = coordinator.request('image-1', 'v1', imageSender);
+    void coordinator.request('video-1', 'v2', videoSender);
+    gate.resolve();
+    await result;
+
+    // Each queued intent must invoke its own card closure. A global sender
+    // would turn the video intent into an image-card action under concurrency.
+    expect(sent).toEqual(['image-action:v1', 'video-action:v2']);
+  });
+
+  it('does not route a stale card closure into another queued card', async () => {
+    const coordinator = new MediaVersionSelectionCoordinator<string>();
+    const firstGate = deferred();
+    const invoked: string[] = [];
+    let imageCalls = 0;
+    let videoCalls = 0;
+
+    const result = coordinator.request('image-1', 'image-v1', async () => {
+      imageCalls += 1;
+      invoked.push('image-1');
+      await firstGate.promise;
+    });
+    void coordinator.request('video-1', 'video-v2', async () => {
+      videoCalls += 1;
+      invoked.push('video-1');
+    });
+
+    // Simulate a later render of the image card supplying a new closure while
+    // the first request is running. It must not replace the queued video card.
+    void coordinator.request('image-1', 'image-v2', async () => {
+      imageCalls += 1;
+      invoked.push('image-1');
+    });
+    firstGate.resolve();
+    await result;
+
+    // The coordinator intentionally serializes writes globally. The contract
+    // here is that each card's intent runs through its own closure exactly
+    // once, not that cards execute in request order.
+    expect(invoked.filter((card) => card === 'image-1')).toHaveLength(2);
+    expect(invoked.filter((card) => card === 'video-1')).toHaveLength(1);
+    expect(imageCalls).toBe(2);
+    expect(videoCalls).toBe(1);
+  });
+
+  it('continues accepting work after a failed request', async () => {
+    const coordinator = new MediaVersionSelectionCoordinator<string>();
+    const sent: string[] = [];
+
+    const result = coordinator.request('image-1', 'bad', async () => {
+      throw new Error('missing');
+    });
+    void coordinator.request('image-1', 'good', async (value) => {
+      sent.push(value);
+    });
+    await result;
+
+    expect(sent).toEqual(['good']);
+  });
+});

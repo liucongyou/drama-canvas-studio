@@ -316,6 +316,8 @@ export type CanvasVideoVersion = {
   width?: number;
   height?: number;
   storage?: CanvasMediaNode['storage'];
+  /** Backend-confirmed readability of this exact historical version. */
+  mediaAvailability?: 'unknown' | 'available' | 'missing';
 };
 
 // 生成参数（详细属性面板：模型/尺寸/清晰度/比例/推理强度/引用/音色）
@@ -768,6 +770,7 @@ export function mediaVersionList(node: CanvasMediaNode): CanvasVideoVersion[] {
       || `${version?.taskId || version?.generatedAt || 'legacy'}:${version?.url || index}`,
     url: mediaSourceUrl(version?.url),
     thumbUrl: mediaSourceUrl(version?.thumbUrl),
+    mediaAvailability: version?.mediaAvailability,
   })).filter((version) => {
     const url = version.url.trim();
     const versionId = String(version.versionId || '');
@@ -777,10 +780,13 @@ export function mediaVersionList(node: CanvasMediaNode): CanvasVideoVersion[] {
   });
   const currentUrl = mediaSourceUrl(node.mediaUrl);
   const currentVersionId = String(node.params?.activeVersionId || '').trim();
-  const currentUrlIndex = currentUrl
-    ? versions.findIndex((version) => version.url === currentUrl)
+  const currentIdIndex = currentVersionId
+    ? versions.findIndex((version) => version.versionId === currentVersionId)
     : -1;
-  if (currentUrl && currentUrlIndex >= 0 && !versions[currentUrlIndex].thumbUrl) {
+  const currentUrlIndex = currentIdIndex < 0 && currentUrl
+    ? versions.findIndex((version) => version.url === currentUrl)
+    : currentIdIndex;
+  if (currentUrlIndex >= 0 && !versions[currentUrlIndex].thumbUrl) {
     const currentThumb = mediaSourceUrl(node.thumbUrl);
     if (currentThumb) versions[currentUrlIndex].thumbUrl = currentThumb;
   }
@@ -792,9 +798,23 @@ export function mediaVersionList(node: CanvasMediaNode): CanvasVideoVersion[] {
       versionId: currentVersionId || `current:${currentUrl}`,
       url: currentUrl,
       thumbUrl: mediaSourceUrl(node.thumbUrl),
+      mediaAvailability: node.mediaAvailability,
     });
   }
   return versions;
+}
+
+export function selectableMediaVersion(
+  versions: CanvasVideoVersion[],
+  nextIndex: number,
+): CanvasVideoVersion | null {
+  if (!Array.isArray(versions) || versions.length < 2) return null;
+  const normalized = (nextIndex + versions.length) % versions.length;
+  const version = versions[normalized];
+  if (!version?.url) return null;
+  if (version.mediaAvailability === 'missing') return null;
+  if (!String(version.versionId || '').trim()) return null;
+  return version;
 }
 
 export function activeMediaVersionIndex(
@@ -1533,6 +1553,30 @@ type PayloadNode = {
     episodeId?: string;
   };
 };
+
+export type UploadedMediaReceipt = {
+  url: string;
+  fileName?: string;
+  /** Backward-compatible upload receipt field. */
+  name?: string;
+  size?: number;
+  mime?: string;
+  sha256?: string;
+  storage?: CanvasMediaNode['storage'];
+};
+
+export type LocalMediaVersionInput = {
+  upload: UploadedMediaReceipt;
+  title?: string;
+  width?: number;
+  height?: number;
+  duration?: number;
+  ratio?: string;
+};
+
+export function mediaNodeFromPayload(n: PayloadNode): CanvasMediaNode {
+  return toMediaNode(n);
+}
 
 export type ProjectResponse = {
   id: string;
@@ -2615,6 +2659,81 @@ export async function patchMediaNodeFields(
   episodeId: string,
 ): ReturnType<typeof patchMediaNodesFields> {
   return patchMediaNodesFields(sessionId, [node], episodeId);
+}
+
+export async function appendLocalMediaVersion(
+  sessionId: string,
+  episodeId: string,
+  nodeId: string,
+  input: LocalMediaVersionInput,
+): Promise<{
+  ok: boolean;
+  node: CanvasMediaNode;
+  versionId: string;
+  updatedAt: string;
+}> {
+  const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
+  if (!normalizedEpisode) throw new Error('保存本地素材必须指定所属集');
+  const canonicalUploadUrl = mediaStorageUrl(input.upload.url);
+  if (!canonicalUploadUrl.startsWith('/uploads/')) {
+    throw new Error('本地素材地址无效');
+  }
+  const result = await request<{
+    ok: boolean;
+    node: PayloadNode;
+    versionId: string;
+    updatedAt: string;
+  }>(`/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/local-version`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...input,
+      upload: {
+        ...input.upload,
+        url: canonicalUploadUrl,
+      },
+      episodeId: normalizedEpisode,
+    }),
+  });
+  return {
+    ...result,
+    node: mediaNodeFromPayload(result.node),
+  };
+}
+
+export async function selectCanvasMediaVersion(
+  sessionId: string,
+  episodeId: string,
+  nodeId: string,
+  versionId: string,
+): Promise<{
+  ok: boolean;
+  node: CanvasMediaNode;
+  versionId: string;
+  updatedAt: string;
+}> {
+  const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
+  if (!normalizedEpisode) throw new Error('切换素材版本必须指定所属集');
+  const normalizedVersionId = String(versionId || '').trim();
+  if (!normalizedVersionId) throw new Error('切换素材版本必须指定版本 ID');
+  const result = await request<{
+    ok: boolean;
+    node: PayloadNode;
+    versionId: string;
+    updatedAt: string;
+  }>(
+    `/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/select-version`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        episodeId: normalizedEpisode,
+        versionId: normalizedVersionId,
+      }),
+    },
+  );
+  return {
+    ...result,
+    node: mediaNodeFromPayload(result.node),
+  };
 }
 
 // ---------- notes ----------

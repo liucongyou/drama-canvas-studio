@@ -31,4 +31,11 @@ describe('media version controls', () => {
     expect(block).toContain('z-index:6');
     expect(block).toContain('pointer-events:auto');
   });
+
+  it('advances from the last click intent before React commits a rerender', () => {
+    expect(source).toMatch(/versionIntentRef/);
+    expect(source).toMatch(/versionIntentRef\.current\.index - 1/);
+    expect(source).toMatch(/versionIntentRef\.current\.index \+ 1/);
+    expect(source).toMatch(/MediaVersionSelectionCoordinator/);
+  });
 });

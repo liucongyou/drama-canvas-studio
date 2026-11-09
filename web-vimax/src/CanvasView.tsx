@@ -111,7 +111,7 @@ import {
   Share2,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceMediaNodeSnapshot, getWorkspaceFacts, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, resolveGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, preserveSelectedMediaVersion, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceMediaNodeSnapshot, getWorkspaceFacts, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, resolveGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, appendLocalMediaVersion, selectCanvasMediaVersion, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, preserveSelectedMediaVersion, selectableMediaVersion, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {canvasEventId, eventBelongsToEpisode, readCanvasEventCursor, shouldProcessCanvasEvent, writeCanvasEventCursor} from './canvasEventCursor';
 import {createCanvasEventLifecycle} from './canvasEventLifecycle';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
@@ -234,6 +234,7 @@ import {
   prepareCanvasUploadFiles,
   shouldArmCanvasFileDrop,
 } from './uploadDragState';
+import {MediaVersionSelectionCoordinator} from './mediaVersionSelectionCoordinator';
 
 type Props = {
   session: string;
@@ -1801,10 +1802,15 @@ type MediaNodeData = {
       onProgress?: (percent: number) => void;
     },
   ) => Promise<void>;
+  onSelectMediaVersion: (
+    node: CanvasMediaNode,
+    versionId: string,
+  ) => Promise<void>;
   suppressNodeOpen: () => void;
   isNodeOpenSuppressed: () => boolean;
   onMediaAvailability?: (nodeId: string, availability: 'missing') => void;
   onRecoverMedia?: (nodeId: string) => void;
+  onToast?: (message: string) => void;
 };
 
 // ---- 生成参数面板（详细属性：模型/清晰度/比例/推理强度/引用资产/音色） ----
@@ -2409,7 +2415,7 @@ function mediaNodePropsEqual(
 }
 
 const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
-  const {node, renderMode = 'full', contentVisible = true, onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, assetsById, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, suppressNodeOpen, isNodeOpenSuppressed, onMediaAvailability, onRecoverMedia, readOnly = false} = data;
+  const {node, renderMode = 'full', contentVisible = true, onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, assetsById, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, onSelectMediaVersion, suppressNodeOpen, isNodeOpenSuppressed, onMediaAvailability, onRecoverMedia, onToast, readOnly = false} = data;
   const [menu, setMenu] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoShellRef = useRef<HTMLDivElement>(null);
@@ -2998,59 +3004,26 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const p = node.params || {};
   const mediaVersions = mediaVersionList(node);
   const currentMediaVersionIndex = activeMediaVersionIndex(node, mediaVersions);
-  const selectMediaVersion = (nextIndex: number) => {
-    if (mediaVersions.length < 2) return;
-    const normalized = (nextIndex + mediaVersions.length) % mediaVersions.length;
-    const version = mediaVersions[normalized];
-    if (!version?.url) return;
-    videoRef.current?.pause();
-    audioRef.current?.pause();
-    setVideoPlaying(false);
-    setAudioPlaying(false);
-    setVideoDuration(0);
-    setAudioDuration(0);
-    setVideoCurrentTime(0);
-    setAudioCurrentTime(0);
-    setMediaLoadFailed(false);
-    setMediaLoaded(false);
-    setVideoSourceReady(false);
-    setVideoCoverUrl('');
-    setVideoCoverUnavailable(false);
-    const generatedVersionSource = version.sourceType === 'generated'
-      || Boolean(version.providerResultUrl || version.storage || version.generatedAt);
-    onChange(
-      node.id,
-      {
-        mediaUrl: version.url,
-        thumbUrl: version.thumbUrl || undefined,
-        actualDuration: version.actualDuration ?? node.actualDuration,
-        storage: version.storage,
-        providerResultUrl: version.providerResultUrl,
-        source: version.sourceType === 'local'
-          ? {
-              type: 'local',
-              fileName: version.fileName,
-              mime: version.mime,
-              size: version.size,
-              sha256: version.sha256,
-              width: version.width,
-              height: version.height,
-              uploadedAt: version.generatedAt,
-            }
-          : generatedVersionSource
-            ? {...(node.source || {}), type: 'generated'}
-            : node.source,
-        params: {
-          ...p,
-          ...(version.versionId
-            ? {activeVersionId: version.versionId}
-            : {}),
-          mediaVersionIndex: normalized,
-          ...(node.kind === 'video' ? {videoVersionIndex: normalized} : {}),
-        },
-      },
-      {mediaVersionSelection: true},
-    );
+  const versionIntentRef = useRef({nodeId: node.id, index: currentMediaVersionIndex});
+  if (versionIntentRef.current.nodeId !== node.id
+      || versionIntentRef.current.index !== currentMediaVersionIndex) {
+    versionIntentRef.current = {
+      nodeId: node.id,
+      index: currentMediaVersionIndex,
+    };
+  }
+  const selectMediaVersion = async (nextIndex: number) => {
+    const version = selectableMediaVersion(mediaVersions, nextIndex);
+    if (!version) {
+      onToast?.('该方向没有可切换的有效历史版本');
+      return;
+    }
+    const versionId = String(version.versionId || '').trim();
+    if (!versionId) {
+      onToast?.('该历史版本缺少稳定版本 ID，请刷新后重试');
+      return;
+    }
+    await onSelectMediaVersion(node, versionId);
   };
   const cardModel = catalog?.models.find((item) =>
     item.enabled !== false
@@ -3910,7 +3883,9 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
               title="上一个生成版本"
               onClick={(event) => {
                 event.stopPropagation();
-                selectMediaVersion(currentMediaVersionIndex - 1);
+                const index = versionIntentRef.current.index - 1;
+                versionIntentRef.current = {nodeId: node.id, index};
+                selectMediaVersion(index);
               }}
               onPointerDown={(event) => event.stopPropagation()}
             >
@@ -3924,7 +3899,9 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
               title="下一个生成版本"
               onClick={(event) => {
                 event.stopPropagation();
-                selectMediaVersion(currentMediaVersionIndex + 1);
+                const index = versionIntentRef.current.index + 1;
+                versionIntentRef.current = {nodeId: node.id, index};
+                selectMediaVersion(index);
               }}
               onPointerDown={(event) => event.stopPropagation()}
             >
@@ -9652,6 +9629,9 @@ function CanvasViewInner({
   const pendingMediaPatchesRef = useRef<Map<string, CanvasMediaNode>>(new Map());
   const pendingMediaNodeSavesRef = useRef<Map<string, CanvasMediaNode>>(new Map());
   const pendingPositionSavesRef = useRef<Map<string, {x: number; y: number; seq: number}>>(new Map());
+  const mediaVersionSelectionRef = useRef(
+    new MediaVersionSelectionCoordinator<string>(),
+  );
   const mediaPatchSaveInFlightRef = useRef(false);
   const mediaPatchRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaPatchRetryAttemptRef = useRef(0);
@@ -11059,92 +11039,87 @@ function CanvasViewInner({
       throw error;
     }
     const inspected = await inspectLocalMedia(file);
-    // The initial node save may finish while the upload is in flight. Re-read the
-    // latest version before writing media fields so the patch does not use a stale
-    // baseUpdatedAt and conflict with its own autosave.
-    let latestTarget = mediaNodesRef.current.find((item) => item.id === target.id) || target;
-    for (let attempt = 0; attempt < 20 && target.updatedAt && latestTarget.updatedAt === target.updatedAt; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 100));
-      latestTarget = mediaNodesRef.current.find((item) => item.id === target.id) || latestTarget;
-    }
-    const existingVersions = mediaVersionList(latestTarget);
-    const currentVersionRecorded = existingVersions.some((version) => version.url === latestTarget.mediaUrl);
-    if (latestTarget.mediaUrl && !currentVersionRecorded) {
-      existingVersions.push({
-        url: latestTarget.mediaUrl,
-        sourceType: latestTarget.source?.type || 'generated',
-        actualDuration: latestTarget.actualDuration,
-      });
-    }
-    const uploadedAt = new Date().toISOString();
-    const localVersion = {
-      url: uploaded.url,
-      sourceType: 'local',
-      fileName: file.name,
-      mime: uploaded.mime || file.type,
-      size: uploaded.size || file.size,
-      sha256: uploaded.sha256,
-      storage: uploaded.storage,
-      width: inspected.width,
-      height: inspected.height,
-      actualDuration: inspected.duration,
-      generatedAt: uploadedAt,
-    };
-    const allVersions = [...existingVersions, localVersion].slice(-20);
-    const selectedVersionIndex = allVersions.length - 1;
-    const params: CanvasMediaParams = {
-      ...(latestTarget.params || {}),
-      mediaVersions: allVersions,
-      mediaVersionIndex: selectedVersionIndex,
-      ...(latestTarget.kind === 'video'
-        ? {
-            videoVersions: allVersions,
-            videoVersionIndex: selectedVersionIndex,
-          }
-        : {}),
-      ...((latestTarget.kind === 'image' || latestTarget.kind === 'video') && inspected.ratio
-        ? {ratio: inspected.ratio}
-        : {}),
-    };
-    const genericTitle = !latestTarget.title.trim()
-      || ['图片节点', '视频节点', '音频节点', '素材'].includes(latestTarget.title.trim());
+    const genericTitle = !target.title.trim()
+      || ['图片节点', '视频节点', '音频节点', '素材'].includes(target.title.trim());
     const title = genericTitle
       ? file.name.replace(/\.[^.]+$/, '')
-      : latestTarget.title;
-    const nextPatch: Partial<CanvasMediaNode> = {
-      title,
-      mediaUrl: uploaded.url,
-      status: 'done',
-      lastError: undefined,
-      actualDuration: inspected.duration,
-      promptStale: false,
-      promptStaleReason: '',
-      sourcePromptUpdatedAt: undefined,
-      source: {
-        type: 'local',
-        fileName: file.name,
-        mime: uploaded.mime || file.type,
-        size: uploaded.size || file.size,
-        uploadedAt,
-        sha256: uploaded.sha256,
+      : target.title;
+    let result: Awaited<ReturnType<typeof appendLocalMediaVersion>>;
+    try {
+      result = await appendLocalMediaVersion(session, currentEp, target.id, {
+        title,
+        upload: {
+          url: uploaded.url,
+          fileName: file.name,
+          mime: uploaded.mime || file.type,
+          size: uploaded.size || file.size,
+          sha256: uploaded.sha256,
+          storage: uploaded.storage,
+        },
         width: inspected.width,
         height: inspected.height,
+        duration: inspected.duration,
+        ratio: inspected.ratio,
+      });
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : '保存本地素材版本失败');
+      throw error;
+    }
+    const remote = result.node;
+    setMediaNodes((prev) => prev.map((item) => item.id === target.id
+      ? {
+          ...remote,
+          updatedAt: result.updatedAt || remote.updatedAt,
+          mediaAvailability: 'available',
+        }
+      : item));
+    broadcastMediaChange([target.id]);
+    setToast(`${target.mediaUrl ? '已添加本地版本' : '已导入本地素材'}：${file.name}`);
+  }, [currentEp, session, setMediaNodes, setToast]);
+
+  const selectMediaVersionFromCard = useCallback(async (
+    target: CanvasMediaNode,
+    versionId: string,
+  ) => {
+    if (readOnly) {
+      setToast('只读分享不能切换生成版本');
+      return;
+    }
+    if (!currentEp) {
+      setToast('画布尚未绑定集数，暂不能切换生成版本');
+      return;
+    }
+    await mediaVersionSelectionRef.current.request(
+      target.id,
+      versionId,
+      async (latestVersionId) => {
+        try {
+          const result = await selectCanvasMediaVersion(
+            session,
+            currentEp,
+            target.id,
+            latestVersionId,
+          );
+          const remote = result.node;
+          setMediaNodes((prev) => prev.map((item) => item.id === target.id
+            ? {
+                ...remote,
+                updatedAt: result.updatedAt || remote.updatedAt,
+                mediaAvailability: 'available',
+              }
+            : item));
+          broadcastMediaChange([target.id]);
+          const index = Math.max(0, mediaVersionList(remote).findIndex(
+            (version) => version.versionId === result.versionId,
+          ));
+          setToast(`已切换到历史版本 ${index + 1}/${mediaVersionList(remote).length}`);
+        } catch (error) {
+          setToast(error instanceof Error ? error.message : '切换历史版本失败');
+          throw error;
+        }
       },
-      storage: uploaded.storage,
-      storageError: '',
-      params,
-    };
-    const persistedAt = new Date().toISOString();
-    await patchMediaNodeFields(session, {
-      ...latestTarget,
-      ...nextPatch,
-      params: {...(latestTarget.params || {}), ...(nextPatch.params || {})},
-      updatedAt: latestTarget.updatedAt,
-      _mediaImport: true,
-    }, currentEp);
-    updateMediaNode(target.id, {...nextPatch, updatedAt: persistedAt}, {persist: false});
-    setToast(`${latestTarget.mediaUrl ? '已添加本地版本' : '已导入本地素材'}：${file.name}`);
-  }, [currentEp, session, setToast, updateMediaNode]);
+    );
+  }, [currentEp, readOnly, session, setMediaNodes, setToast]);
 
   const openNodeLocalUpload = useCallback((node: CanvasMediaNode) => {
     if (node.kind === 'text') return;
@@ -12810,13 +12785,16 @@ function CanvasViewInner({
           versionTotal: versions.length,
         }));
       }
-      const currentIndex = versions.findIndex((version) => version.url === node.mediaUrl);
+      const activeVersionId = String(node.params?.activeVersionId || '').trim();
+      const activeIdIndex = activeVersionId
+        ? versions.findIndex((version) => version.versionId === activeVersionId)
+        : -1;
+      const currentIndex = activeIdIndex >= 0
+        ? activeIdIndex
+        : versions.findIndex((version) => version.url === node.mediaUrl);
       const currentVersion = currentIndex >= 0
         ? versions[currentIndex]
-        : versions.find((version) => (
-            version.versionId
-            && version.versionId === node.params?.activeVersionId
-          ));
+        : undefined;
       return node.mediaUrl ? [{
         node,
         url: node.mediaUrl,
@@ -16020,8 +15998,10 @@ function CanvasViewInner({
           onSelectGroup: selectFlowIds,
           onPressGroup: pressGroup,
           onUploadLocal: importLocalFileToNode,
+          onSelectMediaVersion: selectMediaVersionFromCard,
           onMediaAvailability: updateMediaAvailability,
           onRecoverMedia: recoverMissingMedia,
+          onToast: setToast,
           suppressNodeOpen,
           isNodeOpenSuppressed,
         },
@@ -16059,7 +16039,7 @@ function CanvasViewInner({
     });
     const placed = sortFlowNodesForEntry(safeNodes);
     return placed;
-  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, mediaById, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasVisibleBounds, largeCanvasOverview, editNode?.id, recoverMissingMedia, readOnly]);
+  }, [canvas, notes, updateNoteText, segBoundAssets, effectiveSegments, assetRatios, videoRatios, onVideoMeta, assetQuery, collapsedGroups, toggleGroup, currentEp, segNodeId, fmtEp, visibleMediaNodes, mediaById, generationBusyIds, zOrder, groupMap, selectFlowIds, pressGroup, importLocalFileToNode, selectMediaVersionFromCard, suppressNodeOpen, isNodeOpenSuppressed, mediaRenderMode, largeCanvasVisibleBounds, largeCanvasOverview, editNode?.id, recoverMissingMedia, setToast, readOnly]);
   const renderedEdges = useMemo(() => {
     if (largeCanvasOverview) return [];
     const ids = new Set(flowNodes.map((node) => node.id));

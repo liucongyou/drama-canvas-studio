@@ -238,6 +238,60 @@ class CanvasFeedRoundTripTests(unittest.TestCase):
             {"asset-role-current", "asset-scene-current"},
         )
 
+    def test_asset_id_rebinds_stale_node_id_even_when_it_points_to_another_asset(self):
+        payload = {
+            "nodes": [
+                {
+                    "id": "asset-role-wrong",
+                    "type": "image",
+                    "title": "角色｜钱万金（图2）",
+                    "metadata": {
+                        "assetId": "character:其他角色:default",
+                        "seriesId": "character:其他角色",
+                        "variantKey": "default",
+                        "status": "done",
+                        "content": "/uploads/wrong.png",
+                    },
+                },
+                {
+                    "id": "asset-role-correct",
+                    "type": "image",
+                    "title": "角色｜钱万金（改名后仍是图9）",
+                    "metadata": {
+                        "assetId": "character:钱万金:default",
+                        "seriesId": "character:钱万金",
+                        "variantKey": "default",
+                        "status": "done",
+                        "content": "/uploads/correct.png",
+                    },
+                },
+                {
+                    "id": "video-current",
+                    "type": "video",
+                    "title": "段1 · 告示掀角",
+                    "metadata": {
+                        "prompt": "@角色｜钱万金（图2）",
+                        "params": {
+                            "refs": [{
+                                "nodeId": "asset-role-wrong",
+                                "assetId": "character:钱万金:default",
+                                "seriesId": "character:钱万金",
+                                "variantKey": "default",
+                                "label": "角色｜钱万金（图2）",
+                            }],
+                        },
+                    },
+                },
+            ],
+        }
+
+        changed = repair_dangling_media_references(payload)
+
+        self.assertEqual(changed, 1)
+        refs = payload["nodes"][2]["metadata"]["params"]["refs"]
+        self.assertEqual(refs[0]["nodeId"], "asset-role-correct")
+        self.assertEqual(refs[0]["assetId"], "character:钱万金:default")
+
     def test_valid_reference_wins_over_duplicate_dangling_reference(self):
         payload = {
             "nodes": [

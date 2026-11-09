@@ -2208,14 +2208,11 @@ def _editable_param_view(meta):
 
 
 def _active_media_version(meta):
-    """Return the recorded version that backs metadata.content."""
+    """Return the active version; durable versionId precedes legacy URL state."""
     if not isinstance(meta, dict):
         return {}
     params = meta.get("params")
     if not isinstance(params, dict):
-        return {}
-    content = str(meta.get("content") or "").strip()
-    if not content:
         return {}
     versions = params.get("mediaVersions")
     if not isinstance(versions, list) or not versions:
@@ -2224,16 +2221,24 @@ def _active_media_version(meta):
         return {}
     content = str(meta.get("content") or "").strip()
     active_version_id = str(params.get("activeVersionId") or "").strip()
+    active_index = -1
     if active_version_id:
-        for item in versions:
+        for index, item in enumerate(versions):
             if (
                 isinstance(item, dict)
                 and str(item.get("versionId") or "").strip()
                 == active_version_id
             ):
-                if str(item.get("url") or "").strip() == content:
-                    return item
+                # versionId is the durable identity. TOS URLs are renewed on
+                # every read, so exact URL equality must never be required.
+                active_index = index
                 break
+    if active_index >= 0:
+        # New rows are authoritative by stable versionId. Signed TOS URLs and
+        # legacy duplicated URLs must never override the recorded ID.
+        return versions[active_index]
+    if not content:
+        return {}
     index_key = (
         "videoVersionIndex"
         if isinstance(params.get("videoVersions"), list)
@@ -2264,6 +2269,9 @@ def _active_reference_url(source_meta, raw=None):
     if not isinstance(source_meta, dict):
         return ""
     active = _active_media_version(source_meta)
+    active_storage = (
+        active.get("storage") if isinstance(active, dict) else None
+    )
     for candidate in (
         active.get("url") if isinstance(active, dict) else "",
         source_meta.get("content"),
@@ -2271,6 +2279,18 @@ def _active_reference_url(source_meta, raw=None):
     ):
         value = str(candidate or "").strip()
         if value:
+            if not value.startswith("/uploads/"):
+                descriptor = (
+                    media_storage._stored_descriptor(active_storage)
+                    or media_storage._stored_descriptor(source_meta.get("storage"))
+                )
+                if descriptor:
+                    try:
+                        signed = media_storage.public_url(descriptor)
+                        if signed:
+                            return signed
+                    except Exception:
+                        pass
             return value
     return ""
 
@@ -2399,14 +2419,6 @@ def merge_node_metadata(meta, incoming, generation_active=False, node_type=""):
                         index
                         for index, item in enumerate(versions)
                         if str(item.get("versionId") or "") == requested_version_id
-                        and (
-                            not requested_content
-                            or requested_signed_url
-                            or str(item.get("url") or "").strip()
-                            == requested_content
-                            or str(item.get("url") or "").strip()
-                            == str(meta.get("content") or "").strip()
-                        )
                     ),
                     -1,
                 )
@@ -2479,6 +2491,9 @@ def workspace_media_availability(meta):
     """Return backend-confirmed media availability for a node projection."""
     if not isinstance(meta, dict):
         return ""
+    projected = str(meta.get("mediaAvailability") or "").strip().lower()
+    if projected in {"available", "unknown", "missing"}:
+        return projected
     content = str(meta.get("content") or "").strip()
     if not content:
         return ""
@@ -2495,12 +2510,14 @@ def workspace_media_availability(meta):
         # Signed provider URLs expire while TOS bytes remain. Establish the
         # durable local/storage copy before calling a remote URL unavailable.
         storage = meta.get("storage")
+        if str(meta.get("storageError") or "").strip():
+            return "missing"
         if (
             isinstance(storage, dict)
             and storage.get("status") == "stored"
             and (storage.get("key") or storage.get("url"))
         ):
-            return "available"
+            return "unknown"
         return "unknown"
     return "missing"
 
@@ -2765,6 +2782,139 @@ def _mark_generation_outcome_uncertain(task_id, project_id, node_id, exc, provid
 MAX_MEDIA_VERSIONS = 20
 
 
+LOCAL_MEDIA_PARAM_FIELDS.add("activeVersionId")
+
+
+def _append_local_media_version(meta, node_type, upload):
+    """Append one server-authoritative local-media version and select it.
+
+    The browser uploads bytes first, then sends only the upload receipt. The
+    server reads the current node row inside the atomic patch transaction and
+    appends there, so concurrent autosaves cannot overwrite one another with a
+    stale client-side version array.
+    """
+    if not isinstance(meta, dict) or not isinstance(upload, dict):
+        raise ValueError("本地素材版本参数无效")
+    kind = str(node_type or "").strip().lower()
+    if kind not in {"image", "audio", "video"}:
+        raise ValueError("该节点不支持本地素材版本")
+    url = str(upload.get("url") or "").strip()
+    if not url.startswith("/uploads/"):
+        raise ValueError("本地素材地址无效")
+    try:
+        media_storage._local_path(url)
+    except media_storage.MediaStorageError as exc:
+        raise ValueError(str(exc)) from exc
+
+    params = meta.get("params")
+    params = dict(params) if isinstance(params, dict) else {}
+    _normalize_media_versions(meta, kind)
+    params = dict(meta.get("params") or params)
+    source_versions = params.get("mediaVersions")
+    if not isinstance(source_versions, list) and kind == "video":
+        source_versions = params.get("videoVersions")
+    versions = [
+        dict(item)
+        for item in (source_versions or [])
+        if isinstance(item, dict) and str(item.get("url") or "").strip()
+    ]
+
+    current_url = str(meta.get("content") or "").strip()
+    if current_url and not any(
+        str(item.get("url") or "").strip() == current_url
+        for item in versions
+    ):
+        previous_production = meta.get("production") or {}
+        versions.append({
+            "versionId": (
+                str(params.get("activeVersionId") or "").strip()
+                or f"{kind}:legacy:{len(versions)}"
+            ),
+            "url": current_url,
+            "sourceType": str((meta.get("source") or {}).get("type") or "generated"),
+            "generatedAt": str(meta.get("generatedAt") or ""),
+            "provider": str(meta.get("provider") or previous_production.get("provider") or ""),
+            "model": str(meta.get("model") or previous_production.get("model") or ""),
+            "providerResultUrl": str(meta.get("providerResultUrl") or ""),
+            **({"storage": dict(meta["storage"])} if isinstance(meta.get("storage"), dict) and meta.get("storage") else {}),
+        })
+
+    sha256 = str(upload.get("sha256") or "").strip()
+    version_id = f"{kind}:local:{sha256[:32]}" if sha256 else f"{kind}:local:{secrets.token_hex(16)}"
+    versions = [
+        item for item in versions
+        if str(item.get("versionId") or "").strip() != version_id
+        and str(item.get("url") or "").strip() != url
+    ]
+    uploaded_at = str(upload.get("uploadedAt") or "").strip() or store._now_iso()
+    source = {
+        "type": "local",
+        "fileName": str(
+            upload.get("fileName") or upload.get("name") or ""
+        ).strip(),
+        "mime": str(upload.get("mime") or "").strip(),
+        "size": max(0, int(upload.get("size") or 0)),
+        "uploadedAt": uploaded_at,
+    }
+    for key in ("sha256", "width", "height"):
+        value = upload.get(key)
+        if value not in (None, ""):
+            source[key] = value
+    version = {
+        "versionId": version_id,
+        "url": url,
+        "sourceType": "local",
+        "generatedAt": uploaded_at,
+        "fileName": source["fileName"],
+        "mime": source["mime"],
+        "size": source["size"],
+        **({"sha256": sha256} if sha256 else {}),
+        **({"width": int(upload["width"])} if upload.get("width") not in (None, "") else {}),
+        **({"height": int(upload["height"])} if upload.get("height") not in (None, "") else {}),
+        **({"actualDuration": float(upload["duration"])} if upload.get("duration") not in (None, "") else {}),
+    }
+    storage = upload.get("storage")
+    if isinstance(storage, dict) and storage:
+        version["storage"] = dict(storage)
+    versions.append(version)
+    versions = versions[-MAX_MEDIA_VERSIONS:]
+    selected_index = len(versions) - 1
+
+    params["mediaVersions"] = versions
+    params["mediaVersionIndex"] = selected_index
+    params["activeVersionId"] = version_id
+    if kind == "video":
+        # Generate the poster before copying the version into the legacy
+        # videoVersions list. Otherwise mediaVersions has a thumb while the
+        # older list used by some projections remains posterless.
+        thumb = ensure_video_thumbnail(url)
+        if thumb:
+            version["thumbUrl"] = thumb
+            params["thumbUrl"] = thumb
+        else:
+            params.pop("thumbUrl", None)
+        params["videoVersions"] = [dict(item) for item in versions]
+        params["videoVersionIndex"] = selected_index
+    ratio = str(upload.get("ratio") or "").strip()
+    if ratio and kind in {"image", "video"}:
+        params["ratio"] = ratio
+    meta["params"] = params
+    meta["content"] = url
+    meta["status"] = "done"
+    meta["lastError"] = ""
+    meta["source"] = source
+    meta["storage"] = dict(storage) if isinstance(storage, dict) and storage else {}
+    meta["storageError"] = ""
+    meta["providerResultUrl"] = ""
+    meta["generatedAt"] = uploaded_at
+    meta["videoValidation"] = {}
+    if upload.get("duration") not in (None, ""):
+        meta["actualDuration"] = float(upload["duration"])
+    else:
+        meta.pop("actualDuration", None)
+    return version
+
+
 def _media_version_id(kind, task_id, generated_at, version_index):
     normalized_task_id = str(task_id or "").strip()
     if normalized_task_id:
@@ -2816,12 +2966,6 @@ def _normalize_media_versions(meta, kind):
     params["mediaVersions"] = versions
     if kind == "video":
         params["videoVersions"] = [dict(item) for item in versions]
-    active_url = str(meta.get("content") or "").strip()
-    matching_indexes = [
-        index
-        for index, item in enumerate(versions)
-        if active_url and str(item.get("url") or "") == active_url
-    ]
     active_id = str(params.get("activeVersionId") or "").strip()
     active_match = next(
         (
@@ -2831,14 +2975,22 @@ def _normalize_media_versions(meta, kind):
         ),
         -1,
     )
-    if (
-        active_match >= 0
-        and (
-            not matching_indexes
-            or active_match == matching_indexes[-1]
-        )
-    ):
+    if active_match >= 0:
         return params
+    # Only rows without a usable active ID are legacy rows. URL and index are
+    # one-time migration heuristics; they must never override a valid ID above.
+    active_url = str(meta.get("content") or "").strip()
+    matching_indexes = [
+        index
+        for index, item in enumerate(versions)
+        if active_url and (
+            str(item.get("url") or "") == active_url
+            or media_storage._same_remote_object(
+                str(item.get("url") or ""),
+                active_url,
+            )
+        )
+    ]
     # A legacy list can repeat the same URL after regeneration. The latest
     # matching entry is the active one because _record_media_version appends
     # chronologically. Falling back to the first match would point the current
@@ -2866,6 +3018,137 @@ def _normalize_media_versions(meta, kind):
     else:
         params.pop("activeVersionId", None)
     return params
+
+
+class MediaVersionError(ValueError):
+    """A stable media-version selection could not be satisfied safely."""
+
+    def __init__(self, message, *, code="MEDIA_VERSION_INVALID", status=409):
+        super().__init__(message)
+        self.code = code
+        self.status = status
+
+
+def _select_media_version(meta, node_type, version_id):
+    """Atomically select one version and return its durable node projection.
+
+    The browser never supplies a media URL here. It names only a stable version
+    id; the server resolves the version, verifies that its bytes can still be
+    projected, then updates every current-version pointer from that one object.
+    """
+    if not isinstance(meta, dict):
+        raise MediaVersionError("节点元数据无效", status=400)
+    kind = str(node_type or "").strip().lower()
+    if kind not in {"image", "audio", "video"}:
+        raise MediaVersionError("该节点不支持切换素材版本", status=400)
+    requested_id = str(version_id or "").strip()
+    if not requested_id:
+        raise MediaVersionError("切换素材版本必须指定版本 ID", status=400)
+
+    params = _normalize_media_versions(meta, kind)
+    versions = params.get("mediaVersions")
+    if not isinstance(versions, list) or not versions:
+        raise MediaVersionError(
+            "该节点没有可切换的历史版本",
+            code="MEDIA_VERSION_NOT_FOUND",
+            status=404,
+        )
+    selected_index = next(
+        (
+            index for index, version in enumerate(versions)
+            if isinstance(version, dict)
+            and str(version.get("versionId") or "").strip() == requested_id
+        ),
+        -1,
+    )
+    if selected_index < 0:
+        raise MediaVersionError(
+            "该历史版本不存在或已被裁剪",
+            code="MEDIA_VERSION_NOT_FOUND",
+            status=404,
+        )
+    selected = dict(versions[selected_index])
+    version_projection = {
+        "metadata": {
+            "content": str(selected.get("url") or ""),
+            "storage": selected.get("storage"),
+            "params": {"mediaVersions": [selected]},
+        }
+    }
+    selected_url = media_storage.project_node_media_url(version_projection)
+    projected_version = (
+        version_projection["metadata"]["params"]["mediaVersions"][0]
+    )
+    if (
+        not selected_url
+        or projected_version.get("mediaAvailability") == "missing"
+    ):
+        raise MediaVersionError(
+            "该历史版本的媒体文件已失效，不能切换到已丢失的素材",
+            code="MEDIA_VERSION_MISSING",
+            status=409,
+        )
+
+    # Projection may renew a TOS signature or normalize an old local URL. The
+    # durable URL is what the card should display; never store a signed URL into
+    # current-version truth.
+    durable_url = str(selected.get("url") or "").strip()
+    display_url = str(projected_version.get("url") or selected_url).strip()
+    selected["url"] = durable_url
+    selected["thumbUrl"] = str(selected.get("thumbUrl") or "").strip()
+    if kind == "video" and not selected["thumbUrl"] and durable_url.startswith("/uploads/"):
+        thumb = ensure_video_thumbnail(durable_url)
+        if thumb:
+            selected["thumbUrl"] = thumb
+
+    params["mediaVersionIndex"] = selected_index
+    if kind == "video":
+        params["videoVersionIndex"] = selected_index
+        params["videoVersions"] = [dict(item) for item in versions]
+        if selected.get("thumbUrl"):
+            params["thumbUrl"] = selected["thumbUrl"]
+        else:
+            params.pop("thumbUrl", None)
+    params["activeVersionId"] = requested_id
+    params["mediaVersions"] = versions
+    meta["params"] = params
+    meta["content"] = display_url
+    meta["status"] = "done"
+    meta["lastError"] = ""
+    meta["generatedAt"] = str(selected.get("generatedAt") or "")
+    meta["source"] = {
+        **(meta.get("source") if isinstance(meta.get("source"), dict) else {}),
+        **{
+            key: selected[key]
+            for key in ("sourceType", "fileName", "mime", "size", "sha256", "uploadedAt")
+            if selected.get(key) not in (None, "")
+        },
+    }
+    meta["storage"] = (
+        dict(selected["storage"])
+        if isinstance(selected.get("storage"), dict)
+        else {}
+    )
+    meta["storageError"] = ""
+    meta["providerResultUrl"] = str(selected.get("providerResultUrl") or "")
+    for key in ("provider", "model"):
+        if selected.get(key):
+            meta[key] = str(selected[key])
+        else:
+            meta.pop(key, None)
+    if selected.get("actualDuration") not in (None, ""):
+        meta["actualDuration"] = float(selected["actualDuration"])
+    else:
+        meta.pop("actualDuration", None)
+    meta["videoValidation"] = {}
+    # The public projection above only verified bytes. Return a response-only
+    # URL so the immediate POST response and a later workspace read agree.
+    return {
+        "versionId": requested_id,
+        "index": selected_index,
+        "version": selected,
+        "displayUrl": display_url,
+    }
 
 
 def _record_media_version(
@@ -3433,11 +3716,10 @@ def project_workspace_nodes(project_id, workspace):
                 version = versions[index]
                 if not isinstance(version, dict):
                     continue
-                version_meta = {
-                    "content": str(version.get("url") or ""),
-                    "storage": version.get("storage"),
-                }
-                if workspace_media_availability(version_meta) == "available":
+                # project_node_media_url just attempted the real local/TOS
+                # projection for every version. A storage declaration alone is
+                # not proof that this version can still be read.
+                if version.get("mediaAvailability") == "available":
                     durable_index = index
                     durable_version = version
                     break
@@ -3463,6 +3745,26 @@ def project_workspace_nodes(project_id, workspace):
                 meta["mediaAvailability"] = "available"
                 meta["storage"] = durable_version.get("storage") or {}
                 meta["storageError"] = ""
+    return workspace
+
+
+def project_share_workspace_nodes(project_id, workspace):
+    """Apply the same generation/media projection to read-only shares.
+
+    A share must not use a weaker URL and availability path than the owner
+    workspace; doing so is how a live history entry turns into "asset missing"
+    only after someone opens the shared link.
+    """
+    if not isinstance(workspace, dict) or not isinstance(workspace.get("nodes"), list):
+        return workspace
+    for node in workspace["nodes"]:
+        if not isinstance(node, dict):
+            continue
+        media_storage.project_node_media_url(node)
+        meta = node.get("metadata")
+        availability = workspace_media_availability(meta)
+        if availability and isinstance(meta, dict):
+            meta["mediaAvailability"] = availability
     return workspace
 
 
@@ -7704,8 +8006,10 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     if not workspace:
                         return self._send(404, {"error": "项目不存在"})
-                    for node in workspace.get("nodes") or []:
-                        media_storage.project_node_media_url(node)
+                    workspace = project_share_workspace_nodes(
+                        share["projectId"],
+                        workspace,
+                    )
                     return self._send(200, workspace)
                 if resource == "notes":
                     query = urllib.parse.parse_qs(parsed.query)
@@ -8192,6 +8496,194 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/upload/stream":
             return self._handle_stream_upload()
         body = self._read_json()
+        m = re.match(
+            r"^/api/projects/([^/]+)/nodes/([^/]+)/local-version$",
+            path,
+        )
+        if m:
+            pid, nid = unquote(m.group(1)), unquote(m.group(2))
+            project = store.get_project(pid)
+            if not project:
+                return self._send(404, {"error": "项目不存在"})
+            current = store.get_projection_node(pid, nid)
+            if not current:
+                return self._send(404, {"error": "节点不存在"})
+            episode_id = str(
+                body.get("episodeId")
+                or current.get("episodeId")
+                or (current.get("metadata") or {}).get("episodeId")
+                or ""
+            ).strip().upper()
+            if not episode_id:
+                return self._send(400, {
+                    "error": "保存本地素材必须指定所属集",
+                    "code": "CANVAS_EPISODE_REQUIRED",
+                })
+            upload = body.get("upload")
+            if not isinstance(upload, dict):
+                return self._send(400, {"error": "上传结果缺失"})
+            appended = {}
+
+            def merge_metadata(target, _incoming):
+                version = _append_local_media_version(
+                    target,
+                    str(current.get("type") or ""),
+                    upload,
+                )
+                appended.update(version)
+
+            try:
+                updated = store.patch_project_node_atomic(
+                    pid,
+                    episode_id,
+                    nid,
+                    {
+                        # Appending a local version is a field-level command, not
+                        # an editor snapshot. The atomic merge must read the
+                        # latest node row; a stale card timestamp must not turn
+                        # a successful upload into a false tab-conflict.
+                        "metadata": {},
+                        **(
+                            {"title": str(body["title"]).strip()}
+                            if str(body.get("title") or "").strip()
+                            else {}
+                        ),
+                    },
+                    merge_metadata=merge_metadata,
+                )
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
+            except store.RevisionConflictError:
+                return self._send(409, {
+                    "error": "另一个标签页已更新此节点，请刷新后重试",
+                    "code": "NODE_EDIT_CONFLICT",
+                    "nodeId": nid,
+                })
+            if not updated:
+                return self._send(409, {
+                    "error": "保存本地素材版本冲突，请重试",
+                    "code": "NODE_REVISION_CONFLICT",
+                })
+            media_storage.project_node_media_url(updated)
+            updated_meta = updated.setdefault("metadata", {})
+            updated_params = updated_meta.setdefault("params", {})
+            _publish_node_metadata_event(pid, nid, {
+                "status": "done",
+                "content": str(updated_meta.get("content") or ""),
+                "generatedAt": str(updated_meta.get("generatedAt") or ""),
+                "source": updated_meta.get("source") or {},
+                "providerResultUrl": str(updated_meta.get("providerResultUrl") or ""),
+                "storage": updated_meta.get("storage") or {},
+                "actualDuration": updated_meta.get("actualDuration"),
+                "_paramsPatch": {
+                    "mediaVersions": updated_params.get("mediaVersions"),
+                    "mediaVersionIndex": updated_params.get("mediaVersionIndex"),
+                    "activeVersionId": updated_params.get("activeVersionId"),
+                    "videoVersions": updated_params.get("videoVersions"),
+                    "videoVersionIndex": updated_params.get("videoVersionIndex"),
+                    "thumbUrl": updated_params.get("thumbUrl"),
+                },
+            })
+            return self._send(200, {
+                "ok": True,
+                "nodeId": nid,
+                "node": updated,
+                "versionId": str(appended.get("versionId") or ""),
+                "updatedAt": str(updated.get("updatedAt") or ""),
+            })
+        m = re.match(
+            r"^/api/projects/([^/]+)/nodes/([^/]+)/select-version$",
+            path,
+        )
+        if m:
+            pid, nid = unquote(m.group(1)), unquote(m.group(2))
+            project = store.get_project(pid)
+            if not project:
+                return self._send(404, {"error": "项目不存在"})
+            current = store.get_projection_node(pid, nid)
+            if not current:
+                return self._send(404, {"error": "节点不存在"})
+            episode_id = str(
+                body.get("episodeId")
+                or current.get("episodeId")
+                or (current.get("metadata") or {}).get("episodeId")
+                or ""
+            ).strip().upper()
+            if not episode_id:
+                return self._send(400, {
+                    "error": "切换素材版本必须指定所属集",
+                    "code": "CANVAS_EPISODE_REQUIRED",
+                })
+            version_id = str(body.get("versionId") or "").strip()
+            selected = {}
+
+            def merge_metadata(target, _incoming):
+                nonlocal selected
+                selected = _select_media_version(
+                    target,
+                    str(current.get("type") or ""),
+                    version_id,
+                )
+
+            try:
+                updated = store.patch_project_node_atomic(
+                    pid,
+                    episode_id,
+                    nid,
+                    {
+                        # Selection is authoritative against the current node
+                        # row. The version ID is validated inside the same
+                        # transaction; the card's old updatedAt is irrelevant.
+                        "metadata": {},
+                    },
+                    merge_metadata=merge_metadata,
+                )
+            except MediaVersionError as exc:
+                return self._send(exc.status, {
+                    "error": str(exc),
+                    "code": exc.code,
+                    "nodeId": nid,
+                })
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
+            except store.RevisionConflictError:
+                return self._send(409, {
+                    "error": "另一个标签页已更新此节点，请刷新后重试",
+                    "code": "NODE_EDIT_CONFLICT",
+                    "nodeId": nid,
+                })
+            if not updated:
+                return self._send(409, {
+                    "error": "切换素材版本冲突，请重试",
+                    "code": "NODE_REVISION_CONFLICT",
+                })
+            media_storage.project_node_media_url(updated)
+            updated_meta = updated.setdefault("metadata", {})
+            updated_params = updated_meta.setdefault("params", {})
+            _publish_node_metadata_event(pid, nid, {
+                "status": "done",
+                "content": str(updated_meta.get("content") or ""),
+                "generatedAt": str(updated_meta.get("generatedAt") or ""),
+                "source": updated_meta.get("source") or {},
+                "providerResultUrl": str(updated_meta.get("providerResultUrl") or ""),
+                "storage": updated_meta.get("storage") or {},
+                "actualDuration": updated_meta.get("actualDuration"),
+                "_paramsPatch": {
+                    "mediaVersions": updated_params.get("mediaVersions"),
+                    "mediaVersionIndex": updated_params.get("mediaVersionIndex"),
+                    "activeVersionId": updated_params.get("activeVersionId"),
+                    "videoVersions": updated_params.get("videoVersions"),
+                    "videoVersionIndex": updated_params.get("videoVersionIndex"),
+                    "thumbUrl": updated_params.get("thumbUrl"),
+                },
+            })
+            return self._send(200, {
+                "ok": True,
+                "nodeId": nid,
+                "node": updated,
+                "versionId": str(selected.get("versionId") or version_id),
+                "updatedAt": str(updated.get("updatedAt") or ""),
+            })
         m = re.match(r"^/api/projects/([^/]+)/shares$", path)
         if m:
             current = self._current_session()
@@ -10502,17 +10994,106 @@ class Handler(BaseHTTPRequestHandler):
             resolved = []
             missing = []
             seen_refs = set()
+            nodes = [
+                item for item in proj["payload"].get("nodes", [])
+                if isinstance(item, dict)
+            ]
+            by_node_id = {
+                str(item.get("id") or ""): item
+                for item in nodes
+                if item.get("id")
+            }
+            by_asset_id = {}
+            by_series_variant = {}
+            for item in nodes:
+                source_meta = item.get("metadata") or {}
+                source_asset_id = str(source_meta.get("assetId") or "").strip()
+                if source_asset_id:
+                    by_asset_id.setdefault(source_asset_id, []).append(item)
+                source_series_id = str(source_meta.get("seriesId") or "").strip()
+                if source_series_id:
+                    variant = str(source_meta.get("variantKey") or "default").strip() or "default"
+                    by_series_variant.setdefault(
+                        f"{source_series_id}|{variant}",
+                        [],
+                    ).append(item)
+
             for raw in raw_refs or []:
                 if not isinstance(raw, dict):
                     continue
                 ref_id = str(raw.get("nodeId") or "").strip()
-                if ref_id in seen_refs:
-                    continue
-                seen_refs.add(ref_id)
-                source = next(
-                    (item for item in proj["payload"].get("nodes", []) if item.get("id") == ref_id),
-                    None,
+                requested_asset_id = str(raw.get("assetId") or "").strip()
+                requested_series_id = str(raw.get("seriesId") or "").strip()
+                requested_variant = (
+                    str(raw.get("variantKey") or "default").strip() or "default"
                 )
+                identity_key = (
+                    requested_asset_id
+                    or (
+                        f"{requested_series_id}|{requested_variant}"
+                        if requested_series_id else ""
+                    )
+                )
+                dedupe_key = identity_key or ref_id
+                if dedupe_key and dedupe_key in seen_refs:
+                    continue
+                if dedupe_key:
+                    seen_refs.add(dedupe_key)
+
+                source = by_node_id.get(ref_id)
+                if identity_key:
+                    identity_candidates = (
+                        by_asset_id.get(requested_asset_id)
+                        if requested_asset_id
+                        else by_series_variant.get(identity_key)
+                    ) or []
+                    if len(identity_candidates) > 1:
+                        identity_candidates = sorted(
+                            identity_candidates,
+                            key=lambda item: (
+                                str((item.get("metadata") or {}).get("status") or "") == "done",
+                                bool(str((item.get("metadata") or {}).get("content") or "").strip()),
+                                str(item.get("updatedAt") or ""),
+                            ),
+                            reverse=True,
+                        )
+                    identity_source = identity_candidates[0] if identity_candidates else None
+                    if source and identity_candidates:
+                        source_meta = source.get("metadata") or {}
+                        source_asset_id = str(source_meta.get("assetId") or "").strip()
+                        source_series_id = str(source_meta.get("seriesId") or "").strip()
+                        source_variant = (
+                            str(source_meta.get("variantKey") or "default").strip()
+                            or "default"
+                        )
+                        source_identity = (
+                            source_asset_id
+                            or (
+                                f"{source_series_id}|{source_variant}"
+                                if source_series_id else ""
+                            )
+                        )
+                        if source_identity and source_identity != identity_key:
+                            missing.append({
+                                "nodeId": ref_id,
+                                "assetId": requested_asset_id,
+                                "label": str(
+                                    raw.get("label")
+                                    or (source or {}).get("title")
+                                    or ref_id
+                                ),
+                                "reason": (
+                                    "引用节点与资产唯一 ID 不一致"
+                                    f"（请求 {identity_key}，节点 {source_identity}）"
+                                ),
+                            })
+                            continue
+                    if identity_source and (
+                        not source
+                        or source.get("id") != identity_source.get("id")
+                    ):
+                        source = identity_source
+                        ref_id = str(identity_source.get("id") or ref_id)
                 title = str((source or {}).get("title") or "").strip()
                 claimed = str(raw.get("label") or "").strip()
                 label = title or (claimed if claimed not in generic_labels else "") or ref_id or "未知引用"
@@ -10526,7 +11107,6 @@ class Handler(BaseHTTPRequestHandler):
                 source_variant_key = str(
                     source_meta.get("variantKey") or "default"
                 ).strip()
-                requested_asset_id = str(raw.get("assetId") or "").strip()
                 if (
                     source_asset_id
                     and requested_asset_id

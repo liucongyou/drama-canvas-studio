@@ -149,6 +149,27 @@ def _asset_stable_identity(metadata) -> str:
     return ""
 
 
+def _asset_reference_identity(reference) -> str:
+    """Return the authoritative identity carried by a persisted reference."""
+    if not isinstance(reference, dict):
+        return ""
+    asset_id = str(reference.get("assetId") or "").strip()
+    if asset_id:
+        return asset_id
+    series_id = str(reference.get("seriesId") or "").strip()
+    if not series_id:
+        return ""
+    variant_key = str(reference.get("variantKey") or "default").strip() or "default"
+    return f"{series_id}|{variant_key}"
+
+
+def _asset_node_stable_identity(node) -> str:
+    if not isinstance(node, dict):
+        return ""
+    metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+    return _asset_stable_identity(metadata)
+
+
 def _asset_contract_identity(kind, name, metadata=None):
     """Return one deterministic identity tuple for a media asset.
 
@@ -224,6 +245,22 @@ def _asset_ref_contract(node, label=""):
     }
     return {
         key: value for key, value in result.items()
+        if value not in (None, "")
+    }
+
+
+def _merge_asset_ref_contract(reference, node):
+    """Enrich a reference from its node without overwriting asserted identity."""
+    reference = reference if isinstance(reference, dict) else {}
+    derived = _asset_ref_contract(
+        node,
+        str(reference.get("label") or ""),
+    )
+    merged = {**derived, **reference}
+    if not merged.get("label"):
+        merged["label"] = derived.get("label", "")
+    return {
+        key: value for key, value in merged.items()
         if value not in (None, "")
     }
 
@@ -2380,6 +2417,7 @@ def repair_dangling_media_references(payload):
     by_label: dict[str, list[dict]] = {}
     by_identity: dict[str, list[dict]] = {}
     by_role: dict[str, list[dict]] = {}
+    by_stable_identity: dict[str, list[dict]] = {}
     for node in nodes:
         if str(node.get("type") or "") != "video":
             continue
@@ -2390,13 +2428,10 @@ def repair_dangling_media_references(payload):
             if not isinstance(items, list):
                 continue
             params[key] = [
-                {
-                    **item,
-                    **_asset_ref_contract(
-                        by_id.get(str(item.get("nodeId") or "")) or {},
-                        str(item.get("label") or ""),
-                    ),
-                }
+                _merge_asset_ref_contract(
+                    item,
+                    by_id.get(str(item.get("nodeId") or "")) or {},
+                )
                 for item in items
                 if isinstance(item, dict)
             ]
@@ -2417,6 +2452,9 @@ def repair_dangling_media_references(payload):
             )
         if key:
             by_identity.setdefault(key, []).append(node)
+        stable_identity = _asset_node_stable_identity(node)
+        if stable_identity:
+            by_stable_identity.setdefault(stable_identity, []).append(node)
         if node_type == "audio":
             role = _asset_title_base(title, audio=True).split("·", 1)[0].strip()
             if role:
@@ -2439,7 +2477,41 @@ def repair_dangling_media_references(payload):
         if not isinstance(item, dict):
             return True
         current = str(item.get("nodeId") or "").strip()
-        if current and current in by_id:
+        reference_identity = _asset_reference_identity(item)
+        current_node = by_id.get(current)
+        current_identity = _asset_node_stable_identity(current_node)
+        if reference_identity and current_node:
+            if current_identity == reference_identity:
+                return True
+            # nodeId alone is not authority. Repair it from assetId; if the
+            # identity no longer exists, keep the stale blocker visible instead
+            # of silently binding the wrong image.
+            candidates = by_stable_identity.get(reference_identity) or []
+            if not candidates:
+                return True
+            replacement = max(candidates, key=score)
+            if reference_identity in valid_identities:
+                changed += 1
+                return False
+            item["nodeId"] = replacement["id"]
+            item["label"] = str(replacement.get("title") or item.get("label") or "")
+            valid_identities.add(reference_identity)
+            changed += 1
+            return True
+        if reference_identity:
+            candidates = by_stable_identity.get(reference_identity) or []
+            if not candidates:
+                return True
+            if reference_identity in valid_identities:
+                changed += 1
+                return False
+            replacement = max(candidates, key=score)
+            item["nodeId"] = replacement["id"]
+            item["label"] = str(replacement.get("title") or item.get("label") or "")
+            valid_identities.add(reference_identity)
+            changed += 1
+            return True
+        if current_node:
             return True
         label = str(item.get("label") or "").strip()
         candidates = by_label.get(label) or []
@@ -3420,6 +3492,13 @@ def merge_payload_by_episode(existing, incoming):
         for node_id in same_old_ids
         if node_id in existing_by_id
     ]
+    stable_existing_assets = {}
+    for old in existing_nodes:
+        if old.get("type") not in {"image", "audio"}:
+            continue
+        identity = _asset_node_stable_identity(old)
+        if identity:
+            stable_existing_assets.setdefault(identity, []).append(old)
     stable_node_remap = {}
     claimed_old_ids = set()
     for node in incoming_nodes:
@@ -3432,8 +3511,18 @@ def merge_payload_by_episode(existing, incoming):
         ]
         old = None
         if node_type == "image":
+            stable_identity = _asset_node_stable_identity(node)
+            if stable_identity:
+                candidates_by_identity = stable_existing_assets.get(stable_identity) or []
+                old = next(
+                    (
+                        candidate for candidate in candidates_by_identity
+                        if candidate.get("id") not in claimed_old_ids
+                    ),
+                    None,
+                )
             asset_key = str((node.get("metadata") or {}).get("assetKey") or "")
-            if asset_key:
+            if old is None and not stable_identity and asset_key:
                 old = next(
                     (
                         candidate for candidate in candidates
@@ -3441,7 +3530,7 @@ def merge_payload_by_episode(existing, incoming):
                     ),
                     None,
                 )
-            if old is None:
+            if old is None and not stable_identity:
                 old = next(
                     (
                         candidate for candidate in candidates
@@ -3610,30 +3699,28 @@ def merge_payload_by_episode(existing, incoming):
         node_id = str(node.get("id") or "")
         if not node_id:
             continue
-        incoming_key = str(
-            (node.get("metadata") or {}).get("assetKey")
-            or _asset_identity(
-                _asset_title_base(node.get("title")),
-                _asset_kind_from_title(node.get("title")),
+        stable_identity = _asset_node_stable_identity(node)
+        old = None
+        if stable_identity:
+            old = next(
+                (
+                    candidate for candidate in stable_existing_assets.get(stable_identity, [])
+                    if str(candidate.get("id") or "") not in claimed_old_ids
+                ),
+                None,
             )
-        )
-        if not incoming_key:
-            continue
-        old = next(
-            (
-                candidate for candidate in existing_nodes
-                if candidate.get("type") == "image"
-                and str(
-                    (candidate.get("metadata") or {}).get("assetKey")
-                    or _asset_identity(
-                        _asset_title_base(candidate.get("title")),
-                        _asset_kind_from_title(candidate.get("title")),
-                    )
-                ) == incoming_key
-            ),
-            None,
-        )
-        if old is None:
+        incoming_key = str((node.get("metadata") or {}).get("assetKey") or "")
+        if old is None and not stable_identity and incoming_key:
+            old = next(
+                (
+                    candidate for candidate in existing_nodes
+                    if candidate.get("type") == "image"
+                    and str((candidate.get("metadata") or {}).get("assetKey") or "") == incoming_key
+                    and str(candidate.get("id") or "") not in claimed_old_ids
+                ),
+                None,
+            )
+        if old is None and not stable_identity:
             old = next(
                 (
                     candidate for candidate in existing_nodes
@@ -4025,11 +4112,25 @@ def merge_payload_by_episode(existing, incoming):
                     continue
                 node_id = str(ref.get("nodeId") or "")
                 label = str(ref.get("label") or "")
-                identity = _asset_title_base(
-                    label,
-                    audio=label.startswith(("音频｜", "音色｜")),
-                ).split("·", 1)[0]
-                if label.startswith(("角色｜", "群像｜", "音频｜", "音色｜")) and identity:
+                source_node = next(
+                    (
+                        item for item in merged_payload.get("nodes") or []
+                        if isinstance(item, dict) and str(item.get("id") or "") == node_id
+                    ),
+                    {},
+                )
+                identity = (
+                    _asset_reference_identity(ref)
+                    or _asset_node_stable_identity(source_node)
+                )
+                if not identity and label.startswith(
+                    ("角色｜", "群像｜", "音频｜", "音色｜")
+                ):
+                    identity = _asset_title_base(
+                        label,
+                        audio=label.startswith(("音频｜", "音色｜")),
+                    ).split("·", 1)[0]
+                if identity:
                     if identity in seen_final_identities:
                         continue
                     seen_final_identities.add(identity)
