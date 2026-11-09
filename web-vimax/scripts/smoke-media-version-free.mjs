@@ -194,6 +194,67 @@ try {
       void request.continue();
     });
     await page.setViewport({width: 1440, height: 900, deviceScaleFactor: 1});
+    const layoutChecks = [];
+    const checkVersionHistoryLayout = async (label) => {
+      const count = `[data-id="media-${nodeId}"] .canvas-media-version-count`;
+      await page.click('[aria-label="适应视图"]');
+      await sleep(450);
+      const position = await page.$eval(count, (button) => {
+        const rect = button.getBoundingClientRect();
+        return {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+          width: rect.width,
+          height: rect.height,
+          viewportWidth: window.innerWidth,
+          viewportHeight: window.innerHeight,
+          visible: rect.width > 0
+            && rect.height > 0
+            && rect.left >= 0
+            && rect.top >= 0
+            && rect.right <= window.innerWidth
+            && rect.bottom <= window.innerHeight,
+        };
+      });
+      if (!position.visible) {
+        throw new Error(`${label} 版本按钮不在视口：${JSON.stringify(position)}`);
+      }
+      await page.mouse.click(position.x, position.y);
+      await page.waitForSelector(
+        `[data-media-version-menu="${nodeId}"]`,
+        {timeout: 10_000},
+      );
+      const layout = await page.$eval(
+        `[data-media-version-menu="${nodeId}"]`,
+        (menu) => {
+          const rect = menu.getBoundingClientRect();
+          return {
+            left: Math.round(rect.left),
+            top: Math.round(rect.top),
+            right: Math.round(rect.right),
+            bottom: Math.round(rect.bottom),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
+            withinViewport: rect.left >= 0
+              && rect.top >= 0
+              && rect.right <= window.innerWidth
+              && rect.bottom <= window.innerHeight,
+            readableWidth: rect.width >= 230,
+          };
+        },
+      );
+      if (!layout.withinViewport || !layout.readableWidth) {
+        throw new Error(`${label} 历史版本浮层布局不合格：${JSON.stringify(layout)}`);
+      }
+      layoutChecks.push({label, ...layout});
+      await page.click(count);
+      await page.waitForSelector(
+        `[data-media-version-menu="${nodeId}"]`,
+        {hidden: true, timeout: 10_000},
+      );
+    };
     await page.setCookie({
       name: 'canvas_session',
       value: auth.token,
@@ -242,7 +303,7 @@ try {
     // before the upload has even been persisted. Wait for the version pointer
     // to move, then verify the active version and durable bytes through the API.
     await page.waitForFunction(
-      (id) => document.querySelector(`[data-id="media-${id}"] .canvas-media-version-nav > span`)
+      (id) => document.querySelector(`[data-id="media-${id}"] .canvas-media-version-count`)
         ?.textContent?.trim() === '2/2',
       {timeout: 90_000},
       nodeId,
@@ -285,12 +346,68 @@ try {
     }
 
     const versionLabel = async () => page.$eval(
-      `[data-id="media-${nodeId}"] .canvas-media-version-nav > span`,
+      `[data-id="media-${nodeId}"] .canvas-media-version-count`,
       (node) => (node.textContent || '').trim(),
     );
     if (await versionLabel() !== '2/2') {
       throw new Error(`上传后版本标签应为 2/2，实际 ${await versionLabel()}`);
     }
+
+    const versionCount = `[data-id="media-${nodeId}"] .canvas-media-version-count`;
+    await page.click(versionCount);
+    await page.waitForSelector(
+      `[data-media-version-menu="${nodeId}"]`,
+      {timeout: 10_000},
+    );
+    const historyMenu = await page.$eval(
+      `[data-media-version-menu="${nodeId}"]`,
+      (menu) => {
+        const rect = menu.getBoundingClientRect();
+        const items = [...menu.querySelectorAll('.canvas-media-version-item')];
+        return {
+          count: items.length,
+          activeCount: items.filter((item) => item.classList.contains('is-active')).length,
+          thumbCount: items.filter((item) => item.querySelector('img')).length,
+          fullyVisible: rect.left >= 0
+            && rect.top >= 0
+            && rect.right <= window.innerWidth
+            && rect.bottom <= window.innerHeight,
+          items: items.map((item) => ({
+            text: (item.textContent || '').trim(),
+            disabled: item.disabled,
+          })),
+        };
+      },
+    );
+    if (
+      historyMenu.count !== 2
+      || historyMenu.activeCount !== 1
+      || historyMenu.thumbCount !== 2
+      || !historyMenu.fullyVisible
+    ) {
+      throw new Error(`历史版本列表不完整：${JSON.stringify(historyMenu)}`);
+    }
+    layoutChecks.push({label: 'desktop-1440', ...historyMenu});
+    const versionItems = `[data-media-version-menu="${nodeId}"] .canvas-media-version-item`;
+    await page.click(`${versionItems}:nth-child(2)`);
+    await page.waitForFunction(
+      (id) => document.querySelector(`[data-id="media-${id}"] .canvas-media-version-count`)
+        ?.textContent?.trim() === '1/2',
+      {timeout: 20_000},
+      nodeId,
+    );
+    await page.click(versionCount);
+    await page.waitForSelector(
+      `[data-media-version-menu="${nodeId}"]`,
+      {timeout: 10_000},
+    );
+    await page.click(`${versionItems}:nth-child(3)`);
+    await page.waitForFunction(
+      (id) => document.querySelector(`[data-id="media-${id}"] .canvas-media-version-count`)
+        ?.textContent?.trim() === '2/2',
+      {timeout: 20_000},
+      nodeId,
+    );
 
     const previous = `[data-id="media-${nodeId}"] [aria-label="上一个生成版本"]`;
     const next = `[data-id="media-${nodeId}"] [aria-label="下一个生成版本"]`;
@@ -301,7 +418,7 @@ try {
     let waitError = '';
     try {
       await page.waitForFunction(
-        (id) => document.querySelector(`[data-id="media-${id}"] .canvas-media-version-nav > span`)
+        (id) => document.querySelector(`[data-id="media-${id}"] .canvas-media-version-count`)
           ?.textContent?.trim() === '1/2',
         {timeout: 20_000},
         nodeId,
@@ -364,7 +481,7 @@ try {
     }
     await page.click(next);
     await page.waitForFunction(
-      (id) => document.querySelector(`[data-id="media-${id}"] .canvas-media-version-nav > span`)
+      (id) => document.querySelector(`[data-id="media-${id}"] .canvas-media-version-count`)
         ?.textContent?.trim() === '2/2',
       {timeout: 20_000},
       nodeId,
@@ -377,7 +494,7 @@ try {
       await page.click(next);
     }
     await page.waitForFunction(
-      (id) => document.querySelector(`[data-id="media-${id}"] .canvas-media-version-nav > span`)
+      (id) => document.querySelector(`[data-id="media-${id}"] .canvas-media-version-count`)
         ?.textContent?.trim() === '2/2',
       {timeout: 30_000},
       nodeId,
@@ -410,6 +527,22 @@ try {
     if (await versionLabel() !== '2/2') {
       throw new Error(`刷新后版本未保持 2/2，实际 ${await versionLabel()}`);
     }
+    await page.setViewport({width: 390, height: 844, deviceScaleFactor: 1});
+    await sleep(500);
+    await page.evaluate(() => { window.localStorage.clear(); });
+    await page.reload({waitUntil: 'domcontentloaded', timeout: 60_000});
+    await page.waitForSelector(`[data-id="media-${nodeId}"] .canvas-media-card`, {
+      timeout: 60_000,
+    });
+    await checkVersionHistoryLayout('mobile-390');
+    await page.setViewport({width: 1920, height: 1080, deviceScaleFactor: 1});
+    await sleep(500);
+    await page.evaluate(() => { window.localStorage.clear(); });
+    await page.reload({waitUntil: 'domcontentloaded', timeout: 60_000});
+    await page.waitForSelector(`[data-id="media-${nodeId}"] .canvas-media-card`, {
+      timeout: 60_000,
+    });
+    await checkVersionHistoryLayout('desktop-1920');
     const failedVersionResponses = versionResponses.filter((item) => item.status !== 200);
     if (failedVersionResponses.length) {
       throw new Error(`版本接口出现失败响应：${JSON.stringify(failedVersionResponses)}`);
@@ -434,6 +567,7 @@ try {
       uploadResponseCount: versionResponses.filter((item) => item.url.includes('/local-version')).length,
       selectionResponseCount: versionResponses.filter((item) => item.url.includes('/select-version')).length,
       finalVersion: await versionLabel(),
+      layoutChecks,
       blockedCostRequestCount: blockedCostRequests.length,
       failedApiResponseCount: failedApiResponses.length,
       pageErrors,

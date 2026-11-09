@@ -2414,9 +2414,98 @@ function mediaNodePropsEqual(
   return mediaNodeDataEqual(prev.data, next.data);
 }
 
+function AnchoredMediaVersionPopover({anchorRef, nodeId, onClose, children}: {
+  anchorRef: RefObject<HTMLButtonElement | null>;
+  nodeId: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{left: number; top: number; maxHeight: number} | null>(null);
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const panel = panelRef.current;
+      const anchor = anchorRef.current;
+      if (!panel || !anchor) return;
+
+      const margin = 10;
+      const gap = 7;
+      const rect = anchor.getBoundingClientRect();
+      const width = Math.min(panel.offsetWidth, window.innerWidth - margin * 2);
+      const naturalHeight = Math.max(panel.offsetHeight, panel.scrollHeight);
+      const above = Math.max(0, rect.top - gap - margin);
+      const below = Math.max(0, window.innerHeight - rect.bottom - gap - margin);
+      const placeAbove = above >= Math.min(naturalHeight, 180) || above >= below;
+      const available = Math.max(1, placeAbove ? above : below);
+      const height = Math.min(naturalHeight, available, window.innerHeight - margin * 2);
+      const left = Math.max(margin, Math.min(window.innerWidth - width - margin, rect.right - width));
+      const top = placeAbove
+        ? Math.max(margin, rect.top - gap - height)
+        : Math.min(window.innerHeight - margin - height, rect.bottom + gap);
+
+      setPos({left, top, maxHeight: Math.max(1, Math.min(available, height))});
+    };
+
+    measure();
+    const frame = window.requestAnimationFrame(measure);
+    const observer = new ResizeObserver(measure);
+    if (panelRef.current) observer.observe(panelRef.current);
+    window.addEventListener('resize', measure);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [anchorRef]);
+
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (panelRef.current?.contains(target) || anchorRef.current?.contains(target))) return;
+      onClose();
+    };
+    const closeEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    const closeForViewportChange = () => onClose();
+    document.addEventListener('pointerdown', closeOutside, true);
+    document.addEventListener('keydown', closeEscape, true);
+    window.addEventListener('wheel', closeForViewportChange, {capture: true, passive: true});
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside, true);
+      document.removeEventListener('keydown', closeEscape, true);
+      window.removeEventListener('wheel', closeForViewportChange, true);
+    };
+  }, [anchorRef, onClose]);
+
+  return createPortal(
+    <div
+      ref={panelRef}
+      className="canvas-media-version-pop"
+      role="menu"
+      aria-label="历史版本列表"
+      data-media-version-menu={nodeId}
+      style={{
+        left: pos?.left ?? -9999,
+        top: pos?.top ?? -9999,
+        maxHeight: pos?.maxHeight,
+        visibility: pos ? 'visible' : 'hidden',
+      }}
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<MediaNodeData>>) {
   const {node, renderMode = 'full', contentVisible = true, onChange, onGenerate, onDelete, onEdit, onZoom, onReadText, onCopyText, assets, assetsById, catalog, active, generationBusy, groupMembers, onSelectGroup, onPressGroup, onUploadLocal, onSelectMediaVersion, suppressNodeOpen, isNodeOpenSuppressed, onMediaAvailability, onRecoverMedia, onToast, readOnly = false} = data;
   const [menu, setMenu] = useState(false);
+  const [versionMenuOpen, setVersionMenuOpen] = useState(false);
+  const versionCountRef = useRef<HTMLButtonElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoShellRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -3927,7 +4016,22 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
             >
               <ChevronLeft size={10} strokeWidth={2.3} aria-hidden="true" />
             </button>
-            <span>{currentMediaVersionIndex + 1}/{mediaVersions.length}</span>
+            <button
+              ref={versionCountRef}
+              type="button"
+              className="nodrag canvas-media-version-count"
+              aria-label="打开历史版本列表"
+              aria-expanded={versionMenuOpen}
+              title="查看历史版本"
+              onClick={(event) => {
+                event.stopPropagation();
+                setMenu(false);
+                setVersionMenuOpen((open) => !open);
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              {currentMediaVersionIndex + 1}/{mediaVersions.length}
+            </button>
             <button
               type="button"
               className="nodrag"
@@ -3946,8 +4050,76 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
             </button>
           </div>
         )}
+        {!readOnly && !isText && mediaVersions.length > 1 && versionMenuOpen && (
+          <AnchoredMediaVersionPopover
+            anchorRef={versionCountRef}
+            nodeId={node.id}
+            onClose={() => setVersionMenuOpen(false)}
+          >
+                <div className="canvas-media-version-pop-head">
+                  <strong>历史版本</strong>
+                  <span>{mediaVersions.length} 个</span>
+                </div>
+                {mediaVersions.map((version, index) => {
+                  const versionId = String(version.versionId || '').trim();
+                  const active = index === currentMediaVersionIndex;
+                  const unavailable = version.mediaAvailability === 'missing';
+                  const generatedAt = version.generatedAt
+                    ? new Date(version.generatedAt)
+                    : null;
+                  const generatedLabel = generatedAt && !Number.isNaN(generatedAt.getTime())
+                    ? generatedAt.toLocaleString('zh-CN', {
+                        month: 'numeric',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false,
+                      })
+                    : version.sourceType === 'local'
+                      ? '本地上传'
+                      : '历史版本';
+                  const dimensions = version.width && version.height
+                    ? `${version.width}×${version.height}`
+                    : version.actualDuration
+                      ? `${Number(version.actualDuration).toFixed(1)}s`
+                      : '';
+                  return (
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={active}
+                      className={`canvas-media-version-item nodrag${active ? ' is-active' : ''}${unavailable ? ' is-missing' : ''}`}
+                      key={versionId || `${version.url}-${index}`}
+                      disabled={active || unavailable || !versionId}
+                      title={unavailable ? '该版本文件已丢失' : active ? '当前版本' : '切换到该版本'}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (active || unavailable || !versionId) return;
+                        setVersionMenuOpen(false);
+                        versionIntentRef.current = {nodeId: node.id, index};
+                        selectMediaVersionRef.current(index);
+                      }}
+                    >
+                      <span className="canvas-media-version-thumb">
+                        {version.thumbUrl || (node.kind === 'image' ? version.url : '')
+                          ? <img src={version.thumbUrl || version.url} alt="" loading="lazy" />
+                          : <span>{node.kind === 'video' ? '视频' : node.kind === 'audio' ? '音频' : '图片'}</span>}
+                      </span>
+                      <span className="canvas-media-version-meta">
+                        <strong>{active ? '当前版本' : `版本 ${index + 1}`}</strong>
+                        <small>{generatedLabel}{dimensions ? ` · ${dimensions}` : ''}</small>
+                        {unavailable && <em>文件丢失</em>}
+                      </span>
+                      <span className="canvas-media-version-check" aria-hidden="true">
+                        {active ? <Check size={13} strokeWidth={2.4} /> : null}
+                      </span>
+                    </button>
+                  );
+                })}
+          </AnchoredMediaVersionPopover>
+        )}
         <div className="canvas-media-foot-more">
-          <button type="button" className="nodrag" title={readOnly ? '查看提示词' : '更多'} onClick={(e) => { e.stopPropagation(); setMenu((v) => !v); }}>
+          <button type="button" className="nodrag" title={readOnly ? '查看提示词' : '更多'} onClick={(e) => { e.stopPropagation(); setVersionMenuOpen(false); setMenu((v) => !v); }}>
             <MoreHorizontal size={14} strokeWidth={2} aria-hidden="true" />
           </button>
           {menu && (

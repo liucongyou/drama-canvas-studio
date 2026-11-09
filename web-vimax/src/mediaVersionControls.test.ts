@@ -35,6 +35,33 @@ describe('media version controls', () => {
     expect(block).toContain('pointer-events:auto');
   });
 
+  it('opens a readable history list instead of exposing only blind arrows', () => {
+    expect(source).toContain('aria-label="打开历史版本列表"');
+    expect(source).toContain('className="canvas-media-version-pop"');
+    expect(source).toContain('createPortal(');
+    expect(source).toContain('position:fixed');
+    expect(source).toContain('className="canvas-media-version-thumb"');
+    expect(source).toContain('role="menuitemradio"');
+    expect(source).toMatch(/versionIntentRef\.current = \{nodeId: node\.id, index\}/);
+    expect(source).toMatch(/setVersionMenuOpen\(false\);\s+versionIntentRef\.current/);
+  });
+
+  it('closes history on blank space, Escape, wheel, and keeps it exclusive with More', () => {
+    expect(source).toContain("document.addEventListener('pointerdown', closeOutside, true)");
+    expect(source).toContain("document.addEventListener('keydown', closeEscape, true)");
+    expect(source).toContain("window.addEventListener('wheel', closeForViewportChange");
+    expect(source).toMatch(/setVersionMenuOpen\(false\);\s+setMenu\(\(v\) => !v\)/);
+  });
+
+  it('uses a touch-sized arrow target while keeping the footer compact', () => {
+    const buttonBlock = css.slice(
+      css.indexOf('.canvas-media-version-nav button{'),
+      css.indexOf('.canvas-media-version-nav button:hover{'),
+    );
+    expect(buttonBlock).toMatch(/width:30px/);
+    expect(buttonBlock).toMatch(/height:28px/);
+  });
+
   it('advances from the last click intent before React commits a rerender', () => {
     expect(source).toMatch(/versionIntentRef/);
     expect(source).toMatch(/versionIntentRef\.current\.index - 1/);
