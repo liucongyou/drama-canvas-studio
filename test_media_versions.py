@@ -445,6 +445,72 @@ class MediaVersionTests(unittest.TestCase):
         with self.assertRaisesRegex(server.MediaVersionError, "不存在"):
             server._select_media_version(meta, "image", "image:not-found")
 
+    def test_select_duplicate_version_id_uses_url_and_durable_local_copy(self):
+        meta = {
+            "content": "/uploads/current.png",
+            "status": "done",
+            "params": {
+                "mediaVersions": [
+                    {
+                        "versionId": "image:duplicate",
+                        "url": "https://provider.example/expired.png",
+                    },
+                    {
+                        "versionId": "image:duplicate",
+                        "url": "/uploads/local.png",
+                    },
+                ],
+                "activeVersionId": "image:duplicate",
+                "mediaVersionIndex": 1,
+            },
+        }
+        with mock.patch.object(
+            server.media_storage,
+            "_local_path",
+            return_value="/tmp/local.png",
+        ):
+            selected = server._select_media_version(
+                meta,
+                "image",
+                "image:duplicate",
+                "/uploads/local.png",
+            )
+        self.assertEqual(selected["index"], 1)
+        self.assertEqual(meta["content"], "/uploads/local.png")
+        self.assertEqual(meta["params"]["mediaVersionIndex"], 1)
+
+    def test_select_duplicate_version_id_prefers_available_without_url_hint(self):
+        meta = {
+            "content": "/uploads/current.png",
+            "status": "done",
+            "params": {
+                "mediaVersions": [
+                    {
+                        "versionId": "image:duplicate",
+                        "url": "https://provider.example/unknown.png",
+                    },
+                    {
+                        "versionId": "image:duplicate",
+                        "url": "/uploads/local.png",
+                    },
+                ],
+                "activeVersionId": "image:duplicate",
+                "mediaVersionIndex": 1,
+            },
+        }
+        with mock.patch.object(
+            server.media_storage,
+            "_local_path",
+            return_value="/tmp/local.png",
+        ):
+            selected = server._select_media_version(
+                meta,
+                "image",
+                "image:duplicate",
+            )
+        self.assertEqual(selected["index"], 1)
+        self.assertEqual(meta["content"], "/uploads/local.png")
+
     def test_select_media_version_does_not_overwrite_current_with_expired_history(self):
         meta = {
             "content": "/uploads/current.png",

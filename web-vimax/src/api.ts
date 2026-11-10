@@ -3,7 +3,7 @@
 // 生成：轮询器检测 generating 节点 → POST generate → done/error 事件
 
 import {latestTaskByNode} from './generationPresentation';
-import {resolveMediaVersionIndex} from './mediaVersions';
+import {isMediaVersionSelectable, resolveMediaVersionIndex} from './mediaVersions';
 import {withRequestStatus} from './requestRetry';
 import {shareTokenInPath} from './projectShare';
 import {
@@ -774,8 +774,13 @@ export function mediaVersionList(node: CanvasMediaNode): CanvasVideoVersion[] {
   })).filter((version) => {
     const url = version.url.trim();
     const versionId = String(version.versionId || '');
-    if (!url || seen.has(versionId)) return false;
-    seen.add(versionId);
+    // Legacy rows can share a task-derived id while carrying different bytes
+    // (provider URL vs. local mirror). Only the pair is a duplicate; collapsing
+    // by id hides the durable local copy and makes the card point at a URL that
+    // may already have expired.
+    const dedupeKey = `${versionId}\u0000${url}`;
+    if (!url || seen.has(dedupeKey)) return false;
+    seen.add(dedupeKey);
     return true;
   });
   const currentUrl = mediaSourceUrl(node.mediaUrl);
@@ -818,11 +823,7 @@ export function selectableMediaVersion(
   for (let attempt = 0; attempt < versions.length; attempt += 1) {
     const normalized = (index + versions.length) % versions.length;
     const version = versions[normalized];
-    if (
-      version?.url
-      && version.mediaAvailability === 'available'
-      && String(version.versionId || '').trim()
-    ) {
+    if (isMediaVersionSelectable(version)) {
       return version;
     }
     index += step;
@@ -2718,20 +2719,24 @@ export async function selectCanvasMediaVersion(
   episodeId: string,
   nodeId: string,
   versionId: string,
+  versionUrl = '',
 ): Promise<{
   ok: boolean;
   node: CanvasMediaNode;
   versionId: string;
+  versionIndex: number;
   updatedAt: string;
 }> {
   const normalizedEpisode = String(episodeId || '').trim().toUpperCase();
   if (!normalizedEpisode) throw new Error('切换素材版本必须指定所属集');
   const normalizedVersionId = String(versionId || '').trim();
   if (!normalizedVersionId) throw new Error('切换素材版本必须指定版本 ID');
+  const normalizedVersionUrl = String(versionUrl || '').trim();
   const result = await request<{
     ok: boolean;
     node: PayloadNode;
     versionId: string;
+    versionIndex: number;
     updatedAt: string;
   }>(
     `/api/projects/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/select-version`,
@@ -2740,6 +2745,7 @@ export async function selectCanvasMediaVersion(
       body: JSON.stringify({
         episodeId: normalizedEpisode,
         versionId: normalizedVersionId,
+        ...(normalizedVersionUrl ? {versionUrl: normalizedVersionUrl} : {}),
       }),
     },
   );

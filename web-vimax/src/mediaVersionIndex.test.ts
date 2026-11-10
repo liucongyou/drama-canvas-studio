@@ -1,11 +1,29 @@
 import {describe, expect, it} from 'vitest';
-import {resolveMediaVersionIndex} from './mediaVersions';
+import {isMediaVersionSelectable, resolveMediaVersionIndex} from './mediaVersions';
 
 function version(versionId: string, url: string) {
   return {versionId, url};
 }
 
 describe('resolveMediaVersionIndex', () => {
+  it('only enables versions the server can safely project', () => {
+    expect(isMediaVersionSelectable({
+      versionId: 'v1',
+      url: '/uploads/a.jpg',
+      mediaAvailability: 'available',
+    })).toBe(true);
+    expect(isMediaVersionSelectable({
+      versionId: 'v1',
+      url: 'https://provider.example/a.jpg',
+      mediaAvailability: 'unknown',
+    })).toBe(false);
+    expect(isMediaVersionSelectable({
+      versionId: 'v1',
+      url: '/uploads/missing.jpg',
+      mediaAvailability: 'missing',
+    })).toBe(false);
+  });
+
   it('follows the active version id even when content points at another URL', () => {
     const versions = [
       version('v0', '/uploads/a.jpg'),
@@ -26,6 +44,17 @@ describe('resolveMediaVersionIndex', () => {
     expect(resolveMediaVersionIndex('/uploads/a.jpg', versions, {
       activeVersionId: 'v1',
       index: 1,
+    })).toBe(1);
+  });
+
+  it('uses the current URL to disambiguate duplicate version ids', () => {
+    const versions = [
+      version('v1', 'https://provider.example/expired.jpg'),
+      version('v1', '/uploads/local.jpg'),
+    ];
+    expect(resolveMediaVersionIndex('/uploads/local.jpg', versions, {
+      activeVersionId: 'v1',
+      index: 0,
     })).toBe(1);
   });
 

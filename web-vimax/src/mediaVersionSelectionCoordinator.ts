@@ -1,25 +1,31 @@
 /**
  * Serialize version selections per card and coalesce rapid clicks.
  *
- * A successful selection advances the server revision. Parallel clicks would
- * otherwise reuse a stale updatedAt, while an older response could repaint over
- * a newer choice. Only the newest queued intent matters.
+ * Different cards use independent lanes, so a slow request for one node cannot
+ * block every other card. Within one card only the newest queued intent runs
+ * after the in-flight request, preserving server revision ordering.
  */
+type Intent<T> = {
+  value: T;
+  sequence: number;
+  send: (value: T, sequence: number) => Promise<void>;
+};
+
+type Lane<T> = {
+  pending: Intent<T> | null;
+  running: boolean;
+  waiters: Array<() => void>;
+};
+
 export class MediaVersionSelectionCoordinator<T> {
   private sequence = 0;
-  private running: Promise<void> | null = null;
-  private draining = false;
   private lastRequested = new Map<string, T>();
-  private pending = new Map<string, {
-    value: T;
-    sequence: number;
-    send: (value: T, sequence: number) => Promise<void>;
-  }>();
+  private lanes = new Map<string, Lane<T>>();
 
   /** Return the newest intent currently known for a card, including queued work. */
   peek(nodeId: string): T | null {
-    const intent = this.pending.get(String(nodeId || '').trim());
-    return intent ? intent.value : null;
+    const lane = this.lanes.get(String(nodeId || '').trim());
+    return lane?.pending?.value ?? null;
   }
 
   /** True when no queued intent for this card supersedes the given value. */
@@ -37,15 +43,22 @@ export class MediaVersionSelectionCoordinator<T> {
     if (!key) return Promise.reject(new Error('切换素材版本缺少节点 ID'));
     const sequence = ++this.sequence;
     this.lastRequested.set(key, value);
-    // Keep the sender next to the intent. A single global closure can be
-    // overwritten by another card while this node is queued, which would make
-    // one card's selection execute against a different node.
-    this.pending.set(key, {value, sequence, send});
-    if (this.draining) {
-      return this.running ?? Promise.resolve();
+    let lane = this.lanes.get(key);
+    if (!lane) {
+      lane = {pending: null, running: false, waiters: []};
+      this.lanes.set(key, lane);
     }
-    this.startDrain();
-    return this.running ?? Promise.resolve();
+    // The sender travels with the intent. A render of another card must never
+    // replace this card's closure while it waits for its own lane.
+    lane.pending = {value, sequence, send};
+    const completion = new Promise<void>((resolve) => {
+      lane!.waiters.push(resolve);
+    });
+    if (!lane.running) {
+      lane.running = true;
+      void this.drainLane(key, lane);
+    }
+    return completion;
   }
 
   /** True when no later accepted intent for this card supersedes the value. */
@@ -55,38 +68,25 @@ export class MediaVersionSelectionCoordinator<T> {
     return Object.is(this.lastRequested.get(key), value);
   }
 
-  private startDrain(): void {
-    if (this.draining) return;
-    this.draining = true;
-    this.running = this.drain().finally(() => {
-      this.draining = false;
-      this.running = null;
-      // A request can arrive after drain() observes an empty queue but before
-      // this cleanup microtask runs. It sees `running` and waits instead of
-      // starting another drain, so wake a fresh drain if that window captured
-      // an intent. Without this, the last click is acknowledged but never sent.
-      if (this.pending.size > 0) {
-        this.startDrain();
-      }
-    });
-  }
-
-  private async drain(): Promise<void> {
-    while (this.pending.size > 0) {
-      const [nodeId, intent] = this.pending.entries().next().value as [
-        string,
-        {
-          value: T;
-          sequence: number;
-          send: (value: T, sequence: number) => Promise<void>;
-        },
-      ];
-      this.pending.delete(nodeId);
+  private async drainLane(key: string, lane: Lane<T>): Promise<void> {
+    while (lane.pending) {
+      const intent = lane.pending;
+      lane.pending = null;
       try {
         await intent.send(intent.value, intent.sequence);
       } catch {
         // The caller owns error presentation. A later click must still run.
       }
+    }
+    lane.running = false;
+    const waiters = lane.waiters.splice(0);
+    for (const resolve of waiters) resolve();
+    if (
+      this.lanes.get(key) === lane
+      && !lane.pending
+      && lane.waiters.length === 0
+    ) {
+      this.lanes.delete(key);
     }
   }
 }

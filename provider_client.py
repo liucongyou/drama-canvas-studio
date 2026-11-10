@@ -28,6 +28,7 @@ import wave
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+import ark_video_contract
 import network_security
 import newapi_video_contract
 import media_storage
@@ -3283,37 +3284,31 @@ def _ark_video(
         url = _ark_reference_url(voice)
         content.append({"type": "audio_url", "audio_url": {"url": url}, "role": "reference_audio"})
 
-    duration_spec = (model.get("params") or {}).get("duration") or {}
-    duration_min = _safe_int(duration_spec.get("min"), 4, 1, 60)
-    duration_max = _safe_int(duration_spec.get("max"), 30, 1, 60)
-    duration_default = _safe_int(
-        duration_spec.get("default"),
-        5,
-        duration_min,
-        duration_max,
+    contract = ark_video_contract.validate_submission(
+        remote_model=model.get("remoteModel"),
+        prompt=prompt,
+        refs=refs,
+        voices=voices,
+        params=params,
     )
-    raw_duration = params.get("duration")
-    if raw_duration in (None, ""):
-        duration = duration_default
-    else:
-        try:
-            requested_duration = int(raw_duration)
-        except (TypeError, ValueError):
-            requested_duration = duration_default
-        duration = max(
-            duration_min,
-            min(duration_max, requested_duration),
-        )
+    normalized = ark_video_contract.normalize_params(contract, params)
+    duration = normalized["duration"]
     resolution_spec = (model.get("params") or {}).get("resolution") or {}
     resolutions = resolution_spec.get("options") or ["480P", "720P", "1080P"]
-    resolution = str(params.get("resolution") or resolutions[0]).upper()
+    resolution = str(normalized.get("resolution") or resolutions[0]).upper()
     if resolution not in {str(item).upper() for item in resolutions}:
-        resolution = str(resolutions[0]).upper()
+        raise ValueError(
+            f"当前视频模型不支持分辨率 {resolution}，可选 "
+            + "、".join(str(item) for item in resolutions)
+        )
     ratio_spec = (model.get("params") or {}).get("ratio") or {}
     ratios = ratio_spec.get("options") or ["9:16"]
-    ratio = str(params.get("ratio") or "9:16")
+    ratio = str(normalized.get("ratio") or ratios[0])
     if ratio not in ratios:
-        ratio = str(ratios[0])
+        raise ValueError(
+            f"当前视频模型不支持画幅 {ratio}，可选 "
+            + "、".join(str(item) for item in ratios)
+        )
 
     body: dict[str, Any] = {
         "model": model["remoteModel"],
@@ -3325,7 +3320,20 @@ def _ark_video(
         "watermark": bool(params.get("watermark", False)),
     }
     if params.get("seed") not in (None, ""):
+        if not contract.supports_seed:
+            raise ValueError(f"Seedance {contract.version} 不支持 seed 参数")
         body["seed"] = _safe_int(params.get("seed"), -1, -1, 2**31 - 1)
+    if contract.supports_omni_reference_type and (refs or voices):
+        body["omni_reference_task_type"] = "reference"
+    if contract.supports_output_format:
+        output_format = str(
+            params.get("outputFormat")
+            or params.get("output_format")
+            or "mp4"
+        ).lower()
+        if output_format not in {"mp4", "mov"}:
+            raise ValueError("视频输出格式必须是 mp4 或 mov")
+        body["output_format"] = output_format
     _apply_declared_params(body, model, params)
     response = _submit_json(
         "POST",

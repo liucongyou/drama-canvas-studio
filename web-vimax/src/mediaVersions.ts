@@ -17,12 +17,22 @@
 export type MediaVersionLike = {
   versionId?: string;
   url: string;
+  mediaAvailability?: 'unknown' | 'available' | 'missing';
 };
 
 export type MediaVersionPointer = {
   activeVersionId?: string;
   index?: number;
 };
+
+export function isMediaVersionSelectable(version: MediaVersionLike | null | undefined): boolean {
+  return Boolean(
+    version
+    && String(version.versionId || '').trim()
+    && String(version.url || '').trim()
+    && version.mediaAvailability === 'available'
+  );
+}
 
 export function resolveMediaVersionIndex(
   currentUrl: string,
@@ -32,10 +42,18 @@ export function resolveMediaVersionIndex(
   if (!versions.length) return 0;
   const activeVersionId = String(pointer.activeVersionId || '').trim();
   if (activeVersionId) {
-    const idIndex = versions.findIndex(
-      (version) => String(version.versionId || '').trim() === activeVersionId,
-    );
-    if (idIndex >= 0) return idIndex;
+    const idIndexes: number[] = [];
+    versions.forEach((version, index) => {
+      if (String(version.versionId || '').trim() === activeVersionId) {
+        idIndexes.push(index);
+      }
+    });
+    const current = String(currentUrl || '').trim();
+    if (current) {
+      const exact = idIndexes.find((index) => versions[index].url === current);
+      if (exact !== undefined) return exact;
+    }
+    if (idIndexes.length) return idIndexes[0];
   }
 
   const url = String(currentUrl || '').trim();

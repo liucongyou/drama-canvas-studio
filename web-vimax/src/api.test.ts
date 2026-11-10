@@ -2305,6 +2305,7 @@ describe('api request recovery', () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,
       versionId: 'image:local:next',
+      versionIndex: 1,
       updatedAt: '2026-11-09T00:00:01Z',
       node: {
         id: 'image-1',
@@ -2333,12 +2334,14 @@ describe('api request recovery', () => {
       'EP001',
       'image-1',
       'image:local:next',
+      '/uploads/next.png',
     );
 
     const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1].body));
     expect(requestBody).toMatchObject({
       episodeId: 'EP001',
       versionId: 'image:local:next',
+      versionUrl: '/uploads/next.png',
     });
     expect(requestBody).not.toHaveProperty('baseUpdatedAt');
   });
@@ -2484,5 +2487,38 @@ describe('api request recovery', () => {
 
     expect(activeMediaVersionIndex(node)).toBe(0);
     expect(mediaVersionList(node)).toHaveLength(2);
+  });
+
+  it('keeps local and provider copies that share a legacy version id', () => {
+    const node = {
+      id: 'video-duplicate-id',
+      kind: 'video' as const,
+      title: '段1 · 重复版本 ID',
+      prompt: '',
+      mediaUrl: '/uploads/generated-local.mp4',
+      status: 'done' as const,
+      x: 0,
+      y: 0,
+      updatedAt: '2026-11-10T00:00:00Z',
+      params: {
+        activeVersionId: 'video:task-shared',
+        mediaVersions: [
+          {
+            versionId: 'video:task-shared',
+            url: 'https://provider.example/expired.mp4',
+            mediaAvailability: 'missing' as const,
+          },
+          {
+            versionId: 'video:task-shared',
+            url: '/uploads/generated-local.mp4',
+            mediaAvailability: 'available' as const,
+          },
+        ],
+      },
+    };
+    const versions = mediaVersionList(node);
+
+    expect(versions).toHaveLength(2);
+    expect(activeMediaVersionIndex(node, versions)).toBe(1);
   });
 });

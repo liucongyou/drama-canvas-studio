@@ -4,12 +4,14 @@ import threading
 import json
 import sqlite3
 import tempfile
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 from unittest.mock import patch
 
 import canvas_store
+import generation_acceptance
 import generation_outcome
 import provider_client
 import server
@@ -120,11 +122,16 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             },
         )
         self.root_override.start()
-        self.context = tenant_context.make_context("persistence", "persistence")
+        self.tenant_id = f"persistence-{uuid.uuid4().hex[:12]}"
+        self.context = tenant_context.make_context(
+            self.tenant_id,
+            self.tenant_id,
+        )
         tenant_context.ensure_context_dirs(self.context)
         server.RESUMED_VIDEO_TASKS.clear()
 
     def tearDown(self):
+        tenant_context.set_tenant(None)
         self.root_override.stop()
         self.temp.cleanup()
 
@@ -174,6 +181,21 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             provider_client._emit_task_created(callback, {"taskId": ""})
 
         callback.assert_not_called()
+
+    def test_provider_acceptance_fails_closed_when_journal_is_not_durable(self):
+        remember = mock.Mock(side_effect=OSError("journal disk unavailable"))
+        update = mock.Mock()
+
+        with self.assertRaisesRegex(OSError, "journal disk unavailable"):
+            generation_acceptance.accept_provider_task(
+                {"taskId": "provider-must-not-be-forgotten"},
+                task_id="task-journal-failure",
+                remember=remember,
+                update_task=update,
+            )
+
+        remember.assert_called_once()
+        update.assert_not_called()
 
     def test_client_operation_id_replays_existing_task_without_new_insert(self):
         with tenant_context.use_context(self.context):
@@ -254,6 +276,33 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertNotEqual(first["id"], second["id"])
         self.assertEqual(replay["id"], second["id"])
         self.assertTrue(replay["replayed"])
+
+    def test_same_operation_id_on_another_node_does_not_replay_wrong_task(self):
+        with tenant_context.use_context(self.context):
+            first = canvas_store.create_generation_task(
+                "project-shared-operation",
+                "node-first",
+                kind="video",
+                client_operation_id="shared-batch-operation",
+            )
+            second = canvas_store.create_generation_task(
+                "project-shared-operation",
+                "node-second",
+                kind="video",
+                client_operation_id="shared-batch-operation",
+            )
+            replay = canvas_store.create_generation_task(
+                "project-shared-operation",
+                "node-first",
+                kind="video",
+                client_operation_id="shared-batch-operation",
+            )
+
+        self.assertTrue(first.get("created_new"))
+        self.assertTrue(second.get("created_new"))
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(second["node_id"], "node-second")
+        self.assertEqual(replay["id"], first["id"])
 
     def test_submitting_task_can_claim_normal_execution_lease(self):
         with tenant_context.use_context(self.context):
@@ -2566,7 +2615,7 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         journal_path = (
             Path(self.temp.name)
             / "tenants"
-            / "persistence"
+            / self.tenant_id
             / "generation-journal"
             / "task_REiQtcNHsrOzoN21Fy3TxblDD9I3AG3h.json"
         )

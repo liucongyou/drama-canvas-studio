@@ -503,16 +503,24 @@ def public_url_with_config(
 
 def _playback_cache_key(storage: dict[str, Any]) -> tuple[str, ...]:
     provider = str(storage.get("provider") or "").strip().lower()
-    profile = provider_catalog.storage_profile_config(provider) or _config()
-    credential_fingerprint = hashlib.sha256(
-        str(profile.get("access_key") or "").encode("utf-8")
-    ).hexdigest()[:16]
+    try:
+        profile = provider_catalog.storage_profile_config(provider) or _config()
+        credential_fingerprint = hashlib.sha256(
+            str(profile.get("access_key") or "").encode("utf-8")
+        ).hexdigest()[:16]
+        endpoint = str(profile.get("endpoint") or "")
+    except Exception:
+        # Cache identity must not require decrypting unrelated provider secrets.
+        # If profile resolution is temporarily unavailable, the object receipt
+        # still uniquely identifies the media for this short-lived cache.
+        credential_fingerprint = ""
+        endpoint = ""
     return (
         tenant_context.current_tenant_id(),
         provider,
         str(storage.get("bucket") or ""),
         str(storage.get("key") or ""),
-        str(profile.get("endpoint") or ""),
+        endpoint,
         credential_fingerprint,
         str(_PLAYBACK_URL_TTL_SECONDS),
     )
@@ -520,9 +528,13 @@ def _playback_cache_key(storage: dict[str, Any]) -> tuple[str, ...]:
 
 def _cached_public_url(storage: dict[str, Any]) -> str:
     """Mint a stable playback URL for this process without persisting it."""
-    key = _playback_cache_key(storage)
-    now = time.monotonic()
     with _PLAYBACK_URL_CACHE_LOCK:
+        # Resolve the cache identity while holding the same lock as the
+        # signer. Otherwise concurrent reads can resolve slightly different
+        # config snapshots before either one enters the cache, causing two
+        # signatures for the same object.
+        key = _playback_cache_key(storage)
+        now = time.monotonic()
         cached = _PLAYBACK_URL_CACHE.get(key)
         if cached and cached[0] > now:
             return cached[1]

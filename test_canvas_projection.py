@@ -569,6 +569,86 @@ class CanvasProjectionTests(unittest.TestCase):
             "atomic",
         )
 
+    def test_atomic_projection_only_edit_skips_payload_rewrite(self):
+        project_id = canvas_store.create_project(
+            "projection-atomic-no-payload",
+            self._payload(),
+        )
+        connection = canvas_store._connect()
+        try:
+            before_payload = connection.execute(
+                "SELECT payload_json,revision FROM canvas_projects WHERE id=?",
+                (project_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+
+        saved = canvas_store.patch_project_node_atomic(
+            project_id,
+            "EP001",
+            "image-1",
+            {"metadata": {"prompt": "projection only"}},
+            merge_metadata=lambda target, incoming: target.update(incoming),
+            write_payload=False,
+        )
+        after = canvas_store.get_project(project_id)
+        connection = canvas_store._connect()
+        try:
+            after_payload = connection.execute(
+                "SELECT payload_json,revision FROM canvas_projects WHERE id=?",
+                (project_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+
+        self.assertEqual(saved["metadata"]["prompt"], "projection only")
+        self.assertEqual(
+            after["payload"]["nodes"][0]["metadata"]["prompt"],
+            "projection only",
+        )
+        self.assertEqual(after_payload[0], before_payload[0])
+        self.assertEqual(after_payload[1], before_payload[1] + 1)
+
+    def test_projection_only_edit_updates_failure_count_delta(self):
+        payload = self._payload()
+        payload["nodes"][0]["metadata"].update({
+            "status": "failed",
+            "lastError": "供应商欠费",
+        })
+        project_id = canvas_store.create_project(
+            "projection-atomic-failure-delta",
+            payload,
+        )
+        connection = canvas_store._connect()
+        try:
+            before_failed, before_local = connection.execute(
+                "SELECT failed_count,local_blocked_count "
+                "FROM canvas_projects WHERE id=?",
+                (project_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        canvas_store.patch_project_node_atomic(
+            project_id,
+            "EP001",
+            "image-1",
+            {"metadata": {"status": "done", "lastError": ""}},
+            merge_metadata=lambda target, incoming: target.update(incoming),
+            write_payload=False,
+        )
+        connection = canvas_store._connect()
+        try:
+            failed_count, local_blocked_count = connection.execute(
+                "SELECT failed_count,local_blocked_count "
+                "FROM canvas_projects WHERE id=?",
+                (project_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+
+        self.assertEqual(failed_count, before_failed - 1)
+        self.assertEqual(local_blocked_count, before_local)
+
     def test_atomic_node_edit_targets_project_and_preserves_owner(self):
         first_project = canvas_store.create_project(
             "projection-atomic-project-a",

@@ -23,7 +23,7 @@ describe('media version controls', () => {
     expect(source).toContain('.canvas-media-version-nav button[aria-label="下一个生成版本"]');
     expect(source).toMatch(/const onCanvasPointerDownCapture = useCallback/);
     expect(source).toMatch(/pendingMediaVersionPointerRef\.current = \{/);
-    expect(source).toMatch(/selectMediaVersionFromCardRef\.current\(node,/);
+    expect(source).toMatch(/selectMediaVersionFromCardRef\.current\(\s*node,/s);
     expect(source).toMatch(
       /target\?\.closest\('\.canvas-media-version-nav'\)\)\s*\{[\s\S]{0,350}event\.stopPropagation\(\);/,
     );

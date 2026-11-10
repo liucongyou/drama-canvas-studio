@@ -48,11 +48,11 @@ describe('media version selection coordinator', () => {
 
     const result = coordinator.request('image-1', 'v1', imageSender);
     void coordinator.request('video-1', 'v2', videoSender);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(sent).toEqual(['image-action:v1', 'video-action:v2']);
     gate.resolve();
     await result;
 
-    // Each queued intent must invoke its own card closure. A global sender
-    // would turn the video intent into an image-card action under concurrency.
     expect(sent).toEqual(['image-action:v1', 'video-action:v2']);
   });
 
@@ -82,9 +82,7 @@ describe('media version selection coordinator', () => {
     firstGate.resolve();
     await result;
 
-    // The coordinator intentionally serializes writes globally. The contract
-    // here is that each card's intent runs through its own closure exactly
-    // once, not that cards execute in request order.
+    // Each card's intent runs through its own closure exactly once.
     expect(invoked.filter((card) => card === 'image-1')).toHaveLength(2);
     expect(invoked.filter((card) => card === 'video-1')).toHaveLength(1);
     expect(imageCalls).toBe(2);

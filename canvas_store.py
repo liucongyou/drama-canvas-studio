@@ -634,10 +634,18 @@ def _connect():
                 "AND provider_task_id IS NOT NULL AND provider_task_id!='' "
                 "AND status IN ('queued','submitting','running','interrupted')"
             )
+            # Idempotency is scoped to the exact project/node operation. A
+            # single-column key lets an unrelated node replay another node's
+            # paid task (or silently return no work at all).
             con.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_tasks_operation "
-                "ON generation_tasks(client_operation_id) "
-                "WHERE client_operation_id IS NOT NULL AND client_operation_id != ''"
+                "DROP INDEX IF EXISTS idx_generation_tasks_operation"
+            )
+            con.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "idx_generation_tasks_project_node_operation "
+                "ON generation_tasks(project_id,node_id,client_operation_id) "
+                "WHERE client_operation_id IS NOT NULL "
+                "AND client_operation_id != ''"
             )
             snapshot_columns = {
                 row[1] for row in con.execute("PRAGMA table_info(canvas_snapshots)")
@@ -792,6 +800,16 @@ def payload_stats(payload):
         failed_count,
         local_blocked_count,
     )
+
+
+def _metadata_failure_counts(metadata):
+    if not isinstance(metadata, dict):
+        return 0, 0
+    if str(metadata.get("status") or "") != "failed":
+        return 0, 0
+    if is_local_validation_error(metadata.get("lastError")):
+        return 0, 1
+    return 1, 0
 
 
 def sync_payload_projection(
@@ -3598,8 +3616,9 @@ def create_generation_task(
     con = _connect()
     if client_operation_id:
         existing_for_operation = con.execute(
-            "SELECT * FROM generation_tasks WHERE client_operation_id=? LIMIT 1",
-            (client_operation_id,),
+            "SELECT * FROM generation_tasks "
+            "WHERE project_id=? AND node_id=? AND client_operation_id=? LIMIT 1",
+            (project_id, node_id, client_operation_id),
         ).fetchone()
         if existing_for_operation:
             columns = [
@@ -3695,8 +3714,9 @@ def create_generation_task(
         except sqlite3.IntegrityError:
             if client_operation_id:
                 row = connection.execute(
-                    "SELECT * FROM generation_tasks WHERE client_operation_id=? LIMIT 1",
-                    (client_operation_id,),
+                    "SELECT * FROM generation_tasks "
+                    "WHERE project_id=? AND node_id=? AND client_operation_id=? LIMIT 1",
+                    (project_id, node_id, client_operation_id),
                 ).fetchone()
                 if row:
                     columns = [
@@ -4582,6 +4602,7 @@ def patch_project_node_atomic(
     patch_node,
     *,
     merge_metadata,
+    write_payload=True,
 ):
     normalized_episode = str(episode_id or "").strip().upper()
     if not normalized_episode:
@@ -4620,6 +4641,7 @@ def patch_project_node_atomic(
                 raise RevisionConflictError("另一个标签页已更新此节点")
         metadata = source.get("metadata")
         metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        previous_failure_counts = _metadata_failure_counts(metadata)
         merge_metadata(metadata, incoming.get("metadata") or {})
         _asset_node_identity(
             metadata,
@@ -4634,6 +4656,7 @@ def patch_project_node_atomic(
             source["title"] = incoming["title"]
         source["episodeId"] = owner_episode
         source["metadata"]["episodeId"] = owner_episode
+        next_failure_counts = _metadata_failure_counts(source["metadata"])
         stamp = _now_iso()
         source["updatedAt"] = stamp
         changed = con.execute(
@@ -4656,6 +4679,42 @@ def patch_project_node_atomic(
         if changed.rowcount != 1:
             return None
         next_revision = current_revision + 1
+        if not write_payload:
+            meta_row = con.execute(
+                "SELECT meta_json FROM canvas_project_meta WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            try:
+                project_meta = json.loads(meta_row[0] or "{}") if meta_row else {}
+            except (TypeError, ValueError):
+                project_meta = {}
+            if not isinstance(project_meta, dict):
+                project_meta = {}
+            project_meta["revision"] = next_revision
+            project_meta["updatedAt"] = stamp
+            sync_projection_meta(
+                con,
+                project_id,
+                project_meta,
+                updated_at=stamp,
+            )
+            revision_changed = con.execute(
+                "UPDATE canvas_projects SET revision=?,updated_at=?,"
+                "failed_count=MAX(0,COALESCE(failed_count,0)+?),"
+                "local_blocked_count=MAX(0,COALESCE(local_blocked_count,0)+?) "
+                "WHERE id=? AND revision=?",
+                (
+                    next_revision,
+                    stamp,
+                    next_failure_counts[0] - previous_failure_counts[0],
+                    next_failure_counts[1] - previous_failure_counts[1],
+                    project_id,
+                    current_revision,
+                ),
+            )
+            if revision_changed.rowcount != 1:
+                return None
+            return source
         payload_row = con.execute(
             "SELECT payload_json FROM canvas_projects WHERE id=?",
             (project_id,),

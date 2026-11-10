@@ -24,8 +24,11 @@ import tenant_security
 
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(BASE, "config.json")
-LOCAL_CONFIG_PATH = os.path.join(BASE, "config.local.json")
+CONFIG_PATH = os.environ.get("CANVAS_CONFIG_PATH") or os.path.join(BASE, "config.json")
+LOCAL_CONFIG_PATH = (
+    os.environ.get("CANVAS_LOCAL_CONFIG_PATH")
+    or os.path.join(BASE, "config.local.json")
+)
 MODEL_PROFILES_PATH = os.path.join(BASE, "provider_model_profiles.json")
 _MODEL_PROFILES: dict[str, dict[str, Any]] | None = None
 MODEL_DISCOVERY_TIMEOUT_SECONDS = 90

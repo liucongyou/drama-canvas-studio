@@ -55,6 +55,8 @@ import import_feed
 import gate_check
 import generation_budget
 import generation_outcome
+import generation_acceptance
+import explicit_references
 import media_storage
 import provider_catalog
 import provider_client
@@ -589,7 +591,7 @@ def _cookie_secure() -> bool:
 
 
 def _security_headers() -> dict[str, str]:
-    connect_sources = ["'self'", "https:"]
+    connect_sources = ["'self'", "https:", "http://127.0.0.1:8895", "http://localhost:8895"]
     api_host = _api_host()
     if api_host:
         connect_sources.append(f"https://{api_host}")
@@ -3029,7 +3031,33 @@ class MediaVersionError(ValueError):
         self.status = status
 
 
-def _select_media_version(meta, node_type, version_id):
+def _media_url_matches(left, right):
+    """Compare durable upload paths even when the browser sends an API URL."""
+    left = str(left or "").strip()
+    right = str(right or "").strip()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    left_path = urllib.parse.urlsplit(left).path
+    right_path = urllib.parse.urlsplit(right).path
+    if left_path == right_path:
+        return True
+
+    def upload_name(path):
+        if path.startswith("/uploads/"):
+            return unquote(path[len("/uploads/"):])
+        marker = "/api/share/"
+        if marker in path and "/media/" in path:
+            return unquote(path.rsplit("/media/", 1)[1])
+        return ""
+
+    left_name = upload_name(left_path)
+    right_name = upload_name(right_path)
+    return bool(left_name and left_name == right_name)
+
+
+def _select_media_version(meta, node_type, version_id, version_url=""):
     """Atomically select one version and return its durable node projection.
 
     The browser never supplies a media URL here. It names only a stable version
@@ -3053,27 +3081,65 @@ def _select_media_version(meta, node_type, version_id):
             code="MEDIA_VERSION_NOT_FOUND",
             status=404,
         )
-    selected_index = next(
-        (
-            index for index, version in enumerate(versions)
-            if isinstance(version, dict)
-            and str(version.get("versionId") or "").strip() == requested_id
-        ),
-        -1,
-    )
-    if selected_index < 0:
+    matching_indexes = [
+        index
+        for index, version in enumerate(versions)
+        if isinstance(version, dict)
+        and str(version.get("versionId") or "").strip() == requested_id
+    ]
+    if not matching_indexes:
         raise MediaVersionError(
             "该历史版本不存在或已被裁剪",
             code="MEDIA_VERSION_NOT_FOUND",
             status=404,
         )
-    selected = dict(versions[selected_index])
-    version_storage, selected_url, _version_error, availability = (
-        media_storage.resolve_version_media(
-            meta,
-            selected,
+
+    resolved = []
+    for index in matching_indexes:
+        candidate = versions[index]
+        descriptor, display_url, error, availability = (
+            media_storage.resolve_version_media(meta, candidate)
         )
+        durable_url = str(candidate.get("url") or "").strip()
+        expected_match = bool(
+            version_url
+            and (
+                _media_url_matches(version_url, durable_url)
+                or _media_url_matches(version_url, display_url)
+                or _media_url_matches(
+                    version_url,
+                    candidate.get("providerResultUrl"),
+                )
+            )
+        )
+        resolved.append({
+            "index": index,
+            "version": dict(candidate),
+            "storage": descriptor,
+            "display_url": display_url,
+            "error": error,
+            "availability": availability,
+            "expected_match": expected_match,
+            "durable_local": (
+                durable_url.startswith("/uploads/")
+                or bool(descriptor)
+            ),
+        })
+    selected_candidate = min(
+        resolved,
+        key=lambda item: (
+            0 if item["expected_match"] else 1,
+            0 if item["availability"] == "available" else 1,
+            0 if item["durable_local"] else 1,
+            item["index"],
+        ),
     )
+    selected_index = int(selected_candidate["index"])
+    selected = dict(selected_candidate["version"])
+    version_storage = selected_candidate["storage"]
+    selected_url = selected_candidate["display_url"]
+    _version_error = selected_candidate["error"]
+    availability = selected_candidate["availability"]
     if not selected_url or availability != "available":
         raise MediaVersionError(
             "该历史版本的媒体文件已失效，不能切换到已丢失的素材",
@@ -3374,6 +3440,9 @@ def _generation_error_status(exc):
         marker in text
         for marker in (
             "参考素材缺失",
+            "引用 @",
+            "无法解析引用",
+            "对应多个资产",
             "参考图片",
             "参考音频",
             "参考视频",
@@ -8609,6 +8678,11 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "CANVAS_EPISODE_REQUIRED",
                 })
             version_id = str(body.get("versionId") or "").strip()
+            version_url = str(
+                body.get("versionUrl")
+                or body.get("version_url")
+                or ""
+            ).strip()
             selected = {}
 
             def merge_metadata(target, _incoming):
@@ -8617,6 +8691,7 @@ class Handler(BaseHTTPRequestHandler):
                     target,
                     str(current.get("type") or ""),
                     version_id,
+                    version_url,
                 )
 
             try:
@@ -8631,6 +8706,7 @@ class Handler(BaseHTTPRequestHandler):
                         "metadata": {},
                     },
                     merge_metadata=merge_metadata,
+                    write_payload=False,
                 )
             except MediaVersionError as exc:
                 return self._send(exc.status, {
@@ -8676,6 +8752,7 @@ class Handler(BaseHTTPRequestHandler):
                 "nodeId": nid,
                 "node": updated,
                 "versionId": str(selected.get("versionId") or version_id),
+                "versionIndex": int(selected.get("index") or 0),
                 "updatedAt": str(updated.get("updatedAt") or ""),
             })
         m = re.match(r"^/api/projects/([^/]+)/shares$", path)
@@ -10651,20 +10728,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _generate(self, pid, proj, node, task_id=None, lease_owner=""):
         key = (str(pid), str(node.get("id") or ""))
-        if task_id:
-            # Resolve the model in the originating HTTP tenant before a worker is
-            # allowed to start. This turns a configuration/visibility mismatch
-            # into one immediate, actionable error instead of a queued failure.
-            metadata = node.get("metadata") or {}
-            params = metadata.get("params") or {}
-            provider_catalog.resolve_model(
-                str(params.get("provider") or metadata.get("provider") or "").strip()
-                or None,
-                str(params.get("model") or metadata.get("model") or "").strip()
-                or None,
-                str(node.get("type") or ""),
-                require_api_key=False,
-            )
         # The SQLite partial unique index already guarantees one active task
         # per node. Do not layer a process-local boolean lock on top: a worker
         # can otherwise reject its own freshly persisted task as a duplicate.
@@ -10751,6 +10814,19 @@ class Handler(BaseHTTPRequestHandler):
                 error="",
                 finished_at="",
                 **({"_lease_owner": lease_owner} if lease_owner else {}),
+            )
+        if task_id:
+            # Resolve only after the lease gate. A stale worker must receive
+            # GENERATION_LEASE_LOST without touching model secrets/configuration.
+            metadata = node.get("metadata") or {}
+            params = metadata.get("params") or {}
+            provider_catalog.resolve_model(
+                str(params.get("provider") or metadata.get("provider") or "").strip()
+                or None,
+                str(params.get("model") or metadata.get("model") or "").strip()
+                or None,
+                str(node.get("type") or ""),
+                require_api_key=False,
             )
         try:
             return self._generate_once(
@@ -11252,6 +11328,35 @@ class Handler(BaseHTTPRequestHandler):
                     raise RuntimeError(f"当前模型最多接受 {limit} 个参考{label}，实际 {count} 个")
 
         try:
+            prompt = str(meta.get("prompt") or "")
+            explicit = explicit_references.resolve_explicit_references(
+                prompt=prompt,
+                nodes=[
+                    item for item in proj["payload"].get("nodes", [])
+                    if isinstance(item, dict)
+                ],
+                candidate_refs=(
+                    params.get("refs")
+                    if isinstance(params.get("refs"), list)
+                    else meta.get("refs")
+                    if isinstance(meta.get("refs"), list)
+                    else []
+                ),
+                candidate_voices=[
+                    *(
+                        params.get("voiceRefs")
+                        if isinstance(params.get("voiceRefs"), list)
+                        else []
+                    ),
+                    *(
+                        [params.get("voiceRef")]
+                        if isinstance(params.get("voiceRef"), dict)
+                        else []
+                    ),
+                ],
+            )
+            if ntype == "video" and explicit.issues:
+                raise RuntimeError(explicit.issues[0].message)
             requested_provider = str(params.get("provider") or meta.get("provider") or "").strip()
             requested_model = str(
                 params.get("model")
@@ -11278,15 +11383,19 @@ class Handler(BaseHTTPRequestHandler):
             for key in ("ratio", "resolution", "duration", "guidance", "size", "system", "temperature", "maxTokens"):
                 if effective.get(key) in (None, "") and meta.get(key) not in (None, ""):
                     effective[key] = meta.get(key)
-            prompt = str(meta.get("prompt") or "")
             max_prompt = int((model.get("limits") or {}).get("maxPromptChars") or 40000)
             if len(prompt) > max_prompt:
                 raise RuntimeError(f"提示词超过当前模型上限（{max_prompt} 字符）")
             if not prompt.strip():
                 raise RuntimeError("提示词为空，不能提交生成")
-            refs, missing = resolve_refs(
-                params.get("refs") if params.get("refs") is not None else meta.get("refs")
+            raw_refs = (
+                explicit.refs
+                if ntype == "video" and explicit.has_explicit_mention
+                else params.get("refs")
+                if params.get("refs") is not None
+                else meta.get("refs")
             )
+            refs, missing = resolve_refs(raw_refs)
             result = {}
             if ntype == "image":
                 refs = [item for item in refs if item.get("kind") in ("image", "text")]
@@ -11297,25 +11406,9 @@ class Handler(BaseHTTPRequestHandler):
                 generation_task_id = task_id
 
                 def on_image_task_created(task):
-                    provider_task_id = str(task.get("taskId") or "")
-                    if generation_task_id:
-                        # The supplier has accepted a paid task. Persist that
-                        # receipt before the independent journal so the lease
-                        # scanner cannot classify it as "no provider task".
-                        store.update_generation_task(
-                            generation_task_id,
-                            _lease_owner=lease_owner,
-                            provider_task_id=provider_task_id,
-                            status="running",
-                            phase="排队中",
-                            progress=20,
-                            error="",
-                            finished_at="",
-                            next_poll_at=store._now_iso(),
-                        )
-                    store.remember_provider_task(
-                        generation_task_id,
-                        provider_task_id,
+                    accepted = generation_acceptance.accept_provider_task(
+                        task,
+                        task_id=generation_task_id,
                         project_id=pid,
                         node_id=node["id"],
                         provider=provider.get("id"),
@@ -11328,7 +11421,12 @@ class Handler(BaseHTTPRequestHandler):
                             "nodeAssetId": str(meta.get("assetId") or ""),
                             "episodeId": str(meta.get("episodeId") or ""),
                         },
+                        next_poll_at=store._now_iso(),
+                        lease_owner=lease_owner,
+                        remember=store.remember_provider_task,
+                        update_task=store.update_generation_task,
                     )
+                    provider_task_id = accepted.provider_task_id
                     meta.update({
                         "taskId": provider_task_id,
                         "providerTaskStatus": "queued",
@@ -11336,18 +11434,6 @@ class Handler(BaseHTTPRequestHandler):
                         "providerTaskProgress": 0,
                         "generationStartedAt": generation_started_at,
                     })
-                    if generation_task_id:
-                        store.update_generation_task(
-                            generation_task_id,
-                            _lease_owner=lease_owner,
-                            provider_task_id=provider_task_id,
-                            status="running",
-                            phase="排队中",
-                            progress=20,
-                            error="",
-                            finished_at="",
-                            next_poll_at=store._now_iso(),
-                        )
                     commit_node_metadata(pid, node["id"], {
                         "taskId": provider_task_id,
                         "providerTaskStatus": "queued",
@@ -11485,10 +11571,23 @@ class Handler(BaseHTTPRequestHandler):
                         str(generated_at or ""),
                     )
             elif ntype == "video":
-                voice_refs = params.get("voiceRefs") or meta.get("voiceRefs") or []
-                if not voice_refs:
+                # Explicit @ mentions are authoritative. Legacy videos without
+                # any @ mention retain their already-persisted refs so old
+                # projects continue to validate and generate.
+                voice_refs = (
+                    explicit.voices
+                    if explicit.has_explicit_mention
+                    else (
+                        params.get("voiceRefs")
+                        if isinstance(params.get("voiceRefs"), list)
+                        else meta.get("voiceRefs")
+                        if isinstance(meta.get("voiceRefs"), list)
+                        else []
+                    )
+                )
+                if not explicit.has_explicit_mention and not voice_refs:
                     single = params.get("voiceRef") or meta.get("voiceRef")
-                    voice_refs = [single] if single else []
+                    voice_refs = [single] if isinstance(single, dict) else []
                 voices = []
                 for voice_ref in voice_refs:
                     if not isinstance(voice_ref, dict):
@@ -11577,21 +11676,9 @@ class Handler(BaseHTTPRequestHandler):
                 generation_task_id = task_id
 
                 def on_task_created(task):
-                    provider_task_id = str(task.get("taskId") or "")
-                    if generation_task_id:
-                        store.update_generation_task(
-                            generation_task_id,
-                            provider_task_id=provider_task_id,
-                            status="running",
-                            phase="排队中",
-                            progress=20,
-                            error="",
-                            finished_at="",
-                            _lease_owner=lease_owner,
-                        )
-                    store.remember_provider_task(
-                        generation_task_id,
-                        provider_task_id,
+                    accepted = generation_acceptance.accept_provider_task(
+                        task,
+                        task_id=generation_task_id,
                         project_id=pid,
                         node_id=node["id"],
                         provider=provider.get("id"),
@@ -11603,7 +11690,11 @@ class Handler(BaseHTTPRequestHandler):
                             "nodeAssetId": str(meta.get("assetId") or ""),
                             "episodeId": str(meta.get("episodeId") or ""),
                         },
+                        lease_owner=lease_owner,
+                        remember=store.remember_provider_task,
+                        update_task=store.update_generation_task,
                     )
+                    provider_task_id = accepted.provider_task_id
                     meta.update({
                         "taskId": provider_task_id,
                         "providerTaskStatus": "queued",
@@ -11614,13 +11705,6 @@ class Handler(BaseHTTPRequestHandler):
                         "model": model.get("id"),
                         "remoteModel": model.get("remoteModel"),
                     })
-                    if generation_task_id:
-                        store.update_generation_task(
-                            generation_task_id, provider_task_id=provider_task_id,
-                            status="running", phase="排队中", progress=20,
-                            error="", finished_at="",
-                            _lease_owner=lease_owner,
-                        )
                     commit_node_metadata(pid, node["id"], {
                         "taskId": provider_task_id,
                         "providerTaskStatus": "queued",

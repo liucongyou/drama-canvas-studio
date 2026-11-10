@@ -112,6 +112,7 @@ import {
   X,
 } from 'lucide-react';
 import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceMediaNodeSnapshot, getWorkspaceFacts, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, resolveGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, appendLocalMediaVersion, selectCanvasMediaVersion, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, preserveSelectedMediaVersion, selectableMediaVersion, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {isMediaVersionSelectable} from './mediaVersions';
 import {canvasEventId, eventBelongsToEpisode, readCanvasEventCursor, shouldProcessCanvasEvent, writeCanvasEventCursor} from './canvasEventCursor';
 import {createCanvasEventLifecycle} from './canvasEventLifecycle';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
@@ -1805,6 +1806,7 @@ type MediaNodeData = {
   onSelectMediaVersion: (
     node: CanvasMediaNode,
     versionId: string,
+    versionUrl?: string,
   ) => Promise<void>;
   suppressNodeOpen: () => void;
   isNodeOpenSuppressed: () => boolean;
@@ -3135,13 +3137,11 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     // Keep the card's navigation cursor on the version that was actually
     // selected. Otherwise a skipped missing slot leaves the cursor behind and
     // the next click can repeatedly target the same unreachable direction.
-    const resolvedIndex = mediaVersions.findIndex(
-      (item) => String(item.versionId || '').trim() === versionId,
-    );
+    const resolvedIndex = mediaVersions.indexOf(version);
     if (resolvedIndex >= 0) {
       versionIntentRef.current = {nodeId: node.id, index: resolvedIndex};
     }
-    await onSelectMediaVersion(node, versionId);
+    await onSelectMediaVersion(node, versionId, version.url);
   };
   selectMediaVersionRef.current = (nextIndex: number) => {
     void selectMediaVersion(nextIndex);
@@ -4067,7 +4067,14 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                 {mediaVersions.map((version, index) => {
                   const versionId = String(version.versionId || '').trim();
                   const active = index === currentMediaVersionIndex;
-                  const unavailable = version.mediaAvailability === 'missing';
+                  const availability = version.mediaAvailability || 'unknown';
+                  const unavailable = !isMediaVersionSelectable({
+                    ...version,
+                    versionId,
+                  });
+                  const availabilityLabel = availability === 'missing'
+                    ? '文件丢失'
+                    : '待确认';
                   const generatedAt = version.generatedAt
                     ? new Date(version.generatedAt)
                     : null;
@@ -4093,9 +4100,9 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                       role="menuitemradio"
                       aria-checked={active}
                       className={`canvas-media-version-item nodrag${active ? ' is-active' : ''}${unavailable ? ' is-missing' : ''}`}
-                      key={versionId || `${version.url}-${index}`}
+                      key={`${versionId}:${version.url}:${index}`}
                       disabled={active || unavailable || !versionId}
-                      title={unavailable ? '该版本文件已丢失' : active ? '当前版本' : '切换到该版本'}
+                      title={unavailable ? `该版本${availabilityLabel}，不能切换` : active ? '当前版本' : '切换到该版本'}
                       onClick={(event) => {
                         event.stopPropagation();
                         if (active || unavailable || !versionId) return;
@@ -4112,7 +4119,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                       <span className="canvas-media-version-meta">
                         <strong>{active ? '当前版本' : `版本 ${index + 1}`}</strong>
                         <small>{generatedLabel}{dimensions ? ` · ${dimensions}` : ''}</small>
-                        {unavailable && <em>文件丢失</em>}
+                        {unavailable && <em>{availabilityLabel}</em>}
                       </span>
                       <span className="canvas-media-version-check" aria-hidden="true">
                         {active ? <Check size={13} strokeWidth={2.4} /> : null}
@@ -6576,6 +6583,10 @@ const CANVAS_SNAP_GRID: [number, number] = [12, 12];
 // 放在模块级是为了让任何位置的回调都能引用，不受组件内声明顺序影响。
 const NOTE_PREFIX = 'note-';
 const MEDIA_PREFIX = 'media-';
+type MediaVersionSelectionIntent = {
+  versionId: string;
+  versionUrl: string;
+};
 type CanvasGroup = {id: string; name: string; members: string[]};
 
 const KIND_LABEL: Record<CanvasMediaNodeKind, string> = {text: '文本', image: '图片', audio: '音频', video: '视频'};
@@ -9853,7 +9864,7 @@ function CanvasViewInner({
   const pendingMediaNodeSavesRef = useRef<Map<string, CanvasMediaNode>>(new Map());
   const pendingPositionSavesRef = useRef<Map<string, {x: number; y: number; seq: number}>>(new Map());
   const mediaVersionSelectionRef = useRef(
-    new MediaVersionSelectionCoordinator<string>(),
+    new MediaVersionSelectionCoordinator<MediaVersionSelectionIntent>(),
   );
   const pendingMediaVersionPointerRef = useRef<{
     pointerId: number;
@@ -9864,6 +9875,7 @@ function CanvasViewInner({
   const selectMediaVersionFromCardRef = useRef<(
     target: CanvasMediaNode,
     versionId: string,
+    versionUrl?: string,
   ) => Promise<void>>(async () => {});
   const mediaPatchSaveInFlightRef = useRef(false);
   const mediaPatchRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -11313,6 +11325,7 @@ function CanvasViewInner({
   const selectMediaVersionFromCard = useCallback(async (
     target: CanvasMediaNode,
     versionId: string,
+    versionUrl = '',
   ) => {
     if (readOnly) {
       setToast('只读分享不能切换生成版本');
@@ -11325,7 +11338,10 @@ function CanvasViewInner({
     const current = mediaNodesRef.current.find((node) => node.id === target.id) || target;
     const versions = mediaVersionList(current);
     const selectedIndex = versions.findIndex(
-      (version) => String(version.versionId || '').trim() === versionId,
+      (version) => (
+        String(version.versionId || '').trim() === versionId
+        && (!versionUrl || version.url === versionUrl)
+      ),
     );
     const selectedVersion = selectedIndex >= 0 ? versions[selectedIndex] : null;
     if (!selectedVersion) {
@@ -11344,30 +11360,35 @@ function CanvasViewInner({
         _mediaVersionSelection: true,
         params: {
           ...(item.params || {}),
-          activeVersionId: versionId,
+          activeVersionId: selectedVersion.versionId,
           ...(item.params?.videoVersions
             ? {videoVersionIndex: selectedIndex}
             : {mediaVersionIndex: selectedIndex}),
         },
       };
     }));
+    const intent: MediaVersionSelectionIntent = {
+      versionId: String(selectedVersion.versionId || '').trim(),
+      versionUrl: selectedVersion.url,
+    };
     await mediaVersionSelectionRef.current.request(
       target.id,
-      versionId,
-      async (latestVersionId) => {
+      intent,
+      async (latestIntent) => {
         try {
           const result = await selectCanvasMediaVersion(
             session,
             currentEp,
             target.id,
-            latestVersionId,
+            latestIntent.versionId,
+            latestIntent.versionUrl,
           );
-          if (result.versionId !== latestVersionId) {
+          if (result.versionId !== latestIntent.versionId) {
             throw new Error(
-              `历史版本切换未确认：请求 ${latestVersionId}，后端确认 ${result.versionId || '无'}`,
+              `历史版本切换未确认：请求 ${latestIntent.versionId}，后端确认 ${result.versionId || '无'}`,
             );
           }
-          if (!mediaVersionSelectionRef.current.isLatestRequested(target.id, latestVersionId)) {
+          if (!mediaVersionSelectionRef.current.isLatestRequested(target.id, latestIntent)) {
             // A newer click is already queued. Rendering this older response
             // would make the card briefly show the wrong version and can let a
             // background refresh preserve that stale local pointer. Only the
@@ -11388,16 +11409,13 @@ function CanvasViewInner({
               }
             : item));
           broadcastMediaChange([target.id]);
-          const index = Math.max(0, mediaVersionList(remote).findIndex(
-            (version) => version.versionId === result.versionId,
-          ));
-          setToast(`已切换到历史版本 ${index + 1}/${mediaVersionList(remote).length}`);
+          setToast(`已切换到历史版本 ${result.versionIndex + 1}/${mediaVersionList(remote).length}`);
         } catch (error) {
           setToast(error instanceof Error ? error.message : '切换历史版本失败');
           // A failed request must not leave an optimistic pointer pretending
           // that the server accepted it. Never let an older failure undo a
           // newer intent that is still queued.
-          if (mediaVersionSelectionRef.current.isLatestRequested(target.id, latestVersionId)) {
+          if (mediaVersionSelectionRef.current.isLatestRequested(target.id, latestIntent)) {
             try {
               const remoteNodes = await getWorkspaceMediaNodes(session, currentEp);
               const remote = remoteNodes.find((node) => node.id === target.id);
@@ -14682,7 +14700,11 @@ function CanvasViewInner({
       if (resolvedIndex >= 0) {
         mediaVersionNavigationIntentRef.current.set(node.id, resolvedIndex);
       }
-      void selectMediaVersionFromCardRef.current(node, String(selected.versionId));
+      void selectMediaVersionFromCardRef.current(
+        node,
+        String(selected.versionId),
+        selected.url,
+      );
       return;
     }
     const surface = event.currentTarget;

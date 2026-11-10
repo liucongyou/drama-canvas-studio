@@ -228,7 +228,9 @@ class GenerationQueueTests(unittest.TestCase):
         )
 
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
+        # Windows can keep a SQLite handle alive briefly after connection close.
+        # Do not turn that timing race into a false product-test failure.
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.old_db_path = canvas_store.DB_PATH
         self.old_schema_ready = canvas_store._SCHEMA_READY
         canvas_store.DB_PATH = str(Path(self.temp_dir.name) / "queue.db")
@@ -1478,7 +1480,7 @@ class GenerationQueueTests(unittest.TestCase):
         tenant_key = server.tenant_context.current_tenant_id()
         provider_key = f"{tenant_key}\x1fark"
         with server.GENERATION_QUEUE_CONDITION:
-            server.GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL[provider_key] = time.monotonic() + 0.3
+            server.GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL[provider_key] = time.monotonic() + 60
         acquired = threading.Event()
 
         def acquire_after_cooldown():
@@ -1490,6 +1492,9 @@ class GenerationQueueTests(unittest.TestCase):
         thread.start()
         time.sleep(0.1)
         self.assertFalse(acquired.is_set())
+        with server.GENERATION_QUEUE_CONDITION:
+            server.GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL[provider_key] = time.monotonic() - 1
+            server.GENERATION_QUEUE_CONDITION.notify_all()
         self.assertTrue(acquired.wait(timeout=2))
         thread.join(timeout=2)
 

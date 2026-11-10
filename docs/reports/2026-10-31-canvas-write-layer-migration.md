@@ -239,3 +239,38 @@ backend:
   global auto-persist target;
 - only a TOS profile with a persisted successful connection test is eligible;
 - failed reference uploads stop before the paid Seedance submission.
+
+## 2026-11-10 PostgreSQL Shadow Verification
+
+The PostgreSQL shadow path is still read-only; the legacy SQLite process
+remains the write authority.
+
+Completed:
+
+- Alembic schema `20261110_0001` applies successfully to PostgreSQL 16.
+- The shadow backfill is idempotent and verifies content hashes, including
+  `NULL` values and timezone normalization.
+- The internal read API is isolated under `/internal/v1`, requires
+  `X-Internal-Token` and `X-Tenant-Id`, and fails closed in production when no
+  internal token is configured.
+- `canvas_runtime` is a separate `NOSUPERUSER`, `NOBYPASSRLS`, `NOINHERIT`
+  role; unscoped and cross-tenant reads return 0 rows, and DDL is denied.
+- Workspace reads use one PostgreSQL aggregate query instead of loading
+  `payload_json` / `node_json` for every summary request.
+- The shadow sync prunes source-deleted rows and uses a tenant-specific
+  PostgreSQL advisory lock; it commits only after content hashes match.
+- Full backend/shadow gate: 743 tests passed with 208 subtests passed.
+- On the local 17-node / 251-edge shadow project, 12/24/50 concurrent mixed
+  read requests completed without errors. A three-round 12-worker run measured
+  a median P50 of 56 ms and P95 of 122 ms after pool warm-up. This is a local
+  Windows benchmark, not a production SLA.
+
+Still blocked:
+
+- online incremental synchronization
+- PostgreSQL write adapter and canary
+- production traffic switch
+- rollback drill
+
+Do not describe the migration as complete while the legacy SQLite writer is
+still authoritative.
