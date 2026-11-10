@@ -116,3 +116,37 @@ warm open with no long task above 50ms from the 10,000-character input test.
 - The main index chunk still exceeds Vite's 500KB advisory threshold. This
   change does not add Agent code to the main bundle; AgentDock and Markdown are
   independently loaded.
+
+## Production Deployment
+
+- Main service: `drama-canvas-yj.service` active
+- Agent sidecar: `drama-canvas-agent.service` active
+- Release commit: `f1ae209`
+- Frontend entry: `assets/index-CjBnrWHm.js`
+- Backup: `/www/wwwroot/yj.pduoduo.vip/app/backups/agent-f1ae209-20261110-223544`
+- Shared HMAC secret stored in `/etc/drama-canvas-agent.env` with mode `0600`
+- Agent sidecar listens only on `127.0.0.1:8895`
+
+Online API checks:
+
+```text
+Login:                      200
+Agent health via API host:  200
+Agent models:               200, 1 model
+Agent skills:               200, 1 skill
+Project internal read:      200
+Conversation create:        200
+Draft write/read:           200/200
+```
+
+Online browser smoke used the real frontend and API hosts. It verified:
+
+- login through the production login screen;
+- project canvas loads;
+- AgentDock opens;
+- Skill selection persists;
+- draft survives a full page reload;
+- no Agent API or browser page errors;
+- no generation request or import was submitted.
+
+No paid model or media generation was started during online verification.
