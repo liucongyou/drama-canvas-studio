@@ -118,7 +118,7 @@ export type AgentConversation = {
 export type AgentDraft = {
   text: string;
   attachments: AgentFile[];
-  references: Array<{id?: string; nodeId?: string; assetId?: string; seriesId?: string; variantKey?: string; title?: string; displayName?: string; type?: string}>;
+  references: Array<{id?: string; nodeId?: string; assetId?: string; seriesId?: string; variantKey?: string; title?: string; displayName?: string; type?: string; thumb?: string}>;
   skillId?: string;
   routeId?: string;
   modelId?: string;

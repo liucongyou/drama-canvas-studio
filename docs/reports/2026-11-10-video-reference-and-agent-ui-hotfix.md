@@ -90,6 +90,14 @@ Official references:
   line on hover and drag.
 - Close uses a 160ms fade, translate and scale animation.
 - `prefers-reduced-motion` disables the animation.
+- Skill selection now lives inside the composer and can be opened with `/`.
+- `@` opens a categorized, searchable asset menu; hovering a row shows a large
+  thumbnail with type, episode, status and stable asset ID.
+- Selected image references render as inline thumbnail tokens.
+- Assistant messages use full-width mature chat layout; user messages use a
+  compact right-aligned bubble.
+- Message hover actions provide copy controls, timestamps are visible and
+  completed runs end with a divider instead of repeated status cards.
 
 ## Verification
 
@@ -101,6 +109,8 @@ Frontend full suite:            708 passed
 Frontend Agent theme/tests:     10 passed
 TypeScript:                     0 errors
 Browser close animation:        verified
+Skill-inside-composer:          verified
+@ hover image preview:          verified
 Browser page/Agent errors:      0
 ```
 

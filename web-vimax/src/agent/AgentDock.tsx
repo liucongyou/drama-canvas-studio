@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {
-  AtSign, Check, ChevronRight, Download, FileText, History, Image as ImageIcon, Maximize2, Music2,
+  AtSign, Check, ChevronRight, Copy, Download, FileText, History, Image as ImageIcon, Maximize2, Music2,
   Plus, RefreshCw, RotateCcw, Search, Send, Settings, SlidersHorizontal, Sparkles, Square,
   Type, Upload, Video, Wand2, X,
 } from 'lucide-react';
@@ -17,6 +17,7 @@ type AgentReference = {
   id: string;
   title: string;
   type: string;
+  thumb?: string;
   nodeId?: string;
   assetId?: string;
   seriesId?: string;
@@ -61,6 +62,15 @@ function cleanRunText(content: string): string {
   return text;
 }
 
+function nodeThumbFromNode(node: Record<string, unknown>): string {
+  const meta = node.metadata && typeof node.metadata === 'object' ? node.metadata as Record<string, unknown> : {};
+  const raw = String(meta.thumbUrl || meta.content || '');
+  if (!raw) return '';
+  if (raw.startsWith('data:')) return raw;
+  if (raw.startsWith('http')) return raw;
+  return window.location.origin + raw;
+}
+
 function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const [open, setOpen] = useState(() => {
     try { return localStorage.getItem(STORAGE_KEY) === '1'; } catch { return false; }
@@ -92,6 +102,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const [atOpen, setAtOpen] = useState(false);
   const [atCategory, setAtCategory] = useState('subject');
   const [atNodes, setAtNodes] = useState<Array<Record<string, unknown>>>([]);
+  const [atHoverNode, setAtHoverNode] = useState<Record<string, unknown> | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState('');
   const [locks, setLocks] = useState<Record<string, string>>({...LOCK_DEFAULTS});
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -693,6 +704,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
 
   const openAtMenu = useCallback(async () => {
     setAtOpen(true);
+    setAtHoverNode(null);
     setAtCategory('subject');
     setAtQuery('');
     setPickerOpen(false);
@@ -716,11 +728,12 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     const assetId = String(meta.assetId || '');
     const seriesId = String(meta.seriesId || '');
     const variantKey = String(meta.variantKey || '');
+    const thumb = nodeThumbFromNode(node);
     if (id) {
       const refId = assetId || id;
       setReferences((current) => current.some((item) => (item.assetId || item.id) === refId)
         ? current
-        : [...current, {id, nodeId: id, title, type, assetId, seriesId, variantKey}]);
+        : [...current, {id, nodeId: id, title, type, assetId, seriesId, variantKey, thumb}]);
     }
     setPrompt((current) => current + '@' + title + ' ');
     setAtOpen(false);
@@ -728,12 +741,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   }, [autoGrow]);
 
   const nodeThumb = (node: Record<string, unknown>): string => {
-    const meta = node.metadata && typeof node.metadata === 'object' ? node.metadata as Record<string, unknown> : {};
-    const raw = String(meta.thumbUrl || meta.content || '');
-    if (!raw) return '';
-    if (raw.startsWith('data:')) return raw;
-    if (raw.startsWith('http')) return raw;
-    return window.location.origin + raw;
+    return nodeThumbFromNode(node);
   };
 
   const classify = (node: Record<string, unknown>) => {
@@ -748,6 +756,10 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   };
 
   const atItems = atNodes.filter((node) => classify(node) === atCategory && (!atQuery || String(node.title || '').toLowerCase().includes(atQuery.toLowerCase())));
+  const atHoverMeta = atHoverNode && atHoverNode.metadata && typeof atHoverNode.metadata === 'object'
+    ? atHoverNode.metadata as Record<string, unknown>
+    : {};
+  const atHoverThumb = atHoverNode ? nodeThumb(atHoverNode) : '';
   const statusMessage = run ? [...run.messages].reverse().find((message) => message.role === 'status') : undefined;
   const currentStages = run ? (run.stages && run.stages.length ? run.stages : run.steps) : [];
   const activeStage = currentStages.find((stage) => stage.status === 'running')?.name || '';
@@ -815,7 +827,6 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
 
           <div className="agent-context">
             <span>{projectTitle || projectId || '未选择项目'}</span>
-            {skill && <span className="agent-context-skill">@{skill.name}</span>}
           </div>
 
           <main className="agent-chat" ref={chatRef}>
@@ -869,10 +880,22 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
                 )}
                 {visibleMessages.map((message) => (
                   <div key={message.id} className={'agent-msg ' + (message.role === 'user' ? 'is-user' : 'is-assistant')}>
-                    <span className="agent-msg-role">{message.role === 'user' ? '你' : 'Agent'}</span>
-                    <div className="agent-msg-text"><AgentMessageContent blocks={message.blocks} fallback={message.display} /></div>
+                    <div className="agent-msg-avatar">{message.role === 'user' ? '你' : <Sparkles size={14} />}</div>
+                    <div className="agent-msg-body">
+                      <div className="agent-msg-head">
+                        <span>{message.role === 'user' ? '你' : 'Agent'}</span>
+                        {message.createdAt && <time>{new Date(message.createdAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</time>}
+                      </div>
+                      <div className="agent-msg-text"><AgentMessageContent blocks={message.blocks} fallback={message.display} /></div>
+                      <div className="agent-msg-actions">
+                        <button type="button" title="复制" aria-label="复制消息" onClick={() => void navigator.clipboard.writeText(message.display)}><Copy size={12} /></button>
+                      </div>
+                    </div>
                   </div>
                 ))}
+                {(run.status === 'done' || run.status === 'waiting_user') && (
+                  <div className="agent-completed-divider"><span>{run.status === 'done' ? '已完成' : '等待确认'}</span></div>
+                )}
                 {run.status === 'failed' && (
                   <div className="agent-note is-error">
                     <span>{friendlyRunError}</span>
@@ -948,6 +971,11 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
                 setPrompt(value.slice(0, -1));
                 return;
               }
+              if (value.endsWith('@')) {
+                void openAtMenu();
+                setPrompt(value.slice(0, -1));
+                return;
+              }
               setPrompt(value);
             }}
             onSubmit={requestRun}
@@ -955,11 +983,11 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
             onUploadFiles={(files) => files.forEach((file) => void uploadAttachment(file))}
             chips={(skill || attachments.length > 0 || references.length > 0) ? (
               <div className="agent-chips-row">
-                {skill && <span className="agent-skill-chip"><Sparkles size={11} />{skill.name}{routeId && skill.routes ? ' · ' + (skill.routes.find((route) => route.id === routeId)?.name || routeId) : ''}<button type="button" onClick={() => { setSkill(null); setRouteId(''); }}><X size={11} /></button></span>}
-                {references.map((item) => <span key={item.assetId || item.id} className="agent-file-chip"><AtSign size={11} />{item.title}<button type="button" onClick={() => setReferences((current) => current.filter((ref) => (ref.assetId || ref.id) !== (item.assetId || item.id)))}><X size={11} /></button></span>)}
+                {skill ? <span className="agent-skill-chip agent-skill-chip-inline" onClick={openPicker} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') openPicker(); }} role="button" tabIndex={0} title="切换技能"><Sparkles size={11} />{skill.name}{routeId && skill.routes ? ' · ' + (skill.routes.find((route) => route.id === routeId)?.name || routeId) : ''}<button type="button" onClick={(event) => { event.stopPropagation(); setSkill(null); setRouteId(''); }}><X size={11} /></button></span> : <button type="button" className="agent-inline-skill-empty" onClick={openPicker}><Sparkles size={11} />选择技能<ChevronRight size={11} /></button>}
+                {references.map((item) => <span key={item.assetId || item.id} className="agent-file-chip agent-ref-token" title={item.assetId || item.title}>{item.thumb ? <img src={item.thumb} alt="" /> : <AtSign size={11} />}<span>{item.title}</span><button type="button" onClick={() => setReferences((current) => current.filter((ref) => (ref.assetId || ref.id) !== (item.assetId || item.id)))}><X size={11} /></button></span>)}
                 {attachments.map((file) => <span key={file.id} className="agent-file-chip"><FileText size={11} />{file.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.id !== file.id))}><X size={11} /></button></span>)}
               </div>
-            ) : null}
+            ) : <div className="agent-chips-row"><button type="button" className="agent-inline-skill-empty" onClick={openPicker}><Sparkles size={11} />选择技能<ChevronRight size={11} /></button></div>}
             toolbar={(
               <>
                 <button type="button" className="agent-tool" title="上传剧本/参考文件" aria-label="上传剧本/参考文件" onClick={() => fileInputRef.current?.click()}><Plus size={15} /></button>
@@ -1019,12 +1047,26 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
           )}
 
           {atOpen && (
-            <div className="agent-popover agent-at-menu">
+            <div className={'agent-popover agent-at-menu' + (atHoverNode ? ' has-preview' : '')}>
+              {atHoverNode && (
+                <div className="agent-at-preview" aria-live="polite">
+                  {atHoverThumb
+                    ? <img src={atHoverThumb} alt={String(atHoverNode.title || '')} />
+                    : <div className="agent-at-preview-empty"><ImageIcon size={26} /><span>暂无预览</span></div>}
+                  <strong>{String(atHoverNode.title || atHoverNode.id || '')}</strong>
+                  <dl>
+                    <div><dt>类型</dt><dd>{String(atHoverNode.type || '')}</dd></div>
+                    <div><dt>集数</dt><dd>{String(atHoverMeta.episodeId || '跨集')}</dd></div>
+                    <div><dt>状态</dt><dd>{String(atHoverMeta.status || '可用')}</dd></div>
+                    <div><dt>ID</dt><dd title={String(atHoverMeta.assetId || atHoverNode.id || '')}>{String(atHoverMeta.assetId || atHoverNode.id || '')}</dd></div>
+                  </dl>
+                </div>
+              )}
               <div className="agent-popover-head"><Search size={13} /><input autoFocus value={atQuery} onChange={(event) => setAtQuery(event.target.value)} placeholder="搜索当前画布素材" /></div>
               <div className="agent-at-body">
                 <div className="agent-at-cats">
                   {([['subject', '主体', UserIcon], ['image', '图片', ImageIcon], ['video', '视频', Video], ['audio', '音频', Music2], ['text', '文本', Type]] as Array<[string, string, typeof Type]>).map(([key, label, Icon]) => (
-                    <button key={key} type="button" className={atCategory === key ? 'is-active' : ''} onClick={() => setAtCategory(key)}>
+                    <button key={key} type="button" className={atCategory === key ? 'is-active' : ''} onClick={() => { setAtCategory(key); setAtHoverNode(null); }}>
                       <Icon size={13} />{label}<span>{atNodes.filter((node) => classify(node) === key).length}</span>
                     </button>
                   ))}
@@ -1033,7 +1075,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
                   {atItems.slice(0, 80).map((node, index) => {
                     const thumb = nodeThumb(node);
                     return (
-                      <button key={String(node.id || index)} type="button" onClick={() => insertAt(node)}>
+                      <button key={String(node.id || index)} type="button" onClick={() => insertAt(node)} onMouseEnter={() => setAtHoverNode(node)} onFocus={() => setAtHoverNode(node)}>
                         {thumb ? <img className="agent-at-thumb" src={thumb} alt="" loading="lazy" /> : <span className="agent-at-thumb agent-at-thumb-empty"><FileText size={13} /></span>}
                         <span>{String(node.title || node.id || '')}</span>
                         <small>{String(node.type || '')} · {String(node.id || '')}</small>
@@ -1157,13 +1199,27 @@ function PastRun({run}: {run: AgentRun}) {
   }
   return (
     <div className="agent-past">
-      {prompt && <div className="agent-msg is-user"><span className="agent-msg-role">你</span><div className="agent-msg-text"><AgentMessageContent fallback={prompt} /></div></div>}
+      {prompt && (
+        <div className="agent-msg is-user">
+          <div className="agent-msg-avatar">你</div>
+          <div className="agent-msg-body">
+            <div className="agent-msg-head"><span>你</span></div>
+            <div className="agent-msg-text"><AgentMessageContent fallback={prompt} /></div>
+            <div className="agent-msg-actions"><button type="button" title="复制" aria-label="复制消息" onClick={() => void navigator.clipboard.writeText(prompt)}><Copy size={12} /></button></div>
+          </div>
+        </div>
+      )}
       {messages.filter((message) => message.role !== 'user').map((message) => (
         <div key={message.id} className={'agent-msg ' + (message.role === 'user' ? 'is-user' : 'is-assistant')}>
-          <span className="agent-msg-role">{message.role === 'user' ? '你' : 'Agent'}</span>
-          <div className="agent-msg-text"><AgentMessageContent blocks={message.blocks} fallback={message.display} /></div>
+          <div className="agent-msg-avatar">{message.role === 'user' ? '你' : <Sparkles size={14} />}</div>
+          <div className="agent-msg-body">
+            <div className="agent-msg-head"><span>{message.role === 'user' ? '你' : 'Agent'}</span></div>
+            <div className="agent-msg-text"><AgentMessageContent blocks={message.blocks} fallback={message.display} /></div>
+            <div className="agent-msg-actions"><button type="button" title="复制" aria-label="复制消息" onClick={() => void navigator.clipboard.writeText(message.display)}><Copy size={12} /></button></div>
+          </div>
         </div>
       ))}
+      <div className="agent-completed-divider"><span>{run.status === 'done' ? '已完成' : run.status === 'waiting_user' ? '待确认' : '本轮结束'}</span></div>
       <details className="agent-run-trace">
         <summary>
           <span className={'agent-stage-dot ' + (run.status === 'done' ? 'done' : run.status === 'failed' ? 'failed' : 'running')} />

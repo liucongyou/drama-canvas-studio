@@ -4,6 +4,8 @@ const base = process.env.CANVAS_BASE || 'https://yj.pduoduo.vip';
 const username = process.env.CANVAS_USER || 'admin';
 const password = process.env.CANVAS_PASSWORD || '';
 const shotPath = process.env.SHOT_PATH || 'scripts/_agent-online-smoke.png';
+const previewShotPath = process.env.PREVIEW_SHOT_PATH || 'scripts/_agent-at-preview.png';
+const requestedProject = process.env.PROJECT_ID || '';
 
 const browser = await puppeteer.launch({
   executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -58,11 +60,17 @@ try {
     if (login.status !== 200) throw new Error(`login HTTP ${login.status}`);
   }
 
-  const project = await page.evaluate(async () => {
+  const project = await page.evaluate(async (requestedProject) => {
     const response = await fetch('/api/projects', {credentials: 'same-origin'});
     const body = await response.json();
-    return {status: response.status, first: body.projects?.[0] || null};
-  });
+    const projects = body.projects || [];
+    return {
+      status: response.status,
+      first: requestedProject
+        ? projects.find((item) => item.id === requestedProject) || projects[0] || null
+        : projects[0] || null,
+    };
+  }, requestedProject);
   if (project.status !== 200 || !project.first) throw new Error('no project');
 
   step = 'open-agent';
@@ -82,7 +90,7 @@ try {
   await page.waitForSelector('.agent-input-box textarea', {timeout: 20_000});
 
   step = 'skill';
-  if (!(await page.$('.agent-skill-chip'))) {
+  if (!(await page.$('.agent-input-box .agent-skill-chip-inline'))) {
     await page.click('.agent-tool[title="选择技能"]');
     await page.waitForSelector('.agent-picker-item', {timeout: 15_000});
     await page.click('.agent-picker-item');
@@ -103,18 +111,28 @@ try {
     () => (document.querySelector('.agent-input-box textarea')?.value || '').includes('线上只读冒烟'),
     {timeout: 20_000},
   );
-  await page.waitForSelector('.agent-skill-chip', {timeout: 20_000});
+  await page.waitForSelector('.agent-input-box .agent-skill-chip-inline', {timeout: 20_000});
 
   const snapshot = await page.evaluate(() => {
     const panel = document.querySelector('.agent-panel');
     return {
       panel: !!panel,
       composer: !!panel?.querySelector('.agent-input-box textarea'),
-      skill: !!panel?.querySelector('.agent-skill-chip'),
+      skill: !!panel?.querySelector('.agent-input-box .agent-skill-chip-inline'),
       draft: document.querySelector('.agent-input-box textarea')?.value || '',
       apiHost: window.__CANVAS_API_BASE__ || location.origin,
     };
   });
+  await page.click('.agent-tool[title="引用素材"]');
+  await page.waitForSelector('.agent-at-items button', {timeout: 15_000});
+  await page.hover('.agent-at-items button');
+  await page.waitForSelector('.agent-at-preview', {timeout: 5_000});
+  const referencePreview = await page.evaluate(() => ({
+    visible: !!document.querySelector('.agent-at-preview'),
+    image: !!document.querySelector('.agent-at-preview img'),
+  }));
+  if (referencePreview.visible) await page.screenshot({path: previewShotPath, fullPage: false});
+  await page.keyboard.press('Escape');
   await page.click('.agent-icon[title="关闭"]');
   await page.waitForSelector('.agent-panel.is-closing', {timeout: 2_000});
   const closeAnimated = true;
@@ -134,11 +152,14 @@ try {
     base,
     projectId: project.first.id,
     snapshot,
+    referencePreview,
+    previewShotPath,
     closeAnimated,
     errors: relevantErrors,
     shotPath,
   }, null, 2));
   if (!snapshot.panel || !snapshot.composer || !snapshot.skill) failed = true;
+  if (!referencePreview.visible || !referencePreview.image) failed = true;
   if (relevantErrors.length) failed = true;
 } catch (error) {
   console.log('CRASH', step, error?.message || error);

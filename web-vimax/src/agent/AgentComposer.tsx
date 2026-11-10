@@ -68,7 +68,6 @@ export function AgentComposer({
 
   return (
     <div className="agent-composer">
-      {chips}
       <div
         className="agent-input-box"
         onDragOver={(event) => {
@@ -76,6 +75,7 @@ export function AgentComposer({
         }}
         onDrop={drop}
       >
+        {chips && <div className="agent-inline-chips">{chips}</div>}
         <textarea
           ref={textareaRef}
           value={value}
