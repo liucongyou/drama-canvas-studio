@@ -11567,6 +11567,19 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                 ],
             )
+            has_asset_at_syntax = bool(re.search(
+                r"@(?:角色|群像|场景|道具|音频)｜",
+                prompt,
+            ))
+            if (
+                ntype == "video"
+                and has_asset_at_syntax
+                and not explicit.has_explicit_mention
+            ):
+                raise RuntimeError(
+                    "视频提示词包含 @ 资产引用，但没有解析出完整资产身份。"
+                    "请从素材菜单重新选择资产后再提交。"
+                )
             if ntype == "video" and explicit.issues:
                 raise RuntimeError(explicit.issues[0].message)
             requested_provider = str(params.get("provider") or meta.get("provider") or "").strip()
@@ -11899,6 +11912,12 @@ class Handler(BaseHTTPRequestHandler):
                             "prompt": prompt,
                             "params": effective,
                             "refs": refs,
+                            "providerPromptSha256": str(
+                                task.get("providerPromptSha256") or ""
+                            ),
+                            "referenceMapping": task.get(
+                                "referenceMapping"
+                            ) or [],
                             "nodeAssetId": str(meta.get("assetId") or ""),
                             "episodeId": str(meta.get("episodeId") or ""),
                         },

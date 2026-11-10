@@ -115,6 +115,12 @@ try {
       apiHost: window.__CANVAS_API_BASE__ || location.origin,
     };
   });
+  await page.click('.agent-icon[title="关闭"]');
+  await page.waitForSelector('.agent-panel.is-closing', {timeout: 2_000});
+  const closeAnimated = true;
+  await page.waitForSelector('.agent-fab', {timeout: 5_000});
+  await page.click('.agent-fab');
+  await page.waitForSelector('.agent-panel', {timeout: 5_000});
   await page.screenshot({path: shotPath, fullPage: false});
   const relevantErrors = errors.filter((item) =>
     !item.includes('favicon')
@@ -128,6 +134,7 @@ try {
     base,
     projectId: project.first.id,
     snapshot,
+    closeAnimated,
     errors: relevantErrors,
     shotPath,
   }, null, 2));

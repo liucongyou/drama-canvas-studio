@@ -65,6 +65,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const [open, setOpen] = useState(() => {
     try { return localStorage.getItem(STORAGE_KEY) === '1'; } catch { return false; }
   });
+  const [closing, setClosing] = useState(false);
   const [width, setWidth] = useState(() => {
     try { return Math.max(380, Math.min(760, Number(localStorage.getItem(WIDTH_KEY)) || 480)); } catch { return 480; }
   });
@@ -114,6 +115,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const restoredRunRef = useRef<string | null>(null);
   const idempotencyKeyRef = useRef('');
   const draftTimerRef = useRef<number | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, open ? '1' : '0'); } catch {}
@@ -349,6 +351,22 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     } catch {}
   }, []);
 
+  const closePanel = useCallback(() => {
+    if (closeTimerRef.current !== null) return;
+    setClosing(true);
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      setOpen(false);
+      setClosing(false);
+    }, 160);
+  }, []);
+
+  useEffect(() => () => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+    }
+  }, []);
+
   useEffect(() => {
     if (!run || !run.id) return;
     let alive = true;
@@ -380,11 +398,11 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
       if (pickerOpen || modelMenu || settingsOpen || atOpen) {
         setPickerOpen(false); setModelMenu(false); setSettingsOpen(false); setAtOpen(false); return;
       }
-      setOpen(false);
+      closePanel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [managerOpen, pickerOpen, modelMenu, settingsOpen, atOpen]);
+  }, [managerOpen, pickerOpen, modelMenu, settingsOpen, atOpen, closePanel]);
 
   useEffect(() => {
     const onPointer = (event: PointerEvent) => {
@@ -770,7 +788,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   return (
     <>
       {!open && (
-        <button type="button" className="agent-fab" onClick={() => setOpen(true)} aria-label="与 AI 对话">
+        <button type="button" className="agent-fab" onClick={() => { setClosing(false); setOpen(true); }} aria-label="与 AI 对话">
           <Sparkles size={16} strokeWidth={2} />
           <span>与 AI 对话</span>
         </button>
@@ -778,7 +796,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
       {open && (
         <aside
           ref={panelRef}
-          className={'agent-panel' + (resizing ? ' is-resizing' : '')}
+          className={'agent-panel' + (resizing ? ' is-resizing' : '') + (closing ? ' is-closing' : '')}
           style={{width, right: 0}}
           aria-label="AI 创作面板"
         >
@@ -791,7 +809,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
               <button type="button" className="agent-icon" title="技能库" aria-label="技能库" onClick={() => void openManager()}><Sparkles size={15} /></button>
               <button type="button" className="agent-icon" title="刷新" aria-label="刷新" onClick={() => { void refreshMetadata(); if (run) void refreshRun(run.id); }}><RefreshCw size={15} /></button>
               <button type="button" className="agent-icon" title={width > 600 ? '收窄' : '加宽'} aria-label={width > 600 ? '收窄' : '加宽'} onClick={() => setWidth((current) => current > 600 ? 480 : 720)}><Maximize2 size={15} /></button>
-              <button type="button" className="agent-icon" title="关闭" aria-label="关闭" onClick={() => setOpen(false)}><X size={16} /></button>
+              <button type="button" className="agent-icon" title="关闭" aria-label="关闭" onClick={closePanel}><X size={16} /></button>
             </div>
           </header>
 

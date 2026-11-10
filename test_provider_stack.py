@@ -2342,13 +2342,13 @@ class ProviderPayloadTests(unittest.TestCase):
             "https://image.example/prop-7.jpg",
             "https://image.example/crowd-16.jpg",
         ])
-        self.assertIn("<角色｜陈大强（图4）> 对应参考图 1", text)
-        self.assertIn("<场景｜厂区后街·母版（图10）> 对应参考图 2", text)
-        self.assertIn("<角色｜赵铁柱（图1）> 对应参考图 3", text)
-        self.assertIn("<场景｜塌方矿道·母版（图12）> 对应参考图 4", text)
-        self.assertIn("<角色｜贾富贵（图3）> 对应参考图 5", text)
-        self.assertIn("<道具｜合同（图7）> 对应参考图 6", text)
-        self.assertIn("<群像｜街坊群（图16）> 对应参考图 7", text)
+        self.assertIn("将图片 1 中的人物定义为<角色｜陈大强>", text)
+        self.assertIn("将图片 2 中的场景定义为<场景｜厂区后街·母版>", text)
+        self.assertIn("将图片 3 中的人物定义为<角色｜赵铁柱>", text)
+        self.assertIn("将图片 4 中的场景定义为<场景｜塌方矿道·母版>", text)
+        self.assertIn("将图片 5 中的人物定义为<角色｜贾富贵>", text)
+        self.assertIn("将图片 6 中的道具定义为<道具｜合同>", text)
+        self.assertIn("将图片 7 中的群体定义为<群像｜街坊群>", text)
         self.assertIn("【群像】", text)
         self.assertIn("不采用图中人物", text)
 
@@ -2380,8 +2380,101 @@ class ProviderPayloadTests(unittest.TestCase):
 
         self.assertEqual(text.count("### 素材引用"), 1)
         self.assertNotIn("参考图 99", text)
-        self.assertIn("<场景｜厂区后街·母版（图10）> 对应参考图 1", text)
-        self.assertIn("<角色｜陈大强（图4）> 对应参考图 2", text)
+        self.assertIn("将图片 1 中的场景定义为<场景｜厂区后街·母版>", text)
+        self.assertIn("将图片 2 中的人物定义为<角色｜陈大强>", text)
+
+    def test_ark_provider_prompt_uses_only_actual_reference_slots(self):
+        refs = [
+            {
+                "kind": "image",
+                "url": "https://image.example/accountant.jpg",
+                "label": "角色｜老会计（图16）",
+            },
+            {
+                "kind": "image",
+                "url": "https://image.example/jia.jpg",
+                "label": "角色｜贾富贵（图3）",
+            },
+        ]
+        prompt = (
+            "【核心人物】@角色｜老会计（图16）；@角色｜贾富贵（图3）\n"
+            "@角色｜贾富贵（图3）抱着布包跑进夜色。"
+        )
+
+        text = provider_client._ark_prompt_with_material_reference_contract(
+            prompt,
+            refs,
+            [],
+        )
+
+        self.assertIn("<角色｜老会计>；", text)
+        self.assertIn("<角色｜贾富贵>抱着布包", text)
+        self.assertNotIn("@角色｜贾富贵（图3）", text)
+        self.assertNotIn("（图16）", text)
+        self.assertIn("将图片 1 中的人物定义为<角色｜老会计>", text)
+        self.assertIn("将图片 2 中的人物定义为<角色｜贾富贵>", text)
+
+    def test_ark_reference_guard_rejects_old_figure_code(self):
+        refs = [
+            {
+                "kind": "image",
+                "url": "https://image.example/role.jpg",
+                "label": "角色｜贾富贵（图3）",
+            }
+        ]
+        with self.assertRaisesRegex(RuntimeError, "未绑定"):
+            provider_client._ark_validate_reference_contract(
+                "将图片 1 中的人物定义为<角色｜贾富贵>\n"
+                "@角色｜贾富贵（图3）正在奔跑。",
+                refs,
+                [],
+                ["https://image.example/role.jpg"],
+                [],
+            )
+
+    def test_ark_reference_guard_rejects_undefined_body_tag(self):
+        refs = [
+            {
+                "kind": "image",
+                "url": "https://image.example/accountant.jpg",
+                "label": "角色｜老会计（图16）",
+            }
+        ]
+        with self.assertRaisesRegex(RuntimeError, "未定义身份标签"):
+            provider_client._ark_validate_reference_contract(
+                "将图片 1 中的人物定义为<角色｜老会计>\n"
+                "<角色｜贾富贵>抱着布包跑进夜色。",
+                refs,
+                [],
+                ["https://image.example/accountant.jpg"],
+                [],
+            )
+
+    def test_ark_reference_guard_rejects_slot_count_mismatch(self):
+        refs = [
+            {
+                "kind": "image",
+                "url": "https://image.example/role-1.jpg",
+                "label": "角色｜老会计（图16）",
+            },
+            {
+                "kind": "image",
+                "url": "https://image.example/role-2.jpg",
+                "label": "角色｜贾富贵（图3）",
+            },
+        ]
+        text = (
+            "将图片 1 中的人物定义为<角色｜老会计>\n"
+            "将图片 2 中的人物定义为<角色｜贾富贵>"
+        )
+        with self.assertRaisesRegex(RuntimeError, "数量"):
+            provider_client._ark_validate_reference_contract(
+                text,
+                refs,
+                [],
+                ["https://image.example/role-1.jpg"],
+                [],
+            )
 
     def test_ark_video_rejects_below_four_seconds_and_maps_expired_error(self):
         provider = {
