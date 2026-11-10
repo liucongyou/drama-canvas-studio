@@ -20,6 +20,7 @@ import {AUTH_REQUIRED_EVENT, apiUrl, changePassword, createManagedAccount, creat
 import {TenantAdminView} from './TenantAdminView';
 import {shareTokenInPath} from './projectShare';
 import {APP_VERSION, RELEASE_SEEN_KEY} from './changelog';
+const AgentDock = lazy(() => import('./agent/AgentDock').then((module) => ({default: module.AgentDock})));
 import {
   SETTINGS_CATEGORIES,
   firstAvailableSettingsCategory,
@@ -33,6 +34,7 @@ import './ui-refinements.css';
 import './immersive-theme.css';
 import './nav-actions.css';
 import './activity-layout.css';
+import './agent-dock.css';
 import './chat-layout.css';
 import './brand-themes.css';
 import './error-boundary.css';
@@ -1295,6 +1297,12 @@ function Shell({
           </Suspense>
         </ErrorBoundary>
       )}
+      <Suspense fallback={null}>
+        <AgentDock
+          projectId={pid}
+          enabled={Boolean(pid) && !shareTokenInPath(window.location.pathname)}
+        />
+      </Suspense>
     </div>
   );
 }

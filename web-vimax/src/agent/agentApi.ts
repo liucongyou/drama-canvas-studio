@@ -34,8 +34,20 @@ export type AgentMessage = {
   id: number;
   role: string;
   content: string;
+  blocks?: AgentContentBlock[];
+  conversationId?: string;
+  runId?: string;
+  sequenceNo?: number;
   createdAt?: string;
 };
+
+export type AgentContentBlock =
+  | {type: 'text'; text: string}
+  | {type: 'markdown'; text: string}
+  | {type: 'json'; data: unknown}
+  | {type: 'tool'; name: string; summary?: string; status?: string}
+  | {type: 'artifact'; artifactId: string}
+  | {type: 'notice'; level: 'info' | 'warning' | 'error'; code?: string; message: string};
 
 export type AgentStage = {
   id?: number;
@@ -66,12 +78,50 @@ export type AgentRun = {
   prompt: string;
   status: string;
   error: string;
+  errorCode?: string;
+  currentStage?: string;
+  cancelRequested?: boolean;
   createdAt?: string;
   updatedAt?: string;
   messages: AgentMessage[];
   steps: AgentStage[];
   stages: AgentStage[];
   artifacts: AgentArtifact[];
+  toolCalls?: Array<{
+    id: number;
+    name: string;
+    arguments: Record<string, unknown>;
+    status: string;
+    result: Record<string, unknown>;
+    resultBytes?: number;
+    errorCode?: string;
+    startedAt?: string;
+    finishedAt?: string;
+  }>;
+};
+
+export type AgentConversation = {
+  id: string;
+  tenantId: string;
+  accountId: string;
+  projectId: string;
+  title: string;
+  status: string;
+  activeRunId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  messages?: AgentMessage[];
+};
+
+export type AgentDraft = {
+  text: string;
+  attachments: AgentFile[];
+  references: Array<{id?: string; nodeId?: string; assetId?: string; seriesId?: string; variantKey?: string; title?: string; displayName?: string; type?: string}>;
+  skillId?: string;
+  routeId?: string;
+  modelId?: string;
+  locks?: Record<string, string>;
+  updatedAt?: string;
 };
 
 export type AgentSkillDetail = {
@@ -89,13 +139,26 @@ export function agentBaseUrl(): string {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(agentBaseUrl() + path, {
-    credentials: 'same-origin',
-    ...init,
-    headers: init && init.body instanceof FormData
-      ? init.headers
-      : {'Content-Type': 'application/json', ...(init && init.headers ? init.headers : {})},
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 120_000);
+  let response: Response;
+  try {
+    response = await fetch(agentBaseUrl() + path, {
+      credentials: 'same-origin',
+      ...init,
+      signal: init?.signal || controller.signal,
+      headers: init && init.body instanceof FormData
+        ? init.headers
+        : {'Content-Type': 'application/json', ...(init && init.headers ? init.headers : {})},
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('请求超时，任务可能仍在后台执行，请刷新会话恢复');
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timeout);
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = (data as {detail?: unknown; error?: string}).detail;
@@ -110,6 +173,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const agentApi = {
+  bootstrap: (projectId: string) => request<{tenantId: string; accountId: string; conversations: AgentConversation[]}>('/api/agent/bootstrap?projectId=' + encodeURIComponent(projectId)),
+  createConversation: (projectId: string, title = '', conversationId = '') => request<{ok: boolean; conversation: AgentConversation}>('/api/agent/conversations', {
+    method: 'POST',
+    body: JSON.stringify({projectId, title, conversationId}),
+  }),
+  conversation: (id: string) => request<{conversation: AgentConversation}>('/api/agent/conversations/' + encodeURIComponent(id)),
+  draft: (id: string) => request<{draft: AgentDraft}>('/api/agent/conversations/' + encodeURIComponent(id) + '/draft'),
+  saveDraft: (id: string, draft: Partial<AgentDraft>) => request<{ok: boolean; draft: AgentDraft}>('/api/agent/conversations/' + encodeURIComponent(id) + '/draft', {
+    method: 'PUT',
+    body: JSON.stringify(draft),
+  }),
+  appendMessage: (id: string, body: {content: AgentContentBlock[]; skillId: string; modelId?: string; routeId?: string; locks?: Record<string, string>; fileIds?: string[]; referenceNodeIds?: string[]}, idempotencyKey: string) => request<{ok: boolean; idempotent?: boolean; run: AgentRun; message?: AgentMessage}>('/api/agent/conversations/' + encodeURIComponent(id) + '/messages', {
+    method: 'POST',
+    headers: {'Idempotency-Key': idempotencyKey},
+    body: JSON.stringify(body),
+  }),
   models: () => request<{models: AgentModel[]; defaultModelId?: string}>('/api/agent/models'),
   skills: () => request<{skills: AgentSkill[]}>('/api/agent/skills'),
   skill: (id: string) => request<AgentSkillDetail>('/api/agent/skills/' + encodeURIComponent(id)),
@@ -132,6 +211,7 @@ export const agentApi = {
   runs: (projectId: string, conversationId?: string) => request<{runs: AgentRun[]}>('/api/agent/runs?projectId=' + encodeURIComponent(projectId) + (conversationId ? '&conversationId=' + encodeURIComponent(conversationId) : '')),
   createRun: (body: {projectId: string; skillId: string; prompt: string; modelId?: string; routeId?: string; locks?: Record<string, string>; fileIds?: string[]; referenceNodeIds?: string[]; conversationId?: string}) => request<{ok: boolean; run: AgentRun}>('/api/agent/runs', {
     method: 'POST',
+    headers: {'Idempotency-Key': 'run-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 9)},
     body: JSON.stringify(body),
   }),
   run: (id: string) => request<{run: AgentRun}>('/api/agent/runs/' + encodeURIComponent(id)),
