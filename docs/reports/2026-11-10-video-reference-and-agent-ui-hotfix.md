@@ -115,3 +115,22 @@ Browser page/Agent errors:      0
 ```
 
 No paid generation was submitted during verification.
+
+## Production Release
+
+- Release commit: `f55e36e`
+- Version: `2026.11.10.03`
+- Frontend entry: `assets/index-DV6uACSx.js`
+- Main service: `drama-canvas-yj.service` active
+- Agent service: `drama-canvas-agent.service` active
+- Backup: `/www/wwwroot/yj.pduoduo.vip/app/backups/video-ref-agent-ui-f55e36e-20261111-005356`
+
+Online browser smoke verified:
+
+- skill selection renders inside the composer;
+- draft recovery after full reload;
+- `@` menu category/search rendering;
+- hover reference preview displays an image and stable metadata;
+- close animation;
+- zero page errors;
+- no generation or import action.
