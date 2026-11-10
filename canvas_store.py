@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 import tenant_context
 import generation_outcome
+import pg_compat
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "canvas.db")
 
@@ -185,7 +186,11 @@ def _connect():
     global _SCHEMA_READY
     path = _db_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    con = sqlite3.connect(path, timeout=30)
+    con = (
+        pg_compat.connect_path(path, "canvas")
+        if pg_compat.postgres_enabled()
+        else sqlite3.connect(path, timeout=30)
+    )
     con.execute("PRAGMA busy_timeout=30000")
     con.execute("PRAGMA foreign_keys=ON")
     con.execute(
@@ -753,11 +758,15 @@ def _connect():
     return con
 
 
-def _is_readonly_write_error(exc: sqlite3.OperationalError) -> bool:
+def _is_readonly_write_error(
+    exc: sqlite3.OperationalError | pg_compat.OperationalError,
+) -> bool:
     return "readonly" in str(exc).lower()
 
 
-def _is_retryable_write_error(exc: sqlite3.OperationalError) -> bool:
+def _is_retryable_write_error(
+    exc: sqlite3.OperationalError | pg_compat.OperationalError,
+) -> bool:
     """写失败是否值得重试。
 
     `readonly` 看起来完全不像"忙"，但在 Windows + WAL 下它确实是并发打开数据库的
@@ -3095,7 +3104,9 @@ def _run_write_transaction(callback):
     # 不该白等满 35 秒才报错。
     readonly_budget = _MAX_READONLY_RETRIES
 
-    def retryable(exc: sqlite3.OperationalError) -> bool:
+    def retryable(
+        exc: sqlite3.OperationalError | pg_compat.OperationalError,
+    ) -> bool:
         nonlocal readonly_budget
         if _is_readonly_write_error(exc):
             if readonly_budget <= 0:
@@ -3107,7 +3118,7 @@ def _run_write_transaction(callback):
     while True:
         try:
             con = _connect()
-        except sqlite3.OperationalError as exc:
+        except (sqlite3.OperationalError, pg_compat.OperationalError) as exc:
             if not retryable(exc) or time.monotonic() >= deadline:
                 raise
             print(
@@ -3136,12 +3147,12 @@ def _run_write_transaction(callback):
                 _WAL_LAST_MAINTENANCE[path] = now
                 try:
                     con.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                except sqlite3.OperationalError:
+                except (sqlite3.OperationalError, pg_compat.OperationalError):
                     # The next maintenance window retries; business writes must
                     # never fail because a passive checkpoint was busy.
                     pass
             return result
-        except sqlite3.OperationalError as exc:
+        except (sqlite3.OperationalError, pg_compat.OperationalError) as exc:
             if con.in_transaction:
                 con.rollback()
             if not retryable(exc) or time.monotonic() >= deadline:
@@ -3711,7 +3722,7 @@ def create_generation_task(
                     request_json, client_operation_id, "pending", now,
                 ),
             )
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, pg_compat.IntegrityError):
             if client_operation_id:
                 row = connection.execute(
                     "SELECT * FROM generation_tasks "
@@ -6550,7 +6561,13 @@ def record_audit_event(
         )
         con.commit()
         return event_id
-    except (OSError, sqlite3.Error, TypeError, ValueError):
+    except (
+        OSError,
+        sqlite3.Error,
+        pg_compat.DatabaseError,
+        TypeError,
+        ValueError,
+    ):
         return ""
     finally:
         if con is not None:
@@ -7215,6 +7232,28 @@ def _maybe_snapshot(con, pid, title, payload, revision, mode="auto", now=None):
 def storage_stats() -> dict:
     """当前库的页占用情况（只读，用于判断是否需要回收）。"""
     path = _db_path()
+    if pg_compat.postgres_enabled():
+        con = pg_compat.connect_path(path, "canvas")
+        try:
+            file_bytes = int(
+                con.execute(
+                    "SELECT pg_database_size(current_database())"
+                ).fetchone()[0]
+                or 0
+            )
+        except pg_compat.DatabaseError:
+            file_bytes = 0
+        finally:
+            con.close()
+        return {
+            "path": path,
+            "page_count": 0,
+            "free_pages": 0,
+            "page_size": 0,
+            "file_bytes": file_bytes,
+            "free_bytes": 0,
+            "free_ratio": 0.0,
+        }
     if not os.path.exists(path):
         return {"path": path, "page_count": 0, "free_pages": 0, "file_bytes": 0,
                 "free_bytes": 0, "free_ratio": 0.0}
@@ -7254,6 +7293,8 @@ def maintain_storage(min_free_ratio: float = 0.35, min_free_bytes: int = 32 * 10
     触发条件保守：只有「空闲占比 > min_free_ratio 且空闲 > min_free_bytes」才执行，
     避免为几 MB 碎片去锁库。VACUUM 需要短暂独占写锁，调用方应放在低峰或启动后台线程里。
     """
+    if pg_compat.postgres_enabled():
+        return 0
     path = _db_path()
     if not os.path.exists(path):
         return 0
@@ -7277,6 +7318,8 @@ def maintain_storage(min_free_ratio: float = 0.35, min_free_bytes: int = 32 * 10
 
 def checkpoint_wal(*, mode: str = "PASSIVE") -> dict:
     """Move WAL pages back into the main database outside business commits."""
+    if pg_compat.postgres_enabled():
+        return {"ok": True, "busy": 0, "log": 0, "checkpointed": 0}
     path = _db_path()
     if not os.path.exists(path):
         return {"ok": True, "busy": 0, "log": 0, "checkpointed": 0}

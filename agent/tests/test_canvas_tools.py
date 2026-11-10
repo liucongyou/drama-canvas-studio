@@ -93,3 +93,31 @@ def test_node_dependencies_do_not_add_refs() -> None:
     )
     assert result["upstream"][0]["id"] == "image-1"
     assert project["payload"]["nodes"][1]["params"]["refs"] == []
+
+
+def test_read_skill_section_is_bounded_and_rejects_traversal(tmp_path) -> None:
+    root = tmp_path / "skill"
+    (root / "references").mkdir(parents=True)
+    (root / "references" / "runtime-quality-contract.md").write_text(
+        "甲" * 2400,
+        encoding="utf-8",
+    )
+    tools = CanvasTools({}, None, skill={"rootPath": str(root)})
+    first = tools.call(
+        "read_skill_section",
+        {
+            "path": "references/runtime-quality-contract.md",
+            "offset": 0,
+            "maxChars": 1000,
+        },
+        {},
+    )
+    assert first["totalChars"] == 2400
+    assert len(first["content"]) == 1000
+    assert first["truncated"] is True
+    assert first["nextOffset"] == 1000
+
+    import pytest
+
+    with pytest.raises(ValueError):
+        tools.call("read_skill_section", {"path": "../secret.md"}, {})

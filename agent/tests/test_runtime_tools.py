@@ -75,3 +75,23 @@ def test_tool_loop_stops_at_limit(monkeypatch) -> None:
             model_id="m1",
             max_steps=2,
         )
+
+
+def test_system_prompt_injects_runtime_quality_contract(tmp_path) -> None:
+    root = tmp_path / "skill"
+    (root / "references").mkdir(parents=True)
+    (root / "SKILL.md").write_text("# skill", encoding="utf-8")
+    (root / "references" / "runtime-quality-contract.md").write_text(
+        "逐镜 15 项 fail-closed 自检",
+        encoding="utf-8",
+    )
+    prompt = runtime._system_prompt(
+        {
+            "id": "skill",
+            "version": "7.4.30",
+            "rootPath": str(root),
+            "manifest": {"entry": "SKILL.md"},
+        }
+    )
+    assert "逐镜 15 项 fail-closed 自检" in prompt
+    assert "read_skill_section" in prompt

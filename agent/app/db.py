@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,23 +10,32 @@ from typing import Any, Iterator
 
 from app.config import get_settings
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import pg_compat  # noqa: E402
+
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def connect() -> sqlite3.Connection:
+def connect():
     settings = get_settings()
-    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(settings.db_path, timeout=30)
-    conn.row_factory = sqlite3.Row
+    if pg_compat.postgres_enabled():
+        conn = pg_compat.connect_path(settings.db_path, "agent")
+    else:
+        settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(settings.db_path, timeout=30)
+        conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
 @contextmanager
-def db() -> Iterator[sqlite3.Connection]:
+def db() -> Iterator[Any]:
     conn = connect()
     try:
         yield conn

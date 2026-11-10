@@ -13,6 +13,7 @@ from typing import Any
 
 import tenant_context
 import tenant_security
+import pg_compat
 
 
 _SCHEMA_LOCK = threading.Lock()
@@ -47,9 +48,12 @@ def _db_path() -> Path:
 
 def _connect() -> sqlite3.Connection:
     path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(path), timeout=30)
-    con.row_factory = sqlite3.Row
+    if pg_compat.postgres_enabled():
+        con = pg_compat.connect_path(path, "control")
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(str(path), timeout=30)
+        con.row_factory = sqlite3.Row
     con.execute("PRAGMA busy_timeout=30000")
     con.execute("PRAGMA foreign_keys=ON")
     path_key = str(path)
@@ -234,7 +238,7 @@ def create_account(
             ),
         )
         con.commit()
-    except sqlite3.IntegrityError as exc:
+    except (sqlite3.IntegrityError, pg_compat.IntegrityError) as exc:
         raise ValueError(f"账号已存在：{normalized}") from exc
     finally:
         con.close()
@@ -415,7 +419,7 @@ def create_tenant(
             (safe_id, safe_slug, str(name or safe_slug)[:120], "active", now, now, "", legacy_source),
         )
         con.commit()
-    except sqlite3.IntegrityError as exc:
+    except (sqlite3.IntegrityError, pg_compat.IntegrityError) as exc:
         raise ValueError(f"租户 slug 或 ID 已存在：{safe_slug}") from exc
     finally:
         con.close()
@@ -808,7 +812,7 @@ def claim_storage_binding(
             (tenant_id, bucket_value, region_value, prefix_value, fingerprint, _iso()),
         )
         con.commit()
-    except sqlite3.IntegrityError as exc:
+    except (sqlite3.IntegrityError, pg_compat.IntegrityError) as exc:
         con.rollback()
         raise ValueError("该 TOS Bucket 或 Access Key 已被其他租户绑定，不能复用。") from exc
     finally:

@@ -3,3 +3,8 @@ cryptography>=43
 imageio-ffmpeg==0.6.0
 oss2>=2.19.1
 qiniu>=7.15.0
+fastapi>=0.115
+sqlalchemy>=2.0,<2.1
+alembic>=1.13
+psycopg[binary]>=3.2
+pydantic-settings>=2.5

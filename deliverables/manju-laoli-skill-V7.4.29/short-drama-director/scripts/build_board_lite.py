@@ -539,7 +539,7 @@ def _ensure_audio_prompt_refs(prompt, aliases):
             speaking.append(name)
     # 无「台词：角色（语气）」形式的显式对白时，不能把原有音色引用整行删掉：
     # 画外独白（OS）、旁白等段落本就不用标准台词标记，但音色节点仍然必须挂。
-    # 官方 7.4.29 删掉旧版的保留分支后，OS 段的【音色引用】被静默清空 →
+    # 官方 7.4.30 删掉旧版的保留分支后，OS 段的【音色引用】被静默清空 →
     # validate_canvas_feed 报 VOICE_DECLARED_MISSING「对白角色与音色引用不一致」。
     if not speaking:
         if not preserved_line:
@@ -763,7 +763,7 @@ def _generator_metadata():
         pass
     return {
         "name": "build_board_lite.py",
-        "skillVersion": str(data.get("version") or "7.4.29"),
+        "skillVersion": str(data.get("version") or "7.4.30"),
         "packageRevision": str(data.get("packageRevision") or "20261028-r10"),
     }
 
@@ -2393,3 +2393,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

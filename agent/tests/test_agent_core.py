@@ -1,5 +1,7 @@
 from app.llm import extract_json
-from app.skills import _normalize_manifest
+import pytest
+
+from app.skills import SkillError, _normalize_manifest
 
 
 def test_extract_json_from_fence() -> None:
@@ -23,6 +25,19 @@ def test_legacy_manifest_falls_back_to_package() -> None:
     assert normalized["id"] == "manju-laoli-skill"
     assert normalized["entry"] == "short-drama-director/SKILL.md"
     assert normalized["contract"]["schema"] == "drama-canvas-feed/v2"
+
+
+def test_manifest_rejects_a_second_canvas_contract() -> None:
+    with pytest.raises(SkillError):
+        _normalize_manifest(
+            {
+                "id": "bad-skill",
+                "version": "1.0.0",
+                "entry": "SKILL.md",
+                "contract": {"schema": "other-canvas/v9"},
+            },
+            "bad.zip",
+        )
 
 
 def test_normalize_feed_fixes_codes_generator_and_audio() -> None:

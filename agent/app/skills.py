@@ -73,13 +73,25 @@ def _normalize_manifest(manifest: dict[str, Any], source_name: str) -> dict[str,
         raise SkillError("技能包缺少入口 SKILL.md（entry）")
     if entry.startswith("/") or ".." in PurePosixPath(entry).parts:
         raise SkillError("技能入口路径非法")
+    contract = skill.get("contract") or manifest.get("contract") or {
+        "schema": manifest.get("canvasSchema") or "drama-canvas-feed/v2"
+    }
+    schema = (
+        str(contract.get("schema") or "")
+        if isinstance(contract, dict)
+        else ""
+    )
+    if schema != "drama-canvas-feed/v2":
+        raise SkillError(
+            f"技能包 contract.schema 必须是 drama-canvas-feed/v2，收到 {schema or '<missing>'}"
+        )
     return {
         "id": skill_id,
         "name": name or skill_id,
         "version": version,
         "entry": entry,
         "source": source_name,
-        "contract": skill.get("contract") or manifest.get("contract") or {"schema": manifest.get("canvasSchema") or "drama-canvas-feed/v2"},
+        "contract": contract,
         "raw": manifest,
     }
 

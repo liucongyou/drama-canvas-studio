@@ -3,6 +3,18 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.11.01',
+    date: '2026-11-11',
+    title: '画布与智能体统一契约，运行数据库切换 PostgreSQL',
+    releasedAt: '2026-11-11 03:20:00 +08:00',
+    changes: [
+      '智能体生成结果改由共享契约的确定性编译器收口，技能版本、Schema 哈希、图号、音色和 Feed 哈希由服务端写入，预览前先拦截格式漂移。',
+      '技能升级到 V7.4.30，补入规则冲突权威表、平台节奏锁、全局视听锁、逐镜 15 项 fail-closed 自检、成片 canon 和 Retake 协议。',
+      '画布、控制面与智能体运行数据迁移到 PostgreSQL；连接按 schema 复用，36 个并发项目写入 P95 由 14.2 秒降至约 2.0 秒。',
+      'SQLite 仅保留为一次性迁移源和测试夹具，生产运行不再回退；迁移前后逐表校验行数与 SHA-256。',
+    ],
+  },
+  {
     version: '2026.11.10.03',
     date: '2026-11-11',
     title: '视频引用槽位硬校验与智能体面板精致化',

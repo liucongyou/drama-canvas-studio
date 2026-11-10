@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+from pathlib import Path
 from typing import Any
 
 from app import db, files
 from app.canvas_client import CanvasClient, CanvasError
-from app.canvas_tools import CanvasTools
+from app.canvas_tools import CanvasTools, TOOL_DEFINITIONS
 from app.config import get_settings
-from app.feed_normalizer import heal_voice_prompts, normalize_feed
+from app.feed_compiler import compile_feed_draft
 from app.llm import LLMError, chat, chat_stream, chat_tool_round, extract_json
 from app.skills import SkillError, get_skill, read_entry, read_route_entry
 
@@ -102,133 +103,7 @@ def execute_tool_loop(
     raise AgentToolLimitError(f"工具调用超过 {limit} 步上限")
 
 
-TOOL_DEFINITIONS_FOR_RUNTIME = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_project_index",
-            "description": "Read project title, revision and bounded counts.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_episode_context",
-            "description": "Read one episode summary and node membership.",
-            "parameters": {
-                "type": "object",
-                "properties": {"episodeId": {"type": "string"}},
-                "required": ["episodeId"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_nodes",
-            "description": "Search bounded project node summaries.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "type": {"type": "string"},
-                    "episodeId": {"type": "string"},
-                    "assetId": {"type": "string"},
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_node_detail",
-            "description": "Read one node with bounded prompt and references.",
-            "parameters": {
-                "type": "object",
-                "properties": {"nodeId": {"type": "string"}},
-                "required": ["nodeId"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_assets",
-            "description": "List project assets using stable assetId identity.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "kind": {"type": "string"},
-                    "seriesId": {"type": "string"},
-                    "episodeId": {"type": "string"},
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_asset_detail",
-            "description": "Read a stable asset identity and current node.",
-            "parameters": {
-                "type": "object",
-                "properties": {"assetId": {"type": "string"}},
-                "required": ["assetId"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_node_dependencies",
-            "description": "Read observational upstream and downstream summaries.",
-            "parameters": {
-                "type": "object",
-                "properties": {"nodeId": {"type": "string"}},
-                "required": ["nodeId"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "resolve_prompt_references",
-            "description": "Resolve explicit asset identities without guessing.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "assetIds": {"type": "array", "items": {"type": "string"}},
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "validate_feed",
-            "description": "Run existing canvas Feed preview validation.",
-            "parameters": {
-                "type": "object",
-                "properties": {"feed": {"type": "object"}},
-                "required": ["feed"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "finalize_feed",
-            "description": "Finalize a candidate Feed without importing it.",
-            "parameters": {
-                "type": "object",
-                "properties": {"feed": {"type": "object"}},
-                "required": ["feed"],
-            },
-        },
-    },
-]
+TOOL_DEFINITIONS_FOR_RUNTIME = TOOL_DEFINITIONS
 
 
 def create_run(
@@ -446,6 +321,18 @@ def active_run_for_conversation(
 def _system_prompt(skill: dict[str, Any], route_entry: str = "") -> str:
     settings = get_settings()
     entry = route_entry or read_entry(skill, settings.max_entry_chars)
+    quality_path = (
+        Path(str(skill.get("rootPath") or ""))
+        / "references"
+        / "runtime-quality-contract.md"
+    )
+    try:
+        quality_contract = quality_path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        )[:16000]
+    except OSError:
+        quality_contract = ""
     return (
         "你是戏剧画布（drama-canvas-studio）的投喂稿导演。"
         "你的唯一交付是一个可直接导入画布的 JSON 对象，格式固定为 drama-canvas-feed/v2。"
@@ -459,9 +346,13 @@ def _system_prompt(skill: dict[str, Any], route_entry: str = "") -> str:
         "6) 不要改画布已有节点，不要输出导入命令；\n"
         "7) canvas_contract.generator 必须包含 name、skillVersion、packageRevision，用于追踪技能版本。\n\n"
         "9) asset_prompts 每项必须包含 code、name、raw；raw 不能为空。\n"
-        "10) voice_prompts 每项必须包含 code、name、age（纯数字如 28）、gender（female 或 male）、dialect（如 standard）、format=audio-prompt-v1、prompt、label、description；prompt 必须以 A {gender} aged {age} 开头，并以固定音频结尾结束；每个有台词的角色都必须有一条 voice。\n\n""8) 输出骨架如下，必须补齐字段，不要省略 asset_prompts / voice_prompts：\n"
+        "10) voice_prompts 每项必须包含 code、name、age（纯数字如 28）、gender（female 或 male）、dialect（如 standard）、format=audio-prompt-v1、prompt、label、description；prompt 必须以 A {gender} aged {age} 开头，并以固定音频结尾结束；每个有台词的角色都必须有一条 voice。\n\n"
+        "11) 服务端会用共享 canvas_feed_contract 做确定性编译；图号、generator、schemaSha256 和音色机械字段以服务端编译结果为准。\n\n"
+        "8) 输出骨架如下，必须补齐字段，不要省略 asset_prompts / voice_prompts：\n"
         "{\"title\":\"第01集\",\"canvas_contract\":{\"schema\":\"drama-canvas-feed/v2\",\"video_model\":\"doubao-seedance-2-0\",\"video_aspect\":\"9:16\",\"generator\":{\"name\":\"<skill id>\",\"skillVersion\":\"<version>\",\"packageRevision\":\"<revision>\"}},\"asset_prompts\":[],\"voice_prompts\":[],\"segments\":[{\"no\":1,\"name\":\"段1\",\"raw\":\"...\"}]}\n\n"
-        "技能信息：id=" + str(skill.get("id")) + " version=" + str(skill.get("version")) + "\n\n技能规则如下（节选）：\n" + entry
+        "技能信息：id=" + str(skill.get("id")) + " version=" + str(skill.get("version")) + "\n\n"
+        "运行时质量合同（必须执行）：\n" + quality_contract + "\n\n"
+        "技能入口（可能因长度截断；需要其他章节时调用 read_skill_section）：\n" + entry
     )
 
 
@@ -574,6 +465,7 @@ def execute_run(run_id: str) -> None:
             project,
             canvas_client,
             max_result_bytes=settings.agent_tool_result_bytes,
+            skill=skill,
         )
         prefetch_trace: list[dict[str, Any]] = []
         context_payload = {
@@ -658,19 +550,30 @@ def execute_run(run_id: str) -> None:
             db.update_message(status_message_id, "已停止")
             return
         db.update_message(status_message_id, "投喂稿已生成，正在校验契约…")
-        feed = normalize_feed(
+        compiled = compile_feed_draft(
             extract_json(raw),
             skill_id=run["skillId"],
             skill_version=run["skillVersion"],
             package_revision=package_revision,
         )
+        feed = compiled.feed
         db.finish_stage(generate_stage, "done", {"chars": len(raw)})
         db.add_step(run_id, "generate", "done", {"chars": len(raw)})
 
         validate_stage = db.start_stage(run_id, "validate")
         db.set_run_stage(run_id, "validate")
         db.add_step(run_id, "validate", "running")
-        preview = canvas_client.preview_import(run["projectId"], feed)
+        errors = list(compiled.errors)
+        preview = (
+            canvas_client.preview_import(run["projectId"], feed)
+            if not errors
+            else {
+                "errors": errors,
+                "warnings": list(compiled.warnings),
+                "summary": {},
+                "revision": None,
+            }
+        )
         errors = preview.get("errors") if isinstance(preview.get("errors"), list) else []
         repairs = 0
         for _ in range(max(0, int(settings.max_repair_rounds))):
@@ -691,30 +594,29 @@ def execute_run(run_id: str) -> None:
                 model_id=run.get("modelId") or "",
                 tenant_id=run.get("tenantId") or "",
             )
-            feed = normalize_feed(
+            compiled = compile_feed_draft(
                 extract_json(raw),
                 skill_id=run["skillId"],
                 skill_version=run["skillVersion"],
                 package_revision=package_revision,
             )
-            preview = canvas_client.preview_import(run["projectId"], feed)
+            feed = compiled.feed
+            errors = list(compiled.errors)
+            preview = (
+                canvas_client.preview_import(run["projectId"], feed)
+                if not errors
+                else {
+                    "errors": errors,
+                    "warnings": list(compiled.warnings),
+                    "summary": {},
+                    "revision": None,
+                }
+            )
             errors = preview.get("errors") if isinstance(preview.get("errors"), list) else []
         if _is_cancelled(run_id):
             db.update_message(status_message_id, "已停止")
             return
-        auto_healed = False
-        if errors and any("VOICE" in str(item.get("code") or "") for item in errors):
-            healed = heal_voice_prompts(feed)
-            if healed is not feed:
-                feed = normalize_feed(
-                    healed,
-                    skill_id=run["skillId"],
-                    skill_version=run["skillVersion"],
-                    package_revision=package_revision,
-                )
-                preview = canvas_client.preview_import(run["projectId"], feed)
-                errors = preview.get("errors") if isinstance(preview.get("errors"), list) else []
-                auto_healed = True
+        auto_healed = compiled.auto_healed
         db.update_message(status_message_id, "投喂稿已通过预检" if not errors else "预检未通过，请查看问题")
         db.finish_stage(validate_stage, "done" if not errors else "failed", {"errors": errors[:12], "repairs": repairs, "autoHealed": auto_healed})
         db.add_step(run_id, "validate", "done" if not errors else "failed", {"errors": errors[:12], "repairs": repairs})
@@ -726,6 +628,11 @@ def execute_run(run_id: str) -> None:
             "warnings": preview.get("warnings") or [],
             "repairs": repairs,
             "autoHealed": auto_healed,
+            "contract": {
+                "schemaSha256": compiled.schema_sha256,
+                "feedSha256": compiled.feed_sha256,
+                "warnings": list(compiled.warnings),
+            },
         }
         with db.db() as conn:
             conn.execute(
@@ -809,3 +716,4 @@ def cancel_run(
     db.add_message(run_id, "assistant", "运行已取消。")
     db.add_event(run_id, "run.cancelled", {"runId": run_id})
     return {"ok": True, "run": get_run(run_id)}
+

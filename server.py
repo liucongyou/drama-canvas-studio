@@ -409,7 +409,7 @@ def _static_gzip(path: str, mtime_ns: int, size: int, body: bytes) -> bytes | No
 # blob: 地址，刷新即失效 → 拖进来的图全变破图（用户实测）。落盘后给出稳定 URL，
 # 刷新、换浏览器都能继续显示。
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "uploads")
-PORT = 8890
+PORT = int(os.environ.get("CANVAS_PORT", "8890"))
 SERVER_STARTED_AT = time.monotonic()
 PROJECT_WRITE_LOCK = threading.RLock()
 PROJECT_LOCKS = canvas_repository.PROJECT_LOCKS

@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://drama-canvas.local/schemas/drama-canvas-feed-v2.json",
+  "title": "drama-canvas-feed/v2",
+  "type": "object",
+  "required": [
+    "canvas_contract",
+    "asset_prompts",
+    "voice_prompts",
+    "segments"
+  ],
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "canvas_contract": {
+      "type": "object",
+      "required": [
+        "schema"
+      ],
+      "properties": {
+        "schema": {
+          "const": "drama-canvas-feed/v2"
+        },
+        "video_model": {
+          "type": "string"
+        },
+        "video_aspect": {
+          "type": "string"
+        },
+        "asset_aspect": {
+          "type": "string"
+        },
+        "generator": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "skillVersion": {
+              "type": "string"
+            },
+            "packageRevision": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "asset_prompts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "name",
+          "raw"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^图\\s*[0-9]+$"
+          },
+          "semanticCode": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "raw": {
+            "type": "string",
+            "minLength": 1
+          },
+          "canvas": {
+            "type": "object",
+            "properties": {
+              "asset_codes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^图\\s*[0-9]+$"
+                },
+                "uniqueItems": true
+              },
+              "asset_refs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "code"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "pattern": "^图\\s*[0-9]+$"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "voice_prompts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "name",
+          "format"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^图\\s*[0-9]+$"
+          },
+          "semanticCode": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "format": {
+            "const": "audio-prompt-v1"
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "voicePrompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "voiceDescription": {
+            "type": "string",
+            "minLength": 1
+          },
+          "age": {
+            "type": "string",
+            "pattern": "^[0-9]+(?:-[0-9]+)?$"
+          },
+          "voiceAge": {
+            "type": "string",
+            "pattern": "^[0-9]+(?:-[0-9]+)?$"
+          },
+          "gender": {
+            "enum": [
+              "male",
+              "female"
+            ]
+          },
+          "voiceGender": {
+            "enum": [
+              "male",
+              "female"
+            ]
+          },
+          "dialect": {
+            "type": "string",
+            "minLength": 1
+          },
+          "voiceDialect": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "raw"
+        ],
+        "properties": {
+          "no": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "raw": {
+            "type": "string",
+            "minLength": 1
+          },
+          "canvas": {
+            "type": "object",
+            "properties": {
+              "asset_codes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^图\\s*[0-9]+$"
+                },
+                "uniqueItems": true
+              },
+              "asset_refs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "code"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "pattern": "^图\\s*[0-9]+$"
+                    }
+                  },
+                  "additionalProperties": true
+                },
+                "uniqueItems": true
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

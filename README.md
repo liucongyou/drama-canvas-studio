@@ -4,6 +4,27 @@
 
 与 ViMax 解耦：本系统只读投喂载荷（`铁西硬汉_第01集_投喂载荷.json` 格式），不参与剧本创作；ViMax/技能产出的载荷直接拖进来即可。
 
+## 智能体 + 技能 + 画布
+
+智能体侧栏与画布已同源接入：固定技能版本 → 读取项目/节点/资产 → 服务端确定性编译 `drama-canvas-feed/v2` → 共享契约预检/预览 → 用户确认后导入。模型只负责创作内容，Schema 哈希、技能版本、图号、音色和 Feed 哈希由服务端编译。
+
+规划与开发文档：[docs/agent/README.md](docs/agent/README.md)
+
+## PostgreSQL 运行库
+
+生产运行使用 PostgreSQL 16，SQLite 只作为一次性迁移源和测试夹具：
+
+```powershell
+$env:CANVAS_DB_BACKEND="postgres"
+$env:DATABASE_URL="postgresql://drama_canvas@127.0.0.1:5432/drama_canvas"
+python pg_cutover.py --database-url $env:DATABASE_URL --recreate --include-legacy-root
+python server.py
+```
+
+每个业务租户使用独立 schema，控制面、Agent 和旧根库分别使用 `control`、`agent`、`archive_legacy_root`。迁移器逐表校验行数和 SHA-256；运行时不提供 SQLite fallback。
+
+---
+
 ## 启动
 
 ```powershell
@@ -28,7 +49,9 @@ npm --prefix web-vimax run dev         # 画布前端 8891（ViMax 画布内核 
 | 文件 | 职责 |
 |---|---|
 | `server.py` | 本地 HTTP 后端（标准库，零依赖，端口 8890；节点 PUT / catalog / notes / refs / voice / 生成） |
-| `canvas_store.py` | SQLite 存取（payload 整包 + 自动快照） |
+| `canvas_store.py` | PostgreSQL 运行库兼容层（payload 整包 + 自动快照；测试可显式使用 SQLite） |
+| `pg_compat.py` | PostgreSQL schema、连接池、事务与 SQLite 兼容 SQL 适配 |
+| `pg_cutover.py` / `pg_data_migration.py` | 全量 SQLite → PostgreSQL 迁移、行数/SHA-256 对账 |
 | `canvas_repository.py` | 画布仓储边界（revision 前置条件、节点/连线/视口写入、项目版本与恢复） |
 | `import_feed.py` | 投喂载荷 → 画布 payload（五区布局 + 对白音色过滤 + 自动连线 + 标题=投喂名） |
 | `gate_check.py` | 挂接机检（稿 @//图 ↔ 实连线图 双向核对） |

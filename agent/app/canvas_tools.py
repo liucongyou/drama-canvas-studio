@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 from app.canvas_client import CanvasClient
@@ -115,6 +116,26 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "read_skill_section",
+            "description": "Read a bounded Markdown section from the active fixed skill.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "maxChars": {
+                        "type": "integer",
+                        "minimum": 1000,
+                        "maximum": 16000,
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "validate_feed",
             "description": "Run the existing canvas Feed preview validation.",
             "parameters": {
@@ -146,10 +167,12 @@ class CanvasTools:
         canvas_client: CanvasClient | None,
         *,
         max_result_bytes: int = 32 * 1024,
+        skill: dict[str, Any] | None = None,
     ):
         self.project = project if isinstance(project, dict) else {}
         self.canvas_client = canvas_client
         self.max_result_bytes = max(1024, int(max_result_bytes))
+        self.skill = skill if isinstance(skill, dict) else {}
 
     def call(
         self,
@@ -167,6 +190,7 @@ class CanvasTools:
             "get_asset_detail": self._asset_detail,
             "get_node_dependencies": self._node_dependencies,
             "resolve_prompt_references": self._resolve_references,
+            "read_skill_section": self._read_skill_section,
             "validate_feed": self._validate_feed,
             "finalize_feed": self._finalize_feed,
         }
@@ -436,6 +460,44 @@ class CanvasTools:
             else:
                 missing.append(asset_id)
         return {"references": resolved, "missing": missing, "ambiguous": []}
+
+    def _read_skill_section(
+        self,
+        args: dict[str, Any],
+        _context: dict[str, Any],
+    ) -> dict[str, Any]:
+        root_value = str(self.skill.get("rootPath") or "").strip()
+        if not root_value:
+            raise ValueError("当前运行没有固定技能目录")
+        root = Path(root_value).resolve()
+        relative = str(args.get("path") or "").replace("\\", "/").strip()
+        part = Path(relative)
+        if (
+            not relative
+            or part.is_absolute()
+            or ".." in part.parts
+            or part.suffix.lower() != ".md"
+        ):
+            raise ValueError("技能章节路径非法")
+        path = (root / part).resolve()
+        if root not in path.parents or not path.is_file():
+            raise ValueError("技能章节不存在")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        offset = max(0, int(args.get("offset") or 0))
+        max_chars = min(
+            16000,
+            max(1000, int(args.get("maxChars") or 8000)),
+        )
+        content = text[offset:offset + max_chars]
+        next_offset = offset + len(content)
+        return {
+            "path": part.as_posix(),
+            "offset": offset,
+            "totalChars": len(text),
+            "content": content,
+            "truncated": next_offset < len(text),
+            "nextOffset": next_offset if next_offset < len(text) else None,
+        }
 
     def _validate_feed(self, args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         feed = args.get("feed")
