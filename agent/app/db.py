@@ -80,6 +80,12 @@ def init_db() -> None:
                 prompt TEXT NOT NULL,
                 status TEXT NOT NULL,
                 error TEXT NOT NULL DEFAULT '',
+                error_code TEXT NOT NULL DEFAULT '',
+                current_stage TEXT NOT NULL DEFAULT '',
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                idempotency_key TEXT NOT NULL DEFAULT '',
+                started_at TEXT NOT NULL DEFAULT '',
+                finished_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -197,6 +203,18 @@ def init_db() -> None:
             conn.execute("ALTER TABLE runs ADD COLUMN reference_ids_json TEXT NOT NULL DEFAULT '[]'")
         if "conversation_id" not in run_columns:
             conn.execute("ALTER TABLE runs ADD COLUMN conversation_id TEXT NOT NULL DEFAULT ''")
+        if "error_code" not in run_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN error_code TEXT NOT NULL DEFAULT ''")
+        if "current_stage" not in run_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN current_stage TEXT NOT NULL DEFAULT ''")
+        if "cancel_requested" not in run_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
+        if "idempotency_key" not in run_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''")
+        if "started_at" not in run_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN started_at TEXT NOT NULL DEFAULT ''")
+        if "finished_at" not in run_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN finished_at TEXT NOT NULL DEFAULT ''")
 
 
 def json_loads(value: str | None, fallback: Any) -> Any:
@@ -231,10 +249,83 @@ def add_event(run_id: str, event_type: str, payload: dict | None = None) -> None
 
 
 def set_run_status(run_id: str, status: str, error: str = "") -> None:
+    now = utcnow()
+    finished = now if status in {"done", "completed", "failed", "cancelled", "interrupted"} else ""
     with db() as conn:
         conn.execute(
-            "UPDATE runs SET status=?, error=?, updated_at=? WHERE id=?",
-            (status, error, utcnow(), run_id),
+            "UPDATE runs SET status=?, error=?, updated_at=?, finished_at=CASE WHEN ?='' THEN finished_at ELSE ? END WHERE id=?",
+            (status, error, now, finished, finished, run_id),
+        )
+
+
+def set_run_stage(run_id: str, stage: str) -> None:
+    with db() as conn:
+        conn.execute(
+            "UPDATE runs SET current_stage=?, updated_at=? WHERE id=?",
+            (str(stage or ""), utcnow(), run_id),
+        )
+
+
+def request_run_cancel(run_id: str) -> None:
+    with db() as conn:
+        conn.execute(
+            "UPDATE runs SET cancel_requested=1, updated_at=? WHERE id=?",
+            (utcnow(), run_id),
+        )
+
+
+def mark_interrupted_runs() -> int:
+    now = utcnow()
+    with db() as conn:
+        cur = conn.execute(
+            "UPDATE runs SET status='interrupted', error='服务重启时运行未完成', "
+            "error_code='AGENT_INTERRUPTED', finished_at=?, updated_at=? "
+            "WHERE status IN ('queued','running','importing')",
+            (now, now),
+        )
+        return int(cur.rowcount or 0)
+
+
+def start_tool_call(
+    run_id: str,
+    tool_name: str,
+    args: dict | None,
+    idempotency_key: str = "",
+) -> int:
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO tool_calls(run_id, tool_name, args_json, status, idempotency_key, started_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (
+                run_id,
+                str(tool_name or ""),
+                json.dumps(args or {}, ensure_ascii=False),
+                "running",
+                str(idempotency_key or ""),
+                utcnow(),
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def finish_tool_call(
+    call_id: int,
+    status: str,
+    result: dict | None = None,
+    error_code: str = "",
+) -> None:
+    payload = json.dumps(result or {}, ensure_ascii=False)
+    with db() as conn:
+        conn.execute(
+            "UPDATE tool_calls SET status=?, result_json=?, result_bytes=?, error_code=?, finished_at=? WHERE id=?",
+            (
+                str(status or ""),
+                payload,
+                len(payload.encode("utf-8")),
+                str(error_code or ""),
+                utcnow(),
+                int(call_id),
+            ),
         )
 
 
