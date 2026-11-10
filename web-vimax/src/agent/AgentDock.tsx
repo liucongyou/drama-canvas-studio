@@ -361,7 +361,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
         refresh();
       }, 80);
     };
-    const source = new EventSource(agentApi.eventsUrl(run.id));
+    const source = new EventSource(agentApi.eventsUrl(run.id), {withCredentials: true});
     source.onmessage = schedule;
     source.onerror = schedule;
     const timer = window.setInterval(refresh, 1800);

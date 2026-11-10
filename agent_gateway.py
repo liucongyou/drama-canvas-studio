@@ -209,6 +209,8 @@ def _stream_proxy(handler: Any, request: urllib.request.Request) -> bool:
         return True
     with response:
         handler.send_response(int(response.status))
+        for key, value in handler._cors_headers().items():
+            handler.send_header(str(key), str(value))
         for key in (
             "Content-Type",
             "Cache-Control",

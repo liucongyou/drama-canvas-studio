@@ -1,3 +1,5 @@
+import {apiUrl} from '../api';
+
 export type AgentModel = {
   id: string;
   label: string;
@@ -135,7 +137,7 @@ const ENV = (import.meta as ImportMeta & {env?: Record<string, string>}).env || 
 
 export function agentBaseUrl(): string {
   if (ENV.VITE_AGENT_URL) return ENV.VITE_AGENT_URL.replace(/\/$/, '');
-  return '';
+  return 'api';
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -143,14 +145,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const timeout = window.setTimeout(() => controller.abort(), 120_000);
   let response: Response;
   try {
-    response = await fetch(agentBaseUrl() + path, {
-      credentials: 'same-origin',
-      ...init,
-      signal: init?.signal || controller.signal,
-      headers: init && init.body instanceof FormData
-        ? init.headers
-        : {'Content-Type': 'application/json', ...(init && init.headers ? init.headers : {})},
-    });
+    const base = agentBaseUrl();
+    response = await fetch(
+      base === 'api' ? apiUrl(path) : base + path,
+      {
+        credentials: 'include',
+        ...init,
+        signal: init?.signal || controller.signal,
+        headers: init && init.body instanceof FormData
+          ? init.headers
+          : {'Content-Type': 'application/json', ...(init && init.headers ? init.headers : {})},
+      },
+    );
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw new Error('请求超时，任务可能仍在后台执行，请刷新会话恢复');
@@ -217,5 +223,10 @@ export const agentApi = {
   run: (id: string) => request<{run: AgentRun}>('/api/agent/runs/' + encodeURIComponent(id)),
   importRun: (id: string) => request<{ok: boolean; run: AgentRun}>('/api/agent/runs/' + encodeURIComponent(id) + '/import', {method: 'POST', body: '{}'}),
   cancel: (id: string) => request('/api/agent/runs/' + encodeURIComponent(id) + '/cancel', {method: 'POST', body: '{}'}),
-  eventsUrl: (id: string) => agentBaseUrl() + '/api/agent/runs/' + encodeURIComponent(id) + '/events',
+  eventsUrl: (id: string) => {
+    const path = '/api/agent/runs/' + encodeURIComponent(id) + '/events';
+    return ENV.VITE_AGENT_URL
+      ? agentBaseUrl() + path
+      : apiUrl(path);
+  },
 };
