@@ -114,3 +114,15 @@ def test_json_patch_and_insert_or_replace(pg) -> None:
         "SELECT value FROM snapshots WHERE id=?",
         ("s1",),
     ).fetchone()[0] == "new"
+
+
+def test_canvas_schema_name_is_independent_of_absolute_app_path() -> None:
+    first = pg_compat.schema_for_path(
+        "D:/deploy-a/data/tenants/u-demo/canvas.db",
+        "canvas",
+    )
+    second = pg_compat.schema_for_path(
+        "E:/deploy-b/data/tenants/u-demo/canvas.db",
+        "canvas",
+    )
+    assert first == second == "tenant_u_demo"

@@ -15,10 +15,10 @@
 |---|---|---:|
 | `control` | `data/control.db` | 263 |
 | `tenant_owner` | `data/tenants/owner/canvas.db` | 6,377 |
-| `tenant_u_a365879766_17f3b6e8` | `data/tenants/u-a365879766/canvas.db` | 1,312 |
-| `tenant_u_liuchenyou_8fbbc53e` | `data/tenants/u-liuchenyou/canvas.db` | 9 |
-| `tenant_u_zyh2018114_3c2824eb` | `data/tenants/u-zyh2018114/canvas.db` | 7 |
-| `tenant_u_aa520520_8aaefa13` | `data/tenants/u-aa520520/canvas.db` | 8 |
+| `tenant_u_a365879766` | `data/tenants/u-a365879766/canvas.db` | 1,312 |
+| `tenant_u_liuchenyou` | `data/tenants/u-liuchenyou/canvas.db` | 9 |
+| `tenant_u_zyh2018114` | `data/tenants/u-zyh2018114/canvas.db` | 7 |
+| `tenant_u_aa520520` | `data/tenants/u-aa520520/canvas.db` | 8 |
 | `agent` | `agent/data/agent.db` | 8 |
 | `archive_legacy_root` | `data/canvas.db` | 3 |
 

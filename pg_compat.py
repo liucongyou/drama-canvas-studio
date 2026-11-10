@@ -93,11 +93,9 @@ def database_url() -> str:
 def schema_for_path(path: str | os.PathLike[str], kind: str) -> str:
     raw = Path(path).resolve()
     if kind == "control":
-        base_schema = "control"
-        return _schema_with_test_suffix(base_schema)
+        return _schema_with_test_suffix("control")
     if kind == "agent":
-        base_schema = "agent"
-        return _schema_with_test_suffix(base_schema)
+        return _schema_with_test_suffix("agent")
     parent = raw.parent.name.lower()
     if parent and parent not in {"data", "tenants"}:
         candidate = parent
@@ -106,17 +104,7 @@ def schema_for_path(path: str | os.PathLike[str], kind: str) -> str:
     else:
         candidate = raw.stem
     safe = re.sub(r"[^a-z0-9_]+", "_", candidate).strip("_")[:40] or "canvas"
-    digest = hashlib.sha256(str(raw).encode("utf-8")).hexdigest()[:8]
-    base_schema = f"tenant_{safe}_{digest}" if kind == "canvas" and parent not in {
-        "owner",
-        "alpha",
-        "beta",
-        "legacy",
-    } else (
-        f"tenant_{safe}"
-        if kind == "canvas"
-        else f"{kind}_{safe}"
-    )
+    base_schema = f"tenant_{safe}" if kind == "canvas" else f"{kind}_{safe}"
     return _schema_with_test_suffix(base_schema)
 
 

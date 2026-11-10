@@ -21,7 +21,7 @@ python pg_cutover.py --database-url $env:DATABASE_URL --recreate --include-legac
 python server.py
 ```
 
-每个业务租户使用独立 schema，控制面、Agent 和旧根库分别使用 `control`、`agent`、`archive_legacy_root`。迁移器逐表校验行数和 SHA-256；运行时不提供 SQLite fallback。
+每个业务租户使用独立 schema，控制面、Agent 和旧根库分别使用 `control`、`agent`、`archive_legacy_root`。业务 schema 名只由租户 slug 决定，不依赖应用绝对路径，工作目录迁移不会导致数据失联。迁移器逐表校验行数和 SHA-256；运行时不提供 SQLite fallback。
 
 ---
 
