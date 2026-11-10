@@ -213,6 +213,20 @@ def append_message(
             "run": existing,
             "message": None,
         }
+    active = runtime.active_run_for_conversation(
+        conversation_id,
+        tenant_id,
+        account_id,
+    )
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "当前会话已有运行中的任务",
+                "code": "AGENT_RUN_ACTIVE",
+                "runId": active["id"],
+            },
+        )
     prompt = "\n".join(
         str(block.get("text") or block.get("message") or "").strip()
         for block in body.content
@@ -367,6 +381,21 @@ def create_run(
                 "idempotent": True,
                 "run": existing,
             }
+        if body.conversationId:
+            active = runtime.active_run_for_conversation(
+                body.conversationId,
+                context.tenant_id,
+                context.account_id,
+            )
+            if active:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "当前会话已有运行中的任务",
+                        "code": "AGENT_RUN_ACTIVE",
+                        "runId": active["id"],
+                    },
+                )
         return {
             "ok": True,
             "run": runtime.create_run(

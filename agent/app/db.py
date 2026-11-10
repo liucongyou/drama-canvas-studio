@@ -69,6 +69,8 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS runs (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL DEFAULT '',
+                account_id TEXT NOT NULL DEFAULT '',
                 skill_id TEXT NOT NULL,
                 skill_version TEXT NOT NULL,
                 model_id TEXT NOT NULL DEFAULT '',
@@ -191,6 +193,10 @@ def init_db() -> None:
         )
         # Lightweight forward migration for existing agent databases.
         run_columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+        if "tenant_id" not in run_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+        if "account_id" not in run_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN account_id TEXT NOT NULL DEFAULT ''")
         if "model_id" not in run_columns:
             conn.execute("ALTER TABLE runs ADD COLUMN model_id TEXT NOT NULL DEFAULT ''")
         if "route_id" not in run_columns:

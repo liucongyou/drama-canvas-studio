@@ -230,7 +230,20 @@ TOOL_DEFINITIONS_FOR_RUNTIME = [
 ]
 
 
-def create_run(project_id: str, skill_id: str, prompt: str, model_id: str = "", route_id: str = "", locks: dict[str, Any] | None = None, file_ids: list[str] | None = None, reference_ids: list[str] | None = None, conversation_id: str = "") -> dict[str, Any]:
+def create_run(
+    project_id: str,
+    skill_id: str,
+    prompt: str,
+    model_id: str = "",
+    route_id: str = "",
+    locks: dict[str, Any] | None = None,
+    file_ids: list[str] | None = None,
+    reference_ids: list[str] | None = None,
+    conversation_id: str = "",
+    tenant_id: str = "",
+    account_id: str = "",
+    idempotency_key: str = "",
+) -> dict[str, Any]:
     project_id = str(project_id or "").strip()
     skill_id = str(skill_id or "").strip()
     prompt = str(prompt or "").strip()
@@ -245,9 +258,27 @@ def create_run(project_id: str, skill_id: str, prompt: str, model_id: str = "", 
     now = db.utcnow()
     with db.db() as conn:
         conn.execute(
-            "INSERT INTO runs(id, project_id, skill_id, skill_version, model_id, route_id, locks_json, file_ids_json, reference_ids_json, conversation_id, prompt, status, created_at, updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (run_id, project_id, skill_id, skill["version"], model_id, route_id, json.dumps(locks or {}, ensure_ascii=False), json.dumps(file_ids or [], ensure_ascii=False), json.dumps(reference_ids or [], ensure_ascii=False), conversation_id, prompt, "queued", now, now),
+            "INSERT INTO runs(id, project_id, tenant_id, account_id, skill_id, skill_version, model_id, route_id, locks_json, file_ids_json, reference_ids_json, conversation_id, prompt, status, idempotency_key, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                run_id,
+                project_id,
+                str(tenant_id or ""),
+                str(account_id or ""),
+                skill_id,
+                skill["version"],
+                model_id,
+                route_id,
+                json.dumps(locks or {}, ensure_ascii=False),
+                json.dumps(file_ids or [], ensure_ascii=False),
+                json.dumps(reference_ids or [], ensure_ascii=False),
+                conversation_id,
+                prompt,
+                "queued",
+                str(idempotency_key or ""),
+                now,
+                now,
+            ),
         )
     db.add_message(run_id, "user", prompt)
     db.add_event(run_id, "run.created", {"runId": run_id, "projectId": project_id, "skillId": skill_id})
@@ -256,9 +287,19 @@ def create_run(project_id: str, skill_id: str, prompt: str, model_id: str = "", 
     return get_run(run_id) or {"id": run_id}
 
 
-def get_run(run_id: str) -> dict[str, Any] | None:
+def get_run(
+    run_id: str,
+    tenant_id: str = "",
+    account_id: str = "",
+) -> dict[str, Any] | None:
     with db.db() as conn:
-        row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        if tenant_id or account_id:
+            row = conn.execute(
+                "SELECT * FROM runs WHERE id=? AND tenant_id=? AND account_id=?",
+                (run_id, str(tenant_id or ""), str(account_id or "")),
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if not row:
             return None
         messages = conn.execute("SELECT * FROM messages WHERE run_id=? ORDER BY id", (run_id,)).fetchall()
@@ -272,6 +313,8 @@ def get_run(run_id: str) -> dict[str, Any] | None:
     return {
         "id": row["id"],
         "projectId": row["project_id"],
+        "tenantId": row["tenant_id"] if "tenant_id" in row.keys() else "",
+        "accountId": row["account_id"] if "account_id" in row.keys() else "",
         "skillId": row["skill_id"],
         "skillVersion": row["skill_version"],
         "modelId": row["model_id"] if "model_id" in row.keys() else "",
@@ -322,9 +365,17 @@ def get_run(run_id: str) -> dict[str, Any] | None:
     }
 
 
-def list_runs(project_id: str | None = None, conversation_id: str | None = None) -> list[dict[str, Any]]:
+def list_runs(
+    project_id: str | None = None,
+    conversation_id: str | None = None,
+    tenant_id: str = "",
+    account_id: str = "",
+) -> list[dict[str, Any]]:
     clauses = []
     params: list[Any] = []
+    if tenant_id or account_id:
+        clauses.extend(["tenant_id=?", "account_id=?"])
+        params.extend([str(tenant_id or ""), str(account_id or "")])
     if project_id:
         clauses.append("project_id=?")
         params.append(project_id)
@@ -345,6 +396,50 @@ def list_runs(project_id: str | None = None, conversation_id: str | None = None)
         }
         for row in rows
     ]
+
+
+def find_idempotent_run(
+    idempotency_key: str,
+    tenant_id: str,
+    account_id: str,
+    conversation_id: str,
+) -> dict[str, Any] | None:
+    key = str(idempotency_key or "").strip()
+    if not key:
+        return None
+    with db.db() as conn:
+        row = conn.execute(
+            "SELECT id FROM runs WHERE idempotency_key=? AND tenant_id=? AND account_id=? AND conversation_id=? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (
+                key,
+                str(tenant_id or ""),
+                str(account_id or ""),
+                str(conversation_id or ""),
+            ),
+        ).fetchone()
+    return get_run(row["id"], tenant_id, account_id) if row else None
+
+
+def active_run_for_conversation(
+    conversation_id: str,
+    tenant_id: str,
+    account_id: str,
+) -> dict[str, Any] | None:
+    if not conversation_id:
+        return None
+    with db.db() as conn:
+        row = conn.execute(
+            "SELECT id FROM runs WHERE conversation_id=? AND tenant_id=? AND account_id=? "
+            "AND status IN ('queued','running','waiting_locks','waiting_review','importing') "
+            "ORDER BY created_at DESC LIMIT 1",
+            (
+                str(conversation_id or ""),
+                str(tenant_id or ""),
+                str(account_id or ""),
+            ),
+        ).fetchone()
+    return get_run(row["id"], tenant_id, account_id) if row else None
 
 
 def _system_prompt(skill: dict[str, Any], route_entry: str = "") -> str:
@@ -427,7 +522,12 @@ def execute_run(run_id: str) -> None:
 
         brief_stage = db.start_stage(run_id, "brief")
         db.add_step(run_id, "project", "running")
-        project = CanvasClient().get_project(run["projectId"])
+        canvas_client = CanvasClient(
+            tenant_id=run.get("tenantId") or "",
+            account_id=run.get("accountId") or "",
+            request_id=run_id,
+        )
+        project = canvas_client.get_project(run["projectId"])
         brief_text = _project_brief(project)
         db.finish_stage(brief_stage, "done", {"title": project.get("title"), "revision": project.get("revision")})
         _save_artifact(run_id, "brief", {"brief": brief_text, "projectId": run["projectId"]})
@@ -469,7 +569,6 @@ def execute_run(run_id: str) -> None:
         )
         system_prompt = _system_prompt(skill, route_entry)
         status_message_id = db.create_message(run_id, "status", "正在生成投喂稿…")
-        canvas_client = CanvasClient()
         canvas_tools = CanvasTools(
             project,
             canvas_client,
@@ -522,7 +621,7 @@ def execute_run(run_id: str) -> None:
         validate_stage = db.start_stage(run_id, "validate")
         db.set_run_stage(run_id, "validate")
         db.add_step(run_id, "validate", "running")
-        preview = CanvasClient().preview_import(run["projectId"], feed)
+        preview = canvas_client.preview_import(run["projectId"], feed)
         errors = preview.get("errors") if isinstance(preview.get("errors"), list) else []
         repairs = 0
         for _ in range(max(0, int(settings.max_repair_rounds))):
@@ -544,7 +643,7 @@ def execute_run(run_id: str) -> None:
                 skill_version=run["skillVersion"],
                 package_revision=package_revision,
             )
-            preview = CanvasClient().preview_import(run["projectId"], feed)
+            preview = canvas_client.preview_import(run["projectId"], feed)
             errors = preview.get("errors") if isinstance(preview.get("errors"), list) else []
         if _is_cancelled(run_id):
             db.update_message(status_message_id, "已停止")
@@ -559,7 +658,7 @@ def execute_run(run_id: str) -> None:
                     skill_version=run["skillVersion"],
                     package_revision=package_revision,
                 )
-                preview = CanvasClient().preview_import(run["projectId"], feed)
+                preview = canvas_client.preview_import(run["projectId"], feed)
                 errors = preview.get("errors") if isinstance(preview.get("errors"), list) else []
                 auto_healed = True
         db.update_message(status_message_id, "投喂稿已通过预检" if not errors else "预检未通过，请查看问题")
@@ -600,8 +699,12 @@ def execute_run(run_id: str) -> None:
         db.add_event(run_id, "run.failed", {"runId": run_id, "error": str(exc)})
 
 
-def confirm_import(run_id: str) -> dict[str, Any]:
-    run = get_run(run_id)
+def confirm_import(
+    run_id: str,
+    tenant_id: str = "",
+    account_id: str = "",
+) -> dict[str, Any]:
+    run = get_run(run_id, tenant_id, account_id)
     if not run:
         raise ValueError("运行不存在")
     if run["status"] != "waiting_user":
@@ -619,7 +722,11 @@ def confirm_import(run_id: str) -> dict[str, Any]:
     db.set_run_stage(run_id, "deliver")
     db.set_run_status(run_id, "running")
     try:
-        result = CanvasClient().commit_import(run["projectId"], feed, int(revision))
+        result = CanvasClient(
+            tenant_id=run.get("tenantId") or "",
+            account_id=run.get("accountId") or "",
+            request_id=run_id,
+        ).commit_import(run["projectId"], feed, int(revision))
     except Exception as exc:
         db.finish_stage(deliver_stage, "failed", {"error": str(exc)})
         db.set_run_status(run_id, "failed", str(exc))
@@ -633,8 +740,12 @@ def confirm_import(run_id: str) -> dict[str, Any]:
     return {"ok": True, "run": get_run(run_id), "result": result}
 
 
-def cancel_run(run_id: str) -> dict[str, Any]:
-    run = get_run(run_id)
+def cancel_run(
+    run_id: str,
+    tenant_id: str = "",
+    account_id: str = "",
+) -> dict[str, Any]:
+    run = get_run(run_id, tenant_id, account_id)
     if not run:
         raise ValueError("运行不存在")
     if run["status"] in {"done", "failed", "cancelled"}:
