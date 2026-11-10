@@ -1,7 +1,7 @@
 # Canvas Agent Overhaul Design
 
 - Date: 2026-11-10
-- Status: Ready for user review
+- Status: Approved
 - Scope: Agent runtime, same-origin access, canvas tools, project-aware conversation, AgentDock UI, Feed validation and confirmed import
 - Source of truth: this repository only
 
