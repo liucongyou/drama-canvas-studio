@@ -65,6 +65,7 @@ import tenant_bootstrap
 import tenant_context
 import tenant_registry
 import tenant_security
+import agent_gateway
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 # 后端根路径真正要端出去的前端产物。
@@ -6566,36 +6567,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _read_json(self):
-        raw_length = str(self.headers.get("Content-Length") or "0").strip()
-        try:
-            length = int(raw_length)
-        except ValueError as exc:
-            raise RequestBoundaryError(
-                400,
-                "Content-Length 非法",
-                "INVALID_CONTENT_LENGTH",
-            ) from exc
-        if length < 0:
-            raise RequestBoundaryError(
-                400,
-                "Content-Length 不能为负数",
-                "INVALID_CONTENT_LENGTH",
-            )
-        if length <= 0:
+        raw = self._read_raw_body(MAX_JSON_BODY_BYTES)
+        if not raw:
             return {}
-        if length > MAX_JSON_BODY_BYTES:
-            raise RequestBoundaryError(
-                413,
-                f"JSON 请求超过 {MAX_JSON_BODY_BYTES // (1024 * 1024)}MB 上限",
-                "JSON_BODY_TOO_LARGE",
-            )
-        raw = self.rfile.read(length)
-        if len(raw) != length:
-            raise RequestBoundaryError(
-                400,
-                "请求体读取不完整",
-                "JSON_BODY_TRUNCATED",
-            )
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
@@ -6622,6 +6596,43 @@ class Handler(BaseHTTPRequestHandler):
                 "JSON_DEPTH_EXCEEDED",
             )
         return value
+
+    def _read_raw_body(self, max_bytes: int) -> bytes:
+        cached = getattr(self, "_raw_request_body", None)
+        if isinstance(cached, bytes):
+            return cached
+        raw_length = str(self.headers.get("Content-Length") or "0").strip()
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise RequestBoundaryError(
+                400,
+                "Content-Length 非法",
+                "INVALID_CONTENT_LENGTH",
+            ) from exc
+        if length < 0:
+            raise RequestBoundaryError(
+                400,
+                "Content-Length 不能为负数",
+                "INVALID_CONTENT_LENGTH",
+            )
+        if length <= 0:
+            return b""
+        if length > int(max_bytes):
+            raise RequestBoundaryError(
+                413,
+                f"请求体超过 {int(max_bytes) // (1024 * 1024)}MB 上限",
+                "REQUEST_BODY_TOO_LARGE",
+            )
+        raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise RequestBoundaryError(
+                400,
+                "请求体读取不完整",
+                "JSON_BODY_TRUNCATED",
+            )
+        self._raw_request_body = raw
+        return raw
 
     def _send_upload_file(self, fpath: str, name: str):
         """Serve tenant media with session auth, CORS and single-range support."""
@@ -7306,6 +7317,48 @@ class Handler(BaseHTTPRequestHandler):
             return None
         parsed = urlparse(self.path)
         path = parsed.path
+        if agent_gateway.is_agent_internal_path(path):
+            try:
+                raw_body = self._read_raw_body(agent_gateway.MAX_PROXY_BODY_BYTES)
+                context = agent_gateway.verify_context_headers(
+                    self.headers,
+                    method=self.command,
+                    path=self.path,
+                    body=raw_body,
+                )
+            except (RequestBoundaryError, ValueError) as exc:
+                status = exc.status if isinstance(exc, RequestBoundaryError) else 401
+                self._send(
+                    status,
+                    {
+                        "error": str(exc),
+                        "code": "AGENT_INTERNAL_AUTH_FAILED",
+                    },
+                )
+                return None
+            account = tenant_registry.get_account_by_id(context.account_id)
+            tenant = tenant_registry.get_tenant_by_id(context.tenant_id)
+            if (
+                not account
+                or not tenant
+                or str(account.get("tenant_id") or "") != context.tenant_id
+                or str(account.get("status") or "") != "active"
+                or str(tenant.get("status") or "") != "active"
+            ):
+                self._send(
+                    403,
+                    {
+                        "error": "Agent 内部账号上下文无效",
+                        "code": "AGENT_PROJECT_FORBIDDEN",
+                    },
+                )
+                return None
+            self._internal_agent_context = context
+            self._internal_agent_body = raw_body
+            return tenant_context.use_tenant(
+                tenant["id"],
+                tenant["slug"],
+            )
         if path.startswith("/share/") or path.startswith("/api/share/"):
             if (
                 path.startswith("/api/share/")
@@ -7948,6 +8001,44 @@ class Handler(BaseHTTPRequestHandler):
     def _do_get(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        if agent_gateway.is_agent_browser_path(path):
+            return agent_gateway.proxy_agent(self)
+        internal_match = re.match(
+            r"^/api/internal/agent/projects/([^/]+)/(project|index|nodes|assets)$",
+            path,
+        )
+        if internal_match:
+            project_id = unquote(internal_match.group(1))
+            resource = internal_match.group(2)
+            project = store.get_project(project_id)
+            if not project:
+                return self._send(404, {"error": "项目不存在"})
+            if resource == "project":
+                return self._send(200, project)
+            if resource == "index":
+                return self._send(
+                    200,
+                    agent_gateway.project_index_from_project(project),
+                )
+            query = urllib.parse.parse_qs(parsed.query)
+            if resource == "nodes":
+                return self._send(
+                    200,
+                    agent_gateway.project_nodes_from_project(
+                        project,
+                        episode_id=str((query.get("episodeId") or [""])[0]),
+                        node_type=str((query.get("type") or [""])[0]),
+                        query=str((query.get("query") or [""])[0]),
+                        limit=int((query.get("limit") or ["100"])[0]),
+                    ),
+                )
+            return self._send(
+                200,
+                agent_gateway.project_assets_from_project(
+                    project,
+                    limit=int((query.get("limit") or ["300"])[0]),
+                ),
+            )
         download_media = re.match(
             r"^/api/downloads/media/([^/]+)$",
             path,
@@ -8514,6 +8605,112 @@ class Handler(BaseHTTPRequestHandler):
     def _do_post(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        if agent_gateway.is_agent_browser_path(path):
+            return agent_gateway.proxy_agent(self)
+        internal_feed = re.match(
+            r"^/api/internal/agent/projects/([^/]+)/feed/(preview|import)$",
+            path,
+        )
+        if internal_feed:
+            project_id = unquote(internal_feed.group(1))
+            mode = internal_feed.group(2)
+            try:
+                body = json.loads(
+                    getattr(self, "_internal_agent_body", b"{}").decode("utf-8")
+                    or "{}"
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return self._send(
+                    400,
+                    {"error": "Agent Feed 请求体不是有效 JSON"},
+                )
+            feed = body.get("feed_json")
+            if not isinstance(feed, dict):
+                return self._send(
+                    400,
+                    {"error": "feed_json 必须是对象"},
+                )
+            source = body.get("source") if isinstance(body.get("source"), dict) else {"name": "agent"}
+            project = store.get_project(project_id)
+            if not project:
+                return self._send(404, {"error": "项目不存在"})
+            if mode == "preview":
+                plan = canvas_feed_contract.prepare_import(
+                    project["payload"],
+                    feed,
+                    project_id,
+                    int(project.get("revision") or 0),
+                    source=source,
+                )
+                issues = [canvas_feed_contract.issue_dict(item) for item in plan.errors]
+                warnings = [canvas_feed_contract.issue_dict(item) for item in plan.warnings]
+                if plan.errors:
+                    return self._send(
+                        422,
+                        {
+                            "error": "导入校验失败，项目未被修改",
+                            "code": "FEED_VALIDATION_FAILED",
+                            "revision": plan.revision,
+                            "issues": issues,
+                            "warnings": warnings,
+                        },
+                    )
+                return self._send(
+                    200,
+                    {
+                        "dryRun": True,
+                        "id": project_id,
+                        "revision": plan.revision,
+                        "episodeId": plan.episode_id,
+                        "summary": plan.summary,
+                        "warnings": warnings,
+                        "provenance": plan.provenance,
+                    },
+                )
+            try:
+                plan, commit_result = canvas_feed_contract.prepare_import_locked(
+                    feed,
+                    project_id,
+                    source=source,
+                )
+            except canvas_feed_contract.RevisionConflictError as exc:
+                return self._send(
+                    409,
+                    {
+                        "error": str(exc),
+                        "code": "AGENT_FEED_REVISION_CONFLICT",
+                    },
+                )
+            except ValueError as exc:
+                return self._send(
+                    400,
+                    {
+                        "error": str(exc),
+                        "code": "AGENT_IMPORT_CONFLICT",
+                    },
+                )
+            issues = [canvas_feed_contract.issue_dict(item) for item in plan.errors]
+            warnings = [canvas_feed_contract.issue_dict(item) for item in plan.warnings]
+            if plan.errors:
+                return self._send(
+                    422,
+                    {
+                        "error": "导入校验失败，项目未被修改",
+                        "code": "FEED_VALIDATION_FAILED",
+                        "revision": plan.revision,
+                        "issues": issues,
+                        "warnings": warnings,
+                    },
+                )
+            return self._send(
+                200,
+                {
+                    **commit_result,
+                    "summary": plan.summary,
+                    "warnings": warnings,
+                    "provenance": plan.provenance,
+                },
+            )
         m = re.match(
             r"^/api/projects/([^/]+)/downloads$",
             path,
