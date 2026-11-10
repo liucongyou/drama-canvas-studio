@@ -271,9 +271,10 @@ def projects() -> dict[str, Any]:
 
 
 @router.get("/models")
-def list_models() -> dict[str, Any]:
+def list_models(request: Request) -> dict[str, Any]:
+    context = _context(request)
     try:
-        models = backend_models.list_text_models()
+        models = backend_models.list_text_models(context.tenant_id)
     except Exception:
         models = []
     settings = get_settings()

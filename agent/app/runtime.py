@@ -39,6 +39,7 @@ def execute_tool_loop(
             working,
             tools=TOOL_DEFINITIONS_FOR_RUNTIME,
             model_id=model_id,
+            tenant_id=str(context.get("tenantId") or ""),
         )
         if not result.tool_calls:
             return result.content, executed
@@ -684,7 +685,12 @@ def execute_run(run_id: str) -> None:
                 + "请只返回修复后的完整 JSON；不要解释，不要省略 asset_prompts / voice_prompts。"
             )
             db.update_message(status_message_id, f"正在修复契约问题（第 {repairs} 轮）…")
-            raw = chat(system_prompt, user_prompt + "\n\n" + repair, model_id=run.get("modelId") or "")
+            raw = chat(
+                system_prompt,
+                user_prompt + "\n\n" + repair,
+                model_id=run.get("modelId") or "",
+                tenant_id=run.get("tenantId") or "",
+            )
             feed = normalize_feed(
                 extract_json(raw),
                 skill_id=run["skillId"],

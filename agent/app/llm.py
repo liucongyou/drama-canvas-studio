@@ -67,14 +67,19 @@ def _mock() -> str:
     return TICK3 + "json\n" + json.dumps(_demo_feed(), ensure_ascii=False, indent=2) + "\n" + TICK3
 
 
-def chat(system: str, user: str, model_id: str = "") -> str:
+def chat(
+    system: str,
+    user: str,
+    model_id: str = "",
+    tenant_id: str = "",
+) -> str:
     settings = get_settings()
     if settings.llm_mode == "mock":
         return _mock()
 
     resolved = None
     try:
-        resolved = resolve_text_model(model_id)
+        resolved = resolve_text_model(model_id, tenant_id=tenant_id)
     except BackendConfigError:
         resolved = None
 
@@ -129,11 +134,12 @@ def chat_tool_round(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     model_id: str = "",
+    tenant_id: str = "",
 ) -> ToolRound:
     settings = get_settings()
     if settings.llm_mode == "mock":
         return ToolRound(content=_mock(), tool_calls=[], native=True)
-    base_url, api_key, model_name = _target(model_id)
+    base_url, api_key, model_name = _target(model_id, tenant_id=tenant_id)
     if not (base_url and api_key and model_name):
         return ToolRound(content=_mock(), tool_calls=[], native=True)
     payload: dict[str, Any] = {
@@ -174,7 +180,12 @@ def chat_tool_round(
                 if item.get("role") in {"user", "tool", "assistant"}
             )
             return ToolRound(
-                content=chat(system, fallback_user, model_id=model_id),
+                content=chat(
+                    system,
+                    fallback_user,
+                    model_id=model_id,
+                    tenant_id=tenant_id,
+                ),
                 tool_calls=[],
                 native=False,
             )
@@ -207,11 +218,14 @@ def _message_text(message: dict[str, Any]) -> str:
     return json.dumps(content, ensure_ascii=False) if content is not None else ""
 
 
-def _target(model_id: str = "") -> tuple[str, str, str]:
+def _target(
+    model_id: str = "",
+    tenant_id: str = "",
+) -> tuple[str, str, str]:
     settings = get_settings()
     resolved = None
     try:
-        resolved = resolve_text_model(model_id)
+        resolved = resolve_text_model(model_id, tenant_id=tenant_id)
     except BackendConfigError:
         resolved = None
     if resolved:
@@ -219,14 +233,19 @@ def _target(model_id: str = "") -> tuple[str, str, str]:
     return settings.llm_base_url.rstrip("/"), settings.llm_api_key, settings.llm_model
 
 
-def chat_stream(system: str, user: str, model_id: str = ""):
+def chat_stream(
+    system: str,
+    user: str,
+    model_id: str = "",
+    tenant_id: str = "",
+):
     settings = get_settings()
     if settings.llm_mode == "mock":
         text = _mock()
         for index in range(0, len(text), 48):
             yield text[index:index + 48]
         return
-    base_url, api_key, model_name = _target(model_id)
+    base_url, api_key, model_name = _target(model_id, tenant_id=tenant_id)
     if not (base_url and api_key and model_name):
         text = _mock()
         for index in range(0, len(text), 48):
@@ -280,7 +299,12 @@ def chat_stream(system: str, user: str, model_id: str = ""):
     # Streaming is an optimization; never lose a generation because the streaming
     # connection failed before the first byte. Fall back to the non-stream call.
     try:
-        text = chat(system, user, model_id=model_id)
+        text = chat(
+            system,
+            user,
+            model_id=model_id,
+            tenant_id=tenant_id,
+        )
     except LLMError:
         raise LLMError(f"模型流式请求失败：{last_error}") from last_error
     for index in range(0, len(text), 120):

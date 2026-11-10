@@ -24,13 +24,19 @@ class BackendConfigError(RuntimeError):
     pass
 
 
-def _load() -> dict[str, Any]:
+def _load(tenant_id: str = "") -> dict[str, Any]:
     settings = get_settings()
     try:
         import tenant_context
         import provider_catalog
 
-        with tenant_context.use_tenant(settings.canvas_tenant_id, settings.canvas_tenant_slug):
+        selected_tenant = str(tenant_id or settings.canvas_tenant_id).strip()
+        slug = (
+            settings.canvas_tenant_slug
+            if selected_tenant == settings.canvas_tenant_id
+            else selected_tenant
+        )
+        with tenant_context.use_tenant(selected_tenant, slug):
             return provider_catalog.load_config()
     except Exception as exc:
         raise BackendConfigError(f"读取画布后台模型配置失败：{exc}") from exc
@@ -57,7 +63,7 @@ def _providers(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
-def list_text_models() -> list[dict[str, Any]]:
+def list_text_models(tenant_id: str = "") -> list[dict[str, Any]]:
     catalog = _canvas_catalog()
     if catalog:
         providers = {
@@ -83,7 +89,7 @@ def list_text_models() -> list[dict[str, Any]]:
         if result:
             return result
     # Fallback: tenant config when the canvas is not reachable.
-    config = _load()
+    config = _load(tenant_id)
     providers = _providers(config)
     result = []
     for model in config.get("models", []):
@@ -103,9 +109,12 @@ def list_text_models() -> list[dict[str, Any]]:
     return result
 
 
-def resolve_text_model(model_id: str = "") -> dict[str, Any] | None:
+def resolve_text_model(
+    model_id: str = "",
+    tenant_id: str = "",
+) -> dict[str, Any] | None:
     catalog = _canvas_catalog()
-    config = _load()
+    config = _load(tenant_id)
     providers = _providers(config)
     catalog_models = [
         item for item in (catalog or {}).get("models", [])
