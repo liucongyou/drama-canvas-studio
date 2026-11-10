@@ -54,7 +54,7 @@
 
 ## 验证
 
-- Python 全量：`753 passed, 5 skipped, 208 subtests passed`；唯一失败为 Windows 慢读性能断言 `2.188s > 1.5s`，单独连跑 3 次全部通过。
+- Python 全量：`754 passed, 5 skipped, 208 subtests passed`。首轮曾出现一次 Windows 慢读性能断言 `2.188s > 1.5s`，单项连跑 3 次均通过；最终全量复跑全绿。
 - 前端：`76` 个测试文件、`708` 项测试全绿。
 - TypeScript：双工程 `tsc --noEmit` 通过。
 - 生产构建：成功，主入口 `assets/index-BwA9xhR6.js`。

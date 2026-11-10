@@ -29,6 +29,7 @@ _POOL_LOCK = threading.Lock()
 _POOLS: dict[str, queue.LifoQueue[Any]] = {}
 _POOL_IN_USE: dict[str, int] = {}
 _POOL_SIZE = max(2, int(os.getenv("CANVAS_PG_POOL_SIZE", "24")))
+_POOL_SCHEMA_SIZE = max(2, min(8, _POOL_SIZE))
 _SERIAL_ID_CACHE: dict[tuple[str, str], bool] = {}
 
 
@@ -476,7 +477,11 @@ class PGConnection:
         self._release_pool_slot()
         with _POOL_LOCK:
             pool = _POOLS.setdefault(self._pool_key, queue.LifoQueue())
-            can_return = pool.qsize() < _POOL_SIZE
+            total_idle = sum(item.qsize() for item in _POOLS.values())
+            can_return = (
+                pool.qsize() < _POOL_SCHEMA_SIZE
+                and total_idle < _POOL_SIZE
+            )
         if can_return:
             pool.put(self.raw)
             return
