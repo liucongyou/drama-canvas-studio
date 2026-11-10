@@ -6567,7 +6567,10 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _read_json(self):
-        raw = self._read_raw_body(MAX_JSON_BODY_BYTES)
+        raw = self._read_raw_body(
+            MAX_JSON_BODY_BYTES,
+            too_large_code="JSON_BODY_TOO_LARGE",
+        )
         if not raw:
             return {}
         try:
@@ -6597,7 +6600,12 @@ class Handler(BaseHTTPRequestHandler):
             )
         return value
 
-    def _read_raw_body(self, max_bytes: int) -> bytes:
+    def _read_raw_body(
+        self,
+        max_bytes: int,
+        *,
+        too_large_code: str = "REQUEST_BODY_TOO_LARGE",
+    ) -> bytes:
         cached = getattr(self, "_raw_request_body", None)
         if isinstance(cached, bytes):
             return cached
@@ -6622,7 +6630,7 @@ class Handler(BaseHTTPRequestHandler):
             raise RequestBoundaryError(
                 413,
                 f"请求体超过 {int(max_bytes) // (1024 * 1024)}MB 上限",
-                "REQUEST_BODY_TOO_LARGE",
+                too_large_code,
             )
         raw = self.rfile.read(length)
         if len(raw) != length:
@@ -7338,7 +7346,7 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             account = tenant_registry.get_account_by_id(context.account_id)
             tenant = tenant_registry.get_tenant_by_id(context.tenant_id)
-            if (
+            if _auth_mode() == "accounts" and (
                 not account
                 or not tenant
                 or str(account.get("tenant_id") or "") != context.tenant_id
@@ -7355,9 +7363,14 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             self._internal_agent_context = context
             self._internal_agent_body = raw_body
+            if (
+                _auth_mode() != "accounts"
+                and context.tenant_id in {"legacy", "local"}
+            ):
+                return nullcontext()
             return tenant_context.use_tenant(
-                tenant["id"],
-                tenant["slug"],
+                tenant["id"] if tenant else context.tenant_id,
+                tenant["slug"] if tenant else "local",
             )
         if path.startswith("/share/") or path.startswith("/api/share/"):
             if (
@@ -9905,6 +9918,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_put(self):
         path = urlparse(self.path).path
+        if agent_gateway.is_agent_browser_path(path):
+            return agent_gateway.proxy_agent(self)
         project_id = project_id_for_path(path)
         if project_id:
             with project_write_lock(project_id):

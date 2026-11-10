@@ -1,0 +1,857 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canvas Agent · 新会话</title>
+<style>
+  :root{
+    color-scheme:dark;
+    --bg:#0d0d0f;--panel:#1b1b1e;--panel-2:#202024;--line:#2b2b30;
+    --text:#f2f2f3;--muted:#8d8d95;--muted-2:#6e6e76;
+    --accent:#7c8cff;--accent-2:#a78bfa;--ok:#5bd18b;--bad:#ff7a7a;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    display:flex;justify-content:flex-end;overflow:hidden;
+  }
+  .backdrop{position:fixed;inset:0;background:
+    radial-gradient(900px 520px at 18% 12%,rgba(124,140,255,.10),transparent 62%),
+    radial-gradient(700px 420px at 82% 78%,rgba(167,139,250,.08),transparent 60%),
+    #0b0b0d;}
+  .backdrop .brand{position:absolute;left:38px;top:32px;display:flex;align-items:center;gap:10px;color:#d7d7dc;font-size:13px;letter-spacing:.02em}
+  .brand-mark{width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,var(--accent),var(--accent-2));box-shadow:0 0 26px rgba(124,140,255,.45)}
+  .backdrop .hint{position:absolute;left:38px;bottom:34px;color:#5d5d66;font-size:12px;line-height:1.9}
+  .backdrop .hint a{color:#9aa4ff;text-decoration:none}
+  .panel{
+    position:relative;width:460px;height:100vh;background:var(--panel);
+    border-left:1px solid #2a2a2f;display:flex;flex-direction:column;
+    box-shadow:-24px 0 70px rgba(0,0,0,.45);z-index:2;
+  }
+  .panel.wide{width:min(720px,100vw)}
+  header{height:58px;flex:0 0 58px;display:flex;align-items:center;gap:8px;padding:0 14px 0 18px;border-bottom:1px solid rgba(255,255,255,.045)}
+  .new-chat{border:0;background:transparent;color:#e7e7ea;font-size:14px;font-weight:600;letter-spacing:.01em;padding:6px 0;cursor:pointer}
+  .new-chat:hover{color:#fff}
+  .head-actions{margin-left:auto;display:flex;align-items:center;gap:2px}
+  .icon-btn{width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:#a3a3aa;display:grid;place-items:center;cursor:pointer}
+  .icon-btn:hover{background:#2a2a2f;color:#fff}
+  .context{display:grid;grid-template-columns:1fr 1fr auto;gap:6px;padding:10px 14px 0}
+  .context select{
+    min-width:0;height:30px;border:1px solid #303036;border-radius:8px;background:#232327;
+    color:#b9b9c0;font-size:11px;padding:0 8px;outline:none;
+  }
+  .context select:focus{border-color:#4b4b55}
+  .context .upload{height:30px;border:1px solid #303036;border-radius:8px;background:#232327;color:#b9b9c0;font-size:11px;padding:0 9px;cursor:pointer}
+  .settings{position:absolute;left:14px;right:14px;top:auto;bottom:112px;z-index:8;background:#202024;border:1px solid #3a3a44;border-radius:12px;padding:12px;box-shadow:0 18px 50px rgba(0,0,0,.55)}
+  .settings-head{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:600;color:#e8e8ee;margin-bottom:9px}
+  .settings label{display:grid;grid-template-columns:44px minmax(0,1fr);align-items:center;gap:8px;color:#8d8d95;font-size:11px;margin:7px 0}
+  .settings select{width:100%;height:32px;border:1px solid #36363f;border-radius:8px;background:#29292f;color:#d6d6dd;font-size:12px;padding:0 8px;outline:none}
+  .settings-row{display:flex;align-items:center;gap:8px;margin-top:9px}
+  .settings-row .hint{color:#6d6d76;font-size:10px;line-height:1.5}
+  .context{display:none}
+  .panel{background:
+    radial-gradient(600px 320px at 100% 0%,rgba(124,140,255,.10),transparent 62%),
+    radial-gradient(420px 280px at 0% 100%,rgba(167,139,250,.06),transparent 60%),
+    #1b1b1e;animation:panelIn .28s ease-out}
+  @keyframes panelIn{from{opacity:.6;transform:translateX(14px)}to{opacity:1;transform:none}}
+  .chip{transition:transform .16s ease,background .16s,border-color .16s,box-shadow .16s}
+  .chip:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(0,0,0,.25)}
+  .primary{transition:transform .15s,filter .15s,box-shadow .15s}
+  .primary:hover{transform:translateY(-1px);filter:brightness(1.08);box-shadow:0 8px 22px rgba(124,140,255,.28)}
+  .composer-box{transition:border-color .18s,box-shadow .18s}
+  .composer-box:focus-within{border-color:#4f5470;box-shadow:0 0 0 3px rgba(124,140,255,.10),0 10px 28px rgba(0,0,0,.22)}
+  .skill-modal-card{animation:modalIn .2s ease-out}
+  @keyframes modalIn{from{opacity:0;transform:translateY(8px) scale(.99)}to{opacity:1;transform:none}}
+  .canvas-agent-fab{animation:fabGlow 2.8s ease-in-out infinite}
+  @keyframes fabGlow{0%,100%{box-shadow:0 8px 28px rgba(0,0,0,.38),0 0 0 rgba(124,140,255,0)}50%{box-shadow:0 10px 34px rgba(0,0,0,.45),0 0 22px rgba(124,140,255,.18)}}
+  .canvas-agent-dock{animation:dockIn .22s ease-out}
+  @keyframes dockIn{from{transform:translateX(16px);opacity:.7}to{transform:none;opacity:1}}
+  .chat{flex:1;min-height:0;overflow:auto;padding:18px 18px 8px;scroll-behavior:smooth}
+  .chat::-webkit-scrollbar{width:6px}.chat::-webkit-scrollbar-thumb{background:#34343b;border-radius:99px}
+  .welcome{min-height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:28px 8px 40px}
+  .welcome h2{font-size:22px;line-height:1.35;font-weight:650;letter-spacing:.01em;margin:0 0 22px;color:#f4f4f6}
+  .chips{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;max-width:390px}
+  .chip{border:1px solid #303036;background:#242428;color:#c7c7ce;border-radius:999px;padding:7px 15px;font-size:13px;cursor:pointer;white-space:nowrap}
+  .chip:hover{background:#2d2d34;color:#fff;border-color:#41414a}
+  .messages{display:flex;flex-direction:column;gap:14px}
+  .msg{max-width:92%;border-radius:14px;padding:10px 13px;font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+  .msg.user{align-self:flex-end;background:#2a2f45;border:1px solid #3b4263;color:#eef0ff}
+  .msg.assistant{align-self:flex-start;background:#242428;border:1px solid #303036;color:#dedee4}
+  .msg.is-streaming::after{content:'▍';display:inline-block;margin-left:3px;color:#8fa0ff;animation:caretBlink .8s steps(2) infinite}
+  @keyframes caretBlink{50%{opacity:0}}
+  .msg .role{display:block;color:#777780;font-size:10px;letter-spacing:.05em;margin-bottom:4px}
+  .run-state{display:flex;align-items:center;gap:7px;color:#8e8e97;font-size:11px;margin:2px 0 0 2px}
+  .pulse{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent);animation:pulse 1.2s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  .lock-card{border:1px solid #3a3d55;background:linear-gradient(180deg,#24263a,#20212a);border-radius:12px;padding:12px;margin:8px 0}
+  .lock-head{display:flex;align-items:center;justify-content:space-between;color:#ececf4;font-size:12px;font-weight:600;margin-bottom:4px}
+  .lock-sub{color:#8f91a8;font-size:10.5px;margin-bottom:9px}
+  .lock-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  .lock-field{display:flex;flex-direction:column;gap:3px;color:#7f8198;font-size:9.5px}
+  .lock-field select{height:30px;border:1px solid #3b3d50;border-radius:7px;background:#2a2b36;color:#dddde8;font-size:11px;padding:0 6px;outline:none}
+  .lock-actions{display:flex;gap:7px;margin-top:10px}
+  .stage-artifacts{margin:6px 0 0}
+  .stage-artifacts details{border:1px solid #303039;background:#202025;border-radius:8px;padding:6px 8px;margin:5px 0;color:#a8a8b2;font-size:11px}
+  .stage-artifacts summary{cursor:pointer}
+  .stage-artifacts pre{max-height:160px;overflow:auto;margin:6px 0 0;color:#8f8f99;font-size:10px}
+  .skill-modal{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:30;display:flex;align-items:center;justify-content:center;padding:24px}
+  .skill-modal-card{width:min(820px,100%);height:min(560px,80vh);display:grid;grid-template-columns:250px 1fr;background:#1d1d21;border:1px solid #36363f;border-radius:14px;overflow:hidden;box-shadow:0 30px 100px rgba(0,0,0,.7)}
+  .skill-side{border-right:1px solid #303038;padding:12px;display:flex;flex-direction:column;min-height:0}
+  .skill-side-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;color:#eee;font-size:13px}
+  .skill-search{height:32px;border:1px solid #36363f;border-radius:8px;background:#26262c;color:#ddd;font-size:12px;padding:0 9px;outline:none;margin-bottom:8px}
+  .skill-new{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;color:#c9c9d1;text-align:left;border-radius:7px;padding:8px;font-size:12px;cursor:pointer;margin-bottom:4px}
+  .skill-new:hover{background:#2a2a32;color:#fff}.skill-new span{color:#9aa4ff}
+  .skill-list{overflow:auto;min-height:0;display:flex;flex-direction:column;gap:3px}
+  .skill-item{text-align:left;border:0;background:transparent;color:#b9b9c2;border-radius:8px;padding:8px 9px;font-size:12px;cursor:pointer}
+  .skill-item:hover{background:#2a2a31;color:#fff}.skill-item.active{background:#2c2f45;color:#dfe3ff}
+  .skill-item small{display:block;color:#71717a;font-size:9px;margin-top:2px}
+  .skill-detail{min-width:0;padding:16px;display:flex;flex-direction:column;min-height:0}
+  .skill-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+  .skill-detail h3{margin:0;font-size:15px;color:#f2f2f5}.skill-detail .hint{color:#7d7d87;font-size:10px;margin-top:4px}
+  .skill-desc{color:#9b9ba5;font-size:12px;line-height:1.7;margin:12px 0;max-height:120px;overflow:auto}
+  .skill-entry{flex:1;min-height:0;overflow:auto;white-space:pre-wrap;background:#141417;border:1px solid #2e2e36;border-radius:9px;padding:11px;color:#9a9aa5;font-size:11px;line-height:1.6;margin:0}
+  .skill-picker{position:absolute;left:14px;right:14px;bottom:112px;z-index:12;background:#1d1d21;border:1px solid #3a3a44;border-radius:12px;box-shadow:0 22px 70px rgba(0,0,0,.7);overflow:hidden}
+  .picker-search-wrap{padding:9px 9px 6px}
+  .picker-search{width:100%;height:34px;border:1px solid #34343e;border-radius:8px;background:#25252b;color:#ddd;font-size:12px;padding:0 10px;outline:none}
+  .picker-list{max-height:280px;overflow:auto;padding:0 5px}
+  .picker-item{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;color:#c7c7cf;text-align:left;border-radius:8px;padding:9px 8px;cursor:pointer}
+  .picker-item:hover{background:#292930;color:#fff}.picker-item.selected{background:#2b2e44;color:#e4e7ff}
+  .picker-icon{width:22px;height:22px;flex:0 0 22px;border-radius:6px;background:#2d2f3d;display:grid;place-items:center;color:#aeb7ff;font-size:11px}
+  .picker-text{min-width:0;flex:1}.picker-text strong{display:block;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .picker-text small{display:block;color:#777780;font-size:10px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .picker-check{color:#aeb7ff;font-size:14px}
+  .picker-actions{border-top:1px solid #2f2f38;padding:5px}
+  .picker-actions button{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;color:#c9c9d1;text-align:left;border-radius:7px;padding:8px;font-size:12px;cursor:pointer}
+  .picker-actions button:hover{background:#2a2a32;color:#fff}
+  .picker-actions span{color:#9aa4ff;width:14px;text-align:center}
+  .skill-picker.hidden{display:none!important}
+  .at-menu{position:absolute;left:14px;right:14px;bottom:112px;z-index:9;height:360px;max-height:calc(100% - 130px);background:#202024;border:1px solid #3a3a44;border-radius:12px;padding:0;box-shadow:0 18px 50px rgba(0,0,0,.55);overflow:hidden}
+  .at-body{display:grid;grid-template-columns:170px minmax(0,1fr);height:calc(100% - 34px);min-height:0}
+  .at-cats{border-right:1px solid #31313a;overflow:auto;padding:5px}
+  .at-items{display:flex;flex-direction:column;min-width:0;min-height:0}
+  .at-pane-label{color:#777780;font-size:10px;padding:8px 9px 4px}
+  .at-subhead{display:flex;align-items:center;justify-content:space-between;color:#8d8d95;font-size:10px;padding:7px 9px;border-bottom:1px solid #2c2c34}
+  .at-scroll{overflow:auto;flex:1;padding:5px}
+  .at-cat.is-active{background:#2c2f45;color:#e4e7ff}
+  .at-item{white-space:normal;line-height:1.4;padding:8px}
+  .at-item small{margin-left:0;display:block;margin-top:2px}
+  .at-empty{color:#6f6f78;font-size:11px;padding:18px 10px;text-align:center}
+  .at-head{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#8d8d95;font-size:10px;padding:3px 5px 7px}
+  .at-back{border:0;background:transparent;color:#9aa4ff;font-size:10px;cursor:pointer;padding:0}
+  .at-cat{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;color:#c9c9d1;text-align:left;border-radius:7px;padding:8px;font-size:12px;cursor:pointer}
+  .at-cat:hover{background:#2d2d35;color:#fff}
+  .at-cat .at-ico{width:22px;height:22px;border-radius:6px;background:#2b2d3a;display:grid;place-items:center;color:#aeb7ff;font-size:11px}
+  .at-cat .at-meta{color:#6f6f78;font-size:9px;margin-left:auto}
+  .at-cat .at-chev{color:#6f6f78;font-size:14px}
+  .at-head{color:#8d8d95;font-size:10px;padding:3px 5px 7px}
+  .at-list{display:flex;flex-direction:column;gap:2px}
+  .at-item{border:0;background:transparent;color:#c9c9d1;text-align:left;border-radius:7px;padding:7px 8px;font-size:12px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .at-item:hover{background:#2d2d35;color:#fff}.at-item small{color:#6f6f78;font-size:9px;margin-left:6px}
+  .msg{animation:msgIn .18s ease-out}
+  @keyframes msgIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .stage-pill.running .stage-dot{animation:pulse 1s infinite}
+  .skill-modal.hidden,.at-menu.hidden{display:none!important}
+  .stages{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px}
+  .stage-pill{display:inline-flex;align-items:center;gap:5px;border:1px solid #33333b;background:#232327;color:#8f8f98;border-radius:999px;padding:3px 8px;font-size:10px}
+  .stage-pill.done{color:#8fe3aa;border-color:#2c4a38}.stage-pill.failed{color:#ffb0b0;border-color:#573039}.stage-pill.running{color:#aeb7ff;border-color:#3b4266}
+  .stage-dot{width:5px;height:5px;border-radius:50%;background:currentColor}
+  .card{border:1px solid #34343c;background:#202025;border-radius:12px;padding:12px;margin-top:10px}
+  .card-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .card-title{font-size:12px;font-weight:600;color:#e6e6ea}
+  .badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;background:#2c2c33;color:#96969f;font-size:10px}
+  .badge.ok{background:#173523;color:#8fe3aa}.badge.bad{background:#3a2026;color:#ffb0b0}
+  .card pre{max-height:210px;overflow:auto;margin:8px 0 0;padding:9px;border-radius:8px;background:#131316;border:1px solid #2d2d34;color:#a9a9b2;font-size:10.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+  .card .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .primary{border:1px solid #6f7dff;background:linear-gradient(135deg,#6f7dff,#8f6fff);color:#0b0c12;font-weight:650;border-radius:9px;padding:8px 13px;font-size:12px;cursor:pointer}
+  .primary:disabled{opacity:.45;cursor:default}
+  .ghost{border:1px solid #3a3a42;background:#28282e;color:#c4c4cb;border-radius:9px;padding:8px 11px;font-size:12px;cursor:pointer}
+  .issues{color:#ffb0b0;font-size:11.5px;line-height:1.7;margin-top:6px}
+  .composer{flex:0 0 auto;padding:10px 14px 14px;border-top:1px solid rgba(255,255,255,.045);background:linear-gradient(180deg,rgba(27,27,30,.7),#1b1b1e 28%)}
+  .composer-box{border:1px solid #34343c;background:#232327;border-radius:14px;padding:10px 10px 8px;transition:border-color .15s;max-height:190px;overflow:hidden}
+  .composer-box:focus-within{border-color:#4b4b58}
+  .skill-chips{display:flex;flex-wrap:wrap;gap:5px;margin:0 0 5px}
+  .skill-use{border:1px solid #34343e;background:#232328;color:#aeb7ff;border-radius:7px;padding:5px 9px;font-size:11px;cursor:pointer}
+  .skill-use:hover{background:#2d2d36;color:#fff}
+  .skill-chips:empty{display:none}
+  .attachment-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;border:1px solid #3a3f4d;background:#252830;color:#c9d0e2;border-radius:7px;padding:4px 6px;font-size:11px}
+  .attachment-chip .chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}
+  .attachment-chip .chip-x{border:0;background:transparent;color:#7f8799;cursor:pointer;font-size:13px;line-height:1;padding:0 1px}
+  .attachment-chip .chip-x:hover{color:#fff}
+  .attachment-chip svg{flex:0 0 auto;color:#8f9cff}
+  .skill-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;border:1px solid #3c4057;background:linear-gradient(135deg,rgba(124,140,255,.18),rgba(167,139,250,.12));color:#dfe3ff;border-radius:7px;padding:4px 6px;font-size:11px}
+  .skill-chip .chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px}
+  .skill-chip .chip-x{border:0;background:transparent;color:#8f96bd;cursor:pointer;font-size:13px;line-height:1;padding:0 1px}
+  .skill-chip .chip-x:hover{color:#fff}
+  .composer textarea{width:100%;height:72px;min-height:64px;max-height:128px;resize:none;overflow-y:auto;border:0;outline:none;background:transparent;color:#ececf0;font:inherit;font-size:13px;line-height:1.6;padding:2px 4px}
+  .composer textarea::placeholder{color:#6d6d76}
+  .composer-bar{display:flex;align-items:center;gap:4px;margin-top:6px}
+  .tool{width:28px;height:28px;border:0;border-radius:8px;background:transparent;color:#8e8e97;display:grid;place-items:center;cursor:pointer}
+  .tool:hover{background:#2d2d34;color:#fff}
+  .model{margin-left:auto;display:flex;align-items:center;gap:5px;color:#a9a9b2;font-size:11px;padding:4px 7px;border-radius:7px;cursor:default}
+  .model .dot{width:7px;height:7px;border-radius:50%;background:#8f7bff;box-shadow:0 0 8px rgba(143,123,255,.7)}
+  .model{appearance:none;border:0;background:transparent;color:#a9a9b2;font-size:11px;padding:4px 7px;border-radius:7px;max-width:150px;outline:none;cursor:pointer}
+  .model:hover{background:#2d2d34;color:#fff}
+  .model option{background:#232327;color:#ddd}
+  .send{width:30px;height:30px;border:0;border-radius:50%;background:#e8e8ee;color:#141418;display:grid;place-items:center;cursor:pointer;margin-left:4px}
+  .send:hover{background:#fff}.send:disabled{opacity:.35;cursor:default}
+  .foot{margin-top:8px;text-align:center;color:#55555e;font-size:10px}
+  .hidden{display:none!important}
+  .toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);background:#2b2b32;border:1px solid #3a3a44;color:#ddd;padding:8px 12px;border-radius:9px;font-size:12px;z-index:5;opacity:0;pointer-events:none;transition:opacity .2s}
+  .toast.show{opacity:1}
+  body.embed .backdrop{display:none}
+  body.embed .panel{width:100vw;border-left:0;box-shadow:none}
+  @media(max-width:760px){.panel{width:100vw;border-left:0}.backdrop .brand,.backdrop .hint{display:none}}
+</style>
+</head>
+<body>
+<div class="backdrop">
+  <div class="brand"><span class="brand-mark"></span><span>Canvas Agent</span></div>
+  <div class="hint">与画布协同的创作侧车<br><a href="http://127.0.0.1:8890" target="_blank">打开画布 →</a></div>
+</div>
+
+<aside class="panel" id="panel">
+  <header>
+    <button class="new-chat" id="newChat">新会话</button>
+    <div class="head-actions">
+      <button class="icon-btn" id="skillLibrary" title="技能库">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16.5A1.5 1.5 0 0 1 18.5 21H6.5A2.5 2.5 0 0 1 4 18.5z"/><path d="M8 3v18"/><path d="M12 7h5M12 11h5"/></svg>
+      </button>
+      <button class="icon-btn" id="history" title="刷新历史">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg>
+      </button>
+      <button class="icon-btn" id="expand" title="展开">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3H3v5"/><path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M16 21h5v-5"/></svg>
+      </button>
+      <button class="icon-btn" id="close" title="关闭">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+  </header>
+
+
+  <div class="settings hidden" id="settings">
+    <div class="settings-head"><span>创作设置</span><button class="icon-btn" id="settingsClose" title="关闭"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+    <label>项目<select id="project" aria-label="项目"><option value="">选择项目</option></select></label>
+    <select id="skill" class="hidden" aria-label="技能"><option value="">选择技能</option></select>
+    <label>技能分支<select id="route" aria-label="技能分支"><option value="">总控</option></select></label>
+    <div class="settings-row">
+      <button class="ghost" id="upload">上传技能包</button>
+      <span id="skillHint" class="hint">只读技能规则，不执行上传脚本</span>
+    </div>
+    <input class="hidden" id="skillFile" type="file" accept=".zip">
+    <input class="hidden" id="fileInput" type="file" accept=".txt,.md,.markdown,.docx,.doc,.json,.csv,.log">
+  </div>
+
+  <main class="chat" id="chat">
+    <div class="welcome" id="welcome">
+      <h2>探索更多专业创作模式</h2>
+      <div class="chips">
+        <button class="chip" data-prompt="拆解这条参考视频：从镜头、节奏、光影、声音四个维度分析，并给出可复用的创作公式。">/ 视频拆解</button>
+        <button class="chip" data-prompt="把这个剧本拆成分镜：按段落给出景别、机位、构图、运动、节奏和转场。">/ 创作分镜</button>
+        <button class="chip" data-prompt="按全流程广告片导演的方式，从创意、脚本、分镜到投喂稿，做一条 30 秒广告片。">/ 全流程广告片导演</button>
+        <button class="chip" data-prompt="开发一个短剧剧本：先给一句话故事、人物小传、三幕结构，再写第一集。">/ 剧本开发</button>
+        <button class="chip" data-prompt="做一条 60 秒剧情短片：从冲突开场、反转、爽点到收尾，直接给可投喂的分镜。">/ 剧情短片</button>
+      </div>
+    </div>
+    <div class="messages hidden" id="messages"></div>
+  </main>
+
+  <div class="skill-picker hidden" id="skillPicker">
+    <div class="picker-search-wrap"><input id="pickerSearch" class="picker-search" placeholder="搜索技能"></div>
+    <div class="picker-list" id="pickerList"></div>
+    <div class="picker-actions">
+      <button type="button" id="newSkill"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> 新建技能</button>
+      <button type="button" id="manageSkills"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg> 管理技能</button>
+    </div>
+  </div>
+
+  <div class="at-menu hidden" id="atMenu">
+    <div class="at-head">引用画布素材</div>
+    <div class="at-list" id="atList"><span class="hint">打开项目后可用</span></div>
+  </div>
+
+  <div class="composer">
+    <div class="composer-box">
+      <div class="skill-chips" id="skillChips"></div>
+      <div class="skill-chips attachment-chips" id="attachmentChips"></div>
+      <textarea id="prompt" rows="2" placeholder="输入想法、剧本或上传参考，支持 / 使用技能，@ 添加主体，和 Agent 一起创作"></textarea>
+      <div class="composer-bar">
+        <button class="tool" id="plus" title="上传剧本/参考文件">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button class="tool" id="skillPick" title="选择技能">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6z"/><path d="M19 16l.7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7z"/></svg>
+        </button>
+        <button class="tool" id="tune" title="参数">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>
+        </button>
+        <button class="tool" id="at" title="添加主体">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></svg>
+        </button>
+        <select class="model" id="model" title="当前模型" aria-label="模型"><option value="">加载模型…</option></select>
+        <button class="send" id="run" title="发送">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="foot">内容由 AI 生成，请检查后使用</div>
+  </div>
+</aside>
+<div class="skill-modal hidden" id="skillModal" role="dialog" aria-label="技能库">
+  <div class="skill-modal-card">
+    <aside class="skill-side">
+      <div class="skill-side-head"><strong>技能库</strong><button class="icon-btn" id="skillModalClose" title="关闭"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+      <input id="skillSearch" class="skill-search" placeholder="搜索技能">
+      <button class="skill-new" id="manageNewSkill"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> 新建技能</button>
+      <div class="skill-list" id="skillList"></div>
+    </aside>
+    <section class="skill-detail">
+      <div class="skill-detail-head"><div><h3 id="skillDetailName">选择一个技能</h3><p id="skillDetailMeta" class="hint"></p></div><button class="primary" id="useSkill">使用</button></div>
+      <div id="skillDetailDesc" class="skill-desc"></div>
+      <pre id="skillDetailEntry" class="skill-entry">选择左侧技能查看内容</pre>
+    </section>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  'use strict';
+  if(new URLSearchParams(location.search).get('embed') === '1'){ document.body.classList.add('embed'); }
+  var state = {projects: [], skills: [], routes: [], run: null, source: null, timer: null, uploadPending: false, skillDetail: null, skillChip: null, pickerOpen: false, atNodes: [], attachments: []};
+  function $(id){return document.getElementById(id);}
+  function esc(value){
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+    });
+  }
+  var SVG = {
+    sparkle: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6z"/><path d="M19 16l.7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7z"/></svg>',
+    check: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg>',
+    x: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>',
+    user: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>',
+    image: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>',
+    video: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="13" height="14" rx="2"/><path d="M16 10l5-3v10l-5-3z"/></svg>',
+    audio: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg>',
+    text: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>',
+    chevron: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 18l6-6-6-6"/></svg>',
+    arrowLeft: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>'
+  };
+  function toast(text){
+    var node = $('toast'); node.textContent = text; node.classList.add('show');
+    clearTimeout(node._timer); node._timer = setTimeout(function(){node.classList.remove('show');}, 2200);
+  }
+  function api(path, options){
+    return fetch(path, Object.assign({headers:{'Content-Type':'application/json'}}, options || {})).then(function(res){
+      return res.json().catch(function(){return {};}).then(function(data){
+        if(!res.ok){
+          var detail = data.detail;
+          if(detail && typeof detail === 'object') detail = detail.error || JSON.stringify(detail);
+          throw new Error(detail || data.error || ('HTTP ' + res.status));
+        }
+        return data;
+      });
+    });
+  }
+  function loadProjects(){
+    return api('/api/agent/projects').then(function(data){
+      state.projects = data.projects || [];
+      var select = $('project');
+      select.innerHTML = '<option value="">选择项目</option>' + state.projects.map(function(p){
+        return '<option value="' + esc(p.id) + '">' + esc(p.title || p.id) + '</option>';
+      }).join('');
+      if(state.projects.length === 1) select.value = state.projects[0].id;
+      var initialProject = new URLSearchParams(location.search).get('project');
+      if(initialProject && state.projects.some(function(p){ return p.id === initialProject; })) select.value = initialProject;
+    }).catch(function(err){
+      toast('画布连接失败：' + err.message);
+    });
+  }
+  function loadModels(){
+    return api('/api/agent/models').then(function(data){
+      state.models = data.models || [];
+      var select = $('model');
+      if(!state.models.length){ select.innerHTML = '<option value="">默认模型</option>'; return; }
+      select.innerHTML = state.models.map(function(m){
+        return '<option value="' + esc(m.id) + '">' + esc(m.label || m.id) + '</option>';
+      }).join('');
+      select.value = data.defaultModelId || state.models[0].id;
+    }).catch(function(){
+      $('model').innerHTML = '<option value="">默认模型</option>';
+    });
+  }
+  function loadSkills(){
+    return api('/api/agent/skills').then(function(data){
+      state.skills = data.skills || [];
+      var select = $('skill');
+      select.innerHTML = '<option value="">选择技能</option>' + state.skills.map(function(s){
+        return '<option value="' + esc(s.id) + '">' + esc(s.name) + ' · ' + esc(s.activeVersion) + '</option>';
+      }).join('');
+      select.value = '';
+      populateRoutes();
+    }).catch(function(err){
+      toast('技能加载失败：' + err.message);
+    });
+  }
+  function populateRoutes(){
+    var skillId = state.skillChip ? state.skillChip.id : '';
+    var skill = state.skills.filter(function(item){ return item.id === skillId; })[0];
+    state.routes = (skill && skill.routes) || [];
+    var select = $('route');
+    select.innerHTML = '<option value="">总控</option>' + state.routes.map(function(route){
+      return '<option value="' + esc(route.id) + '">' + esc(route.name) + '</option>';
+    }).join('');
+  }
+  function showWelcome(show){
+    $('welcome').classList.toggle('hidden', !show);
+    $('messages').classList.toggle('hidden', show);
+  }
+  function clearChat(){
+    if(state.source){state.source.close(); state.source = null;}
+    if(state.timer){clearInterval(state.timer); state.timer = null;}
+    state.run = null;
+    $('messages').innerHTML = '';
+    state.routes = [];
+    state.skillChip = null;
+    state.attachments = [];
+    renderSkillChip();
+    renderAttachments();
+    $('skill').value = '';
+    $('route').innerHTML = '<option value="">总控</option>';
+    showWelcome(true);
+    $('prompt').value = '';
+    autoGrowPrompt();
+    $('prompt').focus();
+  }
+  function addMessage(role, text){
+    var wrap = document.createElement('div');
+    wrap.className = 'msg ' + role;
+    wrap.innerHTML = '<span class="role">' + (role === 'user' ? '你' : 'Agent') + '</span>' + esc(text);
+    $('messages').appendChild(wrap);
+    $('chat').scrollTop = $('chat').scrollHeight;
+  }
+  function renderRun(run){
+    state.run = run;
+    showWelcome(false);
+    var html = '';
+    var msgs = run.messages || [];
+    msgs.forEach(function(m, index){
+      var streaming = run.status === 'running' && index === msgs.length - 1 && m.role === 'assistant';
+      html += '<div class="msg ' + (m.role === 'user' ? 'user' : 'assistant') + (streaming ? ' is-streaming' : '') + '"><span class="role">' +
+        (m.role === 'user' ? '你' : 'Agent') + '</span>' + esc(m.content) + '</div>';
+    });
+    if(run.status === 'queued' || run.status === 'running'){
+      html += '<div class="run-state"><span class="pulse"></span>正在生成 · ' + (run.stages || run.steps || []).slice(-1).map(function(s){return esc(s.name);}).join('') + '</div>';
+    }
+    var stages = (run.stages && run.stages.length) ? run.stages : (run.steps || []);
+    if(stages.length){
+      html += '<div class="stages">' + stages.map(function(s){
+        return '<span class="stage-pill ' + esc(s.status) + '"><span class="stage-dot"></span>' + esc(s.name) + '</span>';
+      }).join('') + '</div>';
+    }
+    var stageArts = (run.artifacts || []).filter(function(a){ return a.kind !== 'canvas_feed'; });
+    if(stageArts.length){
+      html += '<div class="stage-artifacts">' + stageArts.map(function(a){
+        return '<details><summary>阶段产物 · ' + esc(a.kind) + '</summary><pre>' +
+          esc(JSON.stringify(a.payload || {}, null, 2).slice(0, 3000)) + '</pre></details>';
+      }).join('') + '</div>';
+    }
+    if(run.status === 'failed' && run.error){
+      html += '<div class="issues">' + esc(run.error) + '</div>';
+    }
+    var artifact = (run.artifacts || []).filter(function(a){return a.kind === 'canvas_feed';}).pop();
+    if(artifact){
+      var payload = artifact.payload || {};
+      var preview = payload.preview || {};
+      var errors = payload.errors || [];
+      html += '<div class="card"><div class="card-head"><span class="card-title">投喂稿</span>';
+      html += '<span class="badge ' + (errors.length ? 'bad' : 'ok') + '">' + (errors.length ? (errors.length + ' 个问题') : '预检通过') + '</span>';
+      html += '<span class="badge">revision ' + esc(preview.revision == null ? '?' : preview.revision) + '</span></div>';
+      if(errors.length){
+        html += '<div class="issues">' + errors.slice(0,6).map(function(e){return esc(e.message || e.code || e);}).join('<br>') + '</div>';
+      }
+      html += '<details><summary style="cursor:pointer;color:#8d8d95;font-size:11px">查看 JSON</summary><pre>' + esc(JSON.stringify(payload.feed || {}, null, 2).slice(0, 12000)) + '</pre></details>';
+      if(!errors.length && run.status === 'waiting_user'){
+        html += '<div class="actions"><button class="primary" id="importRun">确认导入画布</button></div>';
+      }
+      html += '</div>';
+    }
+    $('messages').innerHTML = html;
+    var importBtn = $('importRun');
+    if(importBtn) importBtn.onclick = importCurrent;
+    $('chat').scrollTop = $('chat').scrollHeight;
+  }
+  function refreshRun(){
+    if(!state.run) return Promise.resolve();
+    return api('/api/agent/runs/' + encodeURIComponent(state.run.id)).then(function(data){
+      renderRun(data.run);
+    }).catch(function(){});
+  }
+  function openEvents(runId){
+    if(state.source) state.source.close();
+    state.source = new EventSource('/api/agent/runs/' + encodeURIComponent(runId) + '/events');
+    state.source.onmessage = function(){ refreshRun(); };
+    state.source.onerror = function(){ /* EventSource auto-reconnect; polling is fallback. */ };
+  }
+  function autoGrowPrompt(){
+    var el = $('prompt');
+    if(!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.max(64, Math.min(128, el.scrollHeight)) + 'px';
+  }
+  function startRun(){
+    var projectId = $('project').value;
+    var skillId = state.skillChip ? state.skillChip.id : '';
+    var prompt = $('prompt').value.trim();
+    if(!projectId){toggleSettings(true); toast('先选一个项目'); return;}
+    if(!skillId){openSkillPicker(true); toast('先选一个技能'); return;}
+    if(!prompt){toast('先写目标'); return;}
+    toggleSettings(false);
+    openLockCard({
+      projectId: projectId,
+      skillId: skillId,
+      prompt: prompt,
+      modelId: $('model').value,
+      routeId: $('route').value
+    });
+  }
+  function lockSelect(label, key, options){
+    return '<div class="lock-field"><span>' + label + '</span><select data-lock="' + key + '">' +
+      options.map(function(item){ return '<option value="' + esc(item) + '">' + esc(item) + '</option>'; }).join('') +
+      '</select></div>';
+  }
+  function openLockCard(pending){
+    showWelcome(false);
+    var fields = [
+      lockSelect('赛道', 'track', ['国内剧', '海外剧', '解说', '漫剧']),
+      lockSelect('素材来源', 'source', ['原创', '对标', '小说改编']),
+      lockSelect('模型版本', 'modelVersion', ['Seedance 2.0', 'Seedance 2.5']),
+      lockSelect('画幅', 'aspect', ['9:16 竖屏', '16:9 横屏']),
+      lockSelect('交付形态', 'delivery', ['15s 单段', '多段拼接']),
+      lockSelect('段缝', 'seam', ['无缝', '硬切', '转场'])
+    ].join('');
+    var html = '<div class="lock-card" id="lockCard"><div class="lock-head"><span>先锁题，再生成</span><span class="badge">人工门禁</span></div>' +
+      '<div class="lock-sub">这几项会写进本轮 run，模型不允许自行改。</div>' +
+      '<div class="lock-grid">' + fields + '</div>' +
+      '<div class="lock-actions"><button class="primary" id="lockConfirm">确认锁题</button>' +
+      '<button class="ghost" id="lockCancel">取消</button></div></div>';
+    $('messages').insertAdjacentHTML('beforeend', html);
+    $('chat').scrollTop = $('chat').scrollHeight;
+    $('lockCancel').onclick = function(){ var node=$('lockCard'); if(node) node.remove(); };
+    $('lockConfirm').onclick = function(){
+      var locks = {};
+      Array.prototype.forEach.call(document.querySelectorAll('[data-lock]'), function(select){
+        locks[select.getAttribute('data-lock')] = select.value;
+      });
+      var card = $('lockCard'); if(card) card.remove();
+      var lockText = Object.keys(locks).map(function(key){ return key + '=' + locks[key]; }).join('；');
+      addMessage('user', pending.prompt + '\n\n锁题：' + lockText);
+      launchRun(pending, locks);
+    };
+  }
+  function launchRun(pending, locks){
+    $('run').disabled = true;
+    api('/api/agent/runs', {method:'POST', body: JSON.stringify({
+      projectId: pending.projectId,
+      skillId: pending.skillId,
+      prompt: pending.prompt,
+      modelId: pending.modelId,
+      routeId: pending.routeId,
+      locks: locks || {},
+      fileIds: state.attachments.map(function(file){ return file.id; })
+    })})
+      .then(function(data){
+        state.run = data.run;
+        renderRun(data.run);
+        openEvents(data.run.id);
+        state.timer = setInterval(refreshRun, 1500);
+      })
+      .catch(function(err){ addMessage('assistant', '启动失败：' + err.message); })
+      .finally(function(){ $('run').disabled = false; });
+  }
+  function importCurrent(){
+    if(!state.run) return;
+    api('/api/agent/runs/' + encodeURIComponent(state.run.id) + '/import', {method:'POST'})
+      .then(function(data){
+        toast('已导入画布');
+        renderRun(data.run);
+        if(state.timer){clearInterval(state.timer); state.timer = null;}
+      })
+      .catch(function(err){toast('导入失败：' + err.message);});
+  }
+  function uploadSkill(){
+    var file = $('skillFile').files[0];
+    if(!file){toast('先选一个 zip'); return;}
+    if(state.uploadPending) return;
+    state.uploadPending = true;
+    var form = new FormData(); form.append('file', file);
+    toast('正在校验技能包…');
+    fetch('/api/agent/skills/upload', {method:'POST', body: form}).then(function(res){
+      return res.json().catch(function(){return {};}).then(function(data){
+        if(!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+        toast('已安装：' + data.skill.id + ' @ ' + data.skill.version);
+        return loadSkills();
+      });
+    }).catch(function(err){toast('上传失败：' + err.message);}).finally(function(){
+      state.uploadPending = false; $('skillFile').value = '';
+    });
+  }
+  function renderAttachments(){
+    var node = $('attachmentChips');
+    if(!state.attachments.length){ node.innerHTML = ''; return; }
+    node.innerHTML = state.attachments.map(function(file){
+      return '<span class="attachment-chip"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="chip-name">' + esc(file.name) + '</span><button class="chip-x" data-file-id="' + esc(file.id) + '" aria-label="移除文件">' + SVG.x + '</button></span>';
+    }).join('');
+    Array.prototype.forEach.call(node.querySelectorAll('[data-file-id]'), function(btn){
+      btn.onclick = function(){
+        var id = btn.getAttribute('data-file-id');
+        state.attachments = state.attachments.filter(function(file){ return file.id !== id; });
+        renderAttachments();
+      };
+    });
+  }
+  function uploadReference(file){
+    var form = new FormData(); form.append('file', file);
+    toast('正在读取文件：' + file.name);
+    fetch('/api/agent/files/upload', {method:'POST', body: form}).then(function(res){
+      return res.json().catch(function(){return {};}).then(function(data){
+        if(!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+        state.attachments.push(data.file);
+        renderAttachments();
+        toast('已添加：' + data.file.name + ' · ' + data.file.chars + ' 字');
+      });
+    }).catch(function(err){ toast('文件上传失败：' + err.message); });
+  }
+  function renderSkillChip(){
+    var node = $('skillChips');
+    if(!state.skillChip){ node.innerHTML = ''; return; }
+    node.innerHTML = '<span class="skill-chip"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6z"/></svg><span class="chip-name">' + esc(state.skillChip.name) + '</span><button class="chip-x" id="chipRemove" aria-label="移除技能">' + SVG.x + '</button></span>';
+    $('chipRemove').onclick = function(){
+      state.skillChip = null;
+      $('skill').value = '';
+      populateRoutes();
+      renderSkillChip();
+    };
+  }
+  function addSkillChip(id, name){
+    state.skillChip = {id: id, name: name || id};
+    $('skill').value = id;
+    populateRoutes();
+    renderSkillChip();
+  }
+  function openSkillPicker(force){
+    var node = $('skillPicker');
+    var show = typeof force === 'boolean' ? force : node.classList.contains('hidden');
+    node.classList.toggle('hidden', !show);
+    state.pickerOpen = show;
+    if(show){
+      $('atMenu').classList.add('hidden');
+      toggleSettings(false);
+      renderPickerList('');
+      $('pickerSearch').value = '';
+      $('pickerSearch').focus();
+    }
+  }
+  function renderPickerList(query){
+    var q = String(query || '').toLowerCase();
+    var items = state.skills.filter(function(s){
+      return !q || String(s.name || '').toLowerCase().includes(q) || String(s.id || '').toLowerCase().includes(q);
+    });
+    $('pickerList').innerHTML = items.map(function(s){
+      var selected = state.skillChip && state.skillChip.id === s.id;
+      var desc = (s.manifest && s.manifest.raw && s.manifest.raw.description) || ((s.routes || []).length + ' 个技能分支');
+      return '<button class="picker-item' + (selected ? ' selected' : '') + '" data-id="' + esc(s.id) + '">' +
+        '<span class="picker-icon">' + SVG.sparkle + '</span><span class="picker-text"><strong>' + esc(s.name) + '</strong><small>' + esc(desc) + '</small></span>' +
+        '<span class="picker-check">' + (selected ? SVG.check : '') + '</span></button>';
+    }).join('') || '<div class="hint" style="padding:12px 8px">没有匹配技能</div>';
+    Array.prototype.forEach.call(document.querySelectorAll('.picker-item'), function(btn){
+      btn.onclick = function(){
+        var id = btn.getAttribute('data-id');
+        var skill = state.skills.filter(function(item){ return item.id === id; })[0];
+        addSkillChip(id, skill ? skill.name : id);
+        openSkillPicker(false);
+        $('prompt').focus();
+      };
+    });
+  }
+  function openManager(){
+    if(window.self !== window.top){
+      window.parent.postMessage({type:'canvas-agent-open-skill-manager'}, '*');
+    } else {
+      openSkillLibrary();
+    }
+  }
+  function openSkillLibrary(){
+    $('skillModal').classList.remove('hidden');
+    renderSkillList('');
+    $('skillSearch').focus();
+  }
+  function renderSkillList(query){
+    var q = String(query || '').toLowerCase();
+    var items = state.skills.filter(function(s){
+      return !q || String(s.name || '').toLowerCase().includes(q) || String(s.id || '').toLowerCase().includes(q);
+    });
+    $('skillList').innerHTML = items.map(function(s){
+      return '<button class="skill-item" data-id="' + esc(s.id) + '">' + esc(s.name) + '<small>' + esc(s.activeVersion) + ' · ' + (s.routes || []).length + ' 个分支</small></button>';
+    }).join('') || '<span class="hint">没有匹配技能</span>';
+    Array.prototype.forEach.call(document.querySelectorAll('.skill-item'), function(btn){
+      btn.onclick = function(){ showSkillDetail(btn.getAttribute('data-id')); };
+    });
+  }
+  function showSkillDetail(id){
+    api('/api/agent/skills/' + encodeURIComponent(id)).then(function(data){
+      state.skillDetail = data.skill;
+      $('skillDetailName').textContent = data.skill.name || id;
+      $('skillDetailMeta').textContent = (data.skill.id || '') + ' · ' + (data.skill.version || '') + ' · ' + ((data.skill.routes || []).length) + ' 个分支';
+      $('skillDetailDesc').textContent = (data.skill.manifest && data.skill.manifest.raw && data.skill.manifest.raw.description) || '将技能规则注入本轮生成。';
+      $('skillDetailEntry').textContent = data.entry || '（技能入口为空）';
+      Array.prototype.forEach.call(document.querySelectorAll('.skill-item'), function(btn){ btn.classList.toggle('active', btn.getAttribute('data-id') === id); });
+    }).catch(function(err){ toast('读取技能失败：' + err.message); });
+  }
+  function useSkill(){
+    if(!state.skillDetail) return;
+    addSkillChip(state.skillDetail.id, state.skillDetail.name || state.skillDetail.id);
+    $('skillModal').classList.add('hidden');
+    openSkillPicker(false);
+    toast('已选择技能：' + (state.skillDetail.name || state.skillDetail.id));
+  }
+  function classifyAtNode(node){
+    var type = String(node.type || '');
+    var title = String(node.title || '');
+    var meta = node.metadata || {};
+    var assetKey = String(meta.assetKey || '');
+    if(type === 'image'){
+      if(/角色|人物|立绘|主角|主体/.test(title) || assetKey.indexOf('chr_') === 0) return 'subject';
+      return 'image';
+    }
+    if(type === 'video') return 'video';
+    if(type === 'audio') return 'audio';
+    if(type === 'text') return 'text';
+    return '';
+  }
+  function atItems(filter){
+    return state.atNodes.filter(function(n){ return classifyAtNode(n) === filter; });
+  }
+  function insertAt(title){
+    $('prompt').value += '@' + title + ' ';
+    autoGrowPrompt();
+    $('atMenu').classList.add('hidden');
+    $('prompt').focus();
+  }
+  function renderAtMenu(filter){
+    var active = filter || 'subject';
+    var labels = {subject:'主体',image:'图片',video:'视频',audio:'音频',text:'文本'};
+    var icons = {subject:SVG.user,image:SVG.image,video:SVG.video,audio:SVG.audio,text:SVG.text};
+    var items = atItems(active);
+    var cats = Object.keys(labels).map(function(key){
+      return '<button class="at-cat' + (key === active ? ' is-active' : '') + '" data-cat="' + key + '">' +
+        '<span class="at-ico">' + icons[key] + '</span><span>' + labels[key] + '</span>' +
+        '<span class="at-meta">' + atItems(key).length + '</span></button>';
+    }).join('');
+    var rows = items.slice(0, 80).map(function(n){
+      return '<button class="at-item" data-title="' + esc(n.title || n.id) + '">' + esc(n.title || n.id) +
+        '<small>' + esc(n.type === 'image' ? '图片' : n.type === 'video' ? '视频' : n.type === 'audio' ? '音频' : '文本') + '</small></button>';
+    }).join('') || '<div class="at-empty">暂无相关节点</div>';
+    $('atList').innerHTML =
+      '<div class="at-head"><span>输入 @ 引用素材</span></div>' +
+      '<div class="at-body"><div class="at-cats">' + cats + '</div>' +
+      '<div class="at-items"><div class="at-pane-label">当前画布</div>' +
+      '<div class="at-subhead"><span>' + labels[active] + '库</span><span>' + items.length + '</span></div>' +
+      '<div class="at-scroll">' + rows + '</div></div></div>';
+    Array.prototype.forEach.call($('atList').querySelectorAll('.at-cat'), function(btn){
+      btn.onclick = function(){ renderAtMenu(btn.getAttribute('data-cat')); };
+    });
+    Array.prototype.forEach.call($('atList').querySelectorAll('.at-item'), function(btn){
+      btn.onclick = function(){ insertAt(btn.getAttribute('data-title')); };
+    });
+    $('atMenu').classList.remove('hidden');
+  }
+  function openAtMenu(){
+    openSkillPicker(false);
+    toggleSettings(false);
+    var projectId = $('project').value;
+    if(!projectId){ toggleSettings(true); toast('先选项目'); return; }
+    $('atMenu').classList.remove('hidden');
+    $('atList').innerHTML = '<span class="hint" style="padding:10px">读取素材…</span>';
+    api('/api/agent/projects/' + encodeURIComponent(projectId)).then(function(data){
+      var payload = (data.project && data.project.payload) || {};
+      state.atNodes = (payload.nodes || []).filter(function(n){ return n && ['image','video','audio','text'].includes(n.type); });
+      renderAtMenu('');
+    }).catch(function(err){ $('atList').innerHTML = '<span class="hint" style="padding:10px">读取失败：' + esc(err.message) + '</span>'; });
+  }
+  $('newChat').onclick = clearChat;
+  $('history').onclick = function(){ loadProjects(); loadSkills(); refreshRun(); toast('已刷新'); };
+  $('expand').onclick = function(){ $('panel').classList.toggle('wide'); };
+  $('close').onclick = function(){
+    if(window.self !== window.top){ window.parent.postMessage({type:'canvas-agent-close'}, '*'); }
+    else { window.location.href = 'http://127.0.0.1:8890'; }
+  };
+  $('run').onclick = startRun;
+  $('prompt').addEventListener('keydown', function(event){
+    if(event.key === 'Enter' && (event.ctrlKey || event.metaKey)){ event.preventDefault(); startRun(); }
+  });
+  $('prompt').addEventListener('input', function(){
+    autoGrowPrompt();
+    var value = this.value;
+    if(value === '/' || value.endsWith('/')){
+      this.value = value.slice(0, -1);
+      openSkillPicker(true);
+    }
+  });
+  $('plus').onclick = function(){ $('fileInput').click(); };
+  $('fileInput').onchange = function(){ if(this.files && this.files[0]) uploadReference(this.files[0]); this.value = ''; };
+  $('upload').onclick = function(){ $('skillFile').click(); };
+  $('skillFile').onchange = uploadSkill;
+  $('skill').onchange = populateRoutes;
+  $('skillLibrary').onclick = openManager;
+  $('skillPick').onclick = function(){ openSkillPicker(); };
+  window.addEventListener('message', function(event){
+    if(event.data && event.data.type === 'canvas-agent-select-skill' && event.data.skill){
+      addSkillChip(event.data.skill.id, event.data.skill.name);
+      openSkillPicker(false);
+      $('prompt').focus();
+    }
+  });
+  $('pickerSearch').oninput = function(){ renderPickerList(this.value); };
+  $('newSkill').onclick = function(){ openSkillPicker(false); $('skillFile').click(); };
+  $('manageSkills').onclick = function(){ openSkillPicker(false); openManager(); };
+  $('skillModalClose').onclick = function(){ $('skillModal').classList.add('hidden'); };
+  $('skillModal').onclick = function(event){ if(event.target === this) this.classList.add('hidden'); };
+  $('useSkill').onclick = useSkill;
+  $('manageNewSkill').onclick = function(){ $('skillFile').click(); };
+  $('skillSearch').oninput = function(){ renderSkillList(this.value); };
+  function toggleSettings(force){
+    var node = $('settings');
+    var show = typeof force === 'boolean' ? force : node.classList.contains('hidden');
+    node.classList.toggle('hidden', !show);
+  }
+  $('tune').onclick = function(){ openSkillPicker(false); $('atMenu').classList.add('hidden'); toggleSettings(); };
+  $('settingsClose').onclick = function(){ toggleSettings(false); };
+
+  $('at').onclick = openAtMenu;
+  Array.prototype.forEach.call(document.querySelectorAll('.chip'), function(chip){
+    chip.onclick = function(){ $('prompt').value = chip.getAttribute('data-prompt') || ''; autoGrowPrompt(); $('prompt').focus(); };
+  });
+  renderSkillChip();
+  renderAttachments();
+  autoGrowPrompt();
+  document.addEventListener('pointerdown', function(event){
+    var target = event.target;
+    if(!$('settings').classList.contains('hidden') && !$('settings').contains(target) && !(target.closest && target.closest('#tune'))) toggleSettings(false);
+    if(!$('skillPicker').classList.contains('hidden') && !$('skillPicker').contains(target) && !(target.closest && target.closest('#skillPick'))) openSkillPicker(false);
+    if(!$('atMenu').classList.contains('hidden') && !$('atMenu').contains(target) && !(target.closest && target.closest('#at'))) $('atMenu').classList.add('hidden');
+  }, true);
+  document.addEventListener('keydown', function(event){
+    if(event.key !== 'Escape') return;
+    toggleSettings(false); openSkillPicker(false); $('atMenu').classList.add('hidden'); $('skillModal').classList.add('hidden');
+  });
+  loadProjects().then(loadSkills).then(loadModels).then(function(){
+    if(!state.projects.length || !state.skills.length) toggleSettings(true);
+  }).catch(function(){});
+})();
+</script>
+</body>
+</html>

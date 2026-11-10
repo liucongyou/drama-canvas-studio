@@ -1,0 +1,166 @@
+{
+  "schema": "drama-canvas-skill/v1",
+  "id": "manju-laoli-skill",
+  "name": "漫剧老李 AIGC 创作全流程 Skill",
+  "version": "7.4.29",
+  "packageRevision": "20261105-r14",
+  "kind": "suite",
+  "entry": "short-drama-director/SKILL.md",
+  "skills": [
+    {
+      "id": "short-drama-director",
+      "name": "总控",
+      "path": "short-drama-director/SKILL.md"
+    },
+    {
+      "id": "sd-decision-engine",
+      "name": "决策引擎",
+      "path": "sd-decision-engine/SKILL.md"
+    },
+    {
+      "id": "sd-recon-engine",
+      "name": "对标采风引擎",
+      "path": "sd-recon-engine/SKILL.md"
+    },
+    {
+      "id": "sd-script-engine",
+      "name": "剧本引擎",
+      "path": "sd-script-engine/SKILL.md"
+    },
+    {
+      "id": "sd-overseas-engine",
+      "name": "海外剧引擎",
+      "path": "sd-overseas-engine/SKILL.md"
+    },
+    {
+      "id": "sd-jieshuo-engine",
+      "name": "解说引擎",
+      "path": "sd-jieshuo-engine/SKILL.md"
+    },
+    {
+      "id": "sd-asset-engine",
+      "name": "资产引擎",
+      "path": "sd-asset-engine/SKILL.md"
+    },
+    {
+      "id": "sd-storyboard-engine",
+      "name": "分镜引擎",
+      "path": "sd-storyboard-engine/SKILL.md"
+    },
+    {
+      "id": "sd-combat-engine",
+      "name": "打戏引擎",
+      "path": "sd-combat-engine/SKILL.md"
+    },
+    {
+      "id": "sd-xuanhuan-engine",
+      "name": "玄幻打戏引擎",
+      "path": "sd-xuanhuan-engine/SKILL.md"
+    },
+    {
+      "id": "sd-real-engine",
+      "name": "真人打戏引擎",
+      "path": "sd-real-engine/SKILL.md"
+    },
+    {
+      "id": "sd-feed-engine",
+      "name": "投喂引擎",
+      "path": "sd-feed-engine/SKILL.md"
+    },
+    {
+      "id": "sd-qc-engine",
+      "name": "质检引擎",
+      "path": "sd-qc-engine/SKILL.md"
+    }
+  ],
+  "contract": {
+    "schema": "drama-canvas-feed/v2",
+    "schemaFile": "short-drama-director/references/canvas-feed.schema.json",
+    "sha256": "668c40913621cc230aaffd58255ed6d84af00a2e55f280682137cd53c2dd470d"
+  },
+  "runtime": {
+    "mode": "hybrid",
+    "maxContextTokens": 60000,
+    "maxOutputTokens": 8000,
+    "exporter": {
+      "entry": "short-drama-director/scripts/build_board_lite.py",
+      "timeoutSeconds": 120,
+      "network": false
+    },
+    "stages": [
+      {
+        "id": "locks",
+        "label": "锁题",
+        "documents": [
+          "short-drama-director/SKILL.md"
+        ],
+        "maxTokens": 12000
+      },
+      {
+        "id": "script",
+        "label": "剧本",
+        "documents": [
+          "sd-script-engine/SKILL.md"
+        ],
+        "maxTokens": 16000
+      },
+      {
+        "id": "assets",
+        "label": "资产",
+        "documents": [
+          "sd-asset-engine/SKILL.md",
+          "sd-asset-engine/references/*.md"
+        ],
+        "maxTokens": 24000
+      },
+      {
+        "id": "storyboard",
+        "label": "分镜",
+        "documents": [
+          "sd-storyboard-engine/SKILL.md"
+        ],
+        "maxTokens": 20000
+      },
+      {
+        "id": "feed",
+        "label": "投喂稿",
+        "documents": [
+          "sd-feed-engine/SKILL.md",
+          "sd-feed-engine/references/*.md"
+        ],
+        "maxTokens": 24000
+      }
+    ]
+  },
+  "permissions": {
+    "readProject": true,
+    "readAssets": true,
+    "writeArtifacts": true,
+    "executeScripts": false,
+    "network": false
+  },
+  "locks": [
+    "track",
+    "source",
+    "model",
+    "aspect",
+    "delivery",
+    "transition",
+    "style"
+  ],
+  "triggers": [
+    "短剧",
+    "分镜",
+    "资产",
+    "投喂",
+    "画布",
+    "漫剧"
+  ],
+  "publisher": {
+    "name": "漫剧老李"
+  },
+  "files": {
+    "count": 191,
+    "bytes": 5217116
+  }
+}

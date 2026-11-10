@@ -1,0 +1,11 @@
+{
+  "schema": "drama-canvas-skill/v1",
+  "id": "demo-director",
+  "name": "Demo Canvas Director",
+  "version": "0.1.0",
+  "entry": "SKILL.md",
+  "description": "内置演示技能：把用户想法变成 drama-canvas-feed/v2 投喂稿。",
+  "contract": {
+    "schema": "drama-canvas-feed/v2"
+  }
+}

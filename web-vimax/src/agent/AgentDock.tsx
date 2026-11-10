@@ -260,7 +260,18 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
       }
       try { localStorage.setItem('canvas.agent.conversation.' + projectId, conversation.id); } catch {}
       const draft = await agentApi.draft(conversation.id).then((data) => data.draft).catch(() => null);
-      if (alive && draft) applyDraft(draft);
+      if (alive && draft) {
+        applyDraft(draft);
+        if (draft.skillId) {
+          const detail = await agentApi.skill(draft.skillId).catch(() => null);
+          if (alive && detail) {
+            setSkill({
+              ...detail.skill,
+              locks: detail.locks || detail.skill.locks || FALLBACK_LOCKS,
+            });
+          }
+        }
+      }
       if (alive) setConversationReady(true);
     };
     void restore().catch((err) => {

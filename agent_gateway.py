@@ -5,6 +5,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Mapping
 
+import tenant_context
 from agent.app.context import (
     RequestContext,
     context_from_headers,
@@ -78,20 +79,21 @@ def verify_context_headers(
 def proxy_agent(handler: Any) -> bool:
     """Proxy one browser request to the local Agent sidecar."""
     session = handler._current_session()
-    if not session:
+    if not session and os.environ.get("CANVAS_AUTH_MODE", "").strip().lower() == "accounts":
         handler._send(
             401,
             {"error": "请先登录。", "code": "AGENT_AUTH_REQUIRED"},
         )
         return True
-    tenant_id = str(session.get("tenant_id") or "").strip()
-    account_id = str(session.get("account_id") or "").strip()
-    if not tenant_id or not account_id:
-        handler._send(
-            403,
-            {"error": "当前会话缺少账号上下文。", "code": "AGENT_PROJECT_FORBIDDEN"},
-        )
-        return True
+    session = session or {}
+    current_tenant = tenant_context.current()
+    auth_mode = os.environ.get("CANVAS_AUTH_MODE", "host").strip().lower()
+    tenant_id = str(
+        (current_tenant.tenant_id if current_tenant else "")
+        or ("legacy" if auth_mode != "accounts" else "")
+        or session.get("tenant_id")
+    ).strip()
+    account_id = str(session.get("account_id") or "local").strip()
     path = str(handler.path or "")
     method = str(handler.command or "GET").upper()
     try:

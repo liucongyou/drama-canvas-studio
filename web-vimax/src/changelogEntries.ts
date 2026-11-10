@@ -3,6 +3,18 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.10.02',
+    date: '2026-11-10',
+    title: '画布智能体重构',
+    releasedAt: '2026-11-10 20:45:00 +08:00',
+    changes: [
+      '智能体改为同源登录接入，按当前租户和账号隔离会话、草稿、运行记录与画布读取，不再依赖浏览器直连 8895。',
+      '输入框支持中文输入法保护、草稿自动恢复、拖拽与粘贴文件、双击防重提交；Markdown、代码、JSON 和长回复不再被截断。',
+      'Agent 增加项目索引、节点检索、资产台账、依赖查询和 Feed 预检工具，资产引用以 assetId 与 seriesId+variantKey 为权威身份。',
+      '运行记录、工具调用和阶段状态可恢复；Feed 仍需人工确认后导入，测试与冒烟不会触发任何付费生成。',
+    ],
+  },
+  {
     version: '2026.11.10.01',
     date: '2026-11-10',
     title: '历史版本选择稳定性与切换性能',

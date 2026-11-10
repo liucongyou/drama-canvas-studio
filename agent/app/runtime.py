@@ -574,19 +574,67 @@ def execute_run(run_id: str) -> None:
             canvas_client,
             max_result_bytes=settings.agent_tool_result_bytes,
         )
+        prefetch_trace: list[dict[str, Any]] = []
+        context_payload = {
+            "projectId": run["projectId"],
+            "runId": run_id,
+            "tenantId": run.get("tenantId") or "",
+            "accountId": run.get("accountId") or "",
+        }
+        prefetch_context: dict[str, Any] = {}
+        for index, (tool_name, tool_args) in enumerate(
+            (
+                ("get_project_index", {}),
+                ("list_assets", {"limit": 80}),
+            ),
+            start=1,
+        ):
+            call_id = db.start_tool_call(
+                run_id,
+                tool_name,
+                tool_args,
+                idempotency_key=f"prefetch:{run_id}:{index}",
+            )
+            try:
+                tool_result = canvas_tools.call(
+                    tool_name,
+                    tool_args,
+                    context_payload,
+                )
+                db.finish_tool_call(call_id, "done", tool_result)
+                status = "done"
+            except Exception as exc:
+                tool_result = {"error": str(exc)}
+                db.finish_tool_call(
+                    call_id,
+                    "failed",
+                    tool_result,
+                    error_code="AGENT_TOOL_ARGUMENT_INVALID",
+                )
+                status = "failed"
+            prefetch_context[tool_name] = tool_result
+            prefetch_trace.append(
+                {
+                    "id": f"prefetch-{index}",
+                    "name": tool_name,
+                    "arguments": tool_args,
+                    "status": status,
+                    "result": tool_result,
+                }
+            )
+        user_prompt += (
+            "\n\n画布工具预读取结果（只读，不得自行改写）：\n"
+            + json.dumps(prefetch_context, ensure_ascii=False)[:24_000]
+        )
         raw, tool_trace = execute_tool_loop(
             system_prompt,
             [{"role": "user", "content": user_prompt}],
             canvas_tools,
-            {
-                "projectId": run["projectId"],
-                "runId": run_id,
-                "tenantId": run.get("tenantId") or "",
-                "accountId": run.get("accountId") or "",
-            },
+            context_payload,
             model_id=run.get("modelId") or "",
             max_steps=settings.agent_max_tool_steps,
         )
+        tool_trace = [*prefetch_trace, *tool_trace]
         db.update_message(
             status_message_id,
             f"已生成投喂稿，执行 {len(tool_trace)} 次画布工具调用。",

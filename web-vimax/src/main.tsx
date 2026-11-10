@@ -21,6 +21,11 @@ import {TenantAdminView} from './TenantAdminView';
 import {shareTokenInPath} from './projectShare';
 import {APP_VERSION, RELEASE_SEEN_KEY} from './changelog';
 const AgentDock = lazy(() => import('./agent/AgentDock').then((module) => ({default: module.AgentDock})));
+if (typeof window !== 'undefined') {
+  const warmAgentDock = () => { void import('./agent/AgentDock'); };
+  if ('requestIdleCallback' in window) window.requestIdleCallback(warmAgentDock, {timeout: 2500});
+  else globalThis.setTimeout(warmAgentDock, 1800);
+}
 import {
   SETTINGS_CATEGORIES,
   firstAvailableSettingsCategory,
