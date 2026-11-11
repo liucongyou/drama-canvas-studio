@@ -16,7 +16,10 @@ class Settings(BaseSettings):
     agent_sidecar_url: str = "http://127.0.0.1:8895"
     agent_gateway_enabled: bool = True
     agent_signature_window_seconds: int = 60
-    agent_max_tool_steps: int = 12
+    # A skill round may need context reads, asset resolution, validation and
+    # a final JSON pass. Keep a hard ceiling, but do not fail at the old 12-step
+    # boundary while the task is still making progress.
+    agent_max_tool_steps: int = 30
     agent_min_output_tokens: int = 12_000
     agent_tool_result_bytes: int = 32 * 1024
     db_path: Path = AGENT_DIR / "data" / "agent.db"

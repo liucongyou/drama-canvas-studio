@@ -33,7 +33,7 @@ def execute_tool_loop(
     on_content: Callable[[str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     settings = get_settings()
-    limit = max(1, int(max_steps or settings.agent_max_tool_steps or 12))
+    limit = max(1, int(max_steps or settings.agent_max_tool_steps or 30))
     working = [dict(item) for item in messages]
     executed: list[dict[str, Any]] = []
     for _step in range(limit):

@@ -118,6 +118,47 @@ def test_tool_loop_stops_at_limit(monkeypatch) -> None:
         )
 
 
+def test_tool_loop_can_finish_after_twelve_steps(monkeypatch) -> None:
+    calls_seen = 0
+
+    def many_tools(*_args, **_kwargs):
+        nonlocal calls_seen
+        calls_seen += 1
+        if calls_seen <= 20:
+            return ToolRound(
+                content="",
+                tool_calls=[
+                    {
+                        "id": f"call-{calls_seen}",
+                        "type": "function",
+                        "function": {
+                            "name": "get_project_index",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+                native=True,
+            )
+        return ToolRound(content='{"title":"finished"}', tool_calls=[], native=True)
+
+    monkeypatch.setattr(runtime, "chat_tool_round_stream", many_tools)
+    monkeypatch.setattr(
+        runtime,
+        "get_settings",
+        lambda: type("Settings", (), {"agent_max_tool_steps": 30})(),
+    )
+
+    content, calls = runtime.execute_tool_loop(
+        "system",
+        [{"role": "user", "content": "hello"}],
+        FakeTools(),
+        {"projectId": "p1"},
+    )
+
+    assert content == '{"title":"finished"}'
+    assert len(calls) == 20
+
+
 def test_system_prompt_injects_runtime_quality_contract(tmp_path) -> None:
     root = tmp_path / "skill"
     (root / "references").mkdir(parents=True)
