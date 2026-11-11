@@ -14,6 +14,7 @@ from app.conversations import (
 @pytest.fixture
 def tmp_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
+    monkeypatch.setenv("CANVAS_ALLOW_SQLITE", "1")
     get_settings.cache_clear()
     db.init_db()
     yield

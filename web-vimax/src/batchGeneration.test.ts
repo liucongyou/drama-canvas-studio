@@ -222,7 +222,7 @@ describe('batch generation evaluation', () => {
     const target = node('target', {
       kind: 'video',
       prompt: sources.map((source) => `@${source.title}`).join('，'),
-      params: {provider: 'provider-1', model: 'video-model', refs: []},
+      params: {provider: 'provider-1', model: 'video-model'},
     });
     const edges = sources.map((source) => ({
       source: `media-${source.id}`,
@@ -236,6 +236,39 @@ describe('batch generation evaluation', () => {
       [],
       edges,
     );
+    expect(candidate.state).toBe('ready');
+  });
+
+  it('does not resurrect user-removed references from lingering links', () => {
+    const kept = Array.from({length: 9}, (_, index) => node(`image-${index}`, {
+      mediaUrl: `https://example.com/${index}.png`,
+    }));
+    const removed = node('image-removed', {
+      mediaUrl: 'https://example.com/removed.png',
+    });
+    const target = node('target', {
+      kind: 'video',
+      prompt: kept.map((source) => `@${source.title}`).join('，'),
+      params: {
+        provider: 'provider-1',
+        model: 'video-model',
+        refs: kept.map((source) => ({nodeId: source.id, label: source.title})),
+      },
+    });
+    const edges = [...kept, removed].map((source) => ({
+      source: `media-${source.id}`,
+      target: `media-${target.id}`,
+    }));
+    const [candidate] = evaluateBatchGeneration(
+      [target],
+      [...kept, removed, target],
+      {...catalog, models: [{...videoModel, limits: {maxImages: 9, maxPromptChars: 1000}}]},
+      [],
+      [],
+      edges,
+    );
+    expect(candidate.node.params?.refs).toHaveLength(9);
+    expect(candidate.node.params?.refs?.some((ref) => ref.nodeId === removed.id)).toBe(false);
     expect(candidate.state).toBe('ready');
   });
 

@@ -63,10 +63,10 @@ export function resolveGenerationModel(node: CanvasMediaNode, catalog: ModelCata
 }
 
 /**
- * Add linked media to the request candidate set for local readiness display.
+ * Add linked media only for legacy nodes without an explicit refs list.
  *
- * This is not a provider request contract. The backend re-resolves `@`
- * mentions against node/asset IDs and builds the authoritative reference plan.
+ * A present refs array, including an empty one, is the user's authoritative
+ * slot set. Links must not resurrect a reference removed in the media modal.
  */
 export function applyGenerationReferences(
   node: CanvasMediaNode,
@@ -77,8 +77,9 @@ export function applyGenerationReferences(
   const params: CanvasMediaParams = {...(node.params || {})};
   const original: CanvasMediaNode = {...node, params};
   if (node.kind !== 'video') return original;
+  if (Array.isArray(params.refs)) return original;
 
-  const refs = [...(params.refs || [])];
+  const refs: NonNullable<CanvasMediaParams['refs']> = [];
   let voices = voiceRefList(params);
   const refLimit = modelMaxRefs(model);
   const audioLimit = Number(model?.limits?.maxAudios || 3);

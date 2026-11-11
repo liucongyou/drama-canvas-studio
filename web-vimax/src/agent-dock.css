@@ -277,7 +277,7 @@
 
 .agent-chat>.agent-run:first-of-type{margin-top:auto}
 
-.agent-msg.is-user{width:fit-content;max-width:88%;margin-left:auto;margin-right:0}
+.agent-msg.is-user{width:max-content;max-width:min(88%,520px);margin-left:auto;margin-right:0}
 .agent-msg.is-user .agent-msg-text{width:auto;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}
 
 .agent-past-failed{padding:2px 0 7px;border-bottom:0;margin:0}
@@ -402,12 +402,12 @@
 .agent-at-preview dt{color:var(--v-text-5,#757579)}.agent-at-preview dd{margin:0;color:var(--v-text-3,#a8a8ab);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 .agent-msg{display:flex;align-items:flex-start;gap:9px;max-width:100%;padding:0;border:0!important;background:transparent!important;border-radius:0;white-space:normal}
-.agent-msg.is-user{flex-direction:row-reverse;margin-left:auto;max-width:94%}
+.agent-msg.is-user{flex-direction:row-reverse;margin-left:auto;max-width:min(94%,520px)}
 .agent-msg-avatar{width:26px;height:26px;flex:0 0 26px;border-radius:8px;display:grid;place-items:center;background:var(--v-surface-hover,#2a2a2a);border:1px solid var(--v-border,#2e2e2e);color:var(--v-text-2,#c9c9cc);font-size:10px;font-weight:650;margin-top:1px}
 .agent-msg.is-user .agent-msg-avatar{background:var(--v-surface-hover,#2a2a2a);border-color:var(--v-border-strong,#3a3a3a);color:var(--v-text-3,#a8a8ab)}
 .agent-msg-body{position:relative;min-width:0;max-width:calc(100% - 35px)}
 .agent-msg.is-user .agent-msg-body{max-width:min(84%,520px);padding:8px 11px;border-radius:14px 14px 4px 14px;background:var(--v-surface-hover,#2a2a2a);border:1px solid var(--v-border-strong,#3a3a3a);box-shadow:0 1px 0 rgba(255,255,255,.025)}
-.agent-msg.is-user.no-avatar .agent-msg-body{max-width:calc(100% - 8px);width:100%}
+.agent-msg.is-user.no-avatar .agent-msg-body{width:auto;max-width:100%;flex:0 1 auto}
 .agent-msg-head{display:flex;align-items:center;gap:7px;color:var(--v-text-5,#757579);font-size:9.5px;margin-bottom:4px}
 .agent-msg-head time{margin-left:auto;font-size:9px;color:var(--v-text-5,#757579)}
 .agent-msg-role{display:none}

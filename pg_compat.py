@@ -88,8 +88,26 @@ class PGRow:
 
 def postgres_enabled() -> bool:
     backend = os.getenv("CANVAS_DB_BACKEND", "").strip().lower()
-    return backend in {"postgres", "postgresql", "pg"} or bool(
-        os.getenv("DATABASE_URL", "").strip()
+    if backend in {"sqlite", "sqlite3"}:
+        if os.getenv("CANVAS_ALLOW_SQLITE", "").strip() == "1":
+            return False
+        raise RuntimeError(
+            "生产模式禁止 SQLite；仅测试环境可设置 CANVAS_ALLOW_SQLITE=1"
+        )
+    if backend in {"postgres", "postgresql", "pg"}:
+        if not database_url():
+            raise RuntimeError(
+                "CANVAS_DB_BACKEND=postgres 时必须配置 DATABASE_URL "
+                "或 CANVAS_DATABASE_URL"
+            )
+        return True
+    if database_url():
+        return True
+    if os.getenv("CANVAS_ALLOW_SQLITE", "").strip() == "1":
+        return False
+    raise RuntimeError(
+        "生产模式必须使用 PostgreSQL：缺少 CANVAS_DB_BACKEND=postgres "
+        "和 DATABASE_URL；拒绝回退 SQLite"
     )
 
 

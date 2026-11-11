@@ -10,6 +10,7 @@ from app.conversations import ensure_conversation, list_conversations
 @pytest.fixture
 def tmp_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
+    monkeypatch.setenv("CANVAS_ALLOW_SQLITE", "1")
     monkeypatch.setenv("LLM_MODE", "mock")
     get_settings.cache_clear()
     db.init_db()

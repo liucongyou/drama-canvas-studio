@@ -3,6 +3,18 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.11.15',
+    date: '2026-11-11',
+    title: '显式参考清单与数据库启动收口',
+    releasedAt: '2026-11-11 22:55:00 +08:00',
+    changes: [
+      '视频节点存在 refs 显式清单时，弹窗删除的素材不会再被残留连线补回；只有旧数据完全缺少 refs 字段时才兼容连线推导。',
+      '正文 @ 继续作为出镜引用，后端仍按唯一 assetId 生成供应商槽位；模型收到的参考数量与弹窗清单一致。',
+      '生产模式缺少 PostgreSQL 配置时启动直接失败，不再静默回落 SQLite；测试夹具必须显式设置 CANVAS_ALLOW_SQLITE=1。',
+      '用户短消息气泡改为按内容宽度布局，短文本保持单行，长文本受面板宽度和 520px 上限约束。',
+    ],
+  },
+  {
     version: '2026.11.11.14',
     date: '2026-11-11',
     title: 'Agent 上下文预取与单次生成',

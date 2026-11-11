@@ -12,6 +12,7 @@ def test_execute_run_persists_content_in_progressive_snapshots(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
+    monkeypatch.setenv("CANVAS_ALLOW_SQLITE", "1")
     get_settings.cache_clear()
     db.init_db()
     run_id = "run_stream_snapshot"

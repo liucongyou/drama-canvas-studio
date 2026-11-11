@@ -92,6 +92,50 @@ DOWNLOAD_TICKET_TTL_SECONDS = max(
 )
 
 
+def request_reference_candidates(
+    *,
+    params: dict[str, Any],
+    meta: dict[str, Any],
+    node_type: str,
+    node_id: str,
+    connections: list[Any],
+    nodes: list[Any],
+) -> tuple[list[dict[str, Any]], bool]:
+    params_refs = params.get("refs")
+    meta_refs = meta.get("refs")
+    explicit_reference_list = (
+        params_refs is not None or isinstance(meta_refs, list)
+    )
+    source_refs = params_refs if params_refs is not None else meta_refs
+    candidates = [
+        dict(ref)
+        for ref in source_refs or []
+        if isinstance(ref, dict)
+    ] if isinstance(source_refs, list) else []
+    if node_type != "video" or explicit_reference_list:
+        return candidates, explicit_reference_list
+
+    linked_node_ids = {
+        str(edge.get("fromNodeId") or "")
+        for edge in connections
+        if isinstance(edge, dict)
+        and str(edge.get("toNodeId") or "") == str(node_id or "")
+        and str(edge.get("fromNodeId") or "")
+    }
+    for source in nodes:
+        if not isinstance(source, dict):
+            continue
+        if str(source.get("id") or "") not in linked_node_ids:
+            continue
+        source_meta = source.get("metadata") or {}
+        candidates.append({
+            "nodeId": str(source.get("id") or ""),
+            "assetId": str(source_meta.get("assetId") or ""),
+            "label": str(source.get("title") or ""),
+        })
+    return candidates, explicit_reference_list
+
+
 def _download_ticket_key() -> bytes:
     return hashlib.sha256(
         b"canvas-download-v1\0" + tenant_security.master_key()
@@ -11711,44 +11755,30 @@ class Handler(BaseHTTPRequestHandler):
                 raise RuntimeError(f"提示词超过当前模型上限（{max_prompt} 字符）")
             if not prompt.strip():
                 raise RuntimeError("提示词为空，不能提交生成")
-            candidate_refs = (
-                params.get("refs")
-                if params.get("refs") is not None
-                else meta.get("refs")
-                if isinstance(meta.get("refs"), list)
-                else []
-            )
             connections = (
                 proj["payload"].get("connections")
                 if isinstance(proj["payload"].get("connections"), list)
                 else []
             )
-            linked_refs = []
-            if ntype == "video":
-                linked_node_ids = {
-                    str(edge.get("fromNodeId") or "")
-                    for edge in connections
-                    if isinstance(edge, dict)
-                    and str(edge.get("toNodeId") or "") == str(node.get("id") or "")
-                    and str(edge.get("fromNodeId") or "")
-                }
-                for source in proj["payload"].get("nodes", []):
-                    if not isinstance(source, dict):
-                        continue
-                    if str(source.get("id") or "") not in linked_node_ids:
-                        continue
-                    source_meta = source.get("metadata") or {}
-                    linked_refs.append({
-                        "nodeId": str(source.get("id") or ""),
-                        "assetId": str(source_meta.get("assetId") or ""),
-                        "label": str(source.get("title") or ""),
-                    })
-            # `params.refs` describes the reference slots carried by this
-            # request. `@` mentions only describe which of those slots appear
-            # on screen. Keep both sets: background identities must still be
-            # available to the model, while explicit mentions may add an asset
-            # that was not represented in the stored candidate list.
-            raw_refs = [*candidate_refs, *linked_refs]
+            candidate_refs, _explicit_reference_list = (
+                request_reference_candidates(
+                    params=params,
+                    meta=meta,
+                    node_type=ntype,
+                    node_id=str(node.get("id") or ""),
+                    connections=connections,
+                    nodes=[
+                        item
+                        for item in proj["payload"].get("nodes", [])
+                        if isinstance(item, dict)
+                    ],
+                )
+            )
+            # An explicit list, including an empty one, is the authoritative
+            # slot set for this request. Legacy nodes without either field can
+            # still derive slots from links. Explicit @ mentions may add a
+            # declared asset, but links must never resurrect a user-removed one.
+            raw_refs = candidate_refs
             if ntype == "video":
                 seen_ref_ids = {
                     str(ref.get("nodeId") or "")

@@ -22,6 +22,16 @@ describe('AgentDock theme polish', () => {
     expect(css).not.toMatch(/\.agent-msg\.is-user \.agent-msg-body\{[^}]*background:var\(--v-accent/);
   });
 
+  it('lets short user messages stay on one line without overflowing long text', () => {
+    expect(css).toMatch(/\.agent-msg\.is-user\{[^}]*width:max-content/);
+    expect(css).toMatch(/\.agent-msg\.is-user\{[^}]*max-width:min\(94%,520px\)/);
+    const noAvatarBody = css.match(/\.agent-msg\.is-user\.no-avatar \.agent-msg-body\{([^}]*)\}/)?.[1] || '';
+    const declarations = noAvatarBody.split(';').map((item) => item.trim());
+    expect(declarations).toContain('width:auto');
+    expect(declarations).toContain('max-width:100%');
+    expect(declarations).not.toContain('width:100%');
+  });
+
   it('keeps the panel edge clean and error actions vivid', () => {
     expect(css).toContain('--agent-danger:#ff4f7b');
     expect(css).toMatch(/\.agent-panel\{[^}]*box-shadow:inset/);

@@ -15,6 +15,7 @@ LOCAL_HEADERS = {
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
+    monkeypatch.setenv("CANVAS_ALLOW_SQLITE", "1")
     monkeypatch.setenv("LLM_MODE", "mock")
     monkeypatch.setenv("AGENT_INTERNAL_SECRET", "")
     monkeypatch.setattr(runtime, "execute_run", lambda _run_id: None)
