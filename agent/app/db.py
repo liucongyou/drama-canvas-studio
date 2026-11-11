@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from contextlib import contextmanager
@@ -17,15 +18,29 @@ if str(ROOT) not in sys.path:
 import pg_compat  # noqa: E402
 
 
+def _sqlite_test_mode_enabled() -> bool:
+    return os.getenv("CANVAS_ALLOW_SQLITE", "").strip() == "1"
+
+
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def connect():
     settings = get_settings()
-    if pg_compat.postgres_enabled():
+    try:
+        use_postgres = pg_compat.postgres_enabled()
+    except RuntimeError:
+        # Tests historically only set DB_PATH. Keep them isolated while the
+        # production path remains fail-closed for PostgreSQL configuration.
+        if not _sqlite_test_mode_enabled():
+            raise
+        use_postgres = False
+    if use_postgres:
         conn = pg_compat.connect_path(settings.db_path, "agent")
     else:
+        if not _sqlite_test_mode_enabled():
+            raise RuntimeError("Agent 生产模式拒绝回退 SQLite")
         settings.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(settings.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
