@@ -780,6 +780,9 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     if (!run) return '';
     const text = String(run.error || '');
     if (/10060|连接|连接尝试失败|timed out|timeout/i.test(text)) return '模型连接超时，锁题和附件已保留，可以直接重试。';
+    if (/JSON 无法解析|Expecting .*delimiter|模型没有返回 JSON 对象|模型返回的不是 JSON 对象/i.test(text)) {
+      return '接口已经连通，但模型这一轮返回的 JSON 格式损坏，未写入画布。锁题和附件已保留，可以直接重试。';
+    }
     if (feedErrors.length) {
       const messages = Array.from(new Set(feedErrors.map((item) => String(item.message || item.code || '')).filter(Boolean)));
       return '投喂稿还差 ' + messages.length + ' 处契约问题：' + messages.slice(0, 3).join('；');

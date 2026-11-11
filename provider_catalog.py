@@ -434,7 +434,7 @@ DEFAULT_MODELS = [
         "openai_chat",
         "OpenAI 兼容对话接口，适合剧本改写与结构化输出",
         badge="Text",
-        default_params={"maxTokens": 3000, "temperature": 0.7},
+        default_params={"maxTokens": 16000, "temperature": 0.7},
         params={
             "maxTokens": {"type": "range", "min": 256, "max": 32000, "step": 256},
             "temperature": {"type": "range", "min": 0, "max": 2, "step": 0.1},

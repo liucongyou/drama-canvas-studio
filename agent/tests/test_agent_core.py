@@ -1,6 +1,9 @@
-from app.llm import extract_json
+from types import SimpleNamespace
+
 import pytest
 
+from app import llm
+from app.llm import _chat_payload, _effective_output_tokens, extract_json
 from app.skills import SkillError, _normalize_manifest
 
 
@@ -10,6 +13,82 @@ def test_extract_json_from_fence() -> None:
 
 def test_extract_json_from_raw_object() -> None:
     assert extract_json('{"title": "x"}')["title"] == "x"
+
+
+def test_chat_payload_requests_json_object_mode() -> None:
+    payload = _chat_payload("system", "user", "test-model", 12_000)
+    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["max_tokens"] == 12_000
+    assert payload["messages"][0] == {"role": "system", "content": "system"}
+    assert payload["messages"][1] == {"role": "user", "content": "user"}
+
+
+def test_chat_falls_back_when_gateway_rejects_json_mode(monkeypatch) -> None:
+    class FakeResponse:
+        def __init__(self, status_code: int, body: dict, text: str = ""):
+            self.status_code = status_code
+            self._body = body
+            self.text = text
+
+        def json(self):
+            return self._body
+
+    class FakeClient:
+        calls: list[dict] = []
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, headers, json):
+            self.calls.append(dict(json))
+            if "response_format" in json:
+                return FakeResponse(
+                    400,
+                    {},
+                    "response_format is not supported",
+                )
+            return FakeResponse(
+                200,
+                {"choices": [{"message": {"content": '{"ok":true}'}}]},
+            )
+
+    FakeClient.calls = []
+    monkeypatch.setattr(llm.httpx, "Client", FakeClient)
+    monkeypatch.setattr(llm, "resolve_text_model", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        llm,
+        "get_settings",
+        lambda: SimpleNamespace(
+            llm_mode="openai",
+            llm_base_url="https://example.test/v1",
+            llm_api_key="test-key",
+            llm_model="test-model",
+            request_timeout_seconds=1,
+            agent_min_output_tokens=12_000,
+        ),
+    )
+
+    assert llm.chat("system", "user") == '{"ok":true}'
+    assert "response_format" in FakeClient.calls[0]
+    assert "response_format" not in FakeClient.calls[1]
+
+
+def test_agent_output_budget_uses_model_limits(monkeypatch) -> None:
+    monkeypatch.setattr(
+        llm,
+        "get_settings",
+        lambda: SimpleNamespace(agent_min_output_tokens=12_000),
+    )
+    assert _effective_output_tokens({"maxTokens": 3000, "maxOutputTokens": 32_000}) == 12_000
+    assert _effective_output_tokens({"maxTokens": 16_000, "maxOutputTokens": 32_000}) == 16_000
+    assert _effective_output_tokens({"maxTokens": 30_000, "maxOutputTokens": 32_000}) == 30_000
+    assert _effective_output_tokens({"maxTokens": 30_000, "maxOutputTokens": 8_000}) == 8_000
 
 
 def test_legacy_manifest_falls_back_to_package() -> None:

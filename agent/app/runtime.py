@@ -588,18 +588,34 @@ def execute_run(run_id: str) -> None:
                 + "请只返回修复后的完整 JSON；不要解释，不要省略 asset_prompts / voice_prompts。"
             )
             db.update_message(status_message_id, f"正在修复契约问题（第 {repairs} 轮）…")
-            raw = chat(
-                system_prompt,
-                user_prompt + "\n\n" + repair,
-                model_id=run.get("modelId") or "",
-                tenant_id=run.get("tenantId") or "",
-            )
-            compiled = compile_feed_draft(
-                extract_json(raw),
-                skill_id=run["skillId"],
-                skill_version=run["skillVersion"],
-                package_revision=package_revision,
-            )
+            try:
+                raw = chat(
+                    system_prompt,
+                    user_prompt + "\n\n" + repair,
+                    model_id=run.get("modelId") or "",
+                    tenant_id=run.get("tenantId") or "",
+                )
+                compiled = compile_feed_draft(
+                    extract_json(raw),
+                    skill_id=run["skillId"],
+                    skill_version=run["skillVersion"],
+                    package_revision=package_revision,
+                )
+            except (LLMError, ValueError) as exc:
+                # A later repair turn must not discard an already valid feed.
+                # Keep the latest parsed version and surface its concrete contract
+                # errors to the user instead of replacing them with a JSON parser
+                # exception.
+                db.update_message(
+                    status_message_id,
+                    "补充修复返回格式异常，已保留上一版有效投喂稿。",
+                )
+                db.add_event(
+                    run_id,
+                    "run.repair_json_invalid",
+                    {"repair": repairs, "error": str(exc)},
+                )
+                break
             feed = compiled.feed
             errors = list(compiled.errors)
             preview = (

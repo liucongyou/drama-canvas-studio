@@ -145,6 +145,14 @@ def resolve_text_model(
                 "baseUrl": base_url,
                 "apiKey": api_key,
                 "model": remote_model,
+                "maxTokens": int(
+                    (selected.get("defaultParams") or {}).get("maxTokens")
+                    or 0
+                ),
+                "maxOutputTokens": int(
+                    ((selected.get("params") or {}).get("maxTokens") or {}).get("max")
+                    or 0
+                ),
             }
     # Fallback: tenant config.
     models = [
@@ -171,4 +179,12 @@ def resolve_text_model(
         "baseUrl": base_url,
         "apiKey": api_key,
         "model": remote_model,
+        "maxTokens": int(
+            (selected.get("defaultParams") or {}).get("maxTokens")
+            or 0
+        ),
+        "maxOutputTokens": int(
+            ((selected.get("params") or {}).get("maxTokens") or {}).get("max")
+            or 0
+        ),
     }

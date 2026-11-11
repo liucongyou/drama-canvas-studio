@@ -67,6 +67,35 @@ def _mock() -> str:
     return TICK3 + "json\n" + json.dumps(_demo_feed(), ensure_ascii=False, indent=2) + "\n" + TICK3
 
 
+def _chat_payload(
+    system: str,
+    user: str,
+    model_name: str,
+    max_tokens: int,
+) -> dict[str, Any]:
+    return {
+        "model": model_name,
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+
+
+def _effective_output_tokens(resolved: dict[str, Any] | None) -> int:
+    settings = get_settings()
+    minimum = max(1, int(settings.agent_min_output_tokens))
+    configured = max(0, int((resolved or {}).get("maxTokens") or 0))
+    requested = max(minimum, configured)
+    model_maximum = max(0, int((resolved or {}).get("maxOutputTokens") or 0))
+    if model_maximum:
+        requested = min(requested, model_maximum)
+    return max(1, requested)
+
+
 def chat(
     system: str,
     user: str,
@@ -77,31 +106,14 @@ def chat(
     if settings.llm_mode == "mock":
         return _mock()
 
-    resolved = None
-    try:
-        resolved = resolve_text_model(model_id, tenant_id=tenant_id)
-    except BackendConfigError:
-        resolved = None
-
-    if resolved:
-        base_url = str(resolved["baseUrl"])
-        api_key = str(resolved["apiKey"])
-        model_name = str(resolved["model"])
-    else:
-        base_url = settings.llm_base_url.rstrip("/")
-        api_key = settings.llm_api_key
-        model_name = settings.llm_model
+    base_url, api_key, model_name, max_tokens = _target(
+        model_id,
+        tenant_id=tenant_id,
+    )
     if not (base_url and api_key and model_name):
         return _mock()
 
-    payload = {
-        "model": model_name,
-        "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    }
+    payload = _chat_payload(system, user, model_name, max_tokens)
     last_error = None
     for attempt in range(2):
         try:
@@ -111,6 +123,17 @@ def chat(
                     headers={"Authorization": f"Bearer {api_key}"},
                     json=payload,
                 )
+                if response.status_code in {400, 422} and "response_format" in payload:
+                    detail = response.text.lower()
+                    if "response_format" in detail or "json_object" in detail or "json mode" in detail:
+                        # Some OpenAI-compatible gateways do not implement JSON mode.
+                        # Retry once without it instead of failing a valid text model.
+                        payload.pop("response_format", None)
+                        response = client.post(
+                            base_url.rstrip("/") + "/chat/completions",
+                            headers={"Authorization": f"Bearer {api_key}"},
+                            json=payload,
+                        )
                 if response.status_code >= 400:
                     raise LLMError(f"模型接口 HTTP {response.status_code}: {response.text[:300]}")
                 data = response.json()
@@ -139,12 +162,13 @@ def chat_tool_round(
     settings = get_settings()
     if settings.llm_mode == "mock":
         return ToolRound(content=_mock(), tool_calls=[], native=True)
-    base_url, api_key, model_name = _target(model_id, tenant_id=tenant_id)
+    base_url, api_key, model_name, max_tokens = _target(model_id, tenant_id=tenant_id)
     if not (base_url and api_key and model_name):
         return ToolRound(content=_mock(), tool_calls=[], native=True)
     payload: dict[str, Any] = {
         "model": model_name,
         "temperature": 0.2,
+        "max_tokens": max_tokens,
         "messages": [{"role": "system", "content": system}, *messages],
         "tools": tools,
         "tool_choice": "auto",
@@ -221,7 +245,7 @@ def _message_text(message: dict[str, Any]) -> str:
 def _target(
     model_id: str = "",
     tenant_id: str = "",
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, int]:
     settings = get_settings()
     resolved = None
     try:
@@ -229,8 +253,18 @@ def _target(
     except BackendConfigError:
         resolved = None
     if resolved:
-        return str(resolved["baseUrl"]), str(resolved["apiKey"]), str(resolved["model"])
-    return settings.llm_base_url.rstrip("/"), settings.llm_api_key, settings.llm_model
+        return (
+            str(resolved["baseUrl"]),
+            str(resolved["apiKey"]),
+            str(resolved["model"]),
+            _effective_output_tokens(resolved),
+        )
+    return (
+        settings.llm_base_url.rstrip("/"),
+        settings.llm_api_key,
+        settings.llm_model,
+        _effective_output_tokens(None),
+    )
 
 
 def chat_stream(
@@ -245,7 +279,7 @@ def chat_stream(
         for index in range(0, len(text), 48):
             yield text[index:index + 48]
         return
-    base_url, api_key, model_name = _target(model_id, tenant_id=tenant_id)
+    base_url, api_key, model_name, max_tokens = _target(model_id, tenant_id=tenant_id)
     if not (base_url and api_key and model_name):
         text = _mock()
         for index in range(0, len(text), 48):
@@ -254,6 +288,7 @@ def chat_stream(
     payload = {
         "model": model_name,
         "temperature": 0.2,
+        "max_tokens": max_tokens,
         "stream": True,
         "messages": [
             {"role": "system", "content": system},
