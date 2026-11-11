@@ -26,6 +26,8 @@
 
 后续把最初带“绝对路径哈希”的用户租户 schema 原地重命名为“租户 ID 清洗名 + 租户 ID 短哈希”；哈希只由租户 ID 决定，既不受部署路径影响，也不会让 `a-b` 与 `a_b` 碰撞。owner 和 4 个用户租户均已重新读取验证，项目数量分别为 `9 / 1 / 1 / 1 / 1`。
 
+数据库隔离再收紧：租户连接的 `search_path` 现在只包含自己的 schema，不再包含 `public`。验证结果为 `search_path=['tenant_owner']`，未限定表名 `generation_tasks` 解析到租户表，而 `public.generation_tasks` 不会被自动命中。
+
 备份：
 
 ```text

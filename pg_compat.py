@@ -436,7 +436,7 @@ class PGConnection:
             application_name="drama_canvas",
         )
         raw.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote_identifier(self.schema)}")
-        raw.execute(f"SET search_path TO {_quote_identifier(self.schema)}, public")
+        raw.execute(f"SET search_path TO {_quote_identifier(self.schema)}")
         raw.execute("SET statement_timeout = '120s'")
         raw.execute("SET lock_timeout = '30s'")
         raw.execute("SET idle_in_transaction_session_timeout = '30s'")

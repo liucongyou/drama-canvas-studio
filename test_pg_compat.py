@@ -34,6 +34,10 @@ def pg(monkeypatch):
 
 
 def test_sqlite_compatible_crud_and_json_path(pg) -> None:
+    schemas = pg.raw.execute(
+        "SELECT current_schemas(false)"
+    ).fetchone()[0]
+    assert schemas == [pg.schema]
     pg.executescript(
         """
         CREATE TABLE items(
