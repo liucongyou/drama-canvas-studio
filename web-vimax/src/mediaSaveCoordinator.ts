@@ -49,10 +49,35 @@ export function rebaseLocalMediaNode(
   local: CanvasMediaNode,
   remote: CanvasMediaNode,
 ): CanvasMediaNode {
+  const localParams = local.params || {};
+  const remoteParams = remote.params || {};
+  // params is a large mixed bag: refs and prompt-affecting choices are user
+  // edits, while the rest is provider/generation state owned by the backend.
+  // Never blindly spread local over remote for every nested key.
+  const userParams = {
+    ...(localParams.model !== undefined ? {model: localParams.model} : {}),
+    ...(localParams.provider !== undefined ? {provider: localParams.provider} : {}),
+    ...(localParams.ratio !== undefined ? {ratio: localParams.ratio} : {}),
+    ...(localParams.resolution !== undefined ? {resolution: localParams.resolution} : {}),
+    ...(localParams.duration !== undefined ? {duration: localParams.duration} : {}),
+    ...(localParams.count !== undefined ? {count: localParams.count} : {}),
+    ...(localParams.guidance !== undefined ? {guidance: localParams.guidance} : {}),
+    ...(localParams.refs !== undefined ? {refs: localParams.refs} : {}),
+    ...(localParams.voiceRef !== undefined ? {voiceRef: localParams.voiceRef} : {}),
+    ...(localParams.voiceRefs !== undefined ? {voiceRefs: localParams.voiceRefs} : {}),
+    ...(localParams.system !== undefined ? {system: localParams.system} : {}),
+    ...(localParams.temperature !== undefined ? {temperature: localParams.temperature} : {}),
+    ...(localParams.maxTokens !== undefined ? {maxTokens: localParams.maxTokens} : {}),
+    ...(localParams.ttsModel !== undefined ? {ttsModel: localParams.ttsModel} : {}),
+    ...(localParams.ttsMode !== undefined ? {ttsMode: localParams.ttsMode} : {}),
+    ...(localParams.voiceId !== undefined ? {voiceId: localParams.voiceId} : {}),
+    ...(localParams.ttsVoice !== undefined ? {ttsVoice: localParams.ttsVoice} : {}),
+  };
   return {
     ...remote,
-    ...local,
-    params: {...(remote.params || {}), ...(local.params || {})},
+    prompt: local.prompt,
+    title: local.title,
+    params: {...remoteParams, ...userParams},
     updatedAt: remote.updatedAt,
   };
 }

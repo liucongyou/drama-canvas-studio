@@ -3,6 +3,7 @@ import {
   generationOwnsAllNodes,
   isMediaSaveConflict,
   mediaSaveRetryDecision,
+  rebaseLocalMediaNode,
 } from './mediaSaveCoordinator';
 import {withRequestStatus} from './requestRetry';
 
@@ -39,6 +40,43 @@ describe('media save coordinator', () => {
       .toMatchObject({retry: true, delayMs: 15_000});
     expect(mediaSaveRetryDecision({error, attempt: 9}))
       .toMatchObject({retry: true, delayMs: 60_000});
+  });
+
+  it('rebases local prompt edits onto remote generation state', () => {
+    const local = {
+      id: 'node-1',
+      kind: 'video' as const,
+      title: '段9',
+      prompt: '本地提示词',
+      status: 'idle' as const,
+      x: 0,
+      y: 0,
+      updatedAt: '2026-11-12T00:00:00Z',
+      params: {
+        model: 'video-model',
+        refs: [{nodeId: 'image-1'}],
+        providerResultUrl: 'blob:local-only',
+        mediaVersions: [{versionId: 'stale'}],
+      },
+    };
+    const remote = {
+      ...local,
+      status: 'done' as const,
+      mediaUrl: '/uploads/current.mp4',
+      updatedAt: '2026-11-12T00:00:03Z',
+      params: {
+        ...local.params,
+        providerResultUrl: 'https://provider/current.mp4',
+        mediaVersions: [{versionId: 'current'}],
+      },
+    };
+    const rebased = rebaseLocalMediaNode(local, remote);
+    expect(rebased.prompt).toBe('本地提示词');
+    expect(rebased.status).toBe('done');
+    expect(rebased.mediaUrl).toBe('/uploads/current.mp4');
+    expect(rebased.params?.providerResultUrl).toBe('https://provider/current.mp4');
+    expect(rebased.params?.mediaVersions).toEqual([{versionId: 'current'}]);
+    expect(rebased.updatedAt).toBe(remote.updatedAt);
   });
 
   it('waits for the online event and never retries client or auth errors', () => {

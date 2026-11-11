@@ -2480,6 +2480,67 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
   color:var(--v-accent);
   border-color:color-mix(in srgb, var(--v-accent) 35%, var(--v-border-hair));
 }
+.canvas-conflict-banner{
+  position:absolute;
+  top:46px;
+  left:16px;
+  right:16px;
+  z-index:30;
+  display:flex;
+  align-items:center;
+  gap:12px;
+  min-height:36px;
+  padding:5px 7px 5px 12px;
+  border:1px solid color-mix(in srgb, var(--v-danger) 30%, var(--v-border-hair));
+  border-radius:7px;
+  background:color-mix(in srgb, var(--v-danger) 7%, var(--v-surface));
+  color:var(--v-text-2);
+  font-size:11px;
+  box-shadow:0 8px 22px rgba(0,0,0,.16);
+}
+.canvas-conflict-banner>span{
+  min-width:0;
+  flex:1;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.canvas-conflict-banner>div{
+  display:flex;
+  align-items:center;
+  gap:5px;
+  flex:none;
+}
+.canvas-conflict-banner button{
+  height:26px;
+  padding:0 8px;
+  border:1px solid var(--v-border-hair);
+  border-radius:5px;
+  background:var(--v-surface-sunken);
+  color:var(--v-text-2);
+  font-size:10.5px;
+  cursor:pointer;
+}
+.canvas-conflict-banner button:hover{
+  color:var(--v-text);
+  background:var(--v-surface-hover);
+}
+.canvas-conflict-banner button:first-child{
+  border-color:color-mix(in srgb, var(--v-accent) 38%, var(--v-border-hair));
+  color:var(--v-accent);
+}
+.canvas-conflict-banner button.is-close{
+  width:26px;
+  padding:0;
+  display:grid;
+  place-items:center;
+  background:transparent;
+}
+@media(max-width:760px){
+  .canvas-conflict-banner{left:8px;right:8px;top:42px}
+  .canvas-conflict-banner>span{white-space:normal}
+  .canvas-conflict-banner button{padding:0 6px}
+}
 .canvas-status-row{
   display:flex;
   min-height:28px;
@@ -6287,8 +6348,9 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   overflow-wrap: anywhere;
   cursor: text;
   contain: layout style;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 56px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--v-border-strong) transparent;
 }
 
 .jim-prompt[contenteditable]:empty::before {

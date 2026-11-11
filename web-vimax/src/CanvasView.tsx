@@ -2209,12 +2209,13 @@ function RichPromptEditor({
   editable?: boolean;
   onChange: (value: string) => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
-  onRendered?: () => void;
+  onRendered?: (mode?: 'sync' | 'deferred') => void;
   onMentionPreview?: (preview: ({url: string; label: string} & PreviewPlacement) | null) => void;
   onMentionRemoved?: (labels: string[]) => void;
 }) {
   const mentionSignature = mentions.map((item) => `${item.kind}:${item.label}:${item.url || ''}`).join('|');
   const lastEditorValueRef = useRef('');
+  const lastMentionSignatureRef = useRef('');
   const composingRef = useRef(false);
   const compositionEndTimerRef = useRef<number | null>(null);
   useEffect(() => {
@@ -2230,14 +2231,22 @@ function RichPromptEditor({
       .map((item) => `@${item.label}`)
       .join('|');
     const mentionsChanged = currentMentions !== wantedMentions;
-    if (active && !mentionsChanged && value === lastEditorValueRef.current) return;
-    if (!active && current === value && !mentionsChanged) return;
+    // The DOM is the first source of truth while the user is editing. Once
+    // blurred, add a deferred reconciliation pass after layout settles; this
+    // catches @ chips appended after the first modal paint (for example the
+    // line "例如 @图片N 在光里") without rebuilding content mid-keystroke.
+    const reconcileOnBlur = !active && mentionsChanged;
+    if (!reconcileOnBlur && current === value && !mentionsChanged) return;
+    if (!reconcileOnBlur && active && !mentionsChanged && value === lastEditorValueRef.current) return;
     buildPromptEditorContent(editor, value, mentions);
     lastEditorValueRef.current = value;
+    lastMentionSignatureRef.current = mentionSignature;
     if (active) {
       promptSetCaret(editor, Math.min(offset ?? value.length, value.length));
     }
-    onRendered?.();
+    onRendered?.(
+      !active && mentionsChanged ? 'deferred' : 'sync',
+    );
   }, [editorRef, mentionSignature, value, mentions]);
   useEffect(() => () => {
     if (compositionEndTimerRef.current !== null) {
@@ -4484,7 +4493,12 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     const ta = taRef.current;
     if (ta) {
       if (document.activeElement === ta) ta.blur();
-      ta.style.height = `${calcTaHeight(ta, collapsedH())}px`;
+      growTa();
+      // The @ mention chips are built on the next layout pass. Re-measure once
+      // after it so the first modal paint already shows the complete prompt
+      // instead of waiting for the user to focus and blur the editor.
+      const frame = window.requestAnimationFrame(() => growTa());
+      return () => window.cancelAnimationFrame(frame);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node?.id]);
@@ -5531,7 +5545,13 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                   }
                 }
               }}
-              onRendered={() => window.requestAnimationFrame(growTa)}
+              onRendered={(mode) => {
+                if (mode === 'deferred') {
+                  window.setTimeout(() => window.requestAnimationFrame(growTa), 40);
+                } else {
+                  window.requestAnimationFrame(growTa);
+                }
+              }}
               onMentionPreview={setMentionPreview}
               onMentionRemoved={(labels) => {
                 for (const label of labels) {
@@ -10033,7 +10053,16 @@ function CanvasViewInner({
     beginSave();
     clearSaveError();
     try {
-      const result = await patchMediaNodesFields(session, snapshots, currentEp);
+      // Another tab may have updated this node after the snapshot was queued.
+      // Pull the current projection first and rebase only fields this tab
+      // actually edited. Unrelated remote changes are not a save conflict.
+      const remoteNodes = await getCanvasMediaNodes(session, currentEp);
+      const remoteById = new Map(remoteNodes.map((node) => [node.id, node]));
+      const rebasedSnapshots = snapshots.map((local) => {
+        const remote = remoteById.get(local.id);
+        return remote ? rebaseLocalMediaNode(local, remote) : local;
+      });
+      const result = await patchMediaNodesFields(session, rebasedSnapshots, currentEp);
       applyMediaPatchRevisions(result.updates);
       clearMediaPatchRetry();
       finishSave(true);
@@ -10073,10 +10102,16 @@ function CanvasViewInner({
           const node = latestById.get(id);
           return node ? [node] : [];
         });
-        const conflict = {message, nodeIds: changedIds, localNodes: local, remoteNodes: remote};
+        const conflictMessage = '检测到另一个标签页修改了同一字段，本地编辑仍保留。请选择保留本地或载入服务器版本。';
+        const conflict = {
+          message: conflictMessage,
+          nodeIds: changedIds,
+          localNodes: local,
+          remoteNodes: remote,
+        };
         mediaSaveConflictRef.current = conflict;
         setMediaSaveConflict(conflict);
-        setSaveError(`${message}。本地编辑仍保留，请选择处理方式。`);
+        setSaveError('');
         return;
       }
       for (const snapshot of snapshots) {
@@ -17629,7 +17664,20 @@ function CanvasViewInner({
         : <header className="workspace-header">{canvasHeaderBody}</header>}
 
       {error && <div className="inline-error canvas-error" role="alert"><span>{error}</span></div>}
-      {saveError && <div className="inline-error canvas-error" role="alert"><span>保存失败：{saveError}</span><button onClick={() => clearSaveError()} aria-label="关闭"><X size={12} strokeWidth={2.2} aria-hidden="true" /></button></div>}
+      {mediaSaveConflict && (
+        <div className="canvas-conflict-banner" role="alert">
+          <span>检测到同一字段被另一页面修改，本地编辑仍保留。</span>
+          <div>
+            <button type="button" onClick={overwriteWithLocalMediaConflict}>保留本地</button>
+            <button type="button" onClick={acceptRemoteMediaConflict}>载入服务器</button>
+            <button type="button" className="is-close" onClick={() => {
+              mediaSaveConflictRef.current = null;
+              setMediaSaveConflict(null);
+            }} aria-label="关闭"><X size={12} strokeWidth={2.2} aria-hidden="true" /></button>
+          </div>
+        </div>
+      )}
+      {saveError && !mediaSaveConflict && <div className="inline-error canvas-error" role="alert"><span>保存失败：{saveError}</span><button onClick={() => clearSaveError()} aria-label="关闭"><X size={12} strokeWidth={2.2} aria-hidden="true" /></button></div>}
       {toast && <div className="canvas-toast" onClick={() => setToast('')}>{toast}</div>}
       {recoveringMediaCount > 0 && (
         <div className="canvas-media-recovery-status" role="status">
