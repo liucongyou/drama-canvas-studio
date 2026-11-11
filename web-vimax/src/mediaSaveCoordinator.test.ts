@@ -1,5 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {
+  generationOwnsAllNodes,
   isMediaSaveConflict,
   mediaSaveRetryDecision,
 } from './mediaSaveCoordinator';
@@ -18,6 +19,16 @@ describe('media save coordinator', () => {
       409,
       'NODE_REVISION_CONFLICT',
     ))).toBe(false);
+  });
+
+  it('recognizes saves entirely owned by an active generation', () => {
+    const active = new Set(['image-1']);
+    expect(generationOwnsAllNodes([{id: 'image-1'}], active)).toBe(true);
+    expect(generationOwnsAllNodes([], active)).toBe(false);
+    expect(generationOwnsAllNodes(
+      [{id: 'image-1'}, {id: 'image-2'}],
+      active,
+    )).toBe(false);
   });
 
   it('backs off transient save failures up to one minute and keeps retrying', () => {

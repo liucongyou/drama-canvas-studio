@@ -33,6 +33,14 @@ export function isMediaSaveConflict(error: unknown): boolean {
   );
 }
 
+export function generationOwnsAllNodes(
+  nodes: Array<{id: string}>,
+  generationNodeIds: ReadonlySet<string>,
+): boolean {
+  return nodes.length > 0
+    && nodes.every((node) => generationNodeIds.has(node.id));
+}
+
 /**
  * Rebase a local edit onto the current server revision. Generation-owned
  * fields come from the server; the user's prompt/params draft is reapplied.

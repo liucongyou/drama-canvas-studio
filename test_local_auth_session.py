@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+import tenant_registry
 
 
 class LocalAuthSessionTests(unittest.TestCase):
@@ -54,6 +55,53 @@ class LocalAuthSessionTests(unittest.TestCase):
         connection.close()
         self.assertNotEqual(response.status, 403)
         self.assertNotIn(b"ORIGIN_REJECTED", response_body)
+
+    def test_local_host_mode_saves_preferences_without_tenant_context(self):
+        saved = {
+            "theme": "forest",
+            "canvasBackgroundMode": "dots",
+        }
+        with (
+            patch.object(
+                tenant_registry,
+                "get_tenant_by_id",
+                return_value=None,
+            ),
+            patch.object(
+                tenant_registry,
+                "create_tenant",
+                return_value={"id": "legacy"},
+            ) as create,
+            patch.object(
+                tenant_registry,
+                "update_tenant_preferences",
+                return_value=saved,
+            ) as update,
+            patch.object(server.store, "record_audit_event"),
+        ):
+            connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+            connection.request(
+                "PUT",
+                "/api/preferences",
+                headers={
+                    "Host": "127.0.0.1:8890",
+                    "Origin": "http://127.0.0.1:8891",
+                    "Content-Type": "application/json",
+                },
+                body=json.dumps(saved).encode("utf-8"),
+            )
+            response = connection.getresponse()
+            body = json.loads(response.read())
+            connection.close()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(body["preferences"], saved)
+        create.assert_called_once_with(
+            "local",
+            name="Local",
+            tenant_id="legacy",
+            legacy_source="local",
+        )
+        update.assert_called_once_with("legacy", saved)
 
 
 if __name__ == "__main__":

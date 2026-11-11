@@ -7685,7 +7685,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_tenant_preferences_update(self, body):
         context = tenant_context.current()
-        if not context:
+        tenant_id = (
+            str(context.tenant_id)
+            if context
+            else ("legacy" if _auth_mode() != "accounts" else "")
+        )
+        if not tenant_id:
             return self._send(401, {
                 "error": "请先登录。",
                 "code": "ACCOUNT_AUTH_REQUIRED",
@@ -7724,8 +7729,18 @@ class Handler(BaseHTTPRequestHandler):
                 "code": "PREFERENCES_EMPTY",
             })
         try:
+            if (
+                _auth_mode() != "accounts"
+                and not tenant_registry.get_tenant_by_id(tenant_id)
+            ):
+                tenant_registry.create_tenant(
+                    "local",
+                    name="Local",
+                    tenant_id=tenant_id,
+                    legacy_source="local",
+                )
             preferences = tenant_registry.update_tenant_preferences(
-                context.tenant_id,
+                tenant_id,
                 updates,
             )
         except ValueError as exc:

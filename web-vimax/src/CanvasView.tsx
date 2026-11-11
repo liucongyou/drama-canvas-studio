@@ -225,6 +225,7 @@ import {
 } from './canvasViewport';
 import {workspaceRetryDecision} from './requestRetry';
 import {
+  generationOwnsAllNodes,
   isMediaSaveConflict,
   mediaSaveRetryDecision,
   rebaseLocalMediaNode,
@@ -9926,6 +9927,18 @@ function CanvasViewInner({
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
+        const generationNodeIds = new Set([
+          ...optimisticGenerationStartsRef.current.keys(),
+          ...generationSubmittingRef.current,
+        ]);
+        if (
+          isMediaSaveConflict(error)
+          && generationOwnsAllNodes(snapshots, generationNodeIds)
+        ) {
+          clearSaveError();
+          finishSave(true);
+          return;
+        }
         finishSave(false);
         setSaveError(message);
         if (message.includes('另一个标签页')) setToast(message);
@@ -9940,7 +9953,7 @@ function CanvasViewInner({
         }
       });
     mediaBatchSaveInFlightRef.current = task;
-  }, [beginSave, broadcastMediaChange, currentEp, finishSave, readOnly, session, setToast]);
+  }, [beginSave, broadcastMediaChange, clearSaveError, currentEp, finishSave, readOnly, session, setToast]);
 
   const mediaPatchFlushRef = useRef<() => void>(() => {});
   const clearMediaPatchRetry = useCallback(() => {
@@ -10003,8 +10016,21 @@ function CanvasViewInner({
       finishSave(true);
       broadcastMediaChange(snapshots.map((snapshot) => snapshot.id));
     } catch (error) {
-      finishSave(false);
       const message = error instanceof Error ? error.message : String(error);
+      const generationNodeIds = new Set([
+        ...optimisticGenerationStartsRef.current.keys(),
+        ...generationSubmittingRef.current,
+      ]);
+      if (
+        isMediaSaveConflict(error)
+        && generationOwnsAllNodes(snapshots, generationNodeIds)
+      ) {
+        clearMediaPatchRetry();
+        clearSaveError();
+        finishSave(true);
+        return;
+      }
+      finishSave(false);
       if (isMediaSaveConflict(error)) {
         clearMediaPatchRetry();
         const changedIds = snapshots.map((snapshot) => snapshot.id);
@@ -10065,7 +10091,7 @@ function CanvasViewInner({
         scheduleMediaPatchFlush(80);
       }
     }
-  }, [applyMediaPatchRevisions, beginSave, broadcastMediaChange, clearMediaPatchRetry, currentEp, finishSave, readOnly, scheduleMediaPatchFlush, session, setMediaSaveConflict, setSaveError, setSaveRetryAttempt, setSaveRetryPending]);
+  }, [applyMediaPatchRevisions, beginSave, broadcastMediaChange, clearMediaPatchRetry, clearSaveError, currentEp, finishSave, readOnly, scheduleMediaPatchFlush, session, setMediaSaveConflict, setSaveError, setSaveRetryAttempt, setSaveRetryPending]);
   const flushMediaPatches = useCallback(() => {
     if (readOnly || mediaPatchSaveInFlightRef.current || mediaSaveConflictRef.current) return;
     const snapshots = [...pendingMediaPatchesRef.current.values()];
@@ -15955,9 +15981,14 @@ function CanvasViewInner({
     // Drop any older debounced patch for the same node so it cannot race that
     // request with a stale baseUpdatedAt.
     pendingMediaPatchesRef.current.delete(node.id);
+    pendingMediaNodeSavesRef.current.delete(node.id);
     if (pendingMediaPatchesRef.current.size === 0 && mediaSaveTimer.current) {
       clearTimeout(mediaSaveTimer.current);
       mediaSaveTimer.current = null;
+    }
+    if (pendingMediaNodeSavesRef.current.size === 0 && mediaBatchSaveTimer.current) {
+      clearTimeout(mediaBatchSaveTimer.current);
+      mediaBatchSaveTimer.current = null;
     }
     setGenerationBusyIds((prev) => {
       if (prev.has(node.id)) return prev;
