@@ -8,6 +8,37 @@ export type QualityFailureDetail = {
   detail: string;
 };
 
+export type QualityStatusPresentation = {
+  label: string;
+  tone: 'not_checked' | 'pending' | 'pass' | 'fail';
+};
+
+export function qualityStatusPresentation(
+  report: QualityReport | null | undefined,
+): QualityStatusPresentation {
+  if (!report?.available) {
+    return {label: '未检查挂接', tone: 'not_checked'};
+  }
+  if (report.passed) {
+    return {label: '挂接通过', tone: 'pass'};
+  }
+  if (Number(report.segment_count || 0) <= 0) {
+    return {label: '挂接待生成', tone: 'pending'};
+  }
+  const failed = Number(report.levels?.fail || 0);
+  return {
+    label: failed > 0 ? `挂接 ${failed} 段未通过` : '挂接未通过',
+    tone: 'fail',
+  };
+}
+
+export function qualityCheckPassed(report: QualityReport | null | undefined): boolean {
+  return Boolean(
+    report?.available
+    && (report.passed || Number(report.segment_count || 0) <= 0),
+  );
+}
+
 function stripSegmentPrefix(value: string): string {
   return value
     .replace(/^段\s*\d+\s*[·:：\-]?\s*/, '')

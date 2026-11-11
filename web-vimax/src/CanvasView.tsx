@@ -141,7 +141,12 @@ import {useDialogFocusTrap} from './useDialogFocusTrap';
 import {dialog} from './GDialog';
 import {taskOutcomePresentation} from './taskOutcomePresentation';
 import {manualTaskResolutionAvailable} from './manualTaskResolution';
-import {qualityFailureDetails, qualityFailureSummary} from './qualityReportPresentation';
+import {
+  qualityCheckPassed,
+  qualityFailureDetails,
+  qualityFailureSummary,
+  qualityStatusPresentation,
+} from './qualityReportPresentation';
 import {
   generationDurationLabel,
   generationPhaseLabel,
@@ -2210,6 +2215,8 @@ function RichPromptEditor({
 }) {
   const mentionSignature = mentions.map((item) => `${item.kind}:${item.label}:${item.url || ''}`).join('|');
   const lastEditorValueRef = useRef('');
+  const composingRef = useRef(false);
+  const compositionEndTimerRef = useRef<number | null>(null);
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -2232,6 +2239,11 @@ function RichPromptEditor({
     }
     onRendered?.();
   }, [editorRef, mentionSignature, value, mentions]);
+  useEffect(() => () => {
+    if (compositionEndTimerRef.current !== null) {
+      window.clearTimeout(compositionEndTimerRef.current);
+    }
+  }, []);
 
   return (
     <div
@@ -2247,6 +2259,7 @@ function RichPromptEditor({
       data-placeholder={placeholder}
       onInput={(event) => {
         if (!editable) return;
+        if (composingRef.current) return;
         const next = promptTextFromEditor(event.currentTarget);
         const previous = lastEditorValueRef.current;
         if (next.trim() && next.length < previous.length && onMentionRemoved) {
@@ -2258,6 +2271,31 @@ function RichPromptEditor({
         event.currentTarget.dataset.promptValue = next;
         lastEditorValueRef.current = next;
         onChange(next);
+      }}
+      onCompositionStart={() => {
+        composingRef.current = true;
+        if (compositionEndTimerRef.current !== null) {
+          window.clearTimeout(compositionEndTimerRef.current);
+          compositionEndTimerRef.current = null;
+        }
+      }}
+      onCompositionEnd={(event) => {
+        composingRef.current = false;
+        // WebKit/Blink can dispatch the final input event on the next task.
+        // Delay the commit by one task so the editor never rebuilds under an
+        // active IME composition while still committing the final text.
+        if (compositionEndTimerRef.current !== null) {
+          window.clearTimeout(compositionEndTimerRef.current);
+        }
+        compositionEndTimerRef.current = window.setTimeout(() => {
+          compositionEndTimerRef.current = null;
+          if (!editable) return;
+          const editor = event.currentTarget;
+          const next = promptTextFromEditor(editor);
+          editor.dataset.promptValue = next;
+          lastEditorValueRef.current = next;
+          onChange(next);
+        }, 0);
       }}
       onBlur={(event) => {
         if (!editable) return;
@@ -10974,7 +11012,7 @@ function CanvasViewInner({
       const failCount = Number(rep.levels?.fail || 0);
       const failures = qualityFailureDetails(rep);
       setToast(
-        rep.passed
+        qualityCheckPassed(rep)
           ? '挂接机检已通过'
           : `挂接机检：${failCount} 段未通过 · ${qualityFailureSummary(failures)}`,
       );
@@ -17299,11 +17337,8 @@ function CanvasViewInner({
   const completionPercent = canvas && canvas.shots.length > 0
     ? Math.round((canvas.shots.filter((shot) => shot.clip_url).length / canvas.shots.length) * 100)
     : 0;
-  const qualityLabel = qualityReport?.available
-    ? qualityReport.passed
-      ? '挂接通过'
-      : `挂接 ${Number(qualityReport.levels?.fail || 0)} 段未通过`
-    : '未检查挂接';
+  const qualityStatus = qualityStatusPresentation(qualityReport);
+  const qualityLabel = qualityStatus.label;
   const qualityFailures = useMemo(
     () => qualityFailureDetails(qualityReport),
     [qualityReport],
@@ -17333,7 +17368,7 @@ function CanvasViewInner({
               <span className="canvas-status-dot" aria-hidden="true" />
               {syncLabel}
               {canvas && canvas.shots.length > 0 && <span className="canvas-status-progress">完成率 {completionPercent}%</span>}
-              <span className={`canvas-status-quality ${qualityReport?.available ? (qualityReport.passed ? 'is-pass' : 'is-fail') : ''}`}>{qualityLabel}</span>
+              <span className={`canvas-status-quality ${qualityStatus.tone === 'pass' ? 'is-pass' : qualityStatus.tone === 'fail' ? 'is-fail' : qualityStatus.tone === 'pending' ? 'is-pending' : ''}`}>{qualityLabel}</span>
               <ChevronDown size={12} strokeWidth={2.2} aria-hidden="true" />
             </button>
             {openMenu === 'status' && (

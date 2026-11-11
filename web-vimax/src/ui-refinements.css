@@ -6286,6 +6286,9 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   cursor: text;
+  contain: layout style;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 56px;
 }
 
 .jim-prompt[contenteditable]:empty::before {
