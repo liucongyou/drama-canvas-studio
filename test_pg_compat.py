@@ -125,4 +125,9 @@ def test_canvas_schema_name_is_independent_of_absolute_app_path() -> None:
         "E:/deploy-b/data/tenants/u-demo/canvas.db",
         "canvas",
     )
-    assert first == second == "tenant_u_demo"
+    assert first == second
+    assert first.startswith("tenant_u_demo_")
+    assert first != pg_compat.schema_for_path(
+        "D:/deploy-a/data/tenants/u_demo/canvas.db",
+        "canvas",
+    )

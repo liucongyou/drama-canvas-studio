@@ -114,7 +114,11 @@ def schema_for_path(path: str | os.PathLike[str], kind: str) -> str:
     else:
         candidate = raw.stem
     safe = re.sub(r"[^a-z0-9_]+", "_", candidate).strip("_")[:40] or "canvas"
-    base_schema = f"tenant_{safe}" if kind == "canvas" else f"{kind}_{safe}"
+    if kind == "canvas" and safe != "owner":
+        identity = hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:8]
+        base_schema = f"tenant_{safe}_{identity}"
+    else:
+        base_schema = f"tenant_{safe}" if kind == "canvas" else f"{kind}_{safe}"
     return _schema_with_test_suffix(base_schema)
 
 

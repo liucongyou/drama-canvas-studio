@@ -15,16 +15,16 @@
 |---|---|---:|
 | `control` | `data/control.db` | 263 |
 | `tenant_owner` | `data/tenants/owner/canvas.db` | 6,377 |
-| `tenant_u_a365879766` | `data/tenants/u-a365879766/canvas.db` | 1,312 |
-| `tenant_u_liuchenyou` | `data/tenants/u-liuchenyou/canvas.db` | 9 |
-| `tenant_u_zyh2018114` | `data/tenants/u-zyh2018114/canvas.db` | 7 |
-| `tenant_u_aa520520` | `data/tenants/u-aa520520/canvas.db` | 8 |
+| `tenant_u_a365879766_<tenant-sha>` | `data/tenants/u-a365879766/canvas.db` | 1,312 |
+| `tenant_u_liuchenyou_<tenant-sha>` | `data/tenants/u-liuchenyou/canvas.db` | 9 |
+| `tenant_u_zyh2018114_<tenant-sha>` | `data/tenants/u-zyh2018114/canvas.db` | 7 |
+| `tenant_u_aa520520_<tenant-sha>` | `data/tenants/u-aa520520/canvas.db` | 8 |
 | `agent` | `agent/data/agent.db` | 8 |
 | `archive_legacy_root` | `data/canvas.db` | 3 |
 
 合计迁移 `7,987` 行。每张表的源/目标行数、规范化 SHA-256 均为 `ok=true`。
 
-后续把最初带“绝对路径哈希”的用户租户 schema 原地重命名为只由 slug 决定的稳定名称；owner 和 4 个用户租户均已重新读取验证，项目数量分别为 `9 / 1 / 1 / 1 / 1`。
+后续把最初带“绝对路径哈希”的用户租户 schema 原地重命名为“租户 ID 清洗名 + 租户 ID 短哈希”；哈希只由租户 ID 决定，既不受部署路径影响，也不会让 `a-b` 与 `a_b` 碰撞。owner 和 4 个用户租户均已重新读取验证，项目数量分别为 `9 / 1 / 1 / 1 / 1`。
 
 备份：
 
