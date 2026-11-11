@@ -4218,7 +4218,7 @@ def update_generation_task(task_id, **fields):
         if lease_owner is not None:
             set_clause = ",".join(
                 (
-                    f"{key}=MAX(COALESCE({key},0),?)"
+                    f"{key}=MAX(CAST(COALESCE({key},0) AS INTEGER),CAST(? AS INTEGER))"
                     if key == "progress"
                     else f"{key}=?"
                 )
@@ -4233,7 +4233,7 @@ def update_generation_task(task_id, **fields):
             return
         set_clause = ",".join(
             (
-                f"{key}=MAX(COALESCE({key},0),?)"
+                f"{key}=MAX(CAST(COALESCE({key},0) AS INTEGER),CAST(? AS INTEGER))"
                 if key == "progress"
                 else f"{key}=?"
             )

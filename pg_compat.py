@@ -170,6 +170,28 @@ def _split_script(script: str) -> list[str]:
     return statements
 
 
+def _escape_sql_literal_percents(sql: str) -> str:
+    """Escape literal percent signs inside SQL strings for psycopg parameters."""
+    out: list[str] = []
+    in_string = False
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if char == "'":
+            out.append(char)
+            if in_string and index + 1 < len(sql) and sql[index + 1] == "'":
+                out.append("'")
+                index += 2
+                continue
+            in_string = not in_string
+        elif char == "%" and in_string:
+            out.append("%%")
+        else:
+            out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def _translate_insert_or_replace(sql: str) -> str:
     match = re.match(
         r"\s*INSERT\s+OR\s+REPLACE\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)\s*\((.*?)\)\s*VALUES\s*\((.*)\)\s*$",
@@ -305,6 +327,11 @@ class PGCursor:
             self._synthetic_index = 0
             return self
         translated = _translate_sql(text)
+        if params:
+            # psycopg treats percent signs in the full SQL string as format
+            # markers when parameters are supplied. SQLite LIKE patterns such
+            # as '%"status"%failed%' must stay literal in PostgreSQL too.
+            translated = _escape_sql_literal_percents(translated)
         if not translated:
             self._synthetic = [PGRow((0, 0, 0), ["busy", "log", "checkpointed"])]
             self._synthetic_index = 0

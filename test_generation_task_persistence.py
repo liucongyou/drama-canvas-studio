@@ -220,6 +220,27 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(first["id"], replay["id"])
         self.assertIn("first snapshot", replay["request_json"])
 
+    def test_generation_progress_is_monotonic_across_database_backends(self):
+        with tenant_context.use_context(self.context):
+            task = canvas_store.create_generation_task(
+                "project-progress",
+                "node-progress",
+                kind="image",
+            )
+            canvas_store.update_generation_task(task["id"], progress=20)
+            canvas_store.update_generation_task(task["id"], progress=10)
+            lower = canvas_store.get_generation_task(task["id"])
+            canvas_store.update_generation_task(task["id"], progress=30)
+            higher = canvas_store.get_generation_task(task["id"])
+
+        self.assertEqual(int(lower["progress"]), 20)
+        self.assertEqual(int(higher["progress"]), 30)
+        source = Path(canvas_store.__file__).read_text(encoding="utf-8")
+        self.assertIn(
+            "MAX(CAST(COALESCE({key},0) AS INTEGER),CAST(? AS INTEGER))",
+            source,
+        )
+
     def test_episode_task_lookup_is_not_truncated_by_newer_other_episode_tasks(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("episode-task-limit")

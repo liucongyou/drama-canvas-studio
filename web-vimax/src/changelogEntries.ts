@@ -3,6 +3,16 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.11.05',
+    date: '2026-11-11',
+    title: 'PostgreSQL 保存与生成进度兼容修复',
+    releasedAt: '2026-11-11 12:46:43 +08:00',
+    changes: [
+      'PostgreSQL 参数化查询会解析 SQL 字符串里的百分号；项目统计中的 LIKE 模式已统一转义，修复生成图片时节点保存返回 HTTP 502。',
+      '生成任务进度列在 PostgreSQL 中是 smallint，原来与 integer 直接参与 MAX 会导致类型错误；现改为两端显式 CAST 为 INTEGER，图片任务不再在提交供应商前中断。',
+    ],
+  },
+  {
     version: '2026.11.11.04',
     date: '2026-11-11',
     title: '本地偏好保存与生成保存冲突修复',
