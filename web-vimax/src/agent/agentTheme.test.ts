@@ -15,4 +15,10 @@ describe('AgentDock theme polish', () => {
     expect(css).toContain('.agent-panel.is-closing');
     expect(css).toContain('agentPanelOut');
   });
+
+  it('keeps user message actions out of the content height', () => {
+    expect(css).toMatch(/\.agent-msg-actions\{[^}]*position:absolute/);
+    expect(css).toMatch(/\.agent-msg\.is-user \.agent-msg-body\{[^}]*background:var\(--v-surface-hover/);
+    expect(css).not.toMatch(/\.agent-msg\.is-user \.agent-msg-body\{[^}]*background:var\(--v-accent/);
+  });
 });
