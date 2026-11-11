@@ -124,6 +124,8 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     ? run.messages.reduce((total, message) => total + String(message.content || '').length, 0)
     : 0;
   const runStatusRef = useRef('');
+  const followLatestRef = useRef(followingLatest);
+  followLatestRef.current = followingLatest;
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, open ? '1' : '0'); } catch {}
@@ -140,10 +142,10 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     const statusKey = run ? run.id + ':' + run.status : '';
     const statusChanged = statusKey !== runStatusRef.current;
     runStatusRef.current = statusKey;
-    if (!followingLatest && !statusChanged) return;
+    if (!followLatestRef.current && !statusChanged) return;
     const frame = window.requestAnimationFrame(() => scrollToLatest('auto'));
     return () => window.cancelAnimationFrame(frame);
-  }, [runContentLength, run && run.id, run && run.status, pendingPrompt, threadRuns.length, followingLatest, scrollToLatest]);
+  }, [runContentLength, run && run.id, run && run.status, pendingPrompt, threadRuns.length, scrollToLatest]);
 
   const onChatScroll = useCallback((event: React.UIEvent<HTMLElement>) => {
     const el = event.currentTarget;
