@@ -3835,6 +3835,7 @@ def insert_project_nodes(
             "WHERE project_id=? AND episode_id=?",
             (project_id, normalized_episode),
         ).fetchone()
+        episode_increment = 0 if group_row else 1
         if group_row and group_row[0]:
             group["title"] = str(group_row[0])
         sync_projection_episode(
@@ -3847,13 +3848,13 @@ def insert_project_nodes(
         revision = current_revision + 1
         con.execute(
             "UPDATE canvas_projects SET revision=?,updated_at=?,"
-            "node_count=node_count+?,episode_count=MAX(episode_count,?) "
+            "node_count=node_count+?,episode_count=episode_count+? "
             "WHERE id=? AND revision=?",
             (
                 revision,
                 stamp,
                 len(items),
-                1 if normalized_episode else 0,
+                episode_increment,
                 project_id,
                 current_revision,
             ),
@@ -4712,13 +4713,19 @@ def patch_project_node_atomic(
             )
             revision_changed = con.execute(
                 "UPDATE canvas_projects SET revision=?,updated_at=?,"
-                "failed_count=MAX(0,COALESCE(failed_count,0)+?),"
-                "local_blocked_count=MAX(0,COALESCE(local_blocked_count,0)+?) "
+                "failed_count=CASE "
+                "WHEN COALESCE(failed_count,0)+CAST(? AS INTEGER)<0 THEN 0 "
+                "ELSE COALESCE(failed_count,0)+CAST(? AS INTEGER) END,"
+                "local_blocked_count=CASE "
+                "WHEN COALESCE(local_blocked_count,0)+CAST(? AS INTEGER)<0 THEN 0 "
+                "ELSE COALESCE(local_blocked_count,0)+CAST(? AS INTEGER) END "
                 "WHERE id=? AND revision=?",
                 (
                     next_revision,
                     stamp,
                     next_failure_counts[0] - previous_failure_counts[0],
+                    next_failure_counts[0] - previous_failure_counts[0],
+                    next_failure_counts[1] - previous_failure_counts[1],
                     next_failure_counts[1] - previous_failure_counts[1],
                     project_id,
                     current_revision,

@@ -3,6 +3,17 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.11.07',
+    date: '2026-11-11',
+    title: 'PostgreSQL 兼容专项审计收口',
+    releasedAt: '2026-11-11 13:10:00 +08:00',
+    changes: [
+      '修复集数统计仍使用 SQLite 标量 MAX(episode_count,?) 的问题，改为正常计数增量；同一集重复新增节点不再虚增集数。',
+      '失败节点统计从 MAX(0, 当前值+增量) 改为标准 CASE WHEN，PostgreSQL 和 SQLite 均能执行，并保持最低为 0。',
+      '补齐 GROUP_CONCAT、json_extract 多级路径、INSERT OR REPLACE、LIMIT -1、COLLATE NOCASE 等 SQLite 写法的跨数据库回归测试。',
+    ],
+  },
+  {
     version: '2026.11.11.06',
     date: '2026-11-11',
     title: '生成进度 SQL 跨 SQLite/PostgreSQL 统一',

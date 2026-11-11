@@ -66,6 +66,82 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertNotIn("owned-node", ep1["nodeIds"])
         self.assertIn("owned-node", ep2["nodeIds"])
 
+    def test_repeated_node_insert_does_not_increment_existing_episode_count(self):
+        project_id = canvas_store.create_project("episode-count-stable")
+        for node_id in ("episode-node-a", "episode-node-b"):
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": node_id,
+                    "type": "image",
+                    "title": node_id,
+                    "metadata": {"status": "idle", "episodeId": "EP001"},
+                }],
+                episode_id="EP001",
+            )
+        con = canvas_store._connect()
+        episode_count = int(con.execute(
+            "SELECT episode_count FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()[0])
+        con.close()
+        self.assertEqual(episode_count, 1)
+
+    def test_failure_counts_clamp_at_zero_after_node_recovers(self):
+        project_id = canvas_store.create_project("failure-count-clamp")
+        canvas_store.insert_project_nodes(
+            project_id,
+            [{
+                "id": "recovering-node",
+                "type": "image",
+                "title": "恢复节点",
+                "metadata": {"status": "idle", "episodeId": "EP001"},
+            }],
+            episode_id="EP001",
+        )
+        project = canvas_store.get_project(project_id)
+        node = next(
+            item for item in project["payload"]["nodes"]
+            if item["id"] == "recovering-node"
+        )
+        failed_node = {
+            **node,
+            "metadata": {**node["metadata"], "status": "failed"},
+        }
+        canvas_store.update_project_nodes(
+            project_id,
+            [failed_node],
+            episode_id="EP001",
+        )
+        con = canvas_store._connect()
+        failed_count = int(con.execute(
+            "SELECT failed_count FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()[0])
+        con.close()
+        self.assertEqual(failed_count, 1)
+
+        recovered = canvas_store.get_project(project_id)
+        recovered_node = next(
+            item for item in recovered["payload"]["nodes"]
+            if item["id"] == "recovering-node"
+        )
+        canvas_store.update_project_nodes(
+            project_id,
+            [{
+                **recovered_node,
+                "metadata": {**recovered_node["metadata"], "status": "idle"},
+            }],
+            episode_id="EP001",
+        )
+        con = canvas_store._connect()
+        clean_count = int(con.execute(
+            "SELECT failed_count FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()[0])
+        con.close()
+        self.assertEqual(clean_count, 0)
+
     def test_insert_node_without_episode_is_rejected(self):
         project_id = canvas_store.create_project("episode-node-required")
         with self.assertRaisesRegex(ValueError, "所属集"):
