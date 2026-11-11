@@ -237,7 +237,7 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.assertEqual(int(higher["progress"]), 30)
         source = Path(canvas_store.__file__).read_text(encoding="utf-8")
         self.assertIn(
-            "MAX(CAST(COALESCE({key},0) AS INTEGER),CAST(? AS INTEGER))",
+            "WHEN CAST(COALESCE({key},0) AS INTEGER)>CAST(? AS INTEGER)",
             source,
         )
 

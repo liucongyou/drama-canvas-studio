@@ -4215,35 +4215,34 @@ def update_generation_task(task_id, **fields):
         updates["updated_at"] = now
         if "progress" in updates:
             updates["progress_updated_at"] = now
-        if lease_owner is not None:
-            set_clause = ",".join(
-                (
-                    f"{key}=MAX(CAST(COALESCE({key},0) AS INTEGER),CAST(? AS INTEGER))"
-                    if key == "progress"
-                    else f"{key}=?"
+        set_clauses: list[str] = []
+        update_values: list[object] = []
+        for key, value in updates.items():
+            if key == "progress":
+                set_clauses.append(
+                    f"{key}=CASE "
+                    f"WHEN CAST(COALESCE({key},0) AS INTEGER)>CAST(? AS INTEGER) "
+                    f"THEN CAST(COALESCE({key},0) AS INTEGER) "
+                    f"ELSE CAST(? AS INTEGER) END"
                 )
-                for key in updates
-            )
+                update_values.extend((value, value))
+            else:
+                set_clauses.append(f"{key}=?")
+                update_values.append(value)
+        set_clause = ",".join(set_clauses)
+        if lease_owner is not None:
             con.execute(
                 "UPDATE generation_tasks SET "
                 + set_clause
                 + " WHERE id=? AND lease_owner=? AND status='running'",
-                (*updates.values(), task_id, str(lease_owner or "")),
+                (*update_values, task_id, str(lease_owner or "")),
             )
             return
-        set_clause = ",".join(
-            (
-                f"{key}=MAX(CAST(COALESCE({key},0) AS INTEGER),CAST(? AS INTEGER))"
-                if key == "progress"
-                else f"{key}=?"
-            )
-            for key in updates
-        )
         con.execute(
             "UPDATE generation_tasks SET "
             + set_clause
             + " WHERE id=?",
-            (*updates.values(), task_id),
+            (*update_values, task_id),
         )
     _run_write_transaction(write)
     return get_generation_task(task_id)

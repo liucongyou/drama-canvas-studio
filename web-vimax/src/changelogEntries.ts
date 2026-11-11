@@ -3,6 +3,16 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.11.06',
+    date: '2026-11-11',
+    title: '生成进度 SQL 跨 SQLite/PostgreSQL 统一',
+    releasedAt: '2026-11-11 12:55:00 +08:00',
+    changes: [
+      'SQLite 的 MAX(a,b) 是标量函数，但 PostgreSQL 的 MAX 只有聚合形式；生成进度更新改用标准 CASE WHEN，两个数据库不再依赖各自专有行为。',
+      '保留进度只增不减的并发语义，避免两个 worker 同时更新时旧进度覆盖新进度。',
+    ],
+  },
+  {
     version: '2026.11.11.05',
     date: '2026-11-11',
     title: 'PostgreSQL 保存与生成进度兼容修复',
