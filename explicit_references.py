@@ -19,6 +19,7 @@ class MentionResolution:
     voices: list[dict[str, Any]]
     issues: list[MentionIssue]
     has_explicit_mention: bool = False
+    reference_identity_map: dict[str, str] | None = None
 
 
 def _title(node: dict[str, Any]) -> str:
@@ -118,6 +119,7 @@ def resolve_explicit_references(
     voices: list[dict[str, Any]] = []
     issues: list[MentionIssue] = []
     seen: set[str] = set()
+    reference_identity_map: dict[str, str] = {}
 
     for label in sorted(by_title, key=len, reverse=True):
         if not _label_matches(text, label):
@@ -137,15 +139,25 @@ def resolve_explicit_references(
         seen.add(node_id)
         base = candidate_by_node.get(node_id) or {}
         metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        stable_identity = (
+            (
+                f"assetId:{str(metadata.get('assetId') or '').strip()}"
+                if str(metadata.get("assetId") or "").strip()
+                else ""
+            )
+            or node_id
+        )
         resolved = {
             **base,
             "nodeId": node_id,
             "label": label,
+            "stableIdentity": stable_identity,
         }
         for key in ("assetId", "seriesId", "variantKey"):
             value = str(metadata.get(key) or "").strip()
             if value:
                 resolved[key] = value
+        reference_identity_map[label] = stable_identity
         if _kind(node) == "audio":
             voices.append(resolved)
         else:
@@ -165,4 +177,5 @@ def resolve_explicit_references(
         voices=voices,
         issues=issues,
         has_explicit_mention=bool(refs or voices or issues),
+        reference_identity_map=reference_identity_map,
     )

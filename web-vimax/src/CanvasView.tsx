@@ -5486,7 +5486,6 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                     node.prompt.trim()
                     && !busy
                     && !overPromptLimit
-                    && !referenceEvaluation.issue
                     && curModelSpec
                     && !missingProviderKey
                   ) {
@@ -5825,9 +5824,9 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
           <button
             type="button"
             className="jim-gen"
-            disabled={busy || !node.prompt.trim() || overPromptLimit || Boolean(referenceEvaluation.issue) || !curModelSpec || missingProviderKey || dependenciesBlocked || modelParamIssues.length > 0}
+            disabled={busy || !node.prompt.trim() || overPromptLimit || !curModelSpec || missingProviderKey || modelParamIssues.length > 0}
             onClick={() => void generateAndClose()}
-            title={busy ? '当前节点正在生成，请到任务中心查看进度' : !curModelSpec ? '当前类型没有可用模型' : missingProviderKey ? '当前供应商尚未配置 API Key' : overPromptLimit ? `提示词超过当前模型上限（${promptLimit} 字符）` : referenceEvaluation.issue ? referenceEvaluation.message : modelParamIssues.length ? modelParamIssues[0].message : dependenciesBlocked ? `缺少：${dependencyBlockers.map((item) => `${item.title}（${item.reason}）`).join('；')}` : isTxt ? '按当前内容生成/改写文本 · Ctrl+⏎' : '按当前供应商与参数生成 · Ctrl+⏎'}
+            title={busy ? '当前节点正在生成，请到任务中心查看进度' : !curModelSpec ? '当前类型没有可用模型' : missingProviderKey ? '当前供应商尚未配置 API Key' : overPromptLimit ? `提示词超过当前模型上限（${promptLimit} 字符）` : modelParamIssues.length ? modelParamIssues[0].message : isTxt ? '按当前内容生成/改写文本 · Ctrl+⏎' : '按当前供应商与参数生成 · Ctrl+⏎'}
           ><ArrowUp size={16} strokeWidth={2.6} aria-hidden="true" /></button>
           </div>
         </div>}
@@ -8439,7 +8438,6 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
   const selected = candidates.filter((item) => item.state === 'ready' && selectedIds.has(item.node.id));
   const runningCount = candidates.filter((item) => item.state === 'running').length;
   const blockedCount = candidates.filter((item) => item.state === 'blocked').length;
-  const referenceLimitCandidates = candidates.filter((item) => item.blocker === 'reference_limit');
   const allReadySelected = readyCandidates.length > 0
     && readyCandidates.every((item) => selectedIds.has(item.node.id));
   const knownCost = selected.reduce((sum, item) => sum + Number(item.cost || 0), 0);
@@ -8495,19 +8493,6 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
             </button>
           )}
         </div>
-
-        {referenceLimitCandidates.length > 0 && (
-          <div className="canvas-batch-gen-alert" role="alert">
-            <CircleAlert size={14} strokeWidth={2} aria-hidden="true" />
-            <span>
-              <strong>{referenceLimitCandidates.length} 项引用超出模型限制，已阻止提交</strong>
-              <small title={referenceLimitCandidates.map((item) => `${item.node.title}：${item.reason}`).join('\n')}>
-                {referenceLimitCandidates.slice(0, 2).map((item) => `${item.node.title || '未命名节点'}：${item.reason}`).join('；')}
-                {referenceLimitCandidates.length > 2 ? `；另有 ${referenceLimitCandidates.length - 2} 项` : ''}
-              </small>
-            </span>
-          </div>
-        )}
 
         <div className="canvas-batch-gen-list">
           {candidates.map((candidate) => {
@@ -15922,7 +15907,7 @@ function CanvasViewInner({
       setToast(`提示词超过当前模型上限（${promptLimit} 字符）`);
       return false;
     }
-    let params: CanvasMediaParams = activeModel
+    const params: CanvasMediaParams = activeModel
       ? inheritedGenerationParams(node.params || {}, activeModel)
       : {...(node.params || {})};
     if (activeModel) {
@@ -15930,26 +15915,6 @@ function CanvasViewInner({
         params.size = CLARITY_SIZES[String(params.clarity || '1.5K')]?.[String(params.ratio || '1:1')]
           || activeModel.defaultParams?.size;
       }
-    }
-    const references = evaluateReferenceLimits(
-      {...node, params},
-      mediaNodes,
-      allEdges,
-      activeModel || null,
-    );
-    params = references.node.params || params;
-    if (references.issue) {
-      setToast(references.message);
-      return false;
-    }
-    const dependencyBlockers = mediaDependencyBlockers(references.node, mediaNodes);
-    if (dependencyBlockers.length > 0) {
-      const names = dependencyBlockers
-        .slice(0, 4)
-        .map((item) => `${item.title}（${item.reason}）`)
-        .join('、');
-      setToast(`还有 ${dependencyBlockers.length} 项引用未就绪：${names}${dependencyBlockers.length > 4 ? '…' : ''}`);
-      return false;
     }
     if (!source?.confirmed) {
       const modelName = activeModel?.label

@@ -36,6 +36,7 @@ def execute_tool_loop(
     limit = max(1, int(max_steps or settings.agent_max_tool_steps or 30))
     working = [dict(item) for item in messages]
     executed: list[dict[str, Any]] = []
+    seen_calls: dict[str, int] = {}
     for _step in range(limit):
         round_chunks: list[str] = []
         round_started = False
@@ -79,6 +80,17 @@ def execute_tool_loop(
                 args = {"_invalidArguments": raw_args}
             if not isinstance(args, dict):
                 args = {"_invalidArguments": args}
+            signature = json.dumps(
+                {"name": name, "arguments": args},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            seen_calls[signature] = seen_calls.get(signature, 0) + 1
+            if seen_calls[signature] > 2:
+                raise AgentToolLimitError(
+                    f"工具 {name} 以相同参数重复调用超过 2 次，已停止空转"
+                )
             call_id = 0
             try:
                 call_id = db.start_tool_call(
@@ -188,9 +200,17 @@ def get_run(
 ) -> dict[str, Any] | None:
     with db.db() as conn:
         if tenant_id or account_id:
+            owner_compat = str(tenant_id or "") == "owner"
             row = conn.execute(
-                "SELECT * FROM runs WHERE id=? AND tenant_id=? AND account_id=?",
-                (run_id, str(tenant_id or ""), str(account_id or "")),
+                "SELECT * FROM runs WHERE id=? AND ("
+                "(tenant_id=? AND account_id=?)"
+                + (" OR (tenant_id='' AND account_id='')" if owner_compat else "")
+                + ")",
+                (
+                    run_id,
+                    str(tenant_id or ""),
+                    str(account_id or ""),
+                ),
             ).fetchone()
         else:
             row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
@@ -268,8 +288,14 @@ def list_runs(
     clauses = []
     params: list[Any] = []
     if tenant_id or account_id:
-        clauses.extend(["tenant_id=?", "account_id=?"])
-        params.extend([str(tenant_id or ""), str(account_id or "")])
+        if str(tenant_id or "") == "owner":
+            clauses.append(
+                "((tenant_id=? AND account_id=?) OR (tenant_id='' AND account_id=''))"
+            )
+            params.extend([str(tenant_id or ""), str(account_id or "")])
+        else:
+            clauses.extend(["tenant_id=?", "account_id=?"])
+            params.extend([str(tenant_id or ""), str(account_id or "")])
     if project_id:
         clauses.append("project_id=?")
         params.append(project_id)
@@ -751,11 +777,16 @@ def confirm_import(
     db.set_run_stage(run_id, "deliver")
     db.set_run_status(run_id, "running")
     try:
-        result = CanvasClient(
-            tenant_id=run.get("tenantId") or "",
-            account_id=run.get("accountId") or "",
+        client = CanvasClient(
+            tenant_id=run.get("tenantId") or tenant_id,
+            account_id=run.get("accountId") or account_id,
             request_id=run_id,
-        ).commit_import(run["projectId"], feed, int(revision))
+        )
+        # An owner-scoped legacy run may have empty attribution. Resolve the
+        # project through the current owner context before any write so a stale
+        # run id can never become a cross-tenant import capability.
+        client.get_project(run["projectId"])
+        result = client.commit_import(run["projectId"], feed, int(revision))
     except Exception as exc:
         db.finish_stage(deliver_stage, "failed", {"error": str(exc)})
         db.set_run_status(run_id, "failed", str(exc))

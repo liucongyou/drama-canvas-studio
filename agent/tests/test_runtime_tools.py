@@ -133,7 +133,9 @@ def test_tool_loop_can_finish_after_twelve_steps(monkeypatch) -> None:
                         "type": "function",
                         "function": {
                             "name": "get_project_index",
-                            "arguments": "{}",
+                            "arguments": (
+                                f'{{"projectId":"p{calls_seen}"}}'
+                            ),
                         },
                     }
                 ],
@@ -157,6 +159,38 @@ def test_tool_loop_can_finish_after_twelve_steps(monkeypatch) -> None:
 
     assert content == '{"title":"finished"}'
     assert len(calls) == 20
+
+
+def test_tool_loop_stops_repeated_identical_calls(monkeypatch) -> None:
+    call_number = 0
+
+    def repeated(*_args, **_kwargs):
+        nonlocal call_number
+        call_number += 1
+        return ToolRound(
+            content="",
+            tool_calls=[
+                {
+                    "id": f"call-{call_number}",
+                    "type": "function",
+                    "function": {
+                        "name": "get_project_index",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+            native=True,
+        )
+
+    monkeypatch.setattr(runtime, "chat_tool_round_stream", repeated)
+    with pytest.raises(runtime.AgentToolLimitError, match="相同参数重复调用"):
+        runtime.execute_tool_loop(
+            "system",
+            [{"role": "user", "content": "hello"}],
+            FakeTools(),
+            {"projectId": "p1"},
+            max_steps=30,
+        )
 
 
 def test_system_prompt_injects_runtime_quality_contract(tmp_path) -> None:

@@ -7326,6 +7326,21 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if agent_gateway.is_agent_internal_path(path):
+            if agent_gateway.allow_unsigned_local_agent():
+                if not agent_gateway.loopback_client(self):
+                    self._send(
+                        403,
+                        {
+                            "error": "未签名的 Agent 请求只能来自本机",
+                            "code": "AGENT_INTERNAL_AUTH_FAILED",
+                        },
+                    )
+                    return None
+                self._internal_agent_body = self._read_raw_body(
+                    agent_gateway.MAX_PROXY_BODY_BYTES
+                )
+                self._internal_agent_context = None
+                return nullcontext()
             try:
                 raw_body = self._read_raw_body(agent_gateway.MAX_PROXY_BODY_BYTES)
                 context = agent_gateway.verify_context_headers(
@@ -8031,6 +8046,11 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if agent_gateway.is_agent_browser_path(path):
             return agent_gateway.proxy_agent(self)
+        if path == "/api/internal/agent/projects":
+            return self._send(
+                200,
+                {"projects": agent_gateway.project_summaries_from_store(store)},
+            )
         internal_match = re.match(
             r"^/api/internal/agent/projects/([^/]+)/(project|index|nodes|assets)$",
             path,
@@ -11318,8 +11338,32 @@ class Handler(BaseHTTPRequestHandler):
             for raw in raw_refs or []:
                 if not isinstance(raw, dict):
                     continue
-                ref_id = str(raw.get("nodeId") or "").strip()
+                requested_node_id = str(raw.get("nodeId") or "").strip()
+                requested_label = str(raw.get("label") or "").strip()
                 requested_asset_id = str(raw.get("assetId") or "").strip()
+
+                # The frontend may only have a canonical @ label (for example
+                # `角色｜贾富贵（图3）`). Resolve that label to the server-side
+                # node/asset identity before matching the asset ID. Browser
+                # ordering never determines identity.
+                if not requested_node_id and requested_label:
+                    matching_nodes = [
+                        item for item in nodes
+                        if str(item.get("title") or "").strip() == requested_label
+                    ]
+                    if len(matching_nodes) == 1:
+                        requested_node_id = str(
+                            matching_nodes[0].get("id") or ""
+                        )
+                    elif len(matching_nodes) > 1:
+                        missing.append({
+                            "nodeId": "",
+                            "label": requested_label,
+                            "reason": "提示词 @ 名称对应多个资产，无法确定唯一资产 ID",
+                        })
+                        continue
+
+                ref_id = requested_node_id
                 requested_series_id = str(raw.get("seriesId") or "").strip()
                 requested_variant = (
                     str(raw.get("variantKey") or "default").strip() or "default"
@@ -11609,6 +11653,13 @@ class Handler(BaseHTTPRequestHandler):
                 requested_model or None,
                 ntype,
             )
+            effective = {**(model.get("defaultParams") or {}), **params}
+            mention_identities = (
+                explicit.reference_identity_map
+                if explicit.has_explicit_mention
+                else {}
+            )
+            effective["_mentionIdentities"] = mention_identities
             if task_id:
                 store.update_generation_task(
                     task_id,
@@ -11619,7 +11670,6 @@ class Handler(BaseHTTPRequestHandler):
                     error="", finished_at="",
                 )
             ensure_provider_auth(provider)
-            effective = {**(model.get("defaultParams") or {}), **params}
             for key in ("ratio", "resolution", "duration", "guidance", "size", "system", "temperature", "maxTokens"):
                 if effective.get(key) in (None, "") and meta.get(key) not in (None, ""):
                     effective[key] = meta.get(key)
@@ -11628,13 +11678,55 @@ class Handler(BaseHTTPRequestHandler):
                 raise RuntimeError(f"提示词超过当前模型上限（{max_prompt} 字符）")
             if not prompt.strip():
                 raise RuntimeError("提示词为空，不能提交生成")
-            raw_refs = (
-                explicit.refs
-                if ntype == "video" and explicit.has_explicit_mention
-                else params.get("refs")
+            candidate_refs = (
+                params.get("refs")
                 if params.get("refs") is not None
                 else meta.get("refs")
+                if isinstance(meta.get("refs"), list)
+                else []
             )
+            connections = (
+                proj["payload"].get("connections")
+                if isinstance(proj["payload"].get("connections"), list)
+                else []
+            )
+            linked_refs = []
+            if ntype == "video":
+                linked_node_ids = {
+                    str(edge.get("fromNodeId") or "")
+                    for edge in connections
+                    if isinstance(edge, dict)
+                    and str(edge.get("toNodeId") or "") == str(node.get("id") or "")
+                    and str(edge.get("fromNodeId") or "")
+                }
+                for source in proj["payload"].get("nodes", []):
+                    if not isinstance(source, dict):
+                        continue
+                    if str(source.get("id") or "") not in linked_node_ids:
+                        continue
+                    source_meta = source.get("metadata") or {}
+                    linked_refs.append({
+                        "nodeId": str(source.get("id") or ""),
+                        "assetId": str(source_meta.get("assetId") or ""),
+                        "label": str(source.get("title") or ""),
+                    })
+            # `params.refs` describes the reference slots carried by this
+            # request. `@` mentions only describe which of those slots appear
+            # on screen. Keep both sets: background identities must still be
+            # available to the model, while explicit mentions may add an asset
+            # that was not represented in the stored candidate list.
+            raw_refs = [*candidate_refs, *linked_refs]
+            if ntype == "video":
+                seen_ref_ids = {
+                    str(ref.get("nodeId") or "")
+                    for ref in raw_refs
+                    if isinstance(ref, dict)
+                }
+                for ref in explicit.refs:
+                    node_id = str(ref.get("nodeId") or "")
+                    if node_id and node_id not in seen_ref_ids:
+                        raw_refs.append(ref)
+                        seen_ref_ids.add(node_id)
             refs, missing = resolve_refs(raw_refs)
             result = {}
             if ntype == "image":
@@ -11916,6 +12008,19 @@ class Handler(BaseHTTPRequestHandler):
                 generation_task_id = task_id
 
                 def on_task_created(task):
+                    reference_plan = {
+                        "providerPromptSha256": str(
+                            task.get("providerPromptSha256") or ""
+                        ),
+                        "referenceMapping": task.get(
+                            "referenceMapping"
+                        ) or [],
+                        "voiceMapping": task.get("voiceMapping") or [],
+                    }
+                    meta["referencePlan"] = reference_plan
+                    commit_node_metadata(pid, node["id"], {
+                        "referencePlan": reference_plan,
+                    })
                     accepted = generation_acceptance.accept_provider_task(
                         task,
                         task_id=generation_task_id,
@@ -11928,11 +12033,12 @@ class Handler(BaseHTTPRequestHandler):
                             "params": effective,
                             "refs": refs,
                             "providerPromptSha256": str(
-                                task.get("providerPromptSha256") or ""
+                                reference_plan["providerPromptSha256"]
                             ),
-                            "referenceMapping": task.get(
+                            "referenceMapping": reference_plan[
                                 "referenceMapping"
-                            ) or [],
+                            ],
+                            "voiceMapping": reference_plan["voiceMapping"],
                             "nodeAssetId": str(meta.get("assetId") or ""),
                             "episodeId": str(meta.get("episodeId") or ""),
                         },
@@ -12037,6 +12143,7 @@ class Handler(BaseHTTPRequestHandler):
                         "status": "pending",
                         "code": "PROVIDER_OUTCOME_UNCERTAIN",
                         "error": str(result.get("message") or "供应商仍在生成"),
+                        "referencePlan": meta.get("referencePlan") or {},
                     })
                 provider_ready_at = store._now_iso()
                 provider_url = str(result.get("url") or "")
@@ -12277,6 +12384,7 @@ class Handler(BaseHTTPRequestHandler):
                 "voiceId", "provider", "model", "remoteModel", "production", "generatedAt",
                 "generationStartedAt", "generationFinishedAt", "providerTaskStatus",
                 "providerTaskPhase", "providerTaskProgress",
+                "referencePlan",
                 "videoValidation", "actualDuration", "storage", "storageError",
                 "source", "providerUrl", "providerResultUrl", "finalizePending",
                 "promptStale", "promptStaleReason", "sourcePromptUpdatedAt",
@@ -12377,6 +12485,7 @@ class Handler(BaseHTTPRequestHandler):
             "generationFinishedAt": str(
                 meta.get("generationFinishedAt") or node_written_at
             ),
+            "referencePlan": meta.get("referencePlan") or {},
         }
         if ntype == "text":
             response["text"] = meta.get("prompt")

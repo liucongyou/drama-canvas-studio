@@ -1101,7 +1101,11 @@ def _ark_material_reference_contract(
     refs: list[dict[str, Any]],
     voices: list[dict[str, Any]],
 ) -> str:
-    """Describe ordered visual/audio references like Volcano drama creation."""
+    """Describe the Ark reference slots carried by this request.
+
+    The slot list only says which assets were attached. It does not say that
+    every attached person is on screen; only body @mentions do that.
+    """
     image_refs = [
         ref for ref in refs
         if str(ref.get("kind") or "image") == "image" and ref.get("url")
@@ -1117,31 +1121,40 @@ def _ark_material_reference_contract(
         label = _ark_reference_label_base(
             str(ref.get("label") or f"参考图{image_index}").strip()
         )
+        asset_id = str(ref.get("assetId") or "").strip()
+        identity = (
+            f"，资产ID={asset_id}"
+            if asset_id
+            else ""
+        )
         if label.startswith("角色｜"):
             groups["人物"].append(
-                f"将图片 {image_index} 中的人物定义为<{label}>，仅采用该人物的"
-                "外貌、发型和服装；人物身份必须严格按此标签绑定，"
-                "不得因画面左右位置或出场先后替换成其他角色。"
+                f"@图像{image_index} = {label}{identity}。随请求提供的身份素材，"
+                "只有正文 @ 到该槽位时才让该角色出镜。出镜时仅采用该人物的"
+                "外貌、发型和服装；不得因画面左右位置或出场先后替换成其他角色。"
             )
         elif label.startswith("群像｜"):
             groups["群像"].append(
-                f"将图片 {image_index} 中的群体定义为<{label}>，仅采用该群体的统一制式、"
+                f"@图像{image_index} = {label}{identity}。随请求提供的群体素材，"
+                "只有正文 @ 到该槽位时才让该群体出镜。出镜时仅采用该群体的统一制式、"
                 "体态与身高带、年龄与性别构成、同框密度和统一朝向；"
                 "不刻画个体五官，不得按段落更换群体长相。"
             )
         elif label.startswith("场景｜"):
             groups["场景"].append(
-                f"将图片 {image_index} 中的场景定义为<{label}>，仅采用该场景的空间布局、"
+                f"@图像{image_index} = {label}{identity}。随请求提供的场景素材，"
+                "只有正文 @ 到该槽位时才使用。出镜时仅采用该场景的空间布局、"
                 "建筑、陈设和光线，不采用图中人物。"
             )
         elif label.startswith("道具｜"):
             groups["道具"].append(
-                f"将图片 {image_index} 中的道具定义为<{label}>，仅采用该道具的造型、"
+                f"@图像{image_index} = {label}{identity}。随请求提供的道具素材，"
+                "只有正文 @ 到该槽位时才使用。使用时仅采用该道具的造型、"
                 "材质与状态，不作为人物身份参考。"
             )
         else:
             groups["其它素材"].append(
-                f"将图片 {image_index} 中的素材定义为<{label}>，仅按标签指定用途引用。"
+                f"@图像{image_index} = {label}{identity}。仅按该槽位指定用途引用。"
             )
 
     voice_lines = []
@@ -1153,16 +1166,16 @@ def _ark_material_reference_contract(
             str(voice.get("label") or f"参考音频{voice_index}").strip()
         )
         voice_lines.append(
-            f"将音频 {voice_index} 中的音色定义为<{label}>，"
-            "仅用于该标签角色发声，不得分配给其他角色。"
+            f"@音频{voice_index} = {label}。"
+            "仅用于同名角色的发声，不得分配给其他角色。"
         )
     if voice_lines:
         groups["声音"] = voice_lines
 
     sections = [
         "### 素材引用",
-        "角色、群像、场景和道具均按标签识别，优先于画面中的人物出场顺序。",
-        "正文只使用下列已定义标签；标签与图片/音频的绑定不得交换。",
+        "@图像N 和 @音频N 是本次请求的临时槽位；资产ID才是持久身份。",
+        "槽位存在不代表角色出镜；正文明确 @图像N 的角色才按该动作出镜。",
         "场景参考图若出现人物，只取空间布局、建筑、陈设与光线，不采用人物。",
     ]
     for heading in ("人物", "群像", "场景", "道具", "声音", "其它素材"):
@@ -1173,43 +1186,73 @@ def _ark_material_reference_contract(
 
 
 _ARK_ASSET_MENTION = re.compile(
-    r"(@(?:角色|群像|场景|道具|音频)｜[^（\n@]+?)\s*（图\s*(\d+)）"
+    r"(@(?:角色|群像|场景|道具|音频)｜[^（\n@]+?)"
+    r"(?:\s*\[ID\s*[:：]\s*([^\]]+)\])?"
+    r"\s*（图\s*(\d+)）"
 )
 _ARK_UNDEFINED_MENTION = re.compile(
     r"@(?:角色|群像|场景|道具|音频)｜[^\s，。；;、)）]+"
 )
-_ARK_DEFINED_TAG = re.compile(
-    r"<((?:角色|群像|场景|道具|音频)｜[^>]+)>"
-)
 _ARK_FIGURE_SUFFIX = re.compile(r"\s*（图\s*\d+）\s*$")
+_ARK_ID_SUFFIX = re.compile(r"\s*\[ID\s*[:：][^\]]+\]\s*$")
 
 
 def _ark_reference_label_base(label: str) -> str:
-    return _ARK_FIGURE_SUFFIX.sub("", str(label or "")).strip()
+    return _ARK_ID_SUFFIX.sub(
+        "",
+        _ARK_FIGURE_SUFFIX.sub("", str(label or "")).strip(),
+    ).strip()
+
+
+def _ark_reference_identity(ref: dict[str, Any]) -> str:
+    asset_id = str(ref.get("assetId") or "").strip()
+    if asset_id:
+        return f"assetId:{asset_id}"
+    return str(ref.get("nodeId") or "").strip()
+
+
+def _ark_reference_identity_from_label(label: str) -> str:
+    match = _ARK_ID_SUFFIX.search(str(label or ""))
+    if not match:
+        return ""
+    value = match.group(0).strip()
+    value = re.sub(r"^\[ID\s*[:：]\s*", "", value)
+    value = value.removesuffix("]").strip()
+    return f"assetId:{value}"
 
 
 def _ark_prompt_with_reference_slots(
     prompt: str,
     refs: list[dict[str, Any]],
     voices: list[dict[str, Any]],
+    *,
+    mention_identities: dict[str, str] | None = None,
 ) -> str:
-    """Remove the canvas figure-code namespace from the provider prompt.
-
-    Ark identifies images by their position in `content`, while the canvas uses
-    persistent `图N` asset codes. Sending both number systems in one prompt
-    creates a real identity ambiguity (for example canvas 图16 may be Ark
-    reference image 2). The provider prompt therefore uses only the actual Ark
-    reference-image/reference-audio slots.
-    """
+    """Rewrite canvas mentions to the real Ark @image/@audio slot numbers."""
     image_refs = [
         ref for ref in refs
         if str(ref.get("kind") or "image") == "image" and ref.get("url")
     ]
-    by_label: dict[str, int] = {}
+    identities = {
+        _ark_reference_label_base(str(key or "")): str(value or "").strip()
+        for key, value in (mention_identities or {}).items()
+        if str(key or "").strip() and str(value or "").strip()
+    }
+    by_identity: dict[str, int] = {}
+    by_label: dict[str, set[int]] = {}
     for image_index, ref in enumerate(image_refs, 1):
         label = str(ref.get("label") or "").strip()
         if label:
-            by_label[_ark_reference_label_base(label)] = image_index
+            label_key = _ark_reference_label_base(label)
+            by_label.setdefault(label_key, set()).add(image_index)
+        identity = _ark_reference_identity(ref)
+        if identity:
+            existing = by_identity.get(identity)
+            if existing and existing != image_index:
+                raise RuntimeError(
+                    f"参考图资产ID重复，无法确定供应商槽位：{identity}"
+                )
+            by_identity[identity] = image_index
     audio_refs = [item for item in voices if item.get("url")]
     audio_by_label = {
         _ark_reference_label_base(str(ref.get("label") or "")): index
@@ -1218,14 +1261,33 @@ def _ark_prompt_with_reference_slots(
 
     def replace(match: re.Match[str]) -> str:
         mention = match.group(1)
-        figure = match.group(2)
+        inline_identity = str(match.group(2) or "").strip()
+        label_key = _ark_reference_label_base(mention.removeprefix("@"))
+        mention_identity = (
+            f"assetId:{inline_identity}"
+            if inline_identity
+            else _ark_reference_identity_from_label(label_key)
+        )
         if mention.startswith("@音频｜"):
-            slot = audio_by_label.get(
-                _ark_reference_label_base(mention.removeprefix("@"))
+            slot = audio_by_label.get(label_key)
+            if not slot:
+                return match.group(0)
+            return (
+                f"@音频{slot}（{label_key}）"
             )
-            return f"<{_ark_reference_label_base(mention.removeprefix('@'))}>" if slot else match.group(0)
-        slot = by_label.get(_ark_reference_label_base(mention.removeprefix("@")))
-        return f"<{_ark_reference_label_base(mention.removeprefix('@'))}>" if slot else match.group(0)
+        slot = None
+        bound_identity = identities.get(label_key)
+        if bound_identity:
+            slot = by_identity.get(bound_identity)
+        elif mention_identity:
+            slot = by_identity.get(mention_identity)
+        elif label_key in by_label and len(by_label[label_key]) == 1:
+            slot = next(iter(by_label[label_key]))
+        if not slot:
+            return match.group(0)
+        return (
+            f"@图像{slot}（{label_key}）"
+        )
 
     return _ARK_ASSET_MENTION.sub(replace, str(prompt or ""))
 
@@ -1273,13 +1335,20 @@ def _ark_prompt_with_material_reference_contract(
     prompt: str,
     refs: list[dict[str, Any]],
     voices: list[dict[str, Any]],
+    *,
+    mention_identities: dict[str, str] | None = None,
 ) -> str:
     """Use the prompt's actual Ark slot order as the only numbering authority.
 
     契约插在【场景资产】之前：段末是最低注意力区，模型读不到身份绑定。
     """
     base = _strip_material_contract_block(prompt)
-    base = _ark_prompt_with_reference_slots(base, refs, voices)
+    base = _ark_prompt_with_reference_slots(
+        base,
+        refs,
+        voices,
+        mention_identities=mention_identities,
+    )
     contract = _ark_material_reference_contract(refs, voices)
     if not contract:
         return base
@@ -1299,7 +1368,7 @@ def _ark_validate_reference_contract(
     image_urls: list[str],
     audio_urls: list[str],
 ) -> None:
-    """Block the paid request when prompt and provider slots disagree."""
+    """Block provider calls when an explicit asset mention is unresolved."""
     if _ARK_ASSET_MENTION.search(text) or _ARK_UNDEFINED_MENTION.search(text):
         raise RuntimeError(
             "视频提示词仍包含未绑定的画布资产引用，供应商参考图槽位未完全归一化"
@@ -1308,54 +1377,26 @@ def _ark_validate_reference_contract(
         ref for ref in refs
         if str(ref.get("kind") or "image") == "image" and ref.get("url")
     ]
-    labels: set[str] = set()
-    for index, ref in enumerate(image_refs, 1):
-        label = _ark_reference_label_base(str(ref.get("label") or ""))
-        if not label:
-            raise RuntimeError(f"第 {index} 张参考图缺少身份标签")
-        if label in labels:
-            raise RuntimeError(f"参考图身份标签重复：{label}")
-        labels.add(label)
-        pattern = (
-            rf"将图片\s*{index}\s*中[^\n]*定义为"
-            rf"<{re.escape(label)}>"
-        )
-        if not re.search(pattern, text):
-            raise RuntimeError(
-                f"参考图 {index} 的身份绑定缺失：{label}"
-            )
     if len(image_urls) != len(image_refs):
         raise RuntimeError(
             "供应商参考图数量与身份绑定数量不一致："
             f"{len(image_urls)} != {len(image_refs)}"
         )
     audio_refs = [item for item in voices if item.get("url")]
-    audio_labels: set[str] = set()
-    for index, ref in enumerate(audio_refs, 1):
-        label = _ark_reference_label_base(str(ref.get("label") or ""))
-        audio_labels.add(label)
-        pattern = (
-            rf"将音频\s*{index}\s*中[^\n]*定义为"
-            rf"<{re.escape(label)}>"
-        )
-        if not re.search(pattern, text):
-            raise RuntimeError(
-                f"音频 {index} 的身份绑定缺失：{label}"
-            )
     if len(audio_urls) != len(audio_refs):
         raise RuntimeError(
             "供应商参考音频数量与身份绑定数量不一致："
             f"{len(audio_urls)} != {len(audio_refs)}"
         )
-    undefined_tags = {
-        tag for tag in _ARK_DEFINED_TAG.findall(text)
-        if tag not in labels and tag not in audio_labels
+    used_audio_slots = {
+        int(slot) for slot in re.findall(r"@音频(\d+)", text)
     }
-    if undefined_tags:
-        raise RuntimeError(
-            "供应商提示词出现未定义身份标签："
-            + "、".join(sorted(undefined_tags)[:8])
-        )
+    invalid_audio_slots = {
+        slot for slot in used_audio_slots
+        if slot < 1 or slot > len(audio_refs)
+    }
+    if invalid_audio_slots:
+        raise RuntimeError("供应商提示词出现未定义的 @音频N 槽位")
 
 
 def _text_refs(refs: list[dict[str, Any]]) -> str:
@@ -3408,10 +3449,16 @@ def _ark_video(
     on_task_created: TaskEventCallback | None = None,
     on_task_update: TaskEventCallback | None = None,
 ) -> dict[str, Any]:
+    mention_identities = params.get("_mentionIdentities")
     text = _ark_prompt_with_material_reference_contract(
         prompt,
         refs,
         voices,
+        mention_identities=(
+            mention_identities
+            if isinstance(mention_identities, dict)
+            else None
+        ),
     )
     text_refs = _text_refs(refs)
     if text_refs:
@@ -3511,6 +3558,42 @@ def _ark_video(
         "status": "queued",
         "progress": 0,
         "createdAt": time.time(),
+        "providerPromptSha256": hashlib.sha256(
+            text.encode("utf-8")
+        ).hexdigest(),
+        "referenceMapping": [
+            {
+                "slot": index,
+                "assetId": str(ref.get("assetId") or ""),
+                "stableIdentity": _ark_reference_identity(ref),
+                "label": _ark_reference_label_base(
+                    str(ref.get("label") or "")
+                ),
+                "nodeId": str(ref.get("nodeId") or ""),
+            }
+            for index, ref in enumerate(
+                [
+                    item for item in refs
+                    if str(item.get("kind") or "image") == "image"
+                    and item.get("url")
+                ],
+                1,
+            )
+        ],
+        "voiceMapping": [
+            {
+                "slot": index,
+                "assetId": str(ref.get("assetId") or ""),
+                "label": _ark_reference_label_base(
+                    str(ref.get("label") or "")
+                ),
+                "nodeId": str(ref.get("nodeId") or ""),
+            }
+            for index, ref in enumerate(
+                [item for item in voices if item.get("url")],
+                1,
+            )
+        ],
     })
     poll_url = _join_url(
         provider["base_url"],

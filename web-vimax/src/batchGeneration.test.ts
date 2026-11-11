@@ -112,36 +112,36 @@ describe('batch generation evaluation', () => {
     expect(result.map((item) => item.state)).toEqual(['ready', 'running']);
   });
 
-  it('blocks nodes whose referenced asset has not been generated', () => {
+  it('leaves referenced asset readiness to the backend submission gate', () => {
     const source = node('source', {status: 'idle', mediaUrl: undefined});
     const target = node('target', {
+      prompt: '@source 角色定妆，正面半身像',
       params: {
         provider: 'provider-1',
         model: 'image-model',
-        refs: [{nodeId: 'source', label: '角色｜赵铁柱（图1）'}],
+        refs: [{nodeId: 'source', label: 'source'}],
       },
     });
     const [candidate] = evaluateBatchGeneration([target], [source, target], catalog, []);
-    expect(candidate.state).toBe('blocked');
-    expect(candidate.reason).toContain('引用未就绪');
+    expect(candidate.state).toBe('ready');
   });
 
-  it('blocks nodes whose referenced media file is confirmed missing', () => {
+  it('does not preempt backend media readiness checks in batch UI', () => {
     const source = node('source', {
       status: 'done',
       mediaUrl: '/uploads/missing.png',
       mediaAvailability: 'missing',
     });
     const target = node('target', {
+      prompt: '@source 角色定妆，正面半身像',
       params: {
         provider: 'provider-1',
         model: 'image-model',
-        refs: [{nodeId: 'source', label: '角色｜赵铁柱（图1）'}],
+        refs: [{nodeId: 'source', label: 'source'}],
       },
     });
     const [candidate] = evaluateBatchGeneration([target], [source, target], catalog, []);
-    expect(candidate.state).toBe('blocked');
-    expect(candidate.reason).toContain('尚未生成');
+    expect(candidate.state).toBe('ready');
   });
 
   it('blocks a model whose provider has no API key', () => {
@@ -155,11 +155,12 @@ describe('batch generation evaluation', () => {
     expect(candidate.reason).toContain('API Key');
   });
 
-  it('blocks image reference counts above the per-kind model limit', () => {
+  it('does not enforce backend reference counts in the batch UI', () => {
     const sources = Array.from({length: 6}, (_, index) => node(`image-${index}`, {
       mediaUrl: `https://example.com/${index}.png`,
     }));
     const target = node('target', {
+      prompt: sources.map((source) => `@${source.title}`).join('，'),
       params: {
         provider: 'provider-1',
         model: 'image-model',
@@ -172,16 +173,15 @@ describe('batch generation evaluation', () => {
       {...catalog, models: [{...model, limits: {maxImages: 5, maxPromptChars: 100}}]},
       [],
     );
-    expect(candidate.state).toBe('blocked');
-    expect(candidate.blocker).toBe('reference_limit');
-    expect(candidate.reason).toContain('最多 5 张参考图，当前 6 张');
+    expect(candidate.state).toBe('ready');
   });
 
-  it('blocks total reference counts above maxRefs when no category total exists', () => {
+  it('does not enforce backend maxRefs in the batch UI', () => {
     const sources = Array.from({length: 4}, (_, index) => node(`image-${index}`, {
       mediaUrl: `https://example.com/${index}.png`,
     }));
     const target = node('target', {
+      prompt: sources.map((source) => `@${source.title}`).join('，'),
       params: {
         provider: 'provider-1',
         model: 'image-model',
@@ -194,17 +194,17 @@ describe('batch generation evaluation', () => {
       {...catalog, models: [{...model, limits: {maxRefs: 3, maxPromptChars: 100}}]},
       [],
     );
-    expect(candidate.state).toBe('blocked');
-    expect(candidate.reason).toContain('最多 3 个参考素材，当前 4 个');
+    expect(candidate.state).toBe('ready');
   });
 
-  it('blocks video voice references above maxAudios', () => {
+  it('does not enforce backend audio counts in the batch UI', () => {
     const voices = Array.from({length: 4}, (_, index) => node(`voice-${index}`, {
       kind: 'audio',
       mediaUrl: `https://example.com/${index}.mp3`,
     }));
     const target = node('target', {
       kind: 'video',
+      prompt: voices.map((source) => `@${source.title}`).join('，'),
       params: {
         provider: 'provider-1',
         model: 'video-model',
@@ -212,17 +212,16 @@ describe('batch generation evaluation', () => {
       },
     });
     const [candidate] = evaluateBatchGeneration([target], [...voices, target], catalog, []);
-    expect(candidate.state).toBe('blocked');
-    expect(candidate.blocker).toBe('reference_limit');
-    expect(candidate.reason).toContain('最多 3 个音色，当前 4 个');
+    expect(candidate.state).toBe('ready');
   });
 
-  it('counts automatically linked references before allowing batch submission', () => {
+  it('leaves automatically linked reference limits to the backend', () => {
     const sources = Array.from({length: 6}, (_, index) => node(`image-${index}`, {
       mediaUrl: `https://example.com/${index}.png`,
     }));
     const target = node('target', {
       kind: 'video',
+      prompt: sources.map((source) => `@${source.title}`).join('，'),
       params: {provider: 'provider-1', model: 'video-model', refs: []},
     });
     const edges = sources.map((source) => ({
@@ -237,8 +236,7 @@ describe('batch generation evaluation', () => {
       [],
       edges,
     );
-    expect(candidate.state).toBe('blocked');
-    expect(candidate.reason).toContain('最多 5 张参考图，当前 6 张');
+    expect(candidate.state).toBe('ready');
   });
 
   it('keeps a node ready at the exact per-kind reference limit', () => {
@@ -247,6 +245,7 @@ describe('batch generation evaluation', () => {
     }));
     const target = node('target', {
       kind: 'video',
+      prompt: sources.map((source) => `@${source.title}`).join('，'),
       params: {
         provider: 'provider-1',
         model: 'video-model',
@@ -257,4 +256,5 @@ describe('batch generation evaluation', () => {
     expect(candidate.state).toBe('ready');
     expect(candidate.blocker).toBeNull();
   });
+
 });

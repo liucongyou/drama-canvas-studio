@@ -63,10 +63,10 @@ export function resolveGenerationModel(node: CanvasMediaNode, catalog: ModelCata
 }
 
 /**
- * Build the exact reference set that submission will use. Video nodes inherit
- * connected media just like `onGenerateMediaNode`, including links drawn in
- * either direction. Keeping this pure makes the prompt editor and batch dialog
- * agree before the user pays for a request.
+ * Add linked media to the request candidate set for local readiness display.
+ *
+ * This is not a provider request contract. The backend re-resolves `@`
+ * mentions against node/asset IDs and builds the authoritative reference plan.
  */
 export function applyGenerationReferences(
   node: CanvasMediaNode,
@@ -261,32 +261,6 @@ export function evaluateBatchGenerationNode(
       model,
       state: 'blocked',
       reason: `提示词超过 ${maxPromptChars} 字符`,
-      blocker: null,
-      cost,
-      costLabel,
-      hasVideoInput,
-    };
-  }
-  if (references.issue) {
-    return {
-      node,
-      model,
-      state: 'blocked',
-      reason: references.message,
-      blocker: 'reference_limit',
-      cost,
-      costLabel,
-      hasVideoInput,
-    };
-  }
-  const blockers = dependencyBlockers(effectiveNode, pool);
-  if (blockers.length > 0) {
-    const suffix = blockers.length > 2 ? ` 等 ${blockers.length} 项` : '';
-    return {
-      node,
-      model,
-      state: 'blocked',
-      reason: `引用未就绪：${blockers.slice(0, 2).join('、')}${suffix}`,
       blocker: null,
       cost,
       costLabel,

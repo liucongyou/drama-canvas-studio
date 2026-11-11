@@ -140,6 +140,22 @@ export type AgentEvent = {
   type: string;
   message?: string;
   sessionId?: string;
+  referencePlan?: {
+    providerPromptSha256?: string;
+    referenceMapping?: Array<{
+      slot: number;
+      assetId?: string;
+      stableIdentity?: string;
+      label?: string;
+      nodeId?: string;
+    }>;
+    voiceMapping?: Array<{
+      slot: number;
+      assetId?: string;
+      label?: string;
+      nodeId?: string;
+    }>;
+  };
   [k: string]: unknown;
 };
 
@@ -3337,6 +3353,22 @@ export async function generateCanvasNodeNow(
       providerTaskPhase?: string;
       providerTaskProgress?: number;
       generationFinishedAt?: string;
+      referencePlan?: {
+        providerPromptSha256?: string;
+        referenceMapping?: Array<{
+          slot: number;
+          assetId?: string;
+          stableIdentity?: string;
+          label?: string;
+          nodeId?: string;
+        }>;
+        voiceMapping?: Array<{
+          slot: number;
+          assetId?: string;
+          label?: string;
+          nodeId?: string;
+        }>;
+      };
       code?: string;
       replayed?: boolean;
     };
@@ -3365,6 +3397,7 @@ export async function generateCanvasNodeNow(
       providerTaskPhase: result.providerTaskPhase,
       providerTaskProgress: result.providerTaskProgress,
       generationFinishedAt: result.generationFinishedAt,
+      referencePlan: result.referencePlan,
     });
     return {deferred: false, ...result};
   } catch (error) {

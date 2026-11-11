@@ -2342,13 +2342,13 @@ class ProviderPayloadTests(unittest.TestCase):
             "https://image.example/prop-7.jpg",
             "https://image.example/crowd-16.jpg",
         ])
-        self.assertIn("将图片 1 中的人物定义为<角色｜陈大强>", text)
-        self.assertIn("将图片 2 中的场景定义为<场景｜厂区后街·母版>", text)
-        self.assertIn("将图片 3 中的人物定义为<角色｜赵铁柱>", text)
-        self.assertIn("将图片 4 中的场景定义为<场景｜塌方矿道·母版>", text)
-        self.assertIn("将图片 5 中的人物定义为<角色｜贾富贵>", text)
-        self.assertIn("将图片 6 中的道具定义为<道具｜合同>", text)
-        self.assertIn("将图片 7 中的群体定义为<群像｜街坊群>", text)
+        self.assertIn("@图像1 = 角色｜陈大强", text)
+        self.assertIn("@图像2 = 场景｜厂区后街·母版", text)
+        self.assertIn("@图像3 = 角色｜赵铁柱", text)
+        self.assertIn("@图像4 = 场景｜塌方矿道·母版", text)
+        self.assertIn("@图像5 = 角色｜贾富贵", text)
+        self.assertIn("@图像6 = 道具｜合同", text)
+        self.assertIn("@图像7 = 群像｜街坊群", text)
         self.assertIn("【群像】", text)
         self.assertIn("不采用图中人物", text)
 
@@ -2380,8 +2380,8 @@ class ProviderPayloadTests(unittest.TestCase):
 
         self.assertEqual(text.count("### 素材引用"), 1)
         self.assertNotIn("参考图 99", text)
-        self.assertIn("将图片 1 中的场景定义为<场景｜厂区后街·母版>", text)
-        self.assertIn("将图片 2 中的人物定义为<角色｜陈大强>", text)
+        self.assertIn("@图像1 = 场景｜厂区后街·母版", text)
+        self.assertIn("@图像2 = 角色｜陈大强", text)
 
     def test_ark_provider_prompt_uses_only_actual_reference_slots(self):
         refs = [
@@ -2389,11 +2389,13 @@ class ProviderPayloadTests(unittest.TestCase):
                 "kind": "image",
                 "url": "https://image.example/accountant.jpg",
                 "label": "角色｜老会计（图16）",
+                "assetId": "character:accountant:default",
             },
             {
                 "kind": "image",
                 "url": "https://image.example/jia.jpg",
                 "label": "角色｜贾富贵（图3）",
+                "assetId": "character:jia:default",
             },
         ]
         prompt = (
@@ -2407,12 +2409,119 @@ class ProviderPayloadTests(unittest.TestCase):
             [],
         )
 
-        self.assertIn("<角色｜老会计>；", text)
-        self.assertIn("<角色｜贾富贵>抱着布包", text)
+        self.assertIn("@图像1（角色｜老会计）；", text)
+        self.assertIn("@图像2（角色｜贾富贵）抱着布包", text)
         self.assertNotIn("@角色｜贾富贵（图3）", text)
         self.assertNotIn("（图16）", text)
-        self.assertIn("将图片 1 中的人物定义为<角色｜老会计>", text)
-        self.assertIn("将图片 2 中的人物定义为<角色｜贾富贵>", text)
+        self.assertIn("@图像1 = 角色｜老会计", text)
+        self.assertIn("@图像2 = 角色｜贾富贵", text)
+
+    def test_ark_provider_prompt_binds_scene_action_to_exact_at_image_slot(self):
+        refs = [
+            {
+                "kind": "image",
+                "url": "https://image.example/jia.jpg",
+                "label": "角色｜贾富贵（图3）",
+            },
+            {
+                "kind": "image",
+                "url": "https://image.example/accountant.jpg",
+                "label": "角色｜老会计（图16）",
+            },
+        ]
+        prompt = (
+            "【时间轴分镜】\n"
+            "镜头2：中景。画面主体：@角色｜贾富贵（图3）从人群最前排往前走两步，"
+            "走到长桌南沿停住。@角色｜老会计（图16）只在后景桌边旁观，无台词。"
+        )
+
+        text = provider_client._ark_prompt_with_material_reference_contract(
+            prompt,
+            refs,
+            [],
+        )
+
+        self.assertIn(
+            "画面主体：@图像1（角色｜贾富贵）从人群最前排往前走两步",
+            text,
+        )
+        self.assertIn(
+            "@图像2（角色｜老会计）只在后景桌边旁观",
+            text,
+        )
+        self.assertIn("@图像1 = 角色｜贾富贵", text)
+        self.assertIn("@图像2 = 角色｜老会计", text)
+        self.assertEqual(text.count("@图像1"), 2)
+        self.assertEqual(text.count("@图像2"), 2)
+
+    def test_ark_provider_prompt_uses_asset_id_when_reference_order_changes(self):
+        refs = [
+            {
+                "kind": "image",
+                "url": "https://image.example/accountant.jpg",
+                "label": "角色｜老会计（图16）",
+                "assetId": "character:accountant:default",
+            },
+            {
+                "kind": "image",
+                "url": "https://image.example/jia.jpg",
+                "label": "角色｜贾富贵（图3）",
+                "assetId": "character:jia:default",
+            },
+        ]
+        prompt = (
+            "画面主体：@角色｜贾富贵（图3）向前走两步。"
+            "@角色｜老会计（图16）只在后景旁观。"
+        )
+
+        text = provider_client._ark_prompt_with_material_reference_contract(
+            prompt,
+            refs,
+            [],
+            mention_identities={
+                "角色｜贾富贵（图3）": "assetId:character:jia:default",
+                "角色｜老会计（图16）": "assetId:character:accountant:default",
+            },
+        )
+
+        self.assertIn(
+            "画面主体：@图像2（角色｜贾富贵）向前走两步",
+            text,
+        )
+        self.assertIn(
+            "@图像1（角色｜老会计）只在后景旁观",
+            text,
+        )
+        self.assertIn(
+            "@图像2 = 角色｜贾富贵，资产ID=character:jia:default",
+            text,
+        )
+
+    def test_ark_reference_identity_map_rejects_duplicate_asset_ids(self):
+        refs = [
+            {
+                "kind": "image",
+                "url": "https://image.example/a.jpg",
+                "label": "角色｜老会计（图16）",
+                "assetId": "character:same:default",
+            },
+            {
+                "kind": "image",
+                "url": "https://image.example/b.jpg",
+                "label": "角色｜贾富贵（图3）",
+                "assetId": "character:same:default",
+            },
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "资产ID重复"):
+            provider_client._ark_prompt_with_material_reference_contract(
+                "@角色｜贾富贵（图3）向前走。",
+                refs,
+                [],
+                mention_identities={
+                    "角色｜贾富贵（图3）": "assetId:character:same:default",
+                },
+            )
 
     def test_ark_reference_guard_rejects_old_figure_code(self):
         refs = [
@@ -2420,6 +2529,7 @@ class ProviderPayloadTests(unittest.TestCase):
                 "kind": "image",
                 "url": "https://image.example/role.jpg",
                 "label": "角色｜贾富贵（图3）",
+                "assetId": "character:jia:default",
             }
         ]
         with self.assertRaisesRegex(RuntimeError, "未绑定"):
@@ -2438,12 +2548,13 @@ class ProviderPayloadTests(unittest.TestCase):
                 "kind": "image",
                 "url": "https://image.example/accountant.jpg",
                 "label": "角色｜老会计（图16）",
+                "assetId": "character:accountant:default",
             }
         ]
-        with self.assertRaisesRegex(RuntimeError, "未定义身份标签"):
+        with self.assertRaisesRegex(RuntimeError, "未绑定"):
             provider_client._ark_validate_reference_contract(
-                "将图片 1 中的人物定义为<角色｜老会计>\n"
-                "<角色｜贾富贵>抱着布包跑进夜色。",
+                "@图像1 = 角色｜老会计。\n"
+                "@角色｜贾富贵（图3）抱着布包跑进夜色。",
                 refs,
                 [],
                 ["https://image.example/accountant.jpg"],
@@ -2456,16 +2567,18 @@ class ProviderPayloadTests(unittest.TestCase):
                 "kind": "image",
                 "url": "https://image.example/role-1.jpg",
                 "label": "角色｜老会计（图16）",
+                "assetId": "character:accountant:default",
             },
             {
                 "kind": "image",
                 "url": "https://image.example/role-2.jpg",
                 "label": "角色｜贾富贵（图3）",
+                "assetId": "character:jia:default",
             },
         ]
         text = (
-            "将图片 1 中的人物定义为<角色｜老会计>\n"
-            "将图片 2 中的人物定义为<角色｜贾富贵>"
+            "@图像1 = 角色｜老会计。\n"
+            "@图像2 = 角色｜贾富贵。"
         )
         with self.assertRaisesRegex(RuntimeError, "数量"):
             provider_client._ark_validate_reference_contract(
@@ -2529,6 +2642,88 @@ class ProviderPayloadTests(unittest.TestCase):
         self.assertEqual(calls[0][2]["resolution"], "720p")
         self.assertEqual(calls[0][2]["ratio"], "9:16")
         self.assertEqual(calls[0][2]["generate_audio"], True)
+
+    def test_ark_video_emits_authoritative_reference_plan(self):
+        provider = {
+            "id": "ark",
+            "name": "火山方舟",
+            "base_url": "https://ark.example/api/v3",
+            "api_key": "test-key",
+        }
+        model = {
+            "id": "seedance",
+            "remoteModel": "doubao-seedance-2-0-mini-260615",
+            "adapter": "ark_video",
+            "params": {
+                "duration": {"min": 4, "max": 30},
+                "ratio": {"options": ["9:16"]},
+                "resolution": {"options": ["480P"]},
+            },
+        }
+        refs = [
+            {
+                "kind": "image",
+                "nodeId": "accountant",
+                "assetId": "character:accountant:default",
+                "url": "https://image.example/accountant.jpg",
+                "label": "角色｜老会计（图16）",
+            },
+            {
+                "kind": "image",
+                "nodeId": "jia",
+                "assetId": "character:jia:default",
+                "url": "https://image.example/jia.jpg",
+                "label": "角色｜贾富贵（图3）",
+            },
+        ]
+        prompts = [
+            "@角色｜贾富贵（图3）向前走两步。@角色｜老会计（图16）只在后景旁观。",
+        ]
+        accepted = []
+
+        def fake_request(method, url, key, body=None, timeout=120):
+            if method == "POST":
+                return {"id": "task-reference-plan"}
+            return {
+                "status": "succeeded",
+                "content": {"video_url": "https://video.example/result.mp4"},
+            }
+
+        with patch.object(provider_client, "_request_json", side_effect=fake_request):
+            provider_client.generate_video(
+                provider,
+                model,
+                prompts[0],
+                {
+                    "duration": 4,
+                    "ratio": "9:16",
+                    "resolution": "480P",
+                    "_mentionIdentities": {
+                        "角色｜贾富贵（图3）": "assetId:character:jia:default",
+                        "角色｜老会计（图16）": "assetId:character:accountant:default",
+                    },
+                },
+                refs,
+                [],
+                on_task_created=accepted.append,
+            )
+
+        plan = accepted[0]
+        self.assertEqual(
+            [
+                (item["slot"], item["assetId"], item["stableIdentity"])
+                for item in plan["referenceMapping"]
+            ],
+            [
+                (1, "character:accountant:default", "assetId:character:accountant:default"),
+                (2, "character:jia:default", "assetId:character:jia:default"),
+            ],
+        )
+        self.assertEqual(len(plan["providerPromptSha256"]), 64)
+        self.assertEqual(
+            plan["referenceMapping"][1]["nodeId"],
+            "jia",
+        )
 
     def test_ark_video_payload_uses_official_seedance_fields(self):
         provider = {
