@@ -193,6 +193,15 @@ def test_tool_loop_stops_repeated_identical_calls(monkeypatch) -> None:
         )
 
 
+def test_main_generation_uses_single_context_and_single_model_call(monkeypatch) -> None:
+    source = runtime.__file__
+    text = __import__("pathlib").Path(source).read_text(encoding="utf-8")
+    assert '("get_project_context", {"nodeLimit": 160})' in text
+    assert "for chunk in chat_stream(" in text
+    assert "execute_tool_loop(\n                system_prompt" not in text
+    assert "模型调用 1 次" in text
+
+
 def test_system_prompt_injects_runtime_quality_contract(tmp_path) -> None:
     root = tmp_path / "skill"
     (root / "references").mkdir(parents=True)
@@ -210,4 +219,4 @@ def test_system_prompt_injects_runtime_quality_contract(tmp_path) -> None:
         }
     )
     assert "逐镜 15 项 fail-closed 自检" in prompt
-    assert "read_skill_section" in prompt
+    assert "不要请求额外工具" in prompt

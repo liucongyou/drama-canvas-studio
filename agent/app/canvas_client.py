@@ -5,7 +5,7 @@ import json
 
 import httpx
 
-from app.context import signed_headers
+from app.context import signed_headers, unsigned_headers
 from app.config import get_settings
 
 
@@ -46,10 +46,14 @@ class CanvasClient:
         path: str,
         body: bytes = b"",
     ) -> dict[str, str]:
-        if not self.internal_secret:
-            return {}
         if not self.account_id:
             raise CanvasError("Agent 画布请求缺少账号上下文")
+        if not self.internal_secret:
+            return unsigned_headers(
+                tenant_id=self.tenant_id,
+                account_id=self.account_id,
+                request_id=self.request_id,
+            )
         return signed_headers(
             secret=self.internal_secret,
             method=method,
@@ -60,9 +64,16 @@ class CanvasClient:
             request_id=self.request_id,
         )
 
+    def _use_internal_paths(self) -> bool:
+        return bool(self.tenant_id and self.account_id)
+
     def list_projects(self) -> list[dict[str, Any]]:
+        path = "/api/internal/agent/projects"
         with self._client() as client:
-            response = client.get("/api/projects")
+            response = client.get(
+                path,
+                headers=self._internal_headers("GET", path),
+            )
             response.raise_for_status()
             data = response.json()
         projects = data.get("projects") if isinstance(data, dict) else data
@@ -71,7 +82,7 @@ class CanvasClient:
     def get_project(self, project_id: str) -> dict[str, Any]:
         path = (
             f"/api/internal/agent/projects/{project_id}/project"
-            if self.internal_secret
+            if self._use_internal_paths()
             else f"/api/projects/{project_id}"
         )
         with self._client() as client:
@@ -87,7 +98,7 @@ class CanvasClient:
     def preview_import(self, project_id: str, feed: dict[str, Any]) -> dict[str, Any]:
         path = (
             f"/api/internal/agent/projects/{project_id}/feed/preview"
-            if self.internal_secret
+            if self._use_internal_paths()
             else f"/api/projects/{project_id}/import/preview"
         )
         payload = {
@@ -115,7 +126,7 @@ class CanvasClient:
     def commit_import(self, project_id: str, feed: dict[str, Any], if_revision: int) -> dict[str, Any]:
         path = (
             f"/api/internal/agent/projects/{project_id}/feed/import"
-            if self.internal_secret
+            if self._use_internal_paths()
             else f"/api/projects/{project_id}/import"
         )
         payload = {

@@ -26,12 +26,27 @@ def _sidecar_url() -> str:
     ).strip().rstrip("/")
 
 
+def _is_loopback_sidecar() -> bool:
+    parsed = urllib.parse.urlparse(_sidecar_url())
+    return (
+        parsed.scheme in {"http", "https"}
+        and (parsed.hostname or "").lower() in {"127.0.0.1", "localhost", "::1"}
+    )
+
+
 def is_agent_browser_path(path: str) -> bool:
     return str(path or "").startswith("/api/agent/")
 
 
 def is_agent_internal_path(path: str) -> bool:
     return str(path or "").startswith("/api/internal/agent/")
+
+def allow_unsigned_local_agent() -> bool:
+    return not _secret() and _is_loopback_sidecar()
+
+def loopback_client(handler: Any) -> bool:
+    client = str(getattr(handler, "client_address", ("", 0))[0] or "")
+    return client in {"127.0.0.1", "::1", "localhost"}
 
 
 def sign_context_headers(
@@ -53,6 +68,36 @@ def sign_context_headers(
         body=body,
         request_id=request_id,
         timestamp=timestamp,
+    )
+
+
+def unsigned_context_headers(
+    *,
+    tenant_id: str,
+    account_id: str,
+    request_id: str = "",
+) -> dict[str, str]:
+    if not str(tenant_id or "").strip() or not str(account_id or "").strip():
+        raise ValueError("Agent 请求上下文不完整")
+    return {
+        "X-Agent-Service": "canvas",
+        "X-Agent-Tenant-Id": str(tenant_id).strip(),
+        "X-Agent-Account-Id": str(account_id).strip(),
+        "X-Agent-Request-Id": str(request_id or ""),
+    }
+
+
+def verify_unsigned_context_headers(headers: Mapping[str, str]) -> RequestContext:
+    if str(headers.get("X-Agent-Service") or "").strip() != "canvas":
+        raise ValueError("Agent 服务身份无效")
+    tenant_id = str(headers.get("X-Agent-Tenant-Id") or "").strip()
+    account_id = str(headers.get("X-Agent-Account-Id") or "").strip()
+    if not tenant_id or not account_id:
+        raise ValueError("Agent 请求上下文不完整")
+    return RequestContext(
+        tenant_id=tenant_id,
+        account_id=account_id,
+        request_id=str(headers.get("X-Agent-Request-Id") or "").strip(),
     )
 
 
@@ -105,19 +150,39 @@ def proxy_agent(handler: Any) -> bool:
         )
         return True
     target = _sidecar_url() + path
-    try:
-        context_headers = sign_context_headers(
-            method=method,
-            path=path,
+    secret = _secret()
+    if secret:
+        try:
+            context_headers = sign_context_headers(
+                method=method,
+                path=path,
+                tenant_id=tenant_id,
+                account_id=account_id,
+                body=body,
+                request_id=str(getattr(handler, "_request_id", "") or ""),
+            )
+        except ValueError as exc:
+            handler._send(
+                503,
+                {"error": str(exc), "code": "AGENT_GATEWAY_MISCONFIGURED"},
+            )
+            return True
+    elif _is_loopback_sidecar():
+        # The sidecar skips HMAC validation when it has no internal secret.
+        # Keep that convenience limited to the same-host development topology;
+        # any non-loopback sidecar still requires a configured shared secret.
+        context_headers = unsigned_context_headers(
             tenant_id=tenant_id,
             account_id=account_id,
-            body=body,
             request_id=str(getattr(handler, "_request_id", "") or ""),
         )
-    except ValueError as exc:
+    else:
         handler._send(
             503,
-            {"error": str(exc), "code": "AGENT_GATEWAY_MISCONFIGURED"},
+            {
+                "error": "Agent 内部签名密钥未配置",
+                "code": "AGENT_GATEWAY_MISCONFIGURED",
+            },
         )
         return True
     headers = {
@@ -251,6 +316,24 @@ def project_index_from_project(project: dict[str, Any]) -> dict[str, Any]:
         "episodeCount": len(episodes),
         "nodeTypes": node_types,
     }
+
+
+def project_summaries_from_store(store: Any) -> list[dict[str, Any]]:
+    rows = store.list_project_summaries()
+    keys = (
+        "id",
+        "title",
+        "revision",
+        "updated_at",
+        "node_count",
+        "connection_count",
+        "episode_count",
+    )
+    return [
+        {key: row.get(key) for key in keys}
+        for row in rows
+        if isinstance(row, dict)
+    ]
 
 
 def project_nodes_from_project(

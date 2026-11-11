@@ -263,9 +263,16 @@ def append_message(
 
 
 @router.get("/projects")
-def projects() -> dict[str, Any]:
+def projects(request: Request) -> dict[str, Any]:
+    context = _context(request)
     try:
-        return {"projects": CanvasClient().list_projects()}
+        return {
+            "projects": CanvasClient(
+                tenant_id=context.tenant_id,
+                account_id=context.account_id,
+                request_id=context.request_id,
+            ).list_projects()
+        }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"画布服务不可用：{exc}") from exc
 

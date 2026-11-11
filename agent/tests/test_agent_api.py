@@ -5,6 +5,12 @@ from app import db, runtime
 from app.config import get_settings
 from app.main import create_app
 
+LOCAL_HEADERS = {
+    "X-Agent-Service": "canvas",
+    "X-Agent-Tenant-Id": "owner",
+    "X-Agent-Account-Id": "admin",
+}
+
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
@@ -23,6 +29,7 @@ def test_append_message_is_idempotent(client: TestClient) -> None:
     created = client.post(
         "/api/agent/conversations",
         json={"projectId": "project-1", "title": "会话"},
+        headers=LOCAL_HEADERS,
     )
     assert created.status_code == 200
     conversation_id = created.json()["conversation"]["id"]
@@ -38,12 +45,12 @@ def test_append_message_is_idempotent(client: TestClient) -> None:
     first = client.post(
         f"/api/agent/conversations/{conversation_id}/messages",
         json=body,
-        headers={"Idempotency-Key": "same"},
+        headers={**LOCAL_HEADERS, "Idempotency-Key": "same"},
     )
     second = client.post(
         f"/api/agent/conversations/{conversation_id}/messages",
         json=body,
-        headers={"Idempotency-Key": "same"},
+        headers={**LOCAL_HEADERS, "Idempotency-Key": "same"},
     )
     assert first.status_code == 200
     assert second.status_code == 200
@@ -55,6 +62,7 @@ def test_draft_survives_reload(client: TestClient) -> None:
     created = client.post(
         "/api/agent/conversations",
         json={"projectId": "project-1"},
+        headers=LOCAL_HEADERS,
     )
     conversation_id = created.json()["conversation"]["id"]
     saved = client.put(
@@ -65,10 +73,12 @@ def test_draft_survives_reload(client: TestClient) -> None:
             "references": [{"assetId": "character:陈大强:default"}],
             "locks": {"track": "国内剧"},
         },
+        headers=LOCAL_HEADERS,
     )
     assert saved.status_code == 200
     loaded = client.get(
         f"/api/agent/conversations/{conversation_id}/draft",
+        headers=LOCAL_HEADERS,
     )
     assert loaded.status_code == 200
     assert loaded.json()["draft"]["text"] == "中文未发送草稿"

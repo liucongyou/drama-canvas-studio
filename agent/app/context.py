@@ -176,3 +176,19 @@ def signed_headers(
         ACCOUNT_HEADER: account_id,
         REQUEST_HEADER: request_id,
     }
+
+
+def unsigned_headers(
+    *,
+    tenant_id: str,
+    account_id: str,
+    request_id: str = "",
+) -> dict[str, str]:
+    if not str(tenant_id or "").strip() or not str(account_id or "").strip():
+        raise ValueError("Agent 请求上下文不完整")
+    return {
+        SERVICE_HEADER: "canvas",
+        TENANT_HEADER: str(tenant_id).strip(),
+        ACCOUNT_HEADER: str(account_id).strip(),
+        REQUEST_HEADER: str(request_id or ""),
+    }

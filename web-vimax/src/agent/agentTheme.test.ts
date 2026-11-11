@@ -42,4 +42,10 @@ describe('AgentDock theme polish', () => {
     expect(css).toContain('animation:agentLiveCaret');
     expect(css).toMatch(/\.agent-live-draft\{[^}]*background:var\(--v-canvas/);
   });
+
+  it('keeps the running status strip transparent and borderless', () => {
+    expect(css).toMatch(/\.agent-progress\{[^}]*display:flex/);
+    expect(css).toMatch(/\.agent-progress\{[^}]*border:0!important/);
+    expect(css).toMatch(/\.agent-progress\{[^}]*background:transparent!important/);
+  });
 });

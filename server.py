@@ -7336,11 +7336,44 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     )
                     return None
+                try:
+                    context = agent_gateway.verify_unsigned_context_headers(
+                        self.headers
+                    )
+                except ValueError as exc:
+                    self._send(
+                        401,
+                        {
+                            "error": str(exc),
+                            "code": "AGENT_INTERNAL_AUTH_FAILED",
+                        },
+                    )
+                    return None
+                account = tenant_registry.get_account_by_id(context.account_id)
+                tenant = tenant_registry.get_tenant_by_id(context.tenant_id)
+                if _auth_mode() == "accounts" and (
+                    not account
+                    or not tenant
+                    or str(account.get("tenant_id") or "") != context.tenant_id
+                    or str(account.get("status") or "") != "active"
+                    or str(tenant.get("status") or "") != "active"
+                ):
+                    self._send(
+                        403,
+                        {
+                            "error": "Agent 内部账号上下文无效",
+                            "code": "AGENT_PROJECT_FORBIDDEN",
+                        },
+                    )
+                    return None
                 self._internal_agent_body = self._read_raw_body(
                     agent_gateway.MAX_PROXY_BODY_BYTES
                 )
-                self._internal_agent_context = None
-                return nullcontext()
+                self._internal_agent_context = context
+                return tenant_context.use_tenant(
+                    tenant["id"] if tenant else context.tenant_id,
+                    tenant["slug"] if tenant else "local",
+                )
             try:
                 raw_body = self._read_raw_body(agent_gateway.MAX_PROXY_BODY_BYTES)
                 context = agent_gateway.verify_context_headers(

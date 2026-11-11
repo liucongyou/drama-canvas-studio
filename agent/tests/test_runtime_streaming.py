@@ -94,21 +94,20 @@ def test_execute_run_persists_content_in_progressive_snapshots(
     )
     chunks = ["第一段", "第二段", "第三段", "第四段"]
 
-    def execute_tool_loop(
+    def chat_stream(
         _system,
-        _messages,
-        _tools,
-        _context,
+        _user,
         *,
-        on_content,
-        **_kwargs,
+        model_id,
+        tenant_id,
     ):
+        assert model_id == "mock"
+        assert tenant_id == "owner"
         for chunk in chunks:
-            on_content(chunk)
+            yield chunk
             time.sleep(0.08)
-        return '{"ok":true}', []
 
-    monkeypatch.setattr(runtime, "execute_tool_loop", execute_tool_loop)
+    monkeypatch.setattr(runtime, "chat_stream", chat_stream)
     runtime.execute_run(run_id)
 
     with db.db() as conn:

@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     max_entry_chars: int = 24_000
     max_zip_bytes: int = 50 * 1024 * 1024
     max_zip_files: int = 2000
-    max_repair_rounds: int = 3
+    max_repair_rounds: int = 2
 
     model_config = SettingsConfigDict(env_file=AGENT_DIR / ".env", extra="ignore")
 

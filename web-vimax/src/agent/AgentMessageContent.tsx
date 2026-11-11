@@ -1,19 +1,46 @@
 import {useState} from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import {Check, ChevronRight, Copy} from 'lucide-react';
+import {Check, ChevronDown, ChevronRight, ChevronUp, Copy} from 'lucide-react';
 import type {AgentContentBlock} from './agentApi';
+
+const COLLAPSE_TEXT_THRESHOLD = 320;
 
 export function normalizeContentBlocks(blocks: AgentContentBlock[] | undefined, fallback = ''): AgentContentBlock[] {
   if (blocks && blocks.length) return blocks;
   return fallback ? [{type: 'text', text: fallback}] : [];
 }
 
-export function AgentMessageContent({blocks, fallback = ''}: {blocks?: AgentContentBlock[]; fallback?: string}) {
+function contentLength(blocks: AgentContentBlock[]): number {
+  return blocks.reduce((total, block) => {
+    if (block.type === 'text' || block.type === 'markdown') return total + block.text.length;
+    if (block.type === 'notice') return total + block.message.length;
+    if (block.type === 'tool') return total + block.name.length + (block.summary || '').length;
+    if (block.type === 'json') return total + 240;
+    return total;
+  }, 0);
+}
+
+export function shouldCollapseAgentContent(blocks: AgentContentBlock[]): boolean {
+  return contentLength(blocks) > COLLAPSE_TEXT_THRESHOLD;
+}
+
+export function AgentMessageContent({
+  blocks,
+  fallback = '',
+  collapsible = true,
+}: {
+  blocks?: AgentContentBlock[];
+  fallback?: string;
+  collapsible?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
   const normalized = normalizeContentBlocks(blocks, fallback);
+  const canCollapse = collapsible && shouldCollapseAgentContent(normalized);
   return (
-    <div className="agent-message-content">
-      {normalized.map((block, index) => {
+    <div className={'agent-message-content' + (canCollapse ? ' is-collapsible' : '') + (canCollapse && !expanded ? ' is-collapsed' : '')}>
+      <div className="agent-message-content-body">
+        {normalized.map((block, index) => {
         if (block.type === 'markdown') {
           return (
             <div className="agent-markdown" key={index}>
@@ -71,7 +98,19 @@ export function AgentMessageContent({blocks, fallback = ''}: {blocks?: AgentCont
           return <div className="agent-plain-text" key={index}>{block.text}</div>;
         }
         return <div className="agent-notice is-warning" key={index}>无法识别的内容块</div>;
-      })}
+        })}
+      </div>
+      {canCollapse && (
+        <button
+          type="button"
+          className="agent-message-expand"
+          onClick={() => setExpanded((current) => !current)}
+          aria-expanded={expanded}
+        >
+          {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          {expanded ? '收起' : '展开'}
+        </button>
+      )}
     </div>
   );
 }

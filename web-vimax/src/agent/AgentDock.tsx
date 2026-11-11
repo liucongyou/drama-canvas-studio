@@ -1,12 +1,13 @@
-import {useCallback, useEffect, useRef, useState} from 'react';
+import {useCallback, useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {
-  AtSign, Check, ChevronRight, Copy, Download, FileText, History, Image as ImageIcon, Maximize2, Music2,
+  ArrowDown, AtSign, Check, ChevronRight, Copy, Download, FileText, History, Image as ImageIcon, Maximize2, Music2,
   Plus, RefreshCw, RotateCcw, Search, Send, Settings, SlidersHorizontal, Sparkles, Square,
   Type, Upload, Video, Wand2, X,
 } from 'lucide-react';
 import {agentApi, type AgentContentBlock, type AgentDraft, type AgentFile, type AgentLock, type AgentModel, type AgentRun, type AgentSkill, type AgentSkillDetail} from './agentApi';
 import {AgentComposer} from './AgentComposer';
 import {AgentMessageContent} from './AgentMessageContent';
+import {cleanRunText, executionDraftMessages, pendingImportRuns, transcriptMessages} from './agentPresentation';
 
 type AgentDockProps = {
   projectId: string | null;
@@ -52,15 +53,6 @@ const FALLBACK_LOCKS: AgentLock[] = [
   {key: 'delivery', label: '交付形态', options: ['15s 单段', '多段拼接']},
   {key: 'seam', label: '段缝', options: ['无缝', '硬切', '转场']},
 ];
-
-function cleanRunText(content: string): string {
-  let text = String(content || '').trim();
-  if (!text) return '';
-  const repairIndex = text.indexOf('上次画布预检问题');
-  if (repairIndex >= 0) text = text.slice(0, repairIndex).trim();
-  if (/^(生成完成，但|生成失败|导入预检未通过|投喂稿已通过预检)/.test(text)) return '';
-  return text;
-}
 
 function nodeThumbFromNode(node: Record<string, unknown>): string {
   const meta = node.metadata && typeof node.metadata === 'object' ? node.metadata as Record<string, unknown> : {};
@@ -108,9 +100,10 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [threadRuns, setThreadRuns] = useState<AgentRun[]>([]);
+  const [projectPendingRuns, setProjectPendingRuns] = useState<AgentRun[]>([]);
   const [conversationId, setConversationId] = useState('default');
   const [conversationReady, setConversationReady] = useState(false);
-  const [traceOpen, setTraceOpen] = useState(false);
+  const [followingLatest, setFollowingLatest] = useState(true);
   const [atQuery, setAtQuery] = useState('');
   const [references, setReferences] = useState<AgentReference[]>([]);
 
@@ -130,16 +123,33 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const runContentLength = run
     ? run.messages.reduce((total, message) => total + String(message.content || '').length, 0)
     : 0;
+  const runStatusRef = useRef('');
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, open ? '1' : '0'); } catch {}
   }, [open]);
 
-  useEffect(() => {
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'auto') => {
     const el = chatRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [runContentLength, run && run.status, pendingPrompt]);
+    el.scrollTo({top: el.scrollHeight, behavior});
+    setFollowingLatest(true);
+  }, []);
+
+  useLayoutEffect(() => {
+    const statusKey = run ? run.id + ':' + run.status : '';
+    const statusChanged = statusKey !== runStatusRef.current;
+    runStatusRef.current = statusKey;
+    if (!followingLatest && !statusChanged) return;
+    const frame = window.requestAnimationFrame(() => scrollToLatest('auto'));
+    return () => window.cancelAnimationFrame(frame);
+  }, [runContentLength, run && run.id, run && run.status, pendingPrompt, threadRuns.length, followingLatest, scrollToLatest]);
+
+  const onChatScroll = useCallback((event: React.UIEvent<HTMLElement>) => {
+    const el = event.currentTarget;
+    const atLatest = el.scrollHeight - el.scrollTop - el.clientHeight <= 48;
+    setFollowingLatest((current) => current === atLatest ? current : atLatest);
+  }, []);
 
   useEffect(() => {
     widthRef.current = width;
@@ -229,6 +239,22 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     void agentApi.runs(projectId).then((data) => { if (alive) setRuns(data.runs || []); }).catch(() => {});
     return () => { alive = false; };
   }, [open, projectId, run && run.status]);
+
+  useEffect(() => {
+    if (!open || !projectId) {
+      setProjectPendingRuns([]);
+      return;
+    }
+    let alive = true;
+    void agentApi.runs(projectId).then(async (data) => {
+      const pending = (data.runs || []).filter((item) => item.status === 'waiting_user');
+      const full = await Promise.all(pending.map((item) =>
+        agentApi.run(item.id).then((result) => result.run).catch(() => item)
+      ));
+      if (alive) setProjectPendingRuns(full);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [open, projectId, run && run.status, threadRuns.length]);
 
   const applyDraft = useCallback((draft: AgentDraft) => {
     setPrompt(String(draft.text || ''));
@@ -327,7 +353,8 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     let alive = true;
     void agentApi.runs(projectId, conversationId).then(async (data) => {
       const summaries = data.runs || [];
-      const full = await Promise.all(summaries.slice(0, 12).map((item) =>
+      const fullTargets = summaries.filter((item, index) => index < 12 || item.status === 'waiting_user');
+      const full = await Promise.all(fullTargets.map((item) =>
         agentApi.run(item.id).then((result) => result.run).catch(() => item)
       ));
       if (alive) {
@@ -337,10 +364,6 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     }).catch(() => {});
     return () => { alive = false; };
   }, [open, projectId, conversationId]);
-
-  useEffect(() => {
-    setTraceOpen(Boolean(run && (run.status === 'queued' || run.status === 'running')));
-  }, [run && run.id, run && run.status]);
 
   useEffect(() => {
     if (!skill || (skill.locks && skill.locks.length)) return;
@@ -637,19 +660,21 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     }
   }, [skill, pendingPrompt, projectId, modelId, routeId, locks, attachments, references, conversationId, conversationReady, autoGrow]);
 
-  const importRun = useCallback(async () => {
-    if (!run) return;
+  const importRun = useCallback(async (targetRunId?: string) => {
+    const targetId = targetRunId || (run && run.id);
+    if (!targetId) return;
     setBusy(true);
     setError('');
     try {
-      const data = await agentApi.importRun(run.id);
-      setRun(data.run);
+      const data = await agentApi.importRun(targetId);
+      setRun((current) => current && current.id === data.run.id ? data.run : current);
+      setThreadRuns((current) => current.map((item) => item.id === data.run.id ? data.run : item));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
-  }, [run]);
+  }, [run && run.id]);
 
   const openHistory = useCallback(async () => {
     if (!projectId) return;
@@ -773,13 +798,14 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const feedPayload = feedArtifact ? feedArtifact.payload as Record<string, unknown> : null;
   const feedErrors = feedPayload && Array.isArray(feedPayload.errors) ? feedPayload.errors as Array<Record<string, unknown>> : [];
   const feedPreview = feedPayload && feedPayload.preview && typeof feedPayload.preview === 'object' ? feedPayload.preview as Record<string, unknown> : {};
-  const displayContent = cleanRunText;
   const runIsStreaming = Boolean(run && (run.status === 'queued' || run.status === 'running'));
-  const visibleMessages = (run ? run.messages || [] : [])
-    .filter((message) => message.role !== 'status')
-    .map((message) => ({...message, display: displayContent(message.content)}))
-    .filter((message) => message.display);
+  const visibleMessages = run
+    ? transcriptMessages(run).map((message) => ({...message, display: message.content}))
+    : [];
+  const executionDrafts = run ? executionDraftMessages(run) : [];
   const processArtifacts = run ? run.artifacts.filter((item) => item.kind !== 'canvas_feed') : [];
+  const importableRuns = pendingImportRuns([run, ...threadRuns, ...projectPendingRuns]);
+  const historyCount = Math.max(runs.length, new Set([...threadRuns, ...projectPendingRuns].map((item) => item.id)).size);
   const friendlyRunError = (() => {
     if (!run) return '';
     const text = String(run.error || '');
@@ -822,7 +848,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
           <div className="agent-resize" onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={endResize} onPointerCancel={endResize} />
           <header className="agent-head">
             <button type="button" className="agent-new" onClick={reset}>新会话</button>
-            <button type="button" className="agent-history-link" onClick={() => void openHistory()}><History size={13} /><span>历史</span>{runs.length > 0 && <b>{runs.length}</b>}</button>
+            <button type="button" className="agent-history-link" onClick={() => void openHistory()}><History size={13} /><span>历史</span>{historyCount > 0 && <b>{historyCount}</b>}</button>
             <div className="agent-head-actions">
               <button type="button" className="agent-icon" title="历史运行" aria-label="历史运行" onClick={() => void openHistory()}><History size={15} /></button>
               <button type="button" className="agent-icon" title="技能库" aria-label="技能库" onClick={() => void openManager()}><Sparkles size={15} /></button>
@@ -836,7 +862,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
             <span>{projectTitle || projectId || '未选择项目'}</span>
           </div>
 
-          <main className="agent-chat" ref={chatRef}>
+          <main className="agent-chat" ref={chatRef} onScroll={onChatScroll}>
             {!run && !pendingPrompt && (
               <div className="agent-welcome">
                 <h2>探索更多专业创作模式</h2>
@@ -882,34 +908,25 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
 
             {run && (
               <div className="agent-run">
-                {(run.status === 'queued' || run.status === 'running') && (
-                  <AgentProgress label={statusMessage ? statusMessage.content : streamLabel} stage={activeStage} />
-                )}
                 {visibleMessages.map((message) => (
-                  <div key={message.id} className={'agent-msg ' + (message.role === 'user' ? 'is-user' : 'is-assistant') + (message.role === 'draft' ? ' is-draft' : '')}>
-                    <div className="agent-msg-avatar">{message.role === 'user' ? '你' : <Sparkles size={14} />}</div>
+                  <div key={message.id} className={'agent-msg ' + (message.role === 'user' ? 'is-user no-avatar' : 'is-assistant')}>
+                    {message.role !== 'user' && <div className="agent-msg-avatar"><Sparkles size={14} /></div>}
                     <div className="agent-msg-body">
                       <div className="agent-msg-head">
-                        <span>{message.role === 'user' ? '你' : message.role === 'draft' ? (runIsStreaming ? 'Agent · 正在写入' : 'Agent · 模型输出草稿') : 'Agent'}</span>
+                        <span>{message.role === 'user' ? '你' : 'Agent'}</span>
                         {message.createdAt && <time>{new Date(message.createdAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</time>}
                       </div>
-                      {message.role === 'draft'
-                        ? <pre className={'agent-live-draft' + (runIsStreaming ? ' is-streaming' : '')}>{message.display}{runIsStreaming && <i aria-hidden="true" />}</pre>
-                        : (
-                          <>
-                            <div className="agent-msg-text"><AgentMessageContent blocks={message.blocks} fallback={message.display} /></div>
-                            <div className="agent-msg-actions">
-                              <button type="button" title="复制" aria-label="复制消息" onClick={() => void navigator.clipboard.writeText(message.display)}><Copy size={12} /></button>
-                            </div>
-                          </>
-                        )}
+                      <div className="agent-msg-text"><AgentMessageContent blocks={message.blocks} fallback={message.display} /></div>
+                      <div className="agent-msg-actions">
+                        <button type="button" title="复制" aria-label="复制消息" onClick={() => void navigator.clipboard.writeText(message.display)}><Copy size={12} /></button>
+                      </div>
                     </div>
                   </div>
                 ))}
                 {(run.status === 'done' || run.status === 'waiting_user') && (
                   <div className="agent-completed-divider"><span>{run.status === 'done' ? '已完成' : '等待确认'}</span></div>
                 )}
-                {run.status === 'failed' && (
+                {(run.status === 'failed' || run.status === 'interrupted') && (
                   <div className="agent-note is-error">
                     <span>{friendlyRunError}</span>
                     <div className="agent-note-actions">
@@ -918,15 +935,28 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
                     </div>
                   </div>
                 )}
-                {(currentStages.length > 0 || processArtifacts.length > 0) && (
-                  <details className="agent-run-trace" open={traceOpen} onToggle={(event) => setTraceOpen(event.currentTarget.open)}>
+                {(currentStages.length > 0 || processArtifacts.length > 0 || executionDrafts.length > 0 || Boolean(run.toolCalls && run.toolCalls.length)) && (
+                  <details className="agent-run-trace">
                     <summary>
-                      <span className={'agent-stage-dot ' + (run.status === 'done' ? 'done' : run.status === 'failed' ? 'failed' : 'running')} />
-                      <span>{run.status === 'done' ? '已完成' : run.status === 'failed' ? '已中断' : '进行中'}</span>
+                      <span className={'agent-stage-dot ' + (run.status === 'done' ? 'done' : run.status === 'failed' || run.status === 'interrupted' ? 'failed' : run.status === 'waiting_user' ? 'done' : 'running')} />
+                      <span>{run.status === 'done' ? '已完成' : run.status === 'failed' || run.status === 'interrupted' ? '已中断' : run.status === 'waiting_user' ? '待确认' : '进行中'}</span>
                       <small>{currentStages.map((stage) => stage.name).join(' · ')}</small>
                       <ChevronRight size={12} className="agent-chev" />
                     </summary>
                     <div className="agent-run-trace-body">
+                      {executionDrafts.map((message) => (
+                        <details className="agent-execution-draft" key={message.id}>
+                          <summary>
+                            <ChevronRight size={12} />
+                            <span>模型原始输出</span>
+                            <small>{runIsStreaming && message === executionDrafts[executionDrafts.length - 1] ? '正在写入' : message.content.length + ' 字'}</small>
+                          </summary>
+                          <pre className={'agent-live-draft' + (runIsStreaming ? ' is-streaming' : '')}>
+                            {message.content}
+                            {runIsStreaming && message === executionDrafts[executionDrafts.length - 1] && <i aria-hidden="true" />}
+                          </pre>
+                        </details>
+                      ))}
                       {currentStages.length > 0 && (
                         <div className="agent-stage-line">
                           {currentStages.map((stage) => <span key={String(stage.id || stage.name)} className={'agent-stage-name ' + stage.status}>{stage.name}</span>)}
@@ -939,7 +969,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
                     </div>
                   </details>
                 )}
-                {run.status !== 'failed' && (
+                {run.status !== 'failed' && run.status !== 'interrupted' && (
                   <div className="agent-run-actions">
                     {(run.status === 'queued' || run.status === 'running') && (
                       <button type="button" className="agent-ghost" onClick={() => void cancelCurrentRun()}><Square size={12} /> 停止</button>
@@ -954,7 +984,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
                     </div>
                     {Boolean(feedPayload && feedPayload.autoHealed) && <div className="agent-result-note">系统自动补全了缺失音色，建议导入前人工确认。</div>}
                     <div className="agent-result-actions">
-                      {run.status === 'waiting_user' && <button type="button" className="agent-primary" onClick={() => void importRun()} disabled={busy}>确认导入画布</button>}
+                      {run.status === 'waiting_user' && <button type="button" className="agent-primary" onClick={() => void importRun(run.id)} disabled={busy}>确认导入画布</button>}
                       <button type="button" className="agent-ghost" onClick={() => {
                         const blob = new Blob([JSON.stringify(feedPayload && feedPayload.feed || {}, null, 2)], {type: 'application/json'});
                         const url = URL.createObjectURL(blob);
@@ -971,9 +1001,42 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
                 )}
               </div>
             )}
+            {!followingLatest && (
+              <button type="button" className="agent-jump-latest" onClick={() => scrollToLatest('smooth')}>
+                <ArrowDown size={13} /> 回到最新
+              </button>
+            )}
           </main>
 
-          {error && (!run || run.status !== 'failed') && <div className="agent-error agent-composer-error">{error}</div>}
+          {run && (run.status === 'queued' || run.status === 'running') && (
+            <AgentProgress label={statusMessage ? statusMessage.content : streamLabel} stage={activeStage} />
+          )}
+          {importableRuns.length > 0 && (
+            <section className="agent-import-tray" aria-label="待导入投喂稿">
+              {importableRuns.map((pendingRun) => {
+                const pendingArtifact = (pendingRun.artifacts || []).filter((item) => item.kind === 'canvas_feed').slice(-1)[0];
+                const pendingPreview = pendingArtifact && pendingArtifact.payload && typeof pendingArtifact.payload.preview === 'object'
+                  ? pendingArtifact.payload.preview as Record<string, unknown>
+                  : {};
+                return (
+                  <div className="agent-import-row" key={pendingRun.id}>
+                    <span className="agent-import-icon"><Check size={13} /></span>
+                    <span className="agent-import-copy">
+                      <strong>投喂稿已通过预检</strong>
+                      <small title={pendingRun.prompt}>
+                        {(cleanRunText(pendingRun.prompt) || '本轮创作').slice(0, 42)}
+                        {' · revision ' + String(pendingPreview.revision || '?')}
+                      </small>
+                    </span>
+                    <button type="button" className="agent-primary" onClick={() => void importRun(pendingRun.id)} disabled={busy}>
+                      {busy ? '导入中…' : '确认导入'}
+                    </button>
+                  </div>
+                );
+              })}
+            </section>
+          )}
+          {error && (!run || (run.status !== 'failed' && run.status !== 'interrupted')) && <div className="agent-error agent-composer-error">{error}</div>}
           <AgentComposer
             value={prompt}
             disabled={!conversationReady}
@@ -1110,7 +1173,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
                   {runs.map((item) => (
                     <button key={item.id} type="button" className="agent-history-row" onClick={() => { setHistoryOpen(false); void agentApi.run(item.id).then((data) => setRun(data.run)).catch(() => {}); }}>
                       <span className={'agent-badge ' + (item.status === 'done' ? 'ok' : item.status === 'failed' ? 'bad' : '')}>{item.status}</span>
-                      <span className="agent-history-prompt">{displayContent(item.prompt) || item.prompt.slice(0, 120)}</span>
+                      <span className="agent-history-prompt">{cleanRunText(item.prompt) || item.prompt.slice(0, 120)}</span>
                       <small>{item.skillId} · {item.createdAt || ''}</small>
                     </button>
                   ))}
@@ -1184,24 +1247,28 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
 
 function PastRun({run}: {run: AgentRun}) {
   const stages = run.stages && run.stages.length ? run.stages : run.steps || [];
-  const messages = (run.messages || [])
-    .filter((message) => message.role !== 'status')
-    .map((message) => ({...message, display: cleanRunText(message.content)}))
-    .filter((message) => message.display);
+  const messages = transcriptMessages(run).map((message) => ({...message, display: message.content}));
+  const drafts = executionDraftMessages(run);
   const artifacts = (run.artifacts || []).filter((item) => item.kind !== 'canvas_feed');
   const prompt = cleanRunText(run.prompt) || run.prompt.slice(0, 160);
-  if (run.status === 'failed' || run.status === 'cancelled') {
+  if (run.status === 'failed' || run.status === 'interrupted' || run.status === 'cancelled') {
     return (
       <div className="agent-past agent-past-failed">
         <details className="agent-run-trace">
           <summary>
-            <span className={'agent-stage-dot ' + (run.status === 'failed' ? 'failed' : '')} />
-            <span>{run.status === 'failed' ? '已中断' : '已停止'}</span>
+            <span className={'agent-stage-dot ' + (run.status === 'failed' || run.status === 'interrupted' ? 'failed' : '')} />
+            <span>{run.status === 'failed' || run.status === 'interrupted' ? '已中断' : '已停止'}</span>
             <small>{prompt}</small>
             <ChevronRight size={12} className="agent-chev" />
           </summary>
           <div className="agent-run-trace-body">
             {prompt && <div className="agent-past-prompt">{prompt}</div>}
+            {messages.filter((message) => message.role !== 'user').map((message) => (
+              <div key={message.id} className="agent-past-reply">
+                <AgentMessageContent blocks={message.blocks} fallback={message.display} />
+              </div>
+            ))}
+            {drafts.length > 0 && <ExecutionDraftTrace drafts={drafts} />}
             {stages.length > 0 && <div className="agent-stage-line">{stages.map((stage) => <span key={String(stage.id || stage.name)} className={'agent-stage-name ' + stage.status}>{stage.name}</span>)}</div>}
             {run.toolCalls && run.toolCalls.length > 0 && <ToolTrace calls={run.toolCalls} />}
             {artifacts.length > 0 && <JsonPreview value={artifacts.reduce((acc, item) => ({...acc, [item.kind]: item.payload}), {} as Record<string, unknown>)} label="查看过程产物" />}
@@ -1213,8 +1280,7 @@ function PastRun({run}: {run: AgentRun}) {
   return (
     <div className="agent-past">
       {prompt && (
-        <div className="agent-msg is-user">
-          <div className="agent-msg-avatar">你</div>
+        <div className="agent-msg is-user no-avatar">
           <div className="agent-msg-body">
             <div className="agent-msg-head"><span>你</span></div>
             <div className="agent-msg-text"><AgentMessageContent fallback={prompt} /></div>
@@ -1223,8 +1289,8 @@ function PastRun({run}: {run: AgentRun}) {
         </div>
       )}
       {messages.filter((message) => message.role !== 'user').map((message) => (
-        <div key={message.id} className={'agent-msg ' + (message.role === 'user' ? 'is-user' : 'is-assistant')}>
-          <div className="agent-msg-avatar">{message.role === 'user' ? '你' : <Sparkles size={14} />}</div>
+        <div key={message.id} className={'agent-msg ' + (message.role === 'user' ? 'is-user no-avatar' : 'is-assistant')}>
+          {message.role !== 'user' && <div className="agent-msg-avatar"><Sparkles size={14} /></div>}
           <div className="agent-msg-body">
             <div className="agent-msg-head"><span>{message.role === 'user' ? '你' : 'Agent'}</span></div>
             <div className="agent-msg-text"><AgentMessageContent blocks={message.blocks} fallback={message.display} /></div>
@@ -1235,12 +1301,13 @@ function PastRun({run}: {run: AgentRun}) {
       <div className="agent-completed-divider"><span>{run.status === 'done' ? '已完成' : run.status === 'waiting_user' ? '待确认' : '本轮结束'}</span></div>
       <details className="agent-run-trace">
         <summary>
-          <span className={'agent-stage-dot ' + (run.status === 'done' ? 'done' : run.status === 'failed' ? 'failed' : 'running')} />
-          <span>{run.status === 'done' ? '已完成' : run.status === 'failed' ? '已中断' : run.status === 'waiting_user' ? '待确认' : '进行中'}</span>
+          <span className={'agent-stage-dot ' + (run.status === 'done' || run.status === 'waiting_user' ? 'done' : 'running')} />
+          <span>{run.status === 'done' ? '已完成' : run.status === 'waiting_user' ? '待确认' : '进行中'}</span>
           <small>{stages.map((stage) => stage.name).join(' · ')}</small>
           <ChevronRight size={12} className="agent-chev" />
         </summary>
         <div className="agent-run-trace-body">
+          {drafts.length > 0 && <ExecutionDraftTrace drafts={drafts} />}
           {stages.length > 0 && <div className="agent-stage-line">{stages.map((stage) => <span key={String(stage.id || stage.name)} className={'agent-stage-name ' + stage.status}>{stage.name}</span>)}</div>}
           {run.toolCalls && run.toolCalls.length > 0 && <ToolTrace calls={run.toolCalls} />}
           {artifacts.length > 0 && <JsonPreview value={artifacts.reduce((acc, item) => ({...acc, [item.kind]: item.payload}), {} as Record<string, unknown>)} label="查看过程产物" />}
@@ -1248,6 +1315,19 @@ function PastRun({run}: {run: AgentRun}) {
       </details>
       {run.status === 'failed' && <div className="agent-past-fail">这一轮没有跑通</div>}
     </div>
+  );
+}
+
+function ExecutionDraftTrace({drafts}: {drafts: ReturnType<typeof executionDraftMessages>}) {
+  return (
+    <details className="agent-execution-draft">
+      <summary>
+        <ChevronRight size={12} />
+        <span>模型原始输出</span>
+        <small>{drafts.reduce((total, item) => total + item.content.length, 0)} 字</small>
+      </summary>
+      <pre className="agent-live-draft">{drafts.map((item) => item.content).join('\n\n')}</pre>
+    </details>
   );
 }
 
@@ -1259,14 +1339,10 @@ function AgentProgress({label, stage}: {label: string; stage: string}) {
   }, []);
   return (
     <div className="agent-progress">
-      <div className="agent-progress-top">
-        <span className="agent-progress-dot" />
-        <strong>Agent 正在工作</strong>
-        <span className="agent-progress-time">{seconds}s</span>
-      </div>
-      <div className="agent-progress-stage">{stage || 'prepare'}</div>
-      <div className="agent-progress-label">{label}</div>
-      <div className="agent-progress-bar"><i /></div>
+      <span className="agent-progress-dot" />
+      <strong>Agent 正在工作</strong>
+      <span className="agent-progress-label">{label || '正在处理…'}</span>
+      <span className="agent-progress-time">{seconds}s</span>
     </div>
   );
 }

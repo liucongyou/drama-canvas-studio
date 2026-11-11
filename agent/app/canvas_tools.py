@@ -20,6 +20,23 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_project_context",
+            "description": "Read a complete bounded project, node and asset context package.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "nodeLimit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 300,
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_episode_context",
             "description": "Read one episode summary and node membership.",
             "parameters": {
@@ -183,6 +200,7 @@ class CanvasTools:
         args = arguments if isinstance(arguments, dict) else {}
         handlers = {
             "get_project_index": self._project_index,
+            "get_project_context": self._project_context,
             "get_episode_context": self._episode_context,
             "search_nodes": self._search_nodes,
             "get_node_detail": self._node_detail,
@@ -228,6 +246,69 @@ class CanvasTools:
             "nodeTypes": by_type,
             "episodes": self._episode_summaries(),
         }
+
+    def full_context(self, *, limit: int = 160) -> dict[str, Any]:
+        """Return one bounded, deterministic context package for generation.
+
+        The model should not have to discover the project by issuing dozens of
+        node reads. This combines the same read-only data the tools expose.
+        """
+        nodes = self._nodes()
+        node_limit = min(300, max(1, int(limit)))
+        summaries = [self._context_node(node) for node in nodes[:node_limit]]
+        assets = self._asset_records()[:200]
+        payload = {
+            "project": self._project_index({}, {}),
+            "nodes": summaries,
+            "nodeCount": len(nodes),
+            "nodesTruncated": len(nodes) > node_limit,
+            "assets": assets,
+            "assetCount": len(assets),
+        }
+        # Keep the structure valid and preserve every node/asset summary.
+        # If the package is large, trim prompt text first instead of slicing
+        # serialized JSON into an unusable preview.
+        max_bytes = max(self.max_result_bytes, 32 * 1024)
+        for budget in (2400, 1200, 600, 240, 0):
+            for item in summaries:
+                if "prompt" in item:
+                    item["prompt"] = item["prompt"][:budget]
+                    item["promptTruncated"] = len(item["prompt"]) >= budget
+            encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            if len(encoded) <= max_bytes:
+                payload["contextBytes"] = len(encoded)
+                payload["contextBudget"] = max_bytes
+                return payload
+        return {
+            "project": payload["project"],
+            "nodes": summaries,
+            "nodeCount": len(nodes),
+            "nodesTruncated": len(nodes) > node_limit,
+            "assets": assets,
+            "assetCount": len(assets),
+            "truncated": True,
+            "contextBytes": len(json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+            "message": "节点与资产摘要完整保留，提示词已按预算压缩。",
+        }
+
+    def _context_node(self, node: dict[str, Any]) -> dict[str, Any]:
+        summary = self._node_summary(node)
+        node_type = str(node.get("type") or "")
+        if node_type not in {"image", "audio"}:
+            return summary
+        metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        prompt = str(metadata.get("prompt") or node.get("prompt") or "")
+        params = _safe_mapping(node.get("params"))
+        return {
+            **summary,
+            "prompt": prompt[:2400],
+            "promptTruncated": len(prompt) > 2400,
+            "refs": _safe_list(params.get("refs")),
+            "voiceRefs": _safe_list(params.get("voiceRefs")),
+        }
+
+    def _project_context(self, args: dict[str, Any], _context: dict[str, Any]) -> dict[str, Any]:
+        return self.full_context(limit=int(args.get("nodeLimit") or 160))
 
     def _episode_summaries(self) -> list[dict[str, Any]]:
         episodes: dict[str, dict[str, Any]] = {}

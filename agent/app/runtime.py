@@ -396,7 +396,8 @@ def _system_prompt(skill: dict[str, Any], route_entry: str = "") -> str:
         "{\"title\":\"第01集\",\"canvas_contract\":{\"schema\":\"drama-canvas-feed/v2\",\"video_model\":\"doubao-seedance-2-0\",\"video_aspect\":\"9:16\",\"generator\":{\"name\":\"<skill id>\",\"skillVersion\":\"<version>\",\"packageRevision\":\"<revision>\"}},\"asset_prompts\":[],\"voice_prompts\":[],\"segments\":[{\"no\":1,\"name\":\"段1\",\"raw\":\"...\"}]}\n\n"
         "技能信息：id=" + str(skill.get("id")) + " version=" + str(skill.get("version")) + "\n\n"
         "运行时质量合同（必须执行）：\n" + quality_contract + "\n\n"
-        "技能入口（可能因长度截断；需要其他章节时调用 read_skill_section）：\n" + entry
+        "技能入口与运行时合同已内置；不要请求额外工具或额外章节，"
+        "直接完成本次投喂稿输出：\n" + entry
     )
 
 
@@ -501,10 +502,10 @@ def execute_run(run_id: str) -> None:
             + (f"已锁题：{locks_text}\n\n" if locks_text else "")
             + (f"参考节点：\n{reference_text}\n\n" if reference_text else "")
             + (f"参考文件：{attachment_text}\n\n" if attachment_text else "")
-            + f"用户目标：\n{run['prompt']}\n\n请按需调用画布工具核验资产和上下文，然后输出一份可导入的完整 JSON。"
+            + f"用户目标：\n{run['prompt']}\n\n请基于即将提供的只读画布上下文，直接输出一份可导入的完整 JSON。"
         )
         system_prompt = _system_prompt(skill, route_entry)
-        status_message_id = db.create_message(run_id, "status", "正在生成投喂稿…")
+        status_message_id = db.create_message(run_id, "status", "上下文已预取，正在生成投喂稿…")
         canvas_tools = CanvasTools(
             project,
             canvas_client,
@@ -520,10 +521,7 @@ def execute_run(run_id: str) -> None:
         }
         prefetch_context: dict[str, Any] = {}
         for index, (tool_name, tool_args) in enumerate(
-            (
-                ("get_project_index", {}),
-                ("list_assets", {"limit": 80}),
-            ),
+            (("get_project_context", {"nodeLimit": 160}),),
             start=1,
         ):
             call_id = db.start_tool_call(
@@ -560,8 +558,10 @@ def execute_run(run_id: str) -> None:
                 }
             )
         user_prompt += (
-            "\n\n画布工具预读取结果（只读，不得自行改写）：\n"
-            + json.dumps(prefetch_context, ensure_ascii=False)[:24_000]
+            "\n\n画布上下文预读取结果（只读，不得自行改写）：\n"
+            + json.dumps(prefetch_context, ensure_ascii=False)[:32_000]
+            + "\n\n上下文已经预取完整。直接基于以上上下文和用户目标输出一份完整 JSON；"
+            + "不要输出解释，不要省略 asset_prompts、voice_prompts 或 segments。"
         )
         stream_message_id = db.create_message(run_id, "draft", "")
         stream_parts: list[str] = []
@@ -594,21 +594,22 @@ def execute_run(run_id: str) -> None:
             flush_stream_content()
 
         try:
-            raw, tool_trace = execute_tool_loop(
+            streamed_parts: list[str] = []
+            for chunk in chat_stream(
                 system_prompt,
-                [{"role": "user", "content": user_prompt}],
-                canvas_tools,
-                context_payload,
+                user_prompt,
                 model_id=run.get("modelId") or "",
-                max_steps=settings.agent_max_tool_steps,
-                on_content=stream_content,
-            )
+                tenant_id=run.get("tenantId") or "",
+            ):
+                streamed_parts.append(str(chunk))
+                stream_content(str(chunk))
+            raw = "".join(streamed_parts)
         finally:
             flush_stream_content(force=True)
-        tool_trace = [*prefetch_trace, *tool_trace]
+        tool_trace = prefetch_trace
         db.update_message(
             status_message_id,
-            f"已生成投喂稿，执行 {len(tool_trace)} 次画布工具调用。",
+            f"已生成投喂稿，执行 {len(tool_trace)} 次内部上下文读取；模型调用 1 次。",
         )
         db.add_event(
             run_id,

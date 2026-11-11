@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {normalizeContentBlocks} from './AgentMessageContent';
+import {normalizeContentBlocks, shouldCollapseAgentContent} from './AgentMessageContent';
 
 describe('agent content blocks', () => {
   it('keeps long markdown and JSON blocks', () => {
@@ -17,5 +17,13 @@ describe('agent content blocks', () => {
     expect(normalizeContentBlocks(undefined, '完整回复')).toEqual([
       {type: 'text', text: '完整回复'},
     ]);
+  });
+
+  it('only collapses long content and keeps the full text available', () => {
+    const short = normalizeContentBlocks(undefined, '短回复');
+    const long = normalizeContentBlocks(undefined, '展开前'.repeat(120));
+    expect(shouldCollapseAgentContent(short)).toBe(false);
+    expect(shouldCollapseAgentContent(long)).toBe(true);
+    expect(long[0]).toMatchObject({type: 'text'});
   });
 });
