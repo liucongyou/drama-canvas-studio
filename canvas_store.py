@@ -752,6 +752,8 @@ def _connect():
                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     (notes_migration, "1"),
                 )
+            if pg_compat.postgres_enabled():
+                pg_compat.ensure_canvas_indexes(con)
             con.commit()
             _SCHEMA_READY_PATHS.add(path)
             _SCHEMA_READY = True

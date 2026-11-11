@@ -32,6 +32,16 @@ _POOL_SIZE = max(2, int(os.getenv("CANVAS_PG_POOL_SIZE", "24")))
 _POOL_SCHEMA_SIZE = max(2, min(8, _POOL_SIZE))
 _SERIAL_ID_CACHE: dict[tuple[str, str], bool] = {}
 
+CANVAS_ROWID_INDEXES = (
+    'CREATE INDEX IF NOT EXISTS ix_pg_projection_nodes_order ON canvas_projection_nodes(project_id, rowid)',
+    'CREATE INDEX IF NOT EXISTS ix_pg_projection_edges_order ON canvas_projection_edges(project_id, rowid)',
+    'CREATE INDEX IF NOT EXISTS ix_pg_projection_episodes_order ON canvas_projection_episodes(project_id, rowid)',
+    'CREATE INDEX IF NOT EXISTS ix_pg_projection_notes_order ON canvas_projection_notes(project_id, episode_id, rowid)',
+    'CREATE INDEX IF NOT EXISTS ix_pg_snapshots_recent ON canvas_snapshots(canvas_id, created_at DESC, rowid DESC)',
+    'CREATE INDEX IF NOT EXISTS ix_pg_tasks_recent ON generation_tasks(project_id, created_at DESC, updated_at DESC, rowid DESC)',
+    'CREATE INDEX IF NOT EXISTS ix_pg_audit_recent ON audit_events(created_at DESC, rowid DESC)',
+)
+
 
 class DatabaseError(RuntimeError):
     pass
@@ -511,6 +521,11 @@ def connect_path(path: str | os.PathLike[str], kind: str = "canvas") -> PGConnec
     except queue.Empty:
         raw = None
     return PGConnection(str(path), kind, schema, raw=raw)
+
+
+def ensure_canvas_indexes(connection: PGConnection) -> None:
+    for statement in CANVAS_ROWID_INDEXES:
+        connection.execute(statement)
 
 
 def table_names(connection: PGConnection) -> list[str]:

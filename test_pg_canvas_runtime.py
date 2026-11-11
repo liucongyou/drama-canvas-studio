@@ -98,3 +98,23 @@ def test_postgres_canvas_crud_projection_events_and_snapshot(pg_canvas) -> None:
     assert snapshot["revision"] >= project["revision"]
     assert canvas_store.list_snapshots(project_id)[0]["id"] == snapshot["id"]
     assert canvas_store.storage_stats()["file_bytes"] > 0
+    with pg_compat.connect_path(
+        os.environ.get("PG_TEST_PATH", "") or canvas_store._db_path(),
+        "canvas",
+    ) as connection:
+        indexes = {
+            row[0]
+            for row in connection.raw.execute(
+                """
+                SELECT indexname
+                FROM pg_indexes
+                WHERE schemaname=current_schema()
+                """
+            ).fetchall()
+        }
+    assert {
+        "ix_pg_projection_nodes_order",
+        "ix_pg_projection_edges_order",
+        "ix_pg_snapshots_recent",
+        "ix_pg_tasks_recent",
+    } <= indexes

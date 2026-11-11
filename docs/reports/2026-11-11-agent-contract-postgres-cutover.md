@@ -54,6 +54,8 @@
 
 首次无预热运行 P95 约 14.2 秒；加入 schema 级连接复用后，预热运行 P95 约 1.99 秒。
 
+补齐 PostgreSQL 专用 `(project_id, rowid)`、快照、任务和审计排序索引。当前 owner 节点表 466 行时，`ORDER BY rowid` 查询执行约 `0.99ms`；数据量较小时规划器选择顺序扫描和内存小排序，索引为更大画布保留。
+
 ## 验证
 
 - Python 全量：`754 passed, 5 skipped, 208 subtests passed`。首轮曾出现一次 Windows 慢读性能断言 `2.188s > 1.5s`，单项连跑 3 次均通过；最终全量复跑全绿。
