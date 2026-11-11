@@ -14,6 +14,7 @@ from canvas_feed_contract import (
     commit_import,
     issue_dict,
     prepare_import,
+    _prepare_feed_for_import,
     _expectations_with_incoming_assets,
     validate_declared_feed,
     validate_final_payload,
@@ -195,10 +196,18 @@ class CanvasFeedNegativeContractTests(unittest.TestCase):
         self.assertIn("视觉年龄 45", conflict_issues[0].message)
         self.assertIn("声线年龄 56-60", conflict_issues[0].message)
 
-    def test_rejects_missing_voice_reference(self):
-        self.assert_fixture_rejected(
-            "04-missing-voice-ref.json",
-            ErrorCode.VOICE_DECLARED_MISSING,
+    def test_rewrites_missing_voice_reference_before_validation(self):
+        payload = json.loads(
+            (FIXTURES / "04-missing-voice-ref.json").read_text(encoding="utf-8")
+        )
+        normalized, issues = _prepare_feed_for_import(payload)
+        self.assertFalse(any(
+            issue.code == ErrorCode.VOICE_DECLARED_MISSING
+            for issue in issues
+        ))
+        self.assertIn(
+            "【音色引用】@音频｜Lin Xia（图9）",
+            normalized["segments"][0]["raw"],
         )
 
     def test_rejects_duplicate_asset_code(self):

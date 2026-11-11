@@ -151,12 +151,24 @@ def normalize_feed(
         for old, new in code_map.items():
             if old and old != new and old in raw:
                 raw = raw.replace(old, new)
-        speaker = re.search(r"台词[:：]\s*([^（(：:\n]+)", raw)
-        if speaker:
-            name = speaker.group(1).strip()
-            code = voice_by_name.get(name, "")
-            if code and ("@音频｜" + name) not in raw:
-                raw = f"【音色引用】@音频｜{name}（{code}）\n" + raw
+        speakers: list[str] = []
+        for match in re.finditer(r"台词[:：]\s*([^（(：:\n]+)", raw):
+            name = match.group(1).strip()
+            if name and name not in speakers:
+                speakers.append(name)
+        raw = re.sub(r"(?m)^【音色引用】[^\n]*(?:\n|$)", "", raw)
+        references = [
+            f"@音频｜{name}（{voice_by_name[name]}）"
+            for name in speakers
+            if voice_by_name.get(name)
+        ]
+        if references:
+            section = "【音色引用】" + "；".join(references)
+            core = re.search(r"(?m)^【核心人物】[^\n]*(?:\n|$)", raw)
+            if core:
+                raw = raw[:core.end()] + section + "\n" + raw[core.end():]
+            else:
+                raw = section + "\n" + raw.lstrip("\n")
         current["raw"] = raw
         normalized_segments.append(current)
     out["segments"] = normalized_segments

@@ -3,6 +3,17 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.11.08',
+    date: '2026-11-11',
+    title: '音色引用确定性归一与真实流式输出',
+    releasedAt: '2026-11-11 14:55:00 +08:00',
+    changes: [
+      '无顶层 assets[] 的旧版投喂稿不再提前跳过归一；每段会按本段全部有音色的对白角色重写唯一【音色引用】，不再依赖模型第三次修复。',
+      '智能体工具调用轮支持真实 SSE token 增量，后端按运行 ID持续写入草稿消息并推送 run.content_delta。',
+      '前端运行中实时显示“Agent 正在写入”的模型原文，完成后自动收起，最终结果仍由后端确定性编译与预检接管。',
+    ],
+  },
+  {
     version: '2026.11.11.07',
     date: '2026-11-11',
     title: 'PostgreSQL 兼容专项审计收口',

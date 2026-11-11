@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app import db, files
 from app.canvas_client import CanvasClient, CanvasError
 from app.canvas_tools import CanvasTools, TOOL_DEFINITIONS
 from app.config import get_settings
 from app.feed_compiler import compile_feed_draft
-from app.llm import LLMError, chat, chat_stream, chat_tool_round, extract_json
+from app.llm import LLMError, chat, chat_stream, chat_tool_round_stream, extract_json
 from app.skills import SkillError, get_skill, read_entry, read_route_entry
 
 ACTIVE = {"queued", "running", "waiting_user"}
@@ -29,20 +30,37 @@ def execute_tool_loop(
     *,
     model_id: str = "",
     max_steps: int | None = None,
+    on_content: Callable[[str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     settings = get_settings()
     limit = max(1, int(max_steps or settings.agent_max_tool_steps or 12))
     working = [dict(item) for item in messages]
     executed: list[dict[str, Any]] = []
     for _step in range(limit):
-        result = chat_tool_round(
+        round_chunks: list[str] = []
+        round_started = False
+
+        def on_round_content(chunk: str) -> None:
+            nonlocal round_started
+            if not round_started:
+                if on_content and executed:
+                    on_content("\n\n")
+                round_started = True
+            if on_content:
+                on_content(str(chunk))
+            round_chunks.append(str(chunk))
+
+        result = chat_tool_round_stream(
             system,
             working,
             tools=TOOL_DEFINITIONS_FOR_RUNTIME,
             model_id=model_id,
             tenant_id=str(context.get("tenantId") or ""),
+            on_content=on_round_content if on_content else None,
         )
         if not result.tool_calls:
+            if on_content and not round_chunks and result.content:
+                on_content(("\n\n" if executed else "") + result.content)
             return result.content, executed
         working.append(
             {
@@ -519,14 +537,48 @@ def execute_run(run_id: str) -> None:
             "\n\n画布工具预读取结果（只读，不得自行改写）：\n"
             + json.dumps(prefetch_context, ensure_ascii=False)[:24_000]
         )
-        raw, tool_trace = execute_tool_loop(
-            system_prompt,
-            [{"role": "user", "content": user_prompt}],
-            canvas_tools,
-            context_payload,
-            model_id=run.get("modelId") or "",
-            max_steps=settings.agent_max_tool_steps,
-        )
+        stream_message_id = db.create_message(run_id, "draft", "")
+        stream_parts: list[str] = []
+        stream_last_flush = 0.0
+        stream_flushed_chars = 0
+
+        def flush_stream_content(*, force: bool = False) -> None:
+            nonlocal stream_last_flush, stream_flushed_chars
+            text = "".join(stream_parts)
+            if not text or (not force and len(text) == stream_flushed_chars):
+                return
+            now = time.monotonic()
+            if (
+                not force
+                and len(text) - stream_flushed_chars < 120
+                and now - stream_last_flush < 0.08
+            ):
+                return
+            db.update_message(stream_message_id, text)
+            db.add_event(
+                run_id,
+                "run.content_delta",
+                {"chars": len(text)},
+            )
+            stream_last_flush = now
+            stream_flushed_chars = len(text)
+
+        def stream_content(chunk: str) -> None:
+            stream_parts.append(str(chunk))
+            flush_stream_content()
+
+        try:
+            raw, tool_trace = execute_tool_loop(
+                system_prompt,
+                [{"role": "user", "content": user_prompt}],
+                canvas_tools,
+                context_payload,
+                model_id=run.get("modelId") or "",
+                max_steps=settings.agent_max_tool_steps,
+                on_content=stream_content,
+            )
+        finally:
+            flush_stream_content(force=True)
         tool_trace = [*prefetch_trace, *tool_trace]
         db.update_message(
             status_message_id,

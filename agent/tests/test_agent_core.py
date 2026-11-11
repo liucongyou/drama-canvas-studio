@@ -3,7 +3,13 @@ from types import SimpleNamespace
 import pytest
 
 from app import llm
-from app.llm import _chat_payload, _effective_output_tokens, extract_json
+from app.llm import (
+    ToolRound,
+    _chat_payload,
+    _effective_output_tokens,
+    _merge_stream_tool_call,
+    extract_json,
+)
 from app.skills import SkillError, _normalize_manifest
 
 
@@ -21,6 +27,106 @@ def test_chat_payload_requests_json_object_mode() -> None:
     assert payload["max_tokens"] == 12_000
     assert payload["messages"][0] == {"role": "system", "content": "system"}
     assert payload["messages"][1] == {"role": "user", "content": "user"}
+
+
+def test_stream_tool_call_deltas_are_assembled_by_index() -> None:
+    calls: dict[int, dict] = {}
+    _merge_stream_tool_call(calls, {
+        "index": 0,
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": "get_", "arguments": '{"x":'},
+    })
+    _merge_stream_tool_call(calls, {
+        "index": 0,
+        "function": {"name": "project", "arguments": '1}'},
+    })
+    assert calls[0]["id"] == "call-1"
+    assert calls[0]["function"]["name"] == "get_project"
+    assert calls[0]["function"]["arguments"] == '{"x":1}'
+
+
+def test_chat_tool_round_stream_emits_content_and_assembles_tools(monkeypatch) -> None:
+    sse = [
+        'data: {"choices":[{"delta":{"content":"正在"}}]}',
+        'data: {"choices":[{"delta":{"content":"写入"}}]}',
+        (
+            'data: {"choices":[{"delta":{"tool_calls":['
+            '{"index":0,"id":"call-1","type":"function",'
+            '"function":{"name":"get_project_","arguments":"{\\"x\\":"}}]}}]}'
+        ),
+        (
+            'data: {"choices":[{"delta":{"tool_calls":['
+            '{"index":0,"function":{"name":"index","arguments":"1}"}}]}}]}'
+        ),
+        "data: [DONE]",
+    ]
+
+    class FakeResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def iter_lines(self):
+            return iter(sse)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def stream(self, method, url, headers, json):
+            assert method == "POST"
+            assert json["stream"] is True
+            return FakeResponse()
+
+    chunks: list[str] = []
+    monkeypatch.setattr(llm.httpx, "Client", FakeClient)
+    monkeypatch.setattr(
+        llm,
+        "_target",
+        lambda *args, **kwargs: (
+            "https://example.test/v1",
+            "test-key",
+            "test-model",
+            12_000,
+        ),
+    )
+    monkeypatch.setattr(
+        llm,
+        "get_settings",
+        lambda: SimpleNamespace(
+            llm_mode="openai",
+            request_timeout_seconds=1,
+        ),
+    )
+
+    result = llm.chat_tool_round_stream(
+        "system",
+        [{"role": "user", "content": "generate"}],
+        [],
+        on_content=chunks.append,
+    )
+
+    assert chunks == ["正在", "写入"]
+    assert result.content == "正在写入"
+    assert result.tool_calls == [{
+        "id": "call-1",
+        "type": "function",
+        "function": {
+            "name": "get_project_index",
+            "arguments": '{"x":1}',
+        },
+    }]
 
 
 def test_chat_falls_back_when_gateway_rejects_json_mode(monkeypatch) -> None:
@@ -91,6 +197,29 @@ def test_agent_output_budget_uses_model_limits(monkeypatch) -> None:
     assert _effective_output_tokens({"maxTokens": 30_000, "maxOutputTokens": 8_000}) == 8_000
 
 
+def test_tool_loop_forwards_streamed_content(monkeypatch) -> None:
+    from app import runtime
+
+    chunks: list[str] = []
+
+    def fake_stream(*args, on_content=None, **kwargs):
+        on_content("正在写入")
+        on_content("投喂稿")
+        return ToolRound(content="正在写入投喂稿", tool_calls=[], native=True)
+
+    monkeypatch.setattr(runtime, "chat_tool_round_stream", fake_stream)
+    content, trace = runtime.execute_tool_loop(
+        "system",
+        [{"role": "user", "content": "generate"}],
+        object(),
+        {"tenantId": ""},
+        on_content=chunks.append,
+    )
+    assert content == "正在写入投喂稿"
+    assert chunks == ["正在写入", "投喂稿"]
+    assert trace == []
+
+
 def test_legacy_manifest_falls_back_to_package() -> None:
     normalized = _normalize_manifest(
         {
@@ -148,6 +277,33 @@ def test_normalize_feed_adds_voice_reference_and_string_age() -> None:
     }, skill_id="s", skill_version="1")
     assert out["voice_prompts"][0]["age"] == "28"
     assert "【音色引用】@音频｜林晚（图1）" in out["segments"][0]["raw"]
+
+
+def test_normalize_feed_rewrites_incomplete_voice_reference() -> None:
+    from app.feed_normalizer import normalize_feed
+
+    out = normalize_feed({
+        "asset_prompts": [
+            {"code": "图1", "name": "赵铁柱", "raw": "男性，34岁"},
+            {"code": "图2", "name": "钱万金", "raw": "男性，52岁"},
+        ],
+        "voice_prompts": [
+            {"code": "图1", "name": "赵铁柱", "age": 34, "gender": "male", "dialect": "standard", "prompt": "calm"},
+            {"code": "图2", "name": "钱万金", "age": 52, "gender": "male", "dialect": "standard", "prompt": "sharp"},
+        ],
+        "segments": [{
+            "no": 1,
+            "raw": (
+                "【音色引用】@音频｜赵铁柱（图1）\n"
+                '台词：钱万金（扬声）："签字。"\n'
+                '台词：赵铁柱（沉声）："先念协议。"'
+            ),
+        }],
+    })
+    raw = out["segments"][0]["raw"]
+    assert raw.count("【音色引用】") == 1
+    assert "@音频｜钱万金（图2）" in raw
+    assert "@音频｜赵铁柱（图1）" in raw
 
 
 def test_normalize_voice_name_from_role_prefix() -> None:

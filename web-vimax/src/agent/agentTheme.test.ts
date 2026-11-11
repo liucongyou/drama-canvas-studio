@@ -36,4 +36,10 @@ describe('AgentDock theme polish', () => {
     expect(css).toMatch(/\.agent-fab svg\{[^}]*color:var\(--v-accent/);
     expect(css).not.toContain('rgba(78,161,255,.18)');
   });
+
+  it('renders live model output with a theme-aware streaming block', () => {
+    expect(css).toContain('.agent-live-draft');
+    expect(css).toContain('animation:agentLiveCaret');
+    expect(css).toMatch(/\.agent-live-draft\{[^}]*background:var\(--v-canvas/);
+  });
 });

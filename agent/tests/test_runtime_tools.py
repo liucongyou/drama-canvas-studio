@@ -33,7 +33,7 @@ def test_tool_loop_executes_tool_then_final(monkeypatch) -> None:
             ToolRound(content='{"title":"x"}', tool_calls=[], native=True),
         ]
     )
-    monkeypatch.setattr(runtime, "chat_tool_round", lambda *args, **kwargs: next(rounds))
+    monkeypatch.setattr(runtime, "chat_tool_round_stream", lambda *args, **kwargs: next(rounds))
     tools = FakeTools()
     content, calls = runtime.execute_tool_loop(
         "system",
@@ -46,6 +46,47 @@ def test_tool_loop_executes_tool_then_final(monkeypatch) -> None:
     assert content == '{"title":"x"}'
     assert calls[0]["name"] == "get_project_index"
     assert tools.calls[0][0] == "get_project_index"
+
+
+def test_tool_loop_streams_only_final_round(monkeypatch) -> None:
+    rounds = iter(
+        [
+            ToolRound(
+                content="先核验项目上下文",
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_project_index",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+                native=True,
+            ),
+            ToolRound(content='{"title":"x"}', tool_calls=[], native=True),
+        ]
+    )
+    streamed: list[str] = []
+
+    def fake_stream(*_args, on_content=None, **_kwargs):
+        round_ = next(rounds)
+        if on_content and not round_.tool_calls:
+            on_content(round_.content)
+        return round_
+
+    monkeypatch.setattr(runtime, "chat_tool_round_stream", fake_stream)
+    content, calls = runtime.execute_tool_loop(
+        "system",
+        [{"role": "user", "content": "hello"}],
+        FakeTools(),
+        {"projectId": "p1"},
+        on_content=streamed.append,
+    )
+    assert content == '{"title":"x"}'
+    assert calls[0]["name"] == "get_project_index"
+    assert streamed == ["\n\n", '{"title":"x"}']
 
 
 def test_tool_loop_stops_at_limit(monkeypatch) -> None:
@@ -65,7 +106,7 @@ def test_tool_loop_stops_at_limit(monkeypatch) -> None:
             native=True,
         )
 
-    monkeypatch.setattr(runtime, "chat_tool_round", always_tool)
+    monkeypatch.setattr(runtime, "chat_tool_round_stream", always_tool)
     with pytest.raises(runtime.AgentToolLimitError):
         runtime.execute_tool_loop(
             "system",

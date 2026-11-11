@@ -127,6 +127,9 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const idempotencyKeyRef = useRef('');
   const draftTimerRef = useRef<number | null>(null);
   const closeTimerRef = useRef<number | null>(null);
+  const runContentLength = run
+    ? run.messages.reduce((total, message) => total + String(message.content || '').length, 0)
+    : 0;
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, open ? '1' : '0'); } catch {}
@@ -136,7 +139,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     const el = chatRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [run && run.messages.length, run && run.status, pendingPrompt]);
+  }, [runContentLength, run && run.status, pendingPrompt]);
 
   useEffect(() => {
     widthRef.current = width;
@@ -771,6 +774,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const feedErrors = feedPayload && Array.isArray(feedPayload.errors) ? feedPayload.errors as Array<Record<string, unknown>> : [];
   const feedPreview = feedPayload && feedPayload.preview && typeof feedPayload.preview === 'object' ? feedPayload.preview as Record<string, unknown> : {};
   const displayContent = cleanRunText;
+  const runIsStreaming = Boolean(run && (run.status === 'queued' || run.status === 'running'));
   const visibleMessages = (run ? run.messages || [] : [])
     .filter((message) => message.role !== 'status')
     .map((message) => ({...message, display: displayContent(message.content)}))
@@ -882,17 +886,23 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
                   <AgentProgress label={statusMessage ? statusMessage.content : streamLabel} stage={activeStage} />
                 )}
                 {visibleMessages.map((message) => (
-                  <div key={message.id} className={'agent-msg ' + (message.role === 'user' ? 'is-user' : 'is-assistant')}>
+                  <div key={message.id} className={'agent-msg ' + (message.role === 'user' ? 'is-user' : 'is-assistant') + (message.role === 'draft' ? ' is-draft' : '')}>
                     <div className="agent-msg-avatar">{message.role === 'user' ? '你' : <Sparkles size={14} />}</div>
                     <div className="agent-msg-body">
                       <div className="agent-msg-head">
-                        <span>{message.role === 'user' ? '你' : 'Agent'}</span>
+                        <span>{message.role === 'user' ? '你' : message.role === 'draft' ? (runIsStreaming ? 'Agent · 正在写入' : 'Agent · 模型输出草稿') : 'Agent'}</span>
                         {message.createdAt && <time>{new Date(message.createdAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</time>}
                       </div>
-                      <div className="agent-msg-text"><AgentMessageContent blocks={message.blocks} fallback={message.display} /></div>
-                      <div className="agent-msg-actions">
-                        <button type="button" title="复制" aria-label="复制消息" onClick={() => void navigator.clipboard.writeText(message.display)}><Copy size={12} /></button>
-                      </div>
+                      {message.role === 'draft'
+                        ? <pre className={'agent-live-draft' + (runIsStreaming ? ' is-streaming' : '')}>{message.display}{runIsStreaming && <i aria-hidden="true" />}</pre>
+                        : (
+                          <>
+                            <div className="agent-msg-text"><AgentMessageContent blocks={message.blocks} fallback={message.display} /></div>
+                            <div className="agent-msg-actions">
+                              <button type="button" title="复制" aria-label="复制消息" onClick={() => void navigator.clipboard.writeText(message.display)}><Copy size={12} /></button>
+                            </div>
+                          </>
+                        )}
                     </div>
                   </div>
                 ))}

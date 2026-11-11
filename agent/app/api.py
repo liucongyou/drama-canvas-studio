@@ -498,7 +498,14 @@ def run_events(run_id: str, request: Request, since: int = 0) -> StreamingRespon
                 if run and run["status"] in {"done", "failed", "cancelled"} and idle_ticks >= 2:
                     break
                 time.sleep(0.5)
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def register_web(app) -> None:

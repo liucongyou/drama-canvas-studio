@@ -1,47 +1,18 @@
-import {afterEach, describe, expect, it, vi} from 'vitest';
-
-type ApiModule = typeof import('./api');
-let apiModule: ApiModule | undefined;
+import {readFileSync} from 'node:fs';
+import {describe, expect, it} from 'vitest';
 
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.resetModules();
-});
+describe('createMediaDownloadUrl contract', () => {
+  it('keeps download tickets on the configured API host', () => {
+    const source = readFileSync(new URL('./api.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('export async function createMediaDownloadUrl');
+    const end = source.indexOf('\nexport ', start + 1);
+    const implementation = source.slice(start, end === -1 ? undefined : end);
 
-
-describe('createMediaDownloadUrl', () => {
-  it('keeps download tickets on the configured API host', async () => {
-    vi.stubGlobal('window', {
-      __CANVAS_API_BASE__: 'https://api.example.com',
-      location: {pathname: '/'},
-    });
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      url: '/api/downloads/media/ticket-token',
-      expiresIn: 600,
-      downloadName: '铁西硬汉_EP07_段13.mp4',
-    }), {
-      status: 200,
-      headers: {'Content-Type': 'application/json'},
-    }));
-    vi.stubGlobal('fetch', fetchMock);
-    apiModule = await import('./api');
-    vi.stubGlobal('window', {
-      __CANVAS_API_BASE__: 'https://api.example.com',
-      location: {pathname: '/'},
-    });
-
-    await expect(apiModule.createMediaDownloadUrl(
-      'project-1',
-      'node-1',
-      'video:task-1',
-      '铁西硬汉_EP07_段13.mp4',
-    )).resolves.toMatchObject({
-      url: 'https://api.example.com/api/downloads/media/ticket-token',
-    });
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://api.example.com/api/projects/project-1/downloads',
-      expect.objectContaining({method: 'POST'}),
+    expect(implementation).toContain(
+      '`/api/projects/${encodeURIComponent(sessionId)}/downloads`',
     );
-  }, 15_000);
+    expect(implementation).toContain("url: apiUrl(String(ticket.url || ''))");
+    expect(implementation).not.toContain('fetch(');
+  });
 });

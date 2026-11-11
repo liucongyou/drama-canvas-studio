@@ -5,7 +5,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -24,6 +24,40 @@ class ToolRound:
     content: str
     tool_calls: list[dict[str, Any]]
     native: bool
+
+
+def _merge_stream_tool_call(
+    accumulated: dict[int, dict[str, Any]],
+    fragment: dict[str, Any],
+) -> None:
+    raw_index = fragment.get("index")
+    index = (
+        int(raw_index)
+        if raw_index is not None
+        else len(accumulated)
+    )
+    current = accumulated.setdefault(
+        index,
+        {
+            "id": "",
+            "type": "function",
+            "function": {"name": "", "arguments": ""},
+        },
+    )
+    if fragment.get("id"):
+        current["id"] = str(fragment["id"])
+    if fragment.get("type"):
+        current["type"] = str(fragment["type"])
+    function = fragment.get("function")
+    if isinstance(function, dict):
+        target = current["function"]
+        if function.get("name"):
+            target["name"] = str(target.get("name") or "") + str(function["name"])
+        if function.get("arguments"):
+            target["arguments"] = (
+                str(target.get("arguments") or "")
+                + str(function["arguments"])
+            )
 
 
 def _demo_feed() -> dict[str, Any]:
@@ -224,6 +258,134 @@ def chat_tool_round(
             item
             for item in message.get("tool_calls") or []
             if isinstance(item, dict)
+        ],
+        native=True,
+    )
+
+
+def chat_tool_round_stream(
+    system: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    model_id: str = "",
+    tenant_id: str = "",
+    on_content: Callable[[str], None] | None = None,
+) -> ToolRound:
+    """Stream one tool-capable round while assembling any tool-call deltas."""
+    settings = get_settings()
+    if settings.llm_mode == "mock":
+        content = _mock()
+        if on_content:
+            for index in range(0, len(content), 48):
+                on_content(content[index:index + 48])
+                time.sleep(0.02)
+        return ToolRound(content=content, tool_calls=[], native=True)
+    base_url, api_key, model_name, max_tokens = _target(
+        model_id,
+        tenant_id=tenant_id,
+    )
+    if not (base_url and api_key and model_name):
+        content = _mock()
+        if on_content:
+            for index in range(0, len(content), 48):
+                on_content(content[index:index + 48])
+                time.sleep(0.02)
+        return ToolRound(content=content, tool_calls=[], native=True)
+    payload = {
+        "model": model_name,
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+        "stream": True,
+        "messages": [{"role": "system", "content": system}, *messages],
+        "tools": tools,
+        "tool_choice": "auto",
+    }
+    content_parts: list[str] = []
+    streamed_tool_calls: dict[int, dict[str, Any]] = {}
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(
+                connect=20,
+                read=settings.request_timeout_seconds,
+                write=30,
+                pool=20,
+            ),
+            trust_env=False,
+        ) as client:
+            with client.stream(
+                "POST",
+                base_url.rstrip("/") + "/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json=payload,
+            ) as response:
+                if response.status_code >= 400:
+                    detail = response.read().decode("utf-8", errors="replace")
+                    if (
+                        response.status_code in {400, 404, 422}
+                        and "tool" in detail.lower()
+                    ):
+                        return chat_tool_round(
+                            system,
+                            messages,
+                            tools,
+                            model_id=model_id,
+                            tenant_id=tenant_id,
+                        )
+                    raise LLMError(
+                        f"模型接口 HTTP {response.status_code}: {detail[:300]}"
+                    )
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        item = json.loads(data)
+                        delta = item["choices"][0].get("delta") or {}
+                    except (ValueError, KeyError, IndexError, TypeError):
+                        continue
+                    content = delta.get("content")
+                    if content:
+                        text = str(content)
+                        content_parts.append(text)
+                        if on_content:
+                            on_content(text)
+                    for fragment in delta.get("tool_calls") or []:
+                        if isinstance(fragment, dict):
+                            _merge_stream_tool_call(
+                                streamed_tool_calls,
+                                fragment,
+                            )
+    except (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.ReadTimeout,
+        httpx.RemoteProtocolError,
+    ) as exc:
+        if content_parts or streamed_tool_calls:
+            raise LLMError(f"模型流式请求中断：{exc}") from exc
+        return chat_tool_round(
+            system,
+            messages,
+            tools,
+            model_id=model_id,
+            tenant_id=tenant_id,
+        )
+    if not content_parts and not streamed_tool_calls:
+        return chat_tool_round(
+            system,
+            messages,
+            tools,
+            model_id=model_id,
+            tenant_id=tenant_id,
+        )
+    return ToolRound(
+        content="".join(content_parts),
+        tool_calls=[
+            streamed_tool_calls[index]
+            for index in sorted(streamed_tool_calls)
+            if streamed_tool_calls[index].get("function", {}).get("name")
         ],
         native=True,
     )

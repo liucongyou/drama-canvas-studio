@@ -916,6 +916,7 @@ def _prepare_feed_for_import(payload: Any) -> tuple[Any, list[ValidationIssue]]:
             figure_to_semantic[figure] = semantic
 
     if not semantic_to_figure:
+        _rewrite_voice_reference_sections(normalized)
         _append_age_conflict_issues(conflicts, semantic_to_figure, issues)
         return normalized, issues
 
@@ -1109,28 +1110,11 @@ def _prepare_feed_for_import(payload: Any) -> tuple[Any, list[ValidationIssue]]:
         normalized.setdefault("voice_prompts", []).append(voice)
         voice_by_role[role] = voice
 
+    _rewrite_voice_reference_sections(normalized, voice_by_role)
     for segment in normalized.get("segments") or []:
         if not isinstance(segment, dict):
             continue
         raw = str(segment.get("raw") or "")
-        if "【音色引用】" not in raw:
-            speaking = [
-                role
-                for role in sorted(dialogue_speakers(raw))
-                if role in voice_by_role
-            ]
-            if speaking:
-                references = "；".join(
-                    f"@音频｜{role}（{voice_by_role[role]['code']}）"
-                    for role in speaking
-                )
-                section = f"【音色引用】{references}"
-                core = re.search(r"(?m)^【核心人物】[^\n]*(?:\n|$)", raw)
-                if core:
-                    raw = raw[:core.end()] + section + "\n" + raw[core.end():]
-                else:
-                    raw = raw.rstrip() + "\n" + section + "\n"
-                segment["raw"] = raw
         actual_codes = {
             canonical_code(f"图{number}")
             for number in re.findall(r"图\s*(\d+)", raw)
@@ -1169,6 +1153,46 @@ def _prepare_feed_for_import(payload: Any) -> tuple[Any, list[ValidationIssue]]:
                     entry["semanticCode"] = match.group(1)
 
     return normalized, issues
+
+
+def _rewrite_voice_reference_sections(
+    payload: dict[str, Any],
+    voice_by_role: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    """Rewrite each segment to reference exactly its speaking voice roles."""
+    if voice_by_role is None:
+        voice_by_role = {}
+        for voice in payload.get("voice_prompts") or []:
+            if not isinstance(voice, dict):
+                continue
+            role = str(voice.get("name") or "").strip()
+            code = canonical_code(voice.get("code"))
+            if role and code:
+                voice_by_role[role] = voice
+    for segment in payload.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        raw = re.sub(
+            r"(?m)^【音色引用】[^\n]*(?:\n|$)",
+            "",
+            str(segment.get("raw") or ""),
+        )
+        speaking = [
+            role
+            for role in sorted(dialogue_speakers(raw))
+            if role in voice_by_role
+        ]
+        if speaking:
+            section = "【音色引用】" + "；".join(
+                f"@音频｜{role}（{voice_by_role[role]['code']}）"
+                for role in speaking
+            )
+            core = re.search(r"(?m)^【核心人物】[^\n]*(?:\n|$)", raw)
+            if core:
+                raw = raw[:core.end()] + section + "\n" + raw[core.end():]
+            else:
+                raw = section + "\n" + raw.lstrip("\n")
+        segment["raw"] = raw
 
 
 def _voice_ref_ids(video: dict) -> set[str]:

@@ -373,6 +373,10 @@
 .agent-msg-role{display:none}
 .agent-msg-text{color:var(--v-text-2,#c9c9cc);font-size:12.5px;line-height:1.72;white-space:normal;word-break:break-word}
 .agent-msg.is-user .agent-msg-text{color:var(--v-text,#e6e6e8)}
+.agent-live-draft{max-height:240px;overflow:auto;margin:4px 0 0;padding:10px 11px;border:1px solid var(--v-border,#2e2e2e);border-radius:8px;background:var(--v-canvas,#121212);color:var(--v-text-2,#c9c9cc);font:10.5px/1.62 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word;scrollbar-width:thin}
+.agent-live-draft.is-streaming{border-color:var(--v-border-strong,#3a3a3a)}
+.agent-live-draft i{display:inline-block;width:5px;height:12px;margin-left:2px;vertical-align:-2px;background:var(--v-accent,#5d62e9);animation:agentLiveCaret .72s steps(2,end) infinite}
+@keyframes agentLiveCaret{50%{opacity:0}}
 .agent-msg.is-user .agent-msg-head{padding-right:20px}
 .agent-msg-actions{position:absolute;top:4px;right:5px;display:flex;align-items:center;gap:2px;height:20px;margin:0;opacity:0;pointer-events:none;transition:opacity .14s}
 .agent-msg:hover .agent-msg-actions,.agent-msg:focus-within .agent-msg-actions{opacity:1;pointer-events:auto}
