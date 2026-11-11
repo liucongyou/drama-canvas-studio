@@ -123,7 +123,13 @@ def run_check(payload, episode_id=None):
             for src in in_edges.get(v["id"], [])
             if src in audio_fig_of
         }
-        image_ok = script_set == linked_figs
+        # `params.refs`/link edges describe attached reference slots. Only
+        # body @ mentions select the identities that must appear in this shot.
+        # Extra attached identities are intentionally allowed (for example a
+        # background character kept available without an on-screen action).
+        missing_script_figs = script_set - linked_figs
+        carried_only_figs = linked_figs - script_set
+        image_ok = not missing_script_figs
         audio_ok = audio_script == voice_ref_figs == linked_audio
         ok = image_ok and audio_ok
         results.append({
@@ -137,6 +143,8 @@ def run_check(payload, episode_id=None):
             "imageOk": image_ok,
             "audioOk": audio_ok,
             "imageStaleOk": not stale_linked,
+            "missing": sorted(missing_script_figs, key=lambda x: int(x[1:])),
+            "carriedOnly": sorted(carried_only_figs, key=lambda x: int(x[1:])),
         })
         if not ok or stale_linked:
             errors.append(v.get("title", ""))

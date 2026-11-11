@@ -3225,6 +3225,8 @@ type GateCheckResult = {
   voiceScript?: string[];
   voiceRefs?: string[];
   voiceLinked?: string[];
+  missing?: string[];
+  carriedOnly?: string[];
 };
 
 async function gateCheck(sessionId: string, epId?: string | null): Promise<{passed: boolean; results: GateCheckResult[]}> {
@@ -3235,9 +3237,8 @@ async function gateCheck(sessionId: string, epId?: string | null): Promise<{pass
 function gateCheckMismatchDetail(result: GateCheckResult): string {
   const reasons: string[] = [];
   if (result.imageOk === false) {
-    const script = (result.script || []).join('、') || '无';
-    const linked = (result.linked || []).join('、') || '无';
-    reasons.push(`画面引用不一致（稿面 ${script}；实挂 ${linked}）`);
+    const missing = (result.missing || []).join('、') || '无';
+    reasons.push(`正文引用未挂接（${missing}）`);
   }
   if ((result.staleLinked || []).length > 0) {
     const stale = (result.staleLinked || []).join('、');
