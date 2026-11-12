@@ -141,12 +141,7 @@ import {useDialogFocusTrap} from './useDialogFocusTrap';
 import {dialog} from './GDialog';
 import {taskOutcomePresentation} from './taskOutcomePresentation';
 import {manualTaskResolutionAvailable} from './manualTaskResolution';
-import {
-  qualityCheckPassed,
-  qualityFailureDetails,
-  qualityFailureSummary,
-  qualityStatusPresentation,
-} from './qualityReportPresentation';
+import {qualityFailureDetails, qualityFailureSummary} from './qualityReportPresentation';
 import {
   generationDurationLabel,
   generationPhaseLabel,
@@ -2197,7 +2192,6 @@ function RichPromptEditor({
   placeholder,
   editable = true,
   onChange,
-  onBlur,
   onKeyDown,
   onRendered,
   onMentionPreview,
@@ -2209,17 +2203,13 @@ function RichPromptEditor({
   placeholder: string;
   editable?: boolean;
   onChange: (value: string) => void;
-  onBlur?: () => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
-  onRendered?: (mode?: 'sync' | 'deferred') => void;
+  onRendered?: () => void;
   onMentionPreview?: (preview: ({url: string; label: string} & PreviewPlacement) | null) => void;
   onMentionRemoved?: (labels: string[]) => void;
 }) {
   const mentionSignature = mentions.map((item) => `${item.kind}:${item.label}:${item.url || ''}`).join('|');
   const lastEditorValueRef = useRef('');
-  const lastMentionSignatureRef = useRef('');
-  const composingRef = useRef(false);
-  const compositionEndTimerRef = useRef<number | null>(null);
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -2233,28 +2223,15 @@ function RichPromptEditor({
       .map((item) => `@${item.label}`)
       .join('|');
     const mentionsChanged = currentMentions !== wantedMentions;
-    // The DOM is the first source of truth while the user is editing. Once
-    // blurred, add a deferred reconciliation pass after layout settles; this
-    // catches @ chips appended after the first modal paint (for example the
-    // line "例如 @图片N 在光里") without rebuilding content mid-keystroke.
-    const reconcileOnBlur = !active && mentionsChanged;
-    if (!reconcileOnBlur && current === value && !mentionsChanged) return;
-    if (!reconcileOnBlur && active && !mentionsChanged && value === lastEditorValueRef.current) return;
+    if (active && !mentionsChanged && value === lastEditorValueRef.current) return;
+    if (!active && current === value && !mentionsChanged) return;
     buildPromptEditorContent(editor, value, mentions);
     lastEditorValueRef.current = value;
-    lastMentionSignatureRef.current = mentionSignature;
     if (active) {
       promptSetCaret(editor, Math.min(offset ?? value.length, value.length));
     }
-    onRendered?.(
-      !active && mentionsChanged ? 'deferred' : 'sync',
-    );
+    onRendered?.();
   }, [editorRef, mentionSignature, value, mentions]);
-  useEffect(() => () => {
-    if (compositionEndTimerRef.current !== null) {
-      window.clearTimeout(compositionEndTimerRef.current);
-    }
-  }, []);
 
   return (
     <div
@@ -2270,7 +2247,6 @@ function RichPromptEditor({
       data-placeholder={placeholder}
       onInput={(event) => {
         if (!editable) return;
-        if (composingRef.current) return;
         const next = promptTextFromEditor(event.currentTarget);
         const previous = lastEditorValueRef.current;
         if (next.trim() && next.length < previous.length && onMentionRemoved) {
@@ -2283,38 +2259,12 @@ function RichPromptEditor({
         lastEditorValueRef.current = next;
         onChange(next);
       }}
-      onCompositionStart={() => {
-        composingRef.current = true;
-        if (compositionEndTimerRef.current !== null) {
-          window.clearTimeout(compositionEndTimerRef.current);
-          compositionEndTimerRef.current = null;
-        }
-      }}
-      onCompositionEnd={(event) => {
-        composingRef.current = false;
-        // WebKit/Blink can dispatch the final input event on the next task.
-        // Delay the commit by one task so the editor never rebuilds under an
-        // active IME composition while still committing the final text.
-        if (compositionEndTimerRef.current !== null) {
-          window.clearTimeout(compositionEndTimerRef.current);
-        }
-        compositionEndTimerRef.current = window.setTimeout(() => {
-          compositionEndTimerRef.current = null;
-          if (!editable) return;
-          const editor = event.currentTarget;
-          const next = promptTextFromEditor(editor);
-          editor.dataset.promptValue = next;
-          lastEditorValueRef.current = next;
-          onChange(next);
-        }, 0);
-      }}
       onBlur={(event) => {
         if (!editable) return;
         const next = promptTextFromEditor(event.currentTarget);
         event.currentTarget.dataset.promptValue = next;
         lastEditorValueRef.current = next;
         onChange(next);
-        onBlur?.();
       }}
       onKeyDown={(event) => {
         onKeyDown(event);
@@ -4367,8 +4317,6 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   const suppressBackdropClickUntilRef = useRef(0);
   const [durationDraft, setDurationDraft] = useState('');
   const commitDurationRef = useRef<(raw: string) => void>(() => {});
-  const promptDraftRef = useRef(node?.prompt || '');
-  const promptCommitTimerRef = useRef<number | null>(null);
   // 提示词框默认 4 行，点放大按钮才撑到 30vh；之前是无条件自适应，一打开就铺满半屏。
   const [taExpanded, setTaExpanded] = useState(false);
   // 弹窗贴卡片下方还是上方：由渲染后的实际高度决定（下方放不下就翻上去）
@@ -4443,15 +4391,12 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
         window.clearTimeout(closeTimerRef.current);
         closeTimerRef.current = null;
       }
-      if (node && promptDraftRef.current !== node.prompt) {
-        onChange(node.id, {prompt: promptDraftRef.current});
-      }
       onClose(reason);
     };
     if (el) el.addEventListener('animationend', finish, {once: true});
     // Unlock the canvas immediately; only the visual exit is deferred.
     closeTimerRef.current = window.setTimeout(finish, 120);
-  }, [closing, node, onChange, onClose]);
+  }, [closing, onClose]);
   useEffect(() => () => {
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
   }, []);
@@ -4466,30 +4411,6 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   // 最近一次写入的 params：同一 tick 内连发 patch（选比例 = ratio + size）时要基于它叠加，
   // 否则第二份快照里的旧值会把第一次写的覆盖掉（★ hook 必须在条件 return 之前）
   const paramsRef = useRef<CanvasMediaParams>(node?.params || {});
-
-  const flushPromptDraft = useCallback(() => {
-    if (promptCommitTimerRef.current !== null) {
-      window.clearTimeout(promptCommitTimerRef.current);
-      promptCommitTimerRef.current = null;
-    }
-    if (!node) return;
-    const next = promptDraftRef.current;
-    if (next === node.prompt) return;
-    onChange(node.id, {prompt: next});
-  }, [node?.id, node?.prompt, onChange]);
-
-  const schedulePromptCommit = (next: string) => {
-    promptDraftRef.current = next;
-    if (promptCommitTimerRef.current !== null) {
-      window.clearTimeout(promptCommitTimerRef.current);
-    }
-    promptCommitTimerRef.current = window.setTimeout(() => {
-      promptCommitTimerRef.current = null;
-      if (!node) return;
-      if (promptDraftRef.current === node.prompt) return;
-      onChange(node.id, {prompt: promptDraftRef.current});
-    }, 120);
-  };
 
   // 提示词框高度：**由内容决定**（对齐即梦 —— 用户明确要求"没内容的时候高度和有内容的高度不一样"）。
   //   空态只有一行占位文案 → 框很矮；写下内容后随行数长高，到上限才内部滚动。
@@ -4520,31 +4441,15 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   // 只有主动点击输入框后才出现编辑光标。
   useEffect(() => {
     if (!node) return;
-    promptDraftRef.current = node.prompt;
     setTaExpanded(false);
     setMentionPreview(null);
     const ta = taRef.current;
     if (ta) {
       if (document.activeElement === ta) ta.blur();
-      growTa();
-      // The @ mention chips are built on the next layout pass. Re-measure once
-      // after it so the first modal paint already shows the complete prompt
-      // instead of waiting for the user to focus and blur the editor.
-      const frame = window.requestAnimationFrame(() => growTa());
-      return () => window.cancelAnimationFrame(frame);
+      ta.style.height = `${calcTaHeight(ta, collapsedH())}px`;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node?.id]);
-  useEffect(() => {
-    if (!node) return;
-    promptDraftRef.current = node.prompt;
-  }, [node?.id, node?.prompt]);
-  useEffect(() => () => {
-    if (promptCommitTimerRef.current !== null) {
-      window.clearTimeout(promptCommitTimerRef.current);
-      promptCommitTimerRef.current = null;
-    }
-  }, []);
 
   // Esc 逐层关闭：下拉面板 / + 菜单 / 画布选择 → @ 候选 → 整栏
   useEffect(() => {
@@ -4677,11 +4582,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
 
   const nodeKind = node?.kind ?? 'image';
   const generateAndClose = async () => {
-    flushPromptDraft();
-    const latestNode = node
-      ? {...node, prompt: promptDraftRef.current}
-      : null;
-    if (latestNode && await onGenerate(latestNode, {
+    if (node && await onGenerate(node, {
       entry: 'prompt-modal',
       confirmed: true,
     })) requestClose();
@@ -5554,7 +5455,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
               placeholder={promptPlaceholder}
               onChange={(next) => {
                 const limited = next.slice(0, promptLimit);
-                schedulePromptCommit(limited);
+                onChange(node.id, {prompt: limited});
                 const editor = taRef.current;
                 const followsAt = Boolean(editor && promptCaretFollowsAt(editor, limited));
                 if (followsAt && editor) {
@@ -5592,15 +5493,8 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                   }
                 }
               }}
-              onRendered={(mode) => {
-                if (mode === 'deferred') {
-                  window.setTimeout(() => window.requestAnimationFrame(growTa), 40);
-                } else {
-                  window.requestAnimationFrame(growTa);
-                }
-              }}
+              onRendered={() => window.requestAnimationFrame(growTa)}
               onMentionPreview={setMentionPreview}
-              onBlur={flushPromptDraft}
               onMentionRemoved={(labels) => {
                 for (const label of labels) {
                   const ref = refEntries.find((item) => refLabel(item) === label);
@@ -10101,16 +9995,7 @@ function CanvasViewInner({
     beginSave();
     clearSaveError();
     try {
-      // Another tab may have updated this node after the snapshot was queued.
-      // Pull the current projection first and rebase only fields this tab
-      // actually edited. Unrelated remote changes are not a save conflict.
-      const remoteNodes = await getCanvasMediaNodes(session, currentEp);
-      const remoteById = new Map(remoteNodes.map((node) => [node.id, node]));
-      const rebasedSnapshots = snapshots.map((local) => {
-        const remote = remoteById.get(local.id);
-        return remote ? rebaseLocalMediaNode(local, remote) : local;
-      });
-      const result = await patchMediaNodesFields(session, rebasedSnapshots, currentEp);
+      const result = await patchMediaNodesFields(session, snapshots, currentEp);
       applyMediaPatchRevisions(result.updates);
       clearMediaPatchRetry();
       finishSave(true);
@@ -10150,16 +10035,10 @@ function CanvasViewInner({
           const node = latestById.get(id);
           return node ? [node] : [];
         });
-        const conflictMessage = '检测到另一个标签页修改了同一字段，本地编辑仍保留。请选择保留本地或载入服务器版本。';
-        const conflict = {
-          message: conflictMessage,
-          nodeIds: changedIds,
-          localNodes: local,
-          remoteNodes: remote,
-        };
+        const conflict = {message, nodeIds: changedIds, localNodes: local, remoteNodes: remote};
         mediaSaveConflictRef.current = conflict;
         setMediaSaveConflict(conflict);
-        setSaveError('');
+        setSaveError(`${message}。本地编辑仍保留，请选择处理方式。`);
         return;
       }
       for (const snapshot of snapshots) {
@@ -11095,7 +10974,7 @@ function CanvasViewInner({
       const failCount = Number(rep.levels?.fail || 0);
       const failures = qualityFailureDetails(rep);
       setToast(
-        qualityCheckPassed(rep)
+        rep.passed
           ? '挂接机检已通过'
           : `挂接机检：${failCount} 段未通过 · ${qualityFailureSummary(failures)}`,
       );
@@ -17420,8 +17299,11 @@ function CanvasViewInner({
   const completionPercent = canvas && canvas.shots.length > 0
     ? Math.round((canvas.shots.filter((shot) => shot.clip_url).length / canvas.shots.length) * 100)
     : 0;
-  const qualityStatus = qualityStatusPresentation(qualityReport);
-  const qualityLabel = qualityStatus.label;
+  const qualityLabel = qualityReport?.available
+    ? qualityReport.passed
+      ? '挂接通过'
+      : `挂接 ${Number(qualityReport.levels?.fail || 0)} 段未通过`
+    : '未检查挂接';
   const qualityFailures = useMemo(
     () => qualityFailureDetails(qualityReport),
     [qualityReport],
@@ -17451,7 +17333,7 @@ function CanvasViewInner({
               <span className="canvas-status-dot" aria-hidden="true" />
               {syncLabel}
               {canvas && canvas.shots.length > 0 && <span className="canvas-status-progress">完成率 {completionPercent}%</span>}
-              <span className={`canvas-status-quality ${qualityStatus.tone === 'pass' ? 'is-pass' : qualityStatus.tone === 'fail' ? 'is-fail' : qualityStatus.tone === 'pending' ? 'is-pending' : ''}`}>{qualityLabel}</span>
+              <span className={`canvas-status-quality ${qualityReport?.available ? (qualityReport.passed ? 'is-pass' : 'is-fail') : ''}`}>{qualityLabel}</span>
               <ChevronDown size={12} strokeWidth={2.2} aria-hidden="true" />
             </button>
             {openMenu === 'status' && (
@@ -17712,20 +17594,7 @@ function CanvasViewInner({
         : <header className="workspace-header">{canvasHeaderBody}</header>}
 
       {error && <div className="inline-error canvas-error" role="alert"><span>{error}</span></div>}
-      {mediaSaveConflict && (
-        <div className="canvas-conflict-banner" role="alert">
-          <span>检测到同一字段被另一页面修改，本地编辑仍保留。</span>
-          <div>
-            <button type="button" onClick={overwriteWithLocalMediaConflict}>保留本地</button>
-            <button type="button" onClick={acceptRemoteMediaConflict}>载入服务器</button>
-            <button type="button" className="is-close" onClick={() => {
-              mediaSaveConflictRef.current = null;
-              setMediaSaveConflict(null);
-            }} aria-label="关闭"><X size={12} strokeWidth={2.2} aria-hidden="true" /></button>
-          </div>
-        </div>
-      )}
-      {saveError && !mediaSaveConflict && <div className="inline-error canvas-error" role="alert"><span>保存失败：{saveError}</span><button onClick={() => clearSaveError()} aria-label="关闭"><X size={12} strokeWidth={2.2} aria-hidden="true" /></button></div>}
+      {saveError && <div className="inline-error canvas-error" role="alert"><span>保存失败：{saveError}</span><button onClick={() => clearSaveError()} aria-label="关闭"><X size={12} strokeWidth={2.2} aria-hidden="true" /></button></div>}
       {toast && <div className="canvas-toast" onClick={() => setToast('')}>{toast}</div>}
       {recoveringMediaCount > 0 && (
         <div className="canvas-media-recovery-status" role="status">
