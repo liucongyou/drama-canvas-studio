@@ -2021,9 +2021,9 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 .jim-prompt-scrollbar{
   position:absolute;
   top:2px;
-  right:3px;
+  right:0;
   bottom:2px;
-  width:2px;
+  width:4px;
   border-radius:99px;
   background:transparent;
   pointer-events:none;
@@ -2032,13 +2032,14 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 .jim-prompt-scrollbar>i{
   display:block;
   width:2px;
+  margin-left:auto;
   border-radius:99px;
   background:color-mix(in srgb,var(--v-text-3) 34%,transparent);
 }
 .jim-prompt{
   flex:1;min-width:0;background:transparent;border:none;color:#e8eef9;
   font-size:14px;line-height:1.62;resize:none;min-height:56px;max-height:132px;
-  font-family:inherit;padding:2px 0;overflow-y:auto;
+  font-family:inherit;padding:2px 4px 2px 0;overflow-y:auto;
   scrollbar-width:none;
 }
 .jim-prompt::-webkit-scrollbar{display:none;width:0;height:0}

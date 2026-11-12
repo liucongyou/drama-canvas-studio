@@ -31,7 +31,7 @@ describe('prompt editor scrollbar', () => {
   it('renders a 2px overlay indicator outside the text flow', () => {
     expect(source).toMatch(/className="jim-prompt-scrollbar"/);
     expect(ui).toMatch(
-      /\.jim-prompt-scrollbar\{[^}]*position:absolute;[^}]*width:2px/s,
+      /\.jim-prompt-scrollbar\{[^}]*position:absolute;[^}]*width:4px/s,
     );
     expect(ui).toMatch(
       /\.jim-prompt-scrollbar>i\{[^}]*width:2px;[^}]*border-radius:99px/s,
@@ -43,5 +43,11 @@ describe('prompt editor scrollbar', () => {
       /\.jim-prompt-scrollbar\{[^}]*pointer-events:none/s,
     );
     expect(source).toMatch(/onScrollStateChange=\{setPromptScrollbar\}/);
+  });
+
+  it('reserves the narrow rail so it cannot cover prompt text', () => {
+    expect(ui).toMatch(
+      /\.jim-prompt\{[^}]*padding:2px 4px 2px 0;[^}]*overflow-y:auto/s,
+    );
   });
 });

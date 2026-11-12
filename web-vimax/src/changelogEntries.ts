@@ -3,6 +3,16 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.12.05',
+    date: '2026-11-12',
+    title: '提示词滚动细轨不遮挡正文',
+    releasedAt: '2026-11-12 16:50:00 +08:00',
+    changes: [
+      '滚动指示条由覆盖正文改为右侧 4px 占位细轨，滑块仍为 2px，不再压住文字或标点。',
+      '保留无上下箭头的原生滚动条隐藏方案，正文只让出最小必要间距。',
+    ],
+  },
+  {
     version: '2026.11.12.04',
     date: '2026-11-12',
     title: '生成状态防回退与提示词编辑器精修',
