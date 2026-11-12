@@ -3,6 +3,16 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.12.06',
+    date: '2026-11-12',
+    title: '提示词细轨适配窗口缩放',
+    releasedAt: '2026-11-12 17:12:00 +08:00',
+    changes: [
+      '提示词编辑区监听窗口与自身尺寸变化，缩放浏览器后重新计算滚动细轨长度和位置。',
+      '编辑区缩放后内容不再溢出时，scrollTop 自动归零，滑块不会停留在底部或越出轨道。',
+    ],
+  },
+  {
     version: '2026.11.12.05',
     date: '2026-11-12',
     title: '提示词滚动细轨不遮挡正文',

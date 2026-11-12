@@ -50,4 +50,10 @@ describe('prompt editor scrollbar', () => {
       /\.jim-prompt\{[^}]*padding:2px 4px 2px 0;[^}]*overflow-y:auto/s,
     );
   });
+
+  it('remeasures the rail when the browser or editor is resized', () => {
+    expect(source).toContain('new ResizeObserver(scheduleSync)');
+    expect(source).toContain("window.addEventListener('resize', scheduleSync)");
+    expect(source).toContain('editor.scrollTop = 0');
+  });
 });

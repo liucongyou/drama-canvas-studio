@@ -5173,7 +5173,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       ta.style.height = `${next}px`;
     });
   };
-  const syncPromptScrollbar = () => {
+  const syncPromptScrollbar = useCallback(() => {
     const editor = taRef.current;
     if (!editor) return;
     const next = {
@@ -5181,6 +5181,10 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       scrollHeight: editor.scrollHeight,
       clientHeight: editor.clientHeight,
     };
+    if (next.scrollHeight <= next.clientHeight + 1 && next.scrollTop !== 0) {
+      editor.scrollTop = 0;
+      next.scrollTop = 0;
+    }
     setPromptScrollbar((current) => (
       current.scrollTop === next.scrollTop
       && current.scrollHeight === next.scrollHeight
@@ -5188,7 +5192,30 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
         ? current
         : next
     ));
-  };
+  }, []);
+  useEffect(() => {
+    const editor = taRef.current;
+    if (!editor) return;
+    let resizeFrame: number | null = null;
+    const scheduleSync = () => {
+      if (resizeFrame !== null) return;
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = null;
+        syncPromptScrollbar();
+      });
+    };
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(scheduleSync);
+    observer?.observe(editor);
+    window.addEventListener('resize', scheduleSync);
+    scheduleSync();
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', scheduleSync);
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
+    };
+  }, [node?.id, openToken, syncPromptScrollbar]);
   // 展开/收起：直接把高度切到目标值，不依赖 onChange 时机
   const applyTaHeight = (expanded: boolean) => {
     const ta = taRef.current;
