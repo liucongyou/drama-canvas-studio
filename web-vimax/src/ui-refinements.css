@@ -6343,67 +6343,14 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   margin-top: 6px;
 }
 
-.jim-prompt[contenteditable],
-textarea.jim-prompt {
+.jim-prompt[contenteditable] {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   cursor: text;
+  contain: layout style;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--v-border-strong) transparent;
-}
-
-textarea.jim-prompt {
-  background: transparent;
-  border: none;
-  outline: none;
-  resize: none;
-  font-family: inherit;
-  caret-color: var(--v-text);
-}
-
-textarea.jim-prompt::placeholder {
-  color: var(--v-text-5);
-}
-
-.jim-prompt-host {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-}
-
-.jim-prompt-host > textarea.jim-prompt {
-  position: relative;
-  z-index: 1;
-  width: 100%;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-  background: transparent;
-}
-
-.jim-prompt-host > textarea.jim-prompt::selection {
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-  background: var(--v-accent-soft);
-}
-
-.jim-prompt-ghost {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  overflow: hidden;
-  pointer-events: none;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--v-text);
-  font: inherit;
-  font-size: 14px;
-  line-height: 1.62;
-  padding: 2px 0;
-}
-
-.jim-prompt-ghost .jim-prompt-mention {
-  vertical-align: middle;
 }
 
 .jim-prompt[contenteditable]:empty::before {
