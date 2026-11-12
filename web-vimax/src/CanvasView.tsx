@@ -2190,98 +2190,89 @@ function buildPromptEditorContent(editor: HTMLElement, value: string, mentions: 
   editor.dataset.promptValue = value;
 }
 
-function RichPromptEditor({
+function NativePromptEditor({
   editorRef,
-  value,
+  initialValue,
+  sessionKey,
   mentions,
   placeholder,
   editable = true,
   onChange,
   onBlur,
   onKeyDown,
-  onRendered,
-  onMentionPreview,
-  onMentionRemoved,
 }: {
-  editorRef: RefObject<HTMLDivElement>;
-  value: string;
+  editorRef: RefObject<HTMLTextAreaElement>;
+  initialValue: string;
+  sessionKey: string;
   mentions: PromptMentionToken[];
   placeholder: string;
   editable?: boolean;
   onChange: (value: string) => void;
   onBlur?: () => void;
-  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
-  onRendered?: (mode?: 'sync' | 'deferred') => void;
-  onMentionPreview?: (preview: ({url: string; label: string} & PreviewPlacement) | null) => void;
-  onMentionRemoved?: (labels: string[]) => void;
+  onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
 }) {
-  const mentionSignature = mentions.map((item) => `${item.kind}:${item.label}:${item.url || ''}`).join('|');
-  const lastEditorValueRef = useRef('');
-  const lastMentionSignatureRef = useRef('');
   const composingRef = useRef(false);
   const compositionEndTimerRef = useRef<number | null>(null);
-  useEffect(() => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const active = document.activeElement === editor;
-    const offset = active ? promptCaretOffset(editor) : null;
-    const current = promptTextFromEditor(editor);
-    const currentMentions = [...editor.querySelectorAll<HTMLElement>('[data-mention]')]
-      .map((item) => item.dataset.mention || '')
-      .join('|');
-    const wantedMentions = promptMentionMatches(value, mentions)
-      .map((item) => `@${item.label}`)
-      .join('|');
-    const mentionsChanged = currentMentions !== wantedMentions;
-    // The DOM is the first source of truth while the user is editing. Once
-    // blurred, add a deferred reconciliation pass after layout settles; this
-    // catches @ chips appended after the first modal paint (for example the
-    // line "例如 @图片N 在光里") without rebuilding content mid-keystroke.
-    const reconcileOnBlur = !active && mentionsChanged;
-    if (!reconcileOnBlur && current === value && !mentionsChanged) return;
-    if (!reconcileOnBlur && active && !mentionsChanged && value === lastEditorValueRef.current) return;
-    buildPromptEditorContent(editor, value, mentions);
-    lastEditorValueRef.current = value;
-    lastMentionSignatureRef.current = mentionSignature;
-    if (active) {
-      promptSetCaret(editor, Math.min(offset ?? value.length, value.length));
+  const lastSessionKeyRef = useRef('');
+  const [displayValue, setDisplayValue] = useState(initialValue);
+  const displayTimerRef = useRef<number | null>(null);
+  const scheduleDisplayValue = (value: string) => {
+    if (displayTimerRef.current !== null) return;
+    displayTimerRef.current = window.requestAnimationFrame(() => {
+      displayTimerRef.current = null;
+      setDisplayValue(value);
+    });
+  };
+  const mentionMatches = promptMentionMatches(displayValue, mentions);
+  const ghostParts: ReactNode[] = [];
+  let ghostCursor = 0;
+  for (const match of mentionMatches) {
+    if (match.start > ghostCursor) {
+      ghostParts.push(displayValue.slice(ghostCursor, match.start));
     }
-    onRendered?.(
-      !active && mentionsChanged ? 'deferred' : 'sync',
+    ghostParts.push(
+      <span key={`${match.label}-${match.start}`} className="jim-prompt-mention is-plain">
+        {match.url ? <img src={match.url} alt="" /> : <i>{match.kind === 'text' ? '文' : match.kind === 'audio' ? '声' : match.kind === 'video' ? '影' : '图'}</i>}
+        <b>{match.label}</b>
+      </span>,
     );
-  }, [editorRef, mentionSignature, value, mentions]);
+    ghostCursor = match.end;
+  }
+  if (ghostCursor < displayValue.length) ghostParts.push(displayValue.slice(ghostCursor));
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || sessionKey === lastSessionKeyRef.current) return;
+    lastSessionKeyRef.current = sessionKey;
+    editor.value = initialValue;
+    setDisplayValue(initialValue);
+  }, [editorRef, initialValue, sessionKey]);
   useEffect(() => () => {
+    if (displayTimerRef.current !== null) {
+      window.cancelAnimationFrame(displayTimerRef.current);
+      displayTimerRef.current = null;
+    }
     if (compositionEndTimerRef.current !== null) {
       window.clearTimeout(compositionEndTimerRef.current);
     }
   }, []);
-
   return (
-    <div
-      ref={editorRef}
-      className="jim-prompt"
-      contentEditable={editable}
-      aria-readonly={!editable}
-      suppressContentEditableWarning
-      spellCheck={false}
-      role="textbox"
-      aria-multiline="true"
-      aria-label={placeholder}
-      data-placeholder={placeholder}
+    <div className="jim-prompt-host">
+      <div className="jim-prompt-ghost" aria-hidden="true">
+        {ghostParts}
+      </div>
+      <textarea
+        ref={editorRef}
+        className="jim-prompt"
+        defaultValue={initialValue}
+        readOnly={!editable}
+        rows={1}
+        spellCheck={false}
+        aria-label={placeholder}
+        placeholder={placeholder}
       onInput={(event) => {
-        if (!editable) return;
-        if (composingRef.current) return;
-        const next = promptTextFromEditor(event.currentTarget);
-        const previous = lastEditorValueRef.current;
-        if (next.trim() && next.length < previous.length && onMentionRemoved) {
-          const removed = promptMentionMatches(previous, mentions)
-            .filter((mention) => !next.includes(`@${mention.label}`))
-            .map((mention) => mention.label);
-          if (removed.length) onMentionRemoved(removed);
-        }
-        event.currentTarget.dataset.promptValue = next;
-        lastEditorValueRef.current = next;
-        onChange(next);
+        if (!editable || composingRef.current) return;
+        scheduleDisplayValue(event.currentTarget.value);
+        onChange(event.currentTarget.value);
       }}
       onCompositionStart={() => {
         composingRef.current = true;
@@ -2292,83 +2283,26 @@ function RichPromptEditor({
       }}
       onCompositionEnd={(event) => {
         composingRef.current = false;
-        // WebKit/Blink can dispatch the final input event on the next task.
-        // Delay the commit by one task so the editor never rebuilds under an
-        // active IME composition while still committing the final text.
         if (compositionEndTimerRef.current !== null) {
           window.clearTimeout(compositionEndTimerRef.current);
         }
         compositionEndTimerRef.current = window.setTimeout(() => {
           compositionEndTimerRef.current = null;
-          if (!editable) return;
-          const editor = event.currentTarget;
-          const next = promptTextFromEditor(editor);
-          editor.dataset.promptValue = next;
-          lastEditorValueRef.current = next;
-          onChange(next);
+          if (editable) {
+            setDisplayValue(event.currentTarget.value);
+            onChange(event.currentTarget.value);
+          }
         }, 0);
       }}
       onBlur={(event) => {
-        if (!editable) return;
-        const next = promptTextFromEditor(event.currentTarget);
-        event.currentTarget.dataset.promptValue = next;
-        lastEditorValueRef.current = next;
-        onChange(next);
+        composingRef.current = false;
+        setDisplayValue(event.currentTarget.value);
+        onChange(event.currentTarget.value);
         onBlur?.();
       }}
-      onKeyDown={(event) => {
-        onKeyDown(event);
-        if (event.defaultPrevented) return;
-        if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
-          event.preventDefault();
-          const selection = window.getSelection();
-          if (!selection || selection.rangeCount === 0) return;
-          const range = selection.getRangeAt(0);
-          range.deleteContents();
-          const lineBreak = document.createTextNode('\n');
-          range.insertNode(lineBreak);
-          range.setStartAfter(lineBreak);
-          range.collapse(true);
-          selection.removeAllRanges();
-          selection.addRange(range);
-          const next = promptTextFromEditor(event.currentTarget);
-          event.currentTarget.dataset.promptValue = next;
-          lastEditorValueRef.current = next;
-          onChange(next);
-        }
-      }}
-      onPaste={(event) => {
-        event.preventDefault();
-        const text = event.clipboardData.getData('text/plain');
-        document.execCommand('insertText', false, text);
-        const next = promptTextFromEditor(event.currentTarget);
-        event.currentTarget.dataset.promptValue = next;
-        lastEditorValueRef.current = next;
-        onChange(next);
-      }}
-      onPointerOver={(event) => {
-        const chip = (event.target as Element | null)?.closest<HTMLElement>('.jim-prompt-mention.has-preview');
-        const url = chip?.dataset.previewUrl;
-        if (!chip || !url || !onMentionPreview) return;
-        const panel = chip.closest<HTMLElement>('.jim-bar');
-        onMentionPreview({
-          url,
-          label: chip.title || chip.dataset.mention || '',
-          ...previewPlacement(
-            chip.getBoundingClientRect(),
-            'center',
-            panel?.getBoundingClientRect(),
-          ),
-        });
-      }}
-      onPointerOut={(event) => {
-        const chip = (event.target as Element | null)?.closest('.jim-prompt-mention');
-        const next = event.relatedTarget as Node | null;
-        if (chip && (!next || !chip.contains(next))) onMentionPreview?.(null);
-      }}
-      onMouseLeave={() => onMentionPreview?.(null)}
-      onScroll={() => onMentionPreview?.(null)}
-    />
+      onKeyDown={onKeyDown}
+      />
+    </div>
   );
 }
 
@@ -4390,7 +4324,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   const audioInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
-  const taRef = useRef<HTMLDivElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
   // ★ 所有 hook 必须在条件 return 之前调用（曾在此处踩坑：整树崩溃）
   const busy = Boolean(node?.status === 'generating' || isLiveProviderGeneration(node));
   const p = node?.params || {};
@@ -4488,7 +4422,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       if (!node) return;
       if (promptDraftRef.current === node.prompt) return;
       onChange(node.id, {prompt: promptDraftRef.current});
-    }, 120);
+    }, 500);
   };
 
   // 提示词框高度：**由内容决定**（对齐即梦 —— 用户明确要求"没内容的时候高度和有内容的高度不一样"）。
@@ -4505,8 +4439,8 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   //   受 padding / line-height / 父级 flex 影响，实测空文本节点也能报到 132px，
   //   于是"空框和有内容一样高"（用户要的正是两者不同）。空内容一律 return baseH。
   // ★ 必须先把 height 置 auto 再读 scrollHeight，否则读到的是上一次设定值的残留。
-  const calcTaHeight = (ta: HTMLElement, cap: number): number => {
-    if (!promptTextFromEditor(ta).trim()) return baseH;
+  const calcTaHeight = (ta: HTMLTextAreaElement, cap: number): number => {
+    if (!ta.value.trim()) return baseH;
     const prev = ta.style.height;
     ta.style.height = 'auto';
     const need = ta.scrollHeight;
@@ -5131,6 +5065,18 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     const cap = taExpandedRef.current ? EXPANDED_CAP() : collapsedH();
     ta.style.height = `${calcTaHeight(ta, cap)}px`;
   };
+  const replacePromptDraft = (next: string, caret = next.length) => {
+    const limited = next.slice(0, promptLimit);
+    promptDraftRef.current = limited;
+    const input = taRef.current;
+    if (input) {
+      input.value = limited;
+      const cursor = Math.max(0, Math.min(caret, limited.length));
+      input.setSelectionRange(cursor, cursor);
+    }
+    onChange(node.id, {prompt: limited});
+    window.requestAnimationFrame(growTa);
+  };
   // 展开/收起：直接把高度切到目标值，不依赖 onChange 时机
   const applyTaHeight = (expanded: boolean) => {
     const ta = taRef.current;
@@ -5153,10 +5099,10 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   // 图片/音频/视频/文本四类都收 —— 素材行的 T 与 ▶ 入口也走这里。
   const pickCands = atCands.filter((a) => a.kind !== 'text' || a.prompt?.trim());
   const insertTemplate = (text: string) => {
-    const base = node.prompt.replace(/\s+$/, '');
-    onChange(node.id, {prompt: base ? `${base}${text}` : text.replace(/^，/, '')});
+    const base = promptDraftRef.current.replace(/\s+$/, '');
+    const next = base ? `${base}${text}` : text.replace(/^，/, '');
+    replacePromptDraft(next, next.length);
     setOpenMenu(null);
-    growTa();
   };
   const pickAt = (a: CanvasMediaNode) => {
     const nextRefs = [...refs];
@@ -5182,7 +5128,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     // selection is no longer trustworthy here. Use the offset captured when
     // the @ menu opened instead of falling back to the end of the prompt.
     const start = atInsertOffsetRef.current
-      ?? (input ? promptCaretOffset(input) : node.prompt.length);
+      ?? (input ? input.selectionStart : node.prompt.length);
     const end = start;
     let before = node.prompt.slice(0, start);
     const after = node.prompt.slice(end);
@@ -5210,7 +5156,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     const restoreFocus = () => {
       const cursor = before.length + insertion.length;
       input?.focus();
-      if (input) promptSetCaret(input, cursor);
+      if (input) input.setSelectionRange(cursor, cursor);
       growTa();
     };
     atInsertOffsetRef.current = null;
@@ -5542,23 +5488,25 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
             }}
           />}
           <div className="jim-prompt-row">
-            <RichPromptEditor
+            <NativePromptEditor
               editorRef={taRef}
-              value={node.prompt}
-              editable={!readOnly}
+              initialValue={node.prompt}
+              sessionKey={`${node.id}:${openToken}`}
               mentions={refEntries.map((ref) => ({
                 label: refLabel(ref),
                 url: refVisualUrl(ref),
                 kind: refKind(ref),
               }))}
+              editable={!readOnly}
               placeholder={promptPlaceholder}
               onChange={(next) => {
                 const limited = next.slice(0, promptLimit);
                 schedulePromptCommit(limited);
                 const editor = taRef.current;
-                const followsAt = Boolean(editor && promptCaretFollowsAt(editor, limited));
+                const caret = editor?.selectionStart ?? limited.length;
+                const followsAt = Boolean(limited.slice(Math.max(0, caret - 1), caret) === '@');
                 if (followsAt && editor) {
-                  atInsertOffsetRef.current = promptCaretOffset(editor);
+                  atInsertOffsetRef.current = caret;
                 } else if (!followsAt) {
                   atInsertOffsetRef.current = null;
                 }
@@ -5592,21 +5540,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                   }
                 }
               }}
-              onRendered={(mode) => {
-                if (mode === 'deferred') {
-                  window.setTimeout(() => window.requestAnimationFrame(growTa), 40);
-                } else {
-                  window.requestAnimationFrame(growTa);
-                }
-              }}
-              onMentionPreview={setMentionPreview}
               onBlur={flushPromptDraft}
-              onMentionRemoved={(labels) => {
-                for (const label of labels) {
-                  const ref = refEntries.find((item) => refLabel(item) === label);
-                  if (ref) removeRef(ref);
-                }
-              }}
             />
           {!readOnly && <div className="jim-prompt-side">
               <button type="button" className="is-clear" title="清空提示词" onClick={() => onChange(node.id, {prompt: ''})}>
@@ -9357,6 +9291,7 @@ function CanvasViewInner({
   const zoomPct = Math.round(canvasViewport.zoom * 100);
   const bgVars = canvasBackgroundCss(zoomPct / 100);
   const viewportRef = useRef(canvasViewport);
+  const viewportGestureRef = useRef<CanvasViewport | null>(null);
   const overviewReturnViewportRef = useRef<CanvasViewport | null>(null);
   const focusSelectionRef = useRef<(showEmptyHint?: boolean) => void>(() => {});
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -9654,6 +9589,12 @@ function CanvasViewInner({
       resetCanvasInteraction();
     };
   }, [resetCanvasInteraction]);
+
+  const endViewportGesture = useCallback(() => {
+    const viewport = viewportGestureRef.current;
+    viewportGestureRef.current = null;
+    if (viewport) setCanvasViewport(viewport);
+  }, []);
 
   // 撤销/重做（作用于用户连线、备注节点与自动边删除状态）
   const pastRef = useRef<HistorySnapshot[]>([]);
@@ -18139,10 +18080,24 @@ function CanvasViewInner({
             onViewportChange={(next) => {
               const valid = validRestoredViewport(next);
               if (!valid) return;
+              const previous = viewportRef.current;
               viewportRef.current = valid;
-              setCanvasViewport(valid);
-              // React Flow updates the local viewport every frame; persistence
-              // is coalesced on gesture end instead of hitting the database.
+              // A pan is already applied by React Flow to its viewport element
+              // every frame. Writing the same viewport back into React state
+              // re-renders CanvasView (and all derived nodes) on every pointer
+              // move. Defer the state commit to gesture end; zoom still needs
+              // per-frame state for dots, ports, card density and flow styles.
+              if (
+                viewportUserInteractingRef.current
+                && Math.abs(valid.zoom - previous.zoom) > 1e-6
+              ) {
+                setCanvasViewport(valid);
+              } else if (viewportUserInteractingRef.current) {
+                viewportGestureRef.current = valid;
+              } else {
+                viewportGestureRef.current = null;
+                setCanvasViewport(valid);
+              }
             }}
             onConnectStart={() => setConnecting(true)}
             onConnectEnd={() => setConnecting(false)}
@@ -18203,10 +18158,12 @@ function CanvasViewInner({
             }}
             onMoveStart={() => {
               viewportUserInteractingRef.current = true;
+              viewportGestureRef.current = null;
               beginCanvasInteraction();
             }}
             onMoveEnd={(_event, viewport) => {
               viewportUserInteractingRef.current = false;
+              endViewportGesture();
               endCanvasInteraction();
               flushViewportNow();
             }}
