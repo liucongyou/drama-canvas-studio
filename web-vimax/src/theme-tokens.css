@@ -1319,9 +1319,21 @@ html[data-theme][data-variant] {
 }
 
 .jim-bar {
-  background: var(--v-surface) !important;
-  border-color: var(--v-border) !important;
-  box-shadow: var(--v-shadow-overlay) !important;
+  /* 2026-11-12: glass panel — this file is imported after ui-refinements, so
+     the final surface must be translucent here instead of flat --v-surface. */
+  background-color: color-mix(in srgb, var(--v-surface) 84%, transparent) !important;
+  background:
+    linear-gradient(160deg,
+      color-mix(in srgb, var(--v-surface) 92%, transparent) 0%,
+      color-mix(in srgb, var(--v-surface) 78%, transparent) 58%,
+      color-mix(in srgb, var(--v-bg-1, #111318) 84%, transparent) 100%) !important;
+  border-color: color-mix(in srgb, var(--v-border) 72%, transparent) !important;
+  box-shadow:
+    0 28px 90px color-mix(in srgb, var(--v-canvas) 48%, transparent),
+    0 4px 18px color-mix(in srgb, var(--v-canvas) 28%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, .18) !important;
+  backdrop-filter: blur(22px) saturate(1.28);
+  -webkit-backdrop-filter: blur(22px) saturate(1.28);
 }
 .jim-head-title,
 .jim-prompt,
@@ -2304,4 +2316,215 @@ html[data-theme='dark'][data-variant='immersive'] .canvas-node.canvas-media-node
   color: var(--v-accent-mid) !important;
   background: var(--v-accent-soft) !important;
   border-color: var(--v-accent-line) !important;
+}
+
+
+/* Theme-aware inline @ mention chips. Each media kind keeps its own hue while
+   the fill/border always mix with the active surface and text tokens. */
+.jim-prompt-mention{
+  --mention: var(--v-accent);
+  color: color-mix(in srgb, var(--mention) 58%, var(--v-text)) !important;
+  border-color: color-mix(in srgb, var(--mention) 36%, transparent) !important;
+  background: color-mix(in srgb, var(--mention) 13%, var(--v-surface)) !important;
+}
+.jim-prompt-mention.is-image{--mention:var(--v-accent)}
+.jim-prompt-mention.is-audio{--mention:#a78bfa}
+.jim-prompt-mention.is-video{--mention:#2dd4bf}
+.jim-prompt-mention.is-text{--mention:var(--v-warn)}
+.jim-prompt-mention b{color:inherit}
+.jim-prompt-mention img,
+.jim-prompt-mention i{
+  background: color-mix(in srgb, var(--mention) 16%, var(--v-surface)) !important;
+  color: color-mix(in srgb, var(--mention) 72%, var(--v-text)) !important;
+}
+.jim-prompt-mention:hover{
+  color: color-mix(in srgb, var(--mention) 45%, var(--v-text)) !important;
+  border-color: color-mix(in srgb, var(--mention) 58%, transparent) !important;
+  background: color-mix(in srgb, var(--mention) 23%, var(--v-surface)) !important;
+}
+html[data-theme='light'][data-variant='light'] .jim-prompt-mention{
+  color: color-mix(in srgb, var(--mention) 64%, var(--v-text)) !important;
+  border-color: color-mix(in srgb, var(--mention) 34%, transparent) !important;
+  background: color-mix(in srgb, var(--mention) 10%, var(--v-surface)) !important;
+}
+html[data-theme='light'][data-variant='light'] .jim-prompt-mention.is-audio{--mention:#7c5fd3}
+html[data-theme='light'][data-variant='light'] .jim-prompt-mention.is-video{--mention:#0f8f83}
+html[data-theme='light'][data-variant='light'] .jim-prompt-mention.is-text{--mention:var(--v-warn)}
+html[data-theme='light'][data-variant='light'] .jim-prompt-mention:hover{
+  background: color-mix(in srgb, var(--mention) 16%, var(--v-surface)) !important;
+}
+/* Validation notices should follow the theme's danger token, not hard-coded red. */
+.jim-validation-notes>div{
+  background:var(--v-danger-soft) !important;
+  color:var(--v-text-2) !important;
+}
+.jim-validation-notes svg{color:var(--v-danger) !important}
+html[data-theme='light'][data-variant='light'] .jim-validation-notes>div{
+  color:var(--v-danger) !important;
+}
+
+/* 场景 / 道具 / 角色 / 音频: keep four distinct hues in both themes.
+   Inline @ chips use data-role; the thumbnail row carries data-ref-role. */
+.jim-prompt-mention[data-role='场景']{--mention:#5b9dff}
+.jim-prompt-mention[data-role='道具']{--mention:#e5a54b}
+.jim-prompt-mention[data-role='角色']{--mention:#a78bfa}
+.jim-prompt-mention[data-role='音频'],
+.jim-prompt-mention[data-role='音色']{--mention:#2dd4bf}
+.jim-prompt-mention[data-role='文本']{--mention:var(--v-warn)}
+
+.jim-ref-item[data-ref-role='场景']{--ref-role-color:#5b9dff}
+.jim-ref-item[data-ref-role='道具']{--ref-role-color:#e5a54b}
+.jim-ref-item[data-ref-role='角色']{--ref-role-color:#a78bfa}
+.jim-ref-item[data-ref-role='音频'],
+.jim-ref-item[data-ref-role='音色']{--ref-role-color:#2dd4bf}
+.jim-ref-item[data-ref-role] .jim-ref-role{
+  color:var(--ref-role-color,var(--v-text-5)) !important;
+  font-weight:650;
+}
+.jim-ref-item[data-ref-role] .jim-ref-thumb{
+  border-color:color-mix(in srgb, var(--ref-role-color, var(--v-border)) 34%, transparent) !important;
+}
+
+html[data-theme='light'][data-variant='light'] .jim-prompt-mention[data-role='场景']{--mention:#2f6feb}
+html[data-theme='light'][data-variant='light'] .jim-prompt-mention[data-role='道具']{--mention:#a66a14}
+html[data-theme='light'][data-variant='light'] .jim-prompt-mention[data-role='角色']{--mention:#6d4fc4}
+html[data-theme='light'][data-variant='light'] .jim-prompt-mention[data-role='音频'],
+html[data-theme='light'][data-variant='light'] .jim-prompt-mention[data-role='音色']{--mention:#0f8f83}
+html[data-theme='light'][data-variant='light'] .jim-prompt-mention[data-role='文本']{--mention:var(--v-warn)}
+
+html[data-theme='light'][data-variant='light'] .jim-ref-item[data-ref-role='场景']{--ref-role-color:#2f6feb}
+html[data-theme='light'][data-variant='light'] .jim-ref-item[data-ref-role='道具']{--ref-role-color:#a66a14}
+html[data-theme='light'][data-variant='light'] .jim-ref-item[data-ref-role='角色']{--ref-role-color:#6d4fc4}
+html[data-theme='light'][data-variant='light'] .jim-ref-item[data-ref-role='音频'],
+html[data-theme='light'][data-variant='light'] .jim-ref-item[data-ref-role='音色']{--ref-role-color:#0f8f83}
+
+/* Prompt body: one notch brighter than secondary UI text on dark themes,
+   while the light theme keeps its dark ink. */
+.jim-prompt{
+  color: color-mix(in srgb, var(--v-text) 72%, #ffffff) !important;
+  font-weight: 430;
+  -webkit-font-smoothing: antialiased;
+}
+html[data-theme='light'][data-variant='light'] .jim-prompt{
+  color: var(--v-text) !important;
+  font-weight: 440;
+}
+.jim-prompt::placeholder{
+  color: color-mix(in srgb, var(--v-text-5) 78%, transparent) !important;
+}
+
+/* Thumbnail captions stay neutral. Type is already visible from the thumbnail
+   and icon; coloring every caption made the row look like a rainbow. */
+.jim-ref-item[data-ref-role] .jim-ref-role{
+  color: var(--v-text-3) !important;
+  font-weight: 520;
+}
+.jim-ref-item[data-ref-role] .jim-ref-thumb{
+  border-color: color-mix(in srgb, var(--v-border) 82%, transparent) !important;
+}
+
+/* Prompt editor surface: one quiet inset panel instead of transparent text on glass. */
+.jim-prompt{
+  background: #2b2a2a6b !important;
+  border-radius: 8px;
+  padding: 8px 10px !important;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.035);
+}
+html[data-theme='light'][data-variant='light'] .jim-prompt{
+  background: rgba(43, 42, 42, .10) !important;
+  box-shadow: inset 0 0 0 1px rgba(15,23,42,.05);
+}
+
+/* Prompt editor melts into the glass panel; the header owns the action buttons. */
+.jim-prompt{
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  padding: 2px 0 !important;
+  min-height: 72px;
+  max-height: 168px;
+}
+.jim-bar[data-kind='text'] .jim-prompt{min-height:72px;max-height:256px}
+.jim-prompt-row{width:100%}
+.jim-head-tools>button.is-extra-params{position:relative}
+
+/* The prompt panel is a glass surface, not a bordered dialog. */
+.jim-bar{
+  border: 0 !important;
+  box-shadow:
+    0 28px 90px color-mix(in srgb, var(--v-canvas) 48%, transparent),
+    0 4px 18px color-mix(in srgb, var(--v-canvas) 26%, transparent) !important;
+}
+.jim-bar::after{display:none !important}
+.jim-prompt{box-shadow:none !important}
+
+/* Flat translucent prompt panel — no gradient background. */
+.jim-bar{
+  background: color-mix(in srgb, var(--v-surface) 88%, transparent) !important;
+}
+.jim-bar::before{
+  background: none !important;
+  opacity: 0 !important;
+}
+
+/* Prompt editor: overlay-thin scrollbar, no reserved gutter. */
+.jim-prompt{
+  overflow-y: auto;
+  padding-right: 0 !important;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,.20) transparent;
+}
+.jim-prompt::-webkit-scrollbar{
+  width: 3px;
+  height: 3px;
+}
+.jim-prompt::-webkit-scrollbar-track{
+  background: transparent;
+  border: 0;
+}
+.jim-prompt::-webkit-scrollbar-thumb{
+  background: rgba(255,255,255,.20);
+  border-radius: 99px;
+  border: 0;
+}
+.jim-prompt::-webkit-scrollbar-thumb:hover{
+  background: rgba(255,255,255,.34);
+}
+html[data-theme='light'][data-variant='light'] .jim-prompt{
+  scrollbar-color: rgba(15,23,42,.22) transparent;
+}
+html[data-theme='light'][data-variant='light'] .jim-prompt::-webkit-scrollbar-thumb{
+  background: rgba(15,23,42,.22);
+}
+
+/* Final override: 2px overlay-style scrollbar, transparent rail. */
+.jim-prompt{
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,.24) transparent;
+}
+.jim-prompt::-webkit-scrollbar{
+  width: 2px !important;
+  height: 2px !important;
+  background: transparent !important;
+}
+.jim-prompt::-webkit-scrollbar-track,
+.jim-prompt::-webkit-scrollbar-track-piece,
+.jim-prompt::-webkit-scrollbar-corner{
+  background: transparent !important;
+  border: 0 !important;
+}
+.jim-prompt::-webkit-scrollbar-thumb{
+  background: rgba(255,255,255,.24) !important;
+  border: 0 !important;
+  border-radius: 99px !important;
+}
+.jim-prompt::-webkit-scrollbar-thumb:hover{
+  background: rgba(255,255,255,.42) !important;
+}
+html[data-theme='light'][data-variant='light'] .jim-prompt{
+  scrollbar-color: rgba(15,23,42,.24) transparent;
+}
+html[data-theme='light'][data-variant='light'] .jim-prompt::-webkit-scrollbar-thumb{
+  background: rgba(15,23,42,.24) !important;
 }

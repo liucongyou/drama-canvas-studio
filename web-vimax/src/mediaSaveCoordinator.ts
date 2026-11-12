@@ -63,6 +63,9 @@ export function rebaseLocalMediaNode(
     ...(localParams.count !== undefined ? {count: localParams.count} : {}),
     ...(localParams.guidance !== undefined ? {guidance: localParams.guidance} : {}),
     ...(localParams.refs !== undefined ? {refs: localParams.refs} : {}),
+    ...(localParams.activeVersionId !== undefined
+      ? {activeVersionId: localParams.activeVersionId}
+      : {}),
     ...(localParams.voiceRef !== undefined ? {voiceRef: localParams.voiceRef} : {}),
     ...(localParams.voiceRefs !== undefined ? {voiceRefs: localParams.voiceRefs} : {}),
     ...(localParams.system !== undefined ? {system: localParams.system} : {}),

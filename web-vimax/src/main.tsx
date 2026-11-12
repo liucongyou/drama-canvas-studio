@@ -7,6 +7,7 @@ import {ModelSettingsDialog} from './ModelSettings';
 import {TosSettingsDialog} from './TosSettings';
 import {ErrorBoundary, ToastHost, installGlobalErrorHandlers} from './ErrorBoundary';
 import {installNetworkStatusToasts} from './networkStatus';
+import {classifyWorkspaceRetryError} from './requestRetry';
 import {applyTheme, normalizeThemePreference, THEMES, type StoredThemePreference, type Theme} from './theme';
 import {mergeSavedPreferences, type ShellPreferences} from './settingsSnapshot';
 import {
@@ -1658,9 +1659,12 @@ function AuthGate() {
           setState(session.authenticated ? 'authenticated' : 'anonymous');
         }
       })
-      .catch(() => {
-        if (!cancelled) {
-          setState('anonymous');
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setState('anonymous');
+        // 401/403 means "not logged in", not "auth service unavailable".
+        // Only network/5xx failures should show the scary connection message.
+        if (classifyWorkspaceRetryError(reason) !== 'auth') {
           setError('无法连接认证服务，请稍后重试。');
         }
       });

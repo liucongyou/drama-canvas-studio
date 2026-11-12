@@ -15079,3 +15079,6 @@ button:disabled, [role="button"]:disabled { transition: none; }
     justify-content: flex-end;
   }
 }
+
+/* Hand-mode pan: hide the screen-space selection bar without a React state update (avoids controlled-viewport reset). */
+body[data-canvas-panning='1'] .canvas-selbar{display:none !important}

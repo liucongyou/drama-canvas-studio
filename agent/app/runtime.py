@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import uuid
@@ -16,6 +17,8 @@ from app.llm import LLMError, chat, chat_stream, chat_tool_round_stream, extract
 from app.skills import SkillError, get_skill, read_entry, read_route_entry
 
 ACTIVE = {"queued", "running", "waiting_user"}
+
+_RUN_SEMAPHORE = threading.BoundedSemaphore(max(1, int(os.getenv("AGENT_MAX_CONCURRENT_RUNS", "2"))))
 
 
 class AgentToolLimitError(RuntimeError):
@@ -439,7 +442,7 @@ def _is_cancelled(run_id: str) -> bool:
     )
 
 
-def execute_run(run_id: str) -> None:
+def _execute_run_body(run_id: str) -> None:
     run = get_run(run_id)
     if not run:
         return
@@ -817,3 +820,21 @@ def cancel_run(
     db.add_event(run_id, "run.cancelled", {"runId": run_id})
     return {"ok": True, "run": get_run(run_id)}
 
+
+
+def execute_run(run_id: str) -> None:
+    """Run one agent request with a process-wide provider concurrency cap.
+
+    A thread per run is fine for isolation, but without a cap a burst of
+    conversations can hit the model provider simultaneously. The semaphore
+    queues excess runs while keeping their DB status as queued.
+    """
+    acquired = False
+    while not acquired:
+        if _is_cancelled(run_id):
+            return
+        acquired = _RUN_SEMAPHORE.acquire(timeout=0.5)
+    try:
+        _execute_run_body(run_id)
+    finally:
+        _RUN_SEMAPHORE.release()

@@ -4,6 +4,7 @@ export type PromptMentionToken = {
   label: string;
   url?: string;
   kind: CanvasMediaNodeKind;
+  role?: string;
 };
 
 export type PromptMentionMatch = PromptMentionToken & {

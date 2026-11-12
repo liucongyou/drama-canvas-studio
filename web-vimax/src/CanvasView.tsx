@@ -288,15 +288,14 @@ function previewPlacement(
   const left = align === 'right'
     ? Math.min(window.innerWidth - width - 8, Math.max(8, rect.right + 10))
     : Math.min(window.innerWidth - width - 8, Math.max(8, rect.left + rect.width / 2 - width / 2));
-  // Preview inside the prompt editor belongs above the whole editor panel, not
-  // above the thumbnail row inside it. Anchoring to the panel top prevents the
-  // preview from covering the editor content while still following the hovered
-  // thumbnail horizontally.
-  const topBoundary = panelRect?.top ?? rect.top;
-  if (topBoundary >= 120) {
-    return {left, bottom: window.innerHeight - topBoundary + 8};
+  // Show the preview immediately above/below the hovered chip. Anchoring to the
+  // editor panel top made it jump to the top of the screen and cover the canvas.
+  // Keep it beside the pointer target; if there is no room above, flip below.
+  const previewH = 240;
+  if (rect.top >= previewH + 24) {
+    return {left, bottom: window.innerHeight - rect.top + 8};
   }
-  return {left, top: Math.min(window.innerHeight - 220, rect.bottom + 10)};
+  return {left, top: Math.max(8, Math.min(window.innerHeight - previewH - 8, rect.bottom + 8))};
 }
 // Scene 宫格卡：顶部横条(160px 竖版视频+信息) + 下方镜头格
 const SEG_ROW = 360;
@@ -2072,7 +2071,8 @@ function removePromptMention(prompt: string, label: string): string {
     .split(`@${label}`)
     .join('')
     .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\s+$/g, '');
+    .replace(/^[ \t]+/g, '')
+    .replace(/[ \t]+$/g, '');
 }
 
 function promptCaretOffset(editor: HTMLElement): number {
@@ -2158,6 +2158,7 @@ function buildPromptEditorContent(editor: HTMLElement, value: string, mentions: 
     if (found.start > cursor) root.append(document.createTextNode(value.slice(cursor, found.start)));
     const chip = document.createElement('span');
     chip.className = `jim-prompt-mention is-${found.kind}`;
+    if (found.role) chip.dataset.role = found.role;
     chip.contentEditable = 'false';
     chip.dataset.mention = `@${found.label}`;
     chip.title = found.label;
@@ -2192,6 +2193,7 @@ function RichPromptEditor({
   placeholder,
   editable = true,
   onChange,
+  onBlur,
   onKeyDown,
   onRendered,
   onMentionPreview,
@@ -2203,13 +2205,15 @@ function RichPromptEditor({
   placeholder: string;
   editable?: boolean;
   onChange: (value: string) => void;
+  onBlur?: () => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
   onRendered?: () => void;
   onMentionPreview?: (preview: ({url: string; label: string} & PreviewPlacement) | null) => void;
   onMentionRemoved?: (labels: string[]) => void;
 }) {
-  const mentionSignature = mentions.map((item) => `${item.kind}:${item.label}:${item.url || ''}`).join('|');
+  const mentionSignature = mentions.map((item) => `${item.kind}:${item.role || ''}:${item.label}:${item.url || ''}`).join('|');
   const lastEditorValueRef = useRef('');
+  const composingRef = useRef(false);
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -2245,19 +2249,29 @@ function RichPromptEditor({
       aria-multiline="true"
       aria-label={placeholder}
       data-placeholder={placeholder}
-      onInput={(event) => {
-        if (!editable) return;
+      onCompositionStart={() => { composingRef.current = true; }}
+      onCompositionEnd={(event) => {
+        composingRef.current = false;
         const next = promptTextFromEditor(event.currentTarget);
-        const previous = lastEditorValueRef.current;
-        if (next.trim() && next.length < previous.length && onMentionRemoved) {
-          const removed = promptMentionMatches(previous, mentions)
-            .filter((mention) => !next.includes(`@${mention.label}`))
-            .map((mention) => mention.label);
-          if (removed.length) onMentionRemoved(removed);
-        }
         event.currentTarget.dataset.promptValue = next;
         lastEditorValueRef.current = next;
         onChange(next);
+      }}
+      onInput={(event) => {
+        if (!editable || composingRef.current) return;
+        const next = promptTextFromEditor(event.currentTarget);
+        const previous = lastEditorValueRef.current;
+        const removed = next.trim() && next.length < previous.length && onMentionRemoved
+          ? promptMentionMatches(previous, mentions)
+            .filter((mention) => !next.includes(`@${mention.label}`))
+            .map((mention) => mention.label)
+          : [];
+        event.currentTarget.dataset.promptValue = next;
+        lastEditorValueRef.current = next;
+        // Commit the text first. The removal handler reads promptDraftRef to strip
+        // the leftover trailing space; calling it before this update re-inserted it.
+        onChange(next);
+        if (removed.length) onMentionRemoved?.(removed);
       }}
       onBlur={(event) => {
         if (!editable) return;
@@ -2265,6 +2279,7 @@ function RichPromptEditor({
         event.currentTarget.dataset.promptValue = next;
         lastEditorValueRef.current = next;
         onChange(next);
+        onBlur?.();
       }}
       onKeyDown={(event) => {
         onKeyDown(event);
@@ -4319,9 +4334,22 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   const commitDurationRef = useRef<(raw: string) => void>(() => {});
   // 提示词框默认 4 行，点放大按钮才撑到 30vh；之前是无条件自适应，一打开就铺满半屏。
   const [taExpanded, setTaExpanded] = useState(false);
+  // Local prompt draft: typing must not write the canvas node on every keystroke.
+  // The parent only receives a committed value after a short idle / blur / close.
+  const [promptDraft, setPromptDraft] = useState(node?.prompt ?? '');
+  const promptDraftRef = useRef(node?.prompt ?? '');
+  const promptDirtyRef = useRef(false);
+  const promptNodeRef = useRef<string | null>(node?.id ?? null);
+  const promptOpenTokenRef = useRef(openToken);
+  const promptCommitTimerRef = useRef<number | null>(null);
+  const promptComposingRef = useRef(false);
+  const promptFlushRef = useRef<() => void>(() => {});
+  const growRafRef = useRef<number | null>(null);
+  const growLastHeightRef = useRef(0);
   // 弹窗贴卡片下方还是上方：由渲染后的实际高度决定（下方放不下就翻上去）
   // 弹窗相对卡片的定位形态：below（卡片下方，默认）/ above（翻到上方）/ center（夹在视口中央）
   const [popupMode, setPopupMode] = useState<'below' | 'above' | 'center'>('below');
+  const [popupReady, setPopupReady] = useState(false);
   const popupModeKeyRef = useRef('');
   const barRef = useRef<HTMLDivElement>(null);
   useDialogFocusTrap(barRef);
@@ -4378,6 +4406,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   const canvasPickRef = useRef(canvasPickOpen); canvasPickRef.current = canvasPickOpen;
   const requestClose = useCallback((reason: 'preserve' | 'clear' = 'preserve') => {
     if (closing) return;
+    promptFlushRef.current();
     const attempt = closeAttemptRef.current + 1;
     closeAttemptRef.current = attempt;
     setClosing(true);
@@ -4407,7 +4436,23 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       closeTimerRef.current = null;
     }
     setClosing(false);
+    popupModeKeyRef.current = '';
+    setPopupReady(false);
   }, [node?.id, openToken]);
+
+  // Anchor variables are written imperatively. Keeping them out of React's
+  // style prop lets the canvas-follow sync update them without a later render
+  // restoring a stale position.
+  useLayoutEffect(() => {
+    const bar = barRef.current;
+    if (!bar || !anchor) return;
+    bar.style.setProperty('--jim-anchor-x', `${anchor.x}px`);
+    bar.style.setProperty('--jim-anchor-bottom', `${anchor.y + anchor.h}px`);
+    bar.style.setProperty('--jim-anchor-top', `${anchor.y}px`);
+    bar.style.setProperty('--jim-anchor-w', `${anchor.w}px`);
+    bar.style.setProperty('--jim-anchor-h', `${anchor.h}px`);
+  }, [anchor?.x, anchor?.y, anchor?.w, anchor?.h]);
+
   // 最近一次写入的 params：同一 tick 内连发 patch（选比例 = ratio + size）时要基于它叠加，
   // 否则第二份快照里的旧值会把第一次写的覆盖掉（★ hook 必须在条件 return 之前）
   const paramsRef = useRef<CanvasMediaParams>(node?.params || {});
@@ -4418,9 +4463,9 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   //   放大态 46vh（适合长提示词通读）。
   //   ★ 不要再写死 min-height —— CSS 的 min-height 会压过这里设的 inline height，
   //     那正是"空输入框也占满一大块"的原因。
-  const collapsedH = () => (node?.kind === 'text' ? 220 : 132);
+  const collapsedH = () => (node?.kind === 'text' ? 256 : 168);
   // 空内容时的底线高度（一行文字 + 上下 padding），保证不至于塌成一条缝
-  const baseH = 52;
+  const baseH = 72;
   // 统一的高度计算：空内容 → 底线高度；有内容 → 按 scrollHeight 长，封顶 cap。
   // ★ 为什么要单独判空：textarea 的 scrollHeight 在**空内容**时并不等于一行高度 ——
   //   受 padding / line-height / 父级 flex 影响，实测空文本节点也能报到 132px，
@@ -4554,7 +4599,8 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   //   居中态的 max-height 由下面的 CSS 统一夹紧，内容区内部滚动，不会出屏。
   const refCount = node?.params?.refs?.length ?? 0;
   useEffect(() => {
-    if (!node || !anchor || taExpanded) { setPopupMode('below'); return; }
+    if (!node || !anchor) { setPopupMode('below'); setPopupReady(false); return; }
+    if (taExpanded) { setPopupMode('below'); setPopupReady(true); return; }
     const el = barRef.current;
     if (!el) return;
     const modeKey = [
@@ -4564,6 +4610,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       Math.round(anchor.h),
       refCount,
       window.innerHeight,
+      Math.round(el.scrollHeight),
     ].join(':');
     if (popupModeKeyRef.current === modeKey) return;
     popupModeKeyRef.current = modeKey;
@@ -4577,12 +4624,15 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       const spaceBelow = viewportHeight - (anchor.y + anchor.h) - 20;
       if (spaceBelow >= need) setPopupMode('below');
       else setPopupMode(anchor.y - 20 >= need ? 'above' : 'center');
+      setPopupReady(true);
     });
-  }, [node, anchor, taExpanded, refCount]);
+  }, [node, anchor, taExpanded, refCount, promptDraft]);
 
   const nodeKind = node?.kind ?? 'image';
   const generateAndClose = async () => {
-    if (node && await onGenerate(node, {
+    if (!node) return;
+    flushPromptDraft();
+    if (await onGenerate({...node, prompt: promptDraftRef.current}, {
       entry: 'prompt-modal',
       confirmed: true,
     })) requestClose();
@@ -4667,6 +4717,59 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       return 0;
     });
   }, [favoriteModelIds, favoriteModelOptions, modelProviderId, recentModelIds, selectedModelGroup]);
+  const flushPromptDraft = useCallback(() => {
+    if (promptCommitTimerRef.current !== null) {
+      window.clearTimeout(promptCommitTimerRef.current);
+      promptCommitTimerRef.current = null;
+    }
+    if (!node) return;
+    const value = promptDraftRef.current;
+    promptDirtyRef.current = false;
+    if (value === node.prompt) return;
+    onChange(node.id, {prompt: value});
+  }, [node, onChange]);
+  promptFlushRef.current = flushPromptDraft;
+
+  const schedulePromptCommit = useCallback(() => {
+    if (promptCommitTimerRef.current !== null) {
+      window.clearTimeout(promptCommitTimerRef.current);
+    }
+    promptCommitTimerRef.current = window.setTimeout(() => {
+      promptCommitTimerRef.current = null;
+      flushPromptDraft();
+    }, 180);
+  }, [flushPromptDraft]);
+
+  // External updates (workspace reconciliation, node switch) sync the draft only
+  // when the local draft is clean. A dirty draft must never be overwritten by a
+  // server snapshot while the user is typing.
+  useLayoutEffect(() => {
+    if (!node) return;
+    const switched = promptNodeRef.current !== node.id
+      || promptOpenTokenRef.current !== openToken;
+    if (switched) {
+      promptNodeRef.current = node.id;
+      promptOpenTokenRef.current = openToken;
+      promptDirtyRef.current = false;
+      promptDraftRef.current = node.prompt;
+      setPromptDraft(node.prompt);
+      return;
+    }
+    if (!promptDirtyRef.current && promptDraftRef.current !== node.prompt) {
+      promptDraftRef.current = node.prompt;
+      setPromptDraft(node.prompt);
+    }
+  }, [node?.id, node?.prompt, openToken]);
+
+  useEffect(() => () => {
+    if (promptCommitTimerRef.current !== null) {
+      window.clearTimeout(promptCommitTimerRef.current);
+    }
+    if (growRafRef.current !== null) {
+      window.cancelAnimationFrame(growRafRef.current);
+    }
+  }, []);
+
   if (!node) return null;
   const meta = MEDIA_KIND_META[node.kind];
   const requestedProvider = String(p.provider || '');
@@ -4685,7 +4788,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       || catalog?.providers.find((item) => item.id === curModelSpec?.providerId)?.icon
       || '';
   const promptLimit = Math.max(1, Number(curModelSpec?.limits?.maxPromptChars || 4000));
-  const overPromptLimit = node.prompt.length > promptLimit;
+  const overPromptLimit = promptDraft.length > promptLimit;
   const activeProvider = catalog?.providers.find((item) => item.id === curModelSpec?.providerId);
   const missingProviderKey = Boolean(catalog && activeProvider && !activeProvider.has_api_key);
   const referenceEvaluation = evaluateReferenceLimits(
@@ -4728,7 +4831,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   const nodeNotices: string[] = [];
   if (catalog && modelOptions.length === 0) nodeNotices.push('当前类型没有可用模型，请到「模型接口」中启用或添加模型');
   if (missingProviderKey) nodeNotices.push(`供应商「${activeProvider?.name || curModelSpec?.providerId}」尚未配置 API Key`);
-  if (overPromptLimit) nodeNotices.push(`提示词 ${node.prompt.length} / ${promptLimit} 字，已超过当前模型上限`);
+  if (overPromptLimit) nodeNotices.push(`提示词 ${promptDraft.length} / ${promptLimit} 字，已超过当前模型上限`);
   if (referenceEvaluation.issue) nodeNotices.push(referenceEvaluation.message);
   if (dependenciesBlocked) {
     const names = dependencyBlockers.slice(0, 4).map((item) => `${item.title}（${item.reason}）`).join('、');
@@ -4937,19 +5040,31 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   // 文本 T / 图片 / 音频波形 / 视频播放，一眼看出这个位子引用的是什么种类。
   const refKind = (r: {nodeId: string}): CanvasMediaNodeKind =>
     kindById.get(r.nodeId) || (isAud ? 'audio' : 'image');
-  const removeRef = (ref: {nodeId: string; label?: string; url?: string}) => {
-    onRemoveRef?.(ref.nodeId);
+  const removeRefs = (targets: Array<{nodeId: string; label?: string; url?: string}>) => {
+    const unique = [...new Map(targets.map((ref) => [ref.nodeId, ref])).values()];
+    if (!unique.length) return;
+    const removedIds = new Set(unique.map((ref) => ref.nodeId));
+    for (const ref of unique) onRemoveRef?.(ref.nodeId);
     const next = withVoiceRefs(
       {...paramsRef.current},
-      voiceRefList(paramsRef.current).filter((item) => item.nodeId !== ref.nodeId),
+      voiceRefList(paramsRef.current).filter((item) => !removedIds.has(item.nodeId)),
     );
-    next.refs = (next.refs || refs).filter((item) => item.nodeId !== ref.nodeId);
+    next.refs = (next.refs || refs).filter((item) => !removedIds.has(item.nodeId));
     paramsRef.current = next;
-    onChange(node.id, {
-      prompt: removePromptMention(node.prompt, refLabel(ref)),
-      params: next,
-    });
+    let nextPrompt = promptDraftRef.current;
+    for (const ref of unique) nextPrompt = removePromptMention(nextPrompt, refLabel(ref));
+    promptDraftRef.current = nextPrompt;
+    promptDirtyRef.current = false;
+    if (promptCommitTimerRef.current !== null) {
+      window.clearTimeout(promptCommitTimerRef.current);
+      promptCommitTimerRef.current = null;
+    }
+    setPromptDraft(nextPrompt);
+    // One atomic prompt+params patch for every removed mention. Looping removeRef
+    // here was the multi-mention version of the 409 save-conflict bug.
+    onChange(node.id, {prompt: nextPrompt, params: next});
   };
+  const removeRef = (ref: {nodeId: string; label?: string; url?: string}) => removeRefs([ref]);
   const reorderRefs = (from: number, to: number) => {
     if (from === to || from < 0 || to < 0) return;
     const ordered = [...refEntries];
@@ -5027,10 +5142,17 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       : '描述你想生成的画面内容，输入 @ 可快速调用参考内容（如 @图片1 模仿 @视频1 的动作，音色参考 @音频1）';
   // 提示词框的两种高度已在 hook 之前定义。这里只保留自适应逻辑，读取 taExpanded 最新值。
   const growTa = () => {
-    const ta = taRef.current;
-    if (!ta) return;
-    const cap = taExpandedRef.current ? EXPANDED_CAP() : collapsedH();
-    ta.style.height = `${calcTaHeight(ta, cap)}px`;
+    if (growRafRef.current !== null) return;
+    growRafRef.current = window.requestAnimationFrame(() => {
+      growRafRef.current = null;
+      const ta = taRef.current;
+      if (!ta) return;
+      const cap = taExpandedRef.current ? EXPANDED_CAP() : collapsedH();
+      const next = calcTaHeight(ta, cap);
+      if (Math.abs(next - growLastHeightRef.current) < 1) return;
+      growLastHeightRef.current = next;
+      ta.style.height = `${next}px`;
+    });
   };
   // 展开/收起：直接把高度切到目标值，不依赖 onChange 时机
   const applyTaHeight = (expanded: boolean) => {
@@ -5054,8 +5176,12 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   // 图片/音频/视频/文本四类都收 —— 素材行的 T 与 ▶ 入口也走这里。
   const pickCands = atCands.filter((a) => a.kind !== 'text' || a.prompt?.trim());
   const insertTemplate = (text: string) => {
-    const base = node.prompt.replace(/\s+$/, '');
-    onChange(node.id, {prompt: base ? `${base}${text}` : text.replace(/^，/, '')});
+    const base = promptDraftRef.current.replace(/\s+$/, '');
+    const nextPrompt = base ? `${base}${text}` : text.replace(/^，/, '');
+    promptDraftRef.current = nextPrompt;
+    promptDirtyRef.current = true;
+    setPromptDraft(nextPrompt);
+    schedulePromptCommit();
     setOpenMenu(null);
     growTa();
   };
@@ -5083,10 +5209,10 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     // selection is no longer trustworthy here. Use the offset captured when
     // the @ menu opened instead of falling back to the end of the prompt.
     const start = atInsertOffsetRef.current
-      ?? (input ? promptCaretOffset(input) : node.prompt.length);
+      ?? (input ? promptCaretOffset(input) : promptDraftRef.current.length);
     const end = start;
-    let before = node.prompt.slice(0, start);
-    const after = node.prompt.slice(end);
+    let before = promptDraftRef.current.slice(0, start);
+    const after = promptDraftRef.current.slice(end);
     // The menu is opened from the caret position, so consume exactly the
     // trigger character immediately before it. Requiring whitespace here made
     // mid-prompt insertions leave a stray "@" behind.
@@ -5102,11 +5228,14 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     const prompt = `${before}${insertion}${after}`;
     suppressBackdropClickRef.current = true;
     suppressBackdropClickUntilRef.current = Date.now() + 600;
+    promptDraftRef.current = prompt;
+    promptDirtyRef.current = true;
+    setPromptDraft(prompt);
+    schedulePromptCommit();
     if (onPickRef) {
       onPickRef(node, a.id);
-      onChange(node.id, {prompt});
     } else {
-      onChange(node.id, {prompt, params: finalParams});
+      onChange(node.id, {params: finalParams});
     }
     const restoreFocus = () => {
       const cursor = before.length + insertion.length;
@@ -5154,6 +5283,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       //
       //   这里用 elementsFromPoint 穿透取真实命中：backdrop 在最上层，
       //   忽略它之后第一个 .react-flow__node 就是用户真正想点的那张卡。
+      promptFlushRef.current();
       if (onBackdropPick) {
         const under = document.elementsFromPoint(e.clientX, e.clientY);
         const hit = under.find((el): el is HTMLElement =>
@@ -5213,26 +5343,25 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
         }}
         // 跟随节点：弹窗贴在选中卡片正下方（即梦是跟着节点走的，不是钉死在屏幕底部）。
         // 用 CSS 变量传坐标，实际夹紧逻辑在 CSS 里用 min()/max() 完成，避免这里算错视口。
-        style={anchor ? ({
-          '--jim-anchor-x': `${anchor.x}px`,
-          '--jim-anchor-bottom': `${anchor.y + anchor.h}px`,
-          '--jim-anchor-top': `${anchor.y}px`,
-          '--jim-anchor-w': `${anchor.w}px`,
-          '--jim-anchor-h': `${anchor.h}px`,
-        } as CSSProperties) : undefined}
+        style={undefined}
         data-anchored={anchor ? '1' : '0'}
         data-flip={popupMode === 'above' ? '1' : '0'}
         data-center={popupMode === 'center' ? '1' : '0'}
         /* 放大态 = 抬到最顶层居中的大浮层：不受卡片位置约束、也不被卡片遮挡。
            这是即梦/Figma 的通用做法 —— 长文本编辑时先给足屏幕空间。 */
         data-expanded={taExpanded ? '1' : '0'}
+        data-ready={popupReady ? '1' : '0'}
       >
         {/* 顶部细行：节点信息 + 放大/收起 + 更多菜单（删除节点）
             放大按钮放这里而不是单独占一行 —— 成熟编辑器（即梦/Figma）都把它收进顶栏。 */}
         <div className="jim-bar-head">
           <span className="jim-head-title" title={node.title}>{node.title || meta.label}</span>
-          <span className={`jim-head-badge${overPromptLimit ? ' is-over-limit' : ''}`}>{isTxt ? `${(node.prompt || '').trim().length} / ${promptLimit} 字` : isAud ? (p.ttsMode === 'speech' ? `音色 ${p.voiceId || p.ttsVoice || '未设置'}` : '音色设计') : isVid ? `${ratioLabel} · ${resLabel}` : `${ratioLabel} · ${clarityLabel}`}</span>
+          <span className={`jim-head-badge${overPromptLimit ? ' is-over-limit' : ''}`}>{isTxt ? `${(promptDraft || '').trim().length} / ${promptLimit} 字` : isAud ? (p.ttsMode === 'speech' ? `音色 ${p.voiceId || p.ttsVoice || '未设置'}` : '音色设计') : isVid ? `${ratioLabel} · ${resLabel}` : `${ratioLabel} · ${clarityLabel}`}</span>
           <div className="jim-head-tools">
+            {!readOnly && <button type="button" className="is-clear" title="清空提示词" aria-label="清空提示词" onClick={() => { promptDraftRef.current = ''; promptDirtyRef.current = true; setPromptDraft(''); schedulePromptCommit(); }}><Eraser size={14} strokeWidth={1.7} aria-hidden="true" /></button>}
+            {!readOnly && templates.length > 0 && <button type="button" title="随机灵感" aria-label="随机灵感" onClick={() => { const list = PROMPT_TEMPLATES[node.kind]; if (list?.length) insertTemplate(list[Math.floor(Math.random() * list.length)].text); }}><Sparkles size={14} strokeWidth={1.9} aria-hidden="true" /></button>}
+            {!readOnly && isVid && <button type="button" className={`is-style ${openMenu === 'style' ? 'is-active' : ''}`} data-pop-owner="style" title="推理强度" aria-label="推理强度" onClick={() => toggle('style')}><Brain size={14} strokeWidth={1.9} aria-hidden="true" /></button>}
+            {!readOnly && extraParamSpecs.length > 0 && <button type="button" className={`is-extra-params ${openMenu === 'advanced' ? 'is-active' : ''}`} data-pop-owner="advanced" title={`高级参数（${extraParamSpecs.length}）`} aria-label="高级参数" onClick={() => toggle('advanced')}><SlidersHorizontal size={14} strokeWidth={1.9} aria-hidden="true" /><i className="jim-side-count">{extraParamSpecs.length}</i></button>}
             {!readOnly && <button
               type="button"
               className={`jim-head-expand ${taExpanded ? 'is-on' : ''}`}
@@ -5250,18 +5379,6 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                 ? <Minimize2 size={14} strokeWidth={1.9} aria-hidden="true" />
                 : <Maximize2 size={14} strokeWidth={1.9} aria-hidden="true" />}
             </button>}
-            <button
-              type="button"
-              className={`jim-head-more-btn ${openMenu === 'more' ? 'is-on' : ''}`} data-pop-owner="more"
-              onClick={() => toggle('more')}
-              title="更多"
-              hidden={readOnly}
-            ><MoreHorizontal size={15} strokeWidth={2} aria-hidden="true" /></button>
-            {!readOnly && openMenu === 'more' && (
-              <div className="jim-pop jim-pop-more">
-                <button type="button" className="is-del" onClick={() => { onDelete(node.id); requestClose(); }}>删除节点</button>
-              </div>
-            )}
           </div>
         </div>
 
@@ -5275,6 +5392,8 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                 key={`${r.nodeId}-${i}`}
                 className={`jim-ref-item ${draggedRefIndex === i ? 'is-dragging' : ''} ${refDropIndex === i && draggedRefIndex !== i ? 'is-drop-target' : ''}`}
                 data-ref-index={i}
+                data-media-kind={refKind(r)}
+                data-ref-role={refRoleLabel(r)}
                 onPointerDown={(event) => {
                   if (event.button !== 0 || (event.target as Element).closest('button')) return;
                   refPointerDragRef.current = {
@@ -5445,17 +5564,21 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
           <div className="jim-prompt-row">
             <RichPromptEditor
               editorRef={taRef}
-              value={node.prompt}
+              value={promptDraft}
               editable={!readOnly}
               mentions={refEntries.map((ref) => ({
                 label: refLabel(ref),
                 url: refVisualUrl(ref),
                 kind: refKind(ref),
+                role: refRoleLabel(ref),
               }))}
               placeholder={promptPlaceholder}
               onChange={(next) => {
                 const limited = next.slice(0, promptLimit);
-                onChange(node.id, {prompt: limited});
+                promptDraftRef.current = limited;
+                promptDirtyRef.current = true;
+                setPromptDraft(limited);
+                schedulePromptCommit();
                 const editor = taRef.current;
                 const followsAt = Boolean(editor && promptCaretFollowsAt(editor, limited));
                 if (followsAt && editor) {
@@ -5467,7 +5590,9 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                 setAtIdx(0);
                 growTa();
               }}
+              onBlur={flushPromptDraft}
               onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return;
                 if (atOpen && event.key === 'Escape') {
                   event.preventDefault();
                   setAtOpen(false);
@@ -5496,51 +5621,12 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
               onRendered={() => window.requestAnimationFrame(growTa)}
               onMentionPreview={setMentionPreview}
               onMentionRemoved={(labels) => {
-                for (const label of labels) {
-                  const ref = refEntries.find((item) => refLabel(item) === label);
-                  if (ref) removeRef(ref);
-                }
+                const targets = labels
+                  .map((label) => refEntries.find((item) => refLabel(item) === label))
+                  .filter((ref): ref is NonNullable<typeof ref> => Boolean(ref));
+                if (targets.length) removeRefs(targets);
               }}
             />
-          {!readOnly && <div className="jim-prompt-side">
-              <button type="button" className="is-clear" title="清空提示词" onClick={() => onChange(node.id, {prompt: ''})}>
-                <Eraser size={14} strokeWidth={1.7} aria-hidden="true" />
-              </button>
-              {/* ★ 只有该类型配了模板才渲染：文本节点原来没模板，按钮悬在那里点不动（死按钮） */}
-              {templates.length > 0 && (
-                <button
-                  type="button"
-                  title="随机灵感"
-                  onClick={() => {
-                    const list = PROMPT_TEMPLATES[node.kind];
-                    if (list?.length) insertTemplate(list[Math.floor(Math.random() * list.length)].text);
-                  }}
-                ><Sparkles size={15} strokeWidth={1.9} aria-hidden="true" /></button>
-              )}
-              {isVid && (
-                <button
-                  type="button"
-                  className={`is-style ${openMenu === 'style' ? 'is-active' : ''}`}
-                  data-pop-owner="style"
-                  title="推理强度"
-                  onClick={() => toggle('style')}
-                >
-                  <Brain size={14} strokeWidth={1.9} aria-hidden="true" />
-                </button>
-              )}
-              {extraParamSpecs.length > 0 && (
-                <button
-                  type="button"
-                  className={`is-extra-params ${openMenu === 'advanced' ? 'is-active' : ''}`}
-                  data-pop-owner="advanced"
-                  title={`高级参数（${extraParamSpecs.length}）`}
-                  onClick={() => toggle('advanced')}
-                >
-                  <SlidersHorizontal size={14} strokeWidth={1.9} aria-hidden="true" />
-                  <i className="jim-side-count">{extraParamSpecs.length}</i>
-                </button>
-              )}
-            </div>}
           </div>
           {atOpen && (
             <AnchoredJimPopover owner="at" className="jim-at-pop">
@@ -5824,7 +5910,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
           <button
             type="button"
             className="jim-gen"
-            disabled={busy || !node.prompt.trim() || overPromptLimit || !curModelSpec || missingProviderKey || modelParamIssues.length > 0}
+            disabled={busy || !promptDraft.trim() || overPromptLimit || !curModelSpec || missingProviderKey || modelParamIssues.length > 0}
             onClick={() => void generateAndClose()}
             title={busy ? '当前节点正在生成，请到任务中心查看进度' : !curModelSpec ? '当前类型没有可用模型' : missingProviderKey ? '当前供应商尚未配置 API Key' : overPromptLimit ? `提示词超过当前模型上限（${promptLimit} 字符）` : modelParamIssues.length ? modelParamIssues[0].message : isTxt ? '按当前内容生成/改写文本 · Ctrl+⏎' : '按当前供应商与参数生成 · Ctrl+⏎'}
           ><ArrowUp size={16} strokeWidth={2.6} aria-hidden="true" /></button>
@@ -9251,6 +9337,7 @@ function CanvasViewInner({
   const zoomPct = Math.round(canvasViewport.zoom * 100);
   const bgVars = canvasBackgroundCss(zoomPct / 100);
   const viewportRef = useRef(canvasViewport);
+  const viewportStateTimerRef = useRef<number | null>(null);
   const overviewReturnViewportRef = useRef<CanvasViewport | null>(null);
   const focusSelectionRef = useRef<(showEmptyHint?: boolean) => void>(() => {});
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -9260,6 +9347,19 @@ function CanvasViewInner({
   const lastPersistedViewportRef = useRef<{key: string; viewport: {x: number; y: number; zoom: number}} | null>(null);
   const viewportUserInteractingRef = useRef(false);
   const viewportScopeRef = useRef('');
+
+  // React Flow owns the live transform. Applying a controlled viewport prop
+  // every frame was the hand-mode bottleneck (and could snap back mid-gesture).
+  // State is now only a UI mirror; programmatic viewport changes are applied here.
+  useEffect(() => {
+    const current = rf.getViewport();
+    if (
+      Math.abs(current.x - canvasViewport.x) < 0.5
+      && Math.abs(current.y - canvasViewport.y) < 0.5
+      && Math.abs(current.zoom - canvasViewport.zoom) < 0.001
+    ) return;
+    void rf.setViewport(canvasViewport, {duration: 0});
+  }, [canvasViewport, rf]);
 
   const loadPersistedLayout = useCallback(() => {
     try {
@@ -9535,6 +9635,7 @@ function CanvasViewInner({
   const resetCanvasInteraction = useCallback(() => {
     interactionDepthRef.current = 0;
     document.body.removeAttribute('data-canvas-interacting');
+    document.body.removeAttribute('data-canvas-panning');
   }, []);
   useEffect(() => {
     const release = () => resetCanvasInteraction();
@@ -9866,6 +9967,7 @@ function CanvasViewInner({
   const mediaPatchSaveInFlightRef = useRef(false);
   const mediaPatchRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaPatchRetryAttemptRef = useRef(0);
+  const mediaPatchConflictRebaseRef = useRef(0);
   const positionMutationSeqRef = useRef(0);
   const broadcastMediaChange = useCallback((nodeIds: string[]) => {
     if (!syncChannelRef.current || nodeIds.length === 0) return;
@@ -9966,6 +10068,19 @@ function CanvasViewInner({
   }> | undefined) => {
     if (!updates?.length) return;
     const byId = new Map(updates.map((update) => [update.id, update]));
+    // Rebase any newer queued patch onto the revision the server just accepted.
+    // Without this, deleting an @ mention while a prompt save is in flight sends
+    // the next patch with an older baseUpdatedAt and produces a false 409.
+    for (const [id, update] of byId) {
+      const queued = pendingMediaPatchesRef.current.get(id);
+      if (queued) {
+        pendingMediaPatchesRef.current.set(id, {
+          ...queued,
+          updatedAt: update.updatedAt || queued.updatedAt,
+          positionUpdatedAt: update.positionUpdatedAt || queued.positionUpdatedAt,
+        });
+      }
+    }
     setMediaNodes((prev) => prev.map((node) => {
       const update = byId.get(node.id);
       if (!update) return node;
@@ -9997,6 +10112,7 @@ function CanvasViewInner({
     try {
       const result = await patchMediaNodesFields(session, snapshots, currentEp);
       applyMediaPatchRevisions(result.updates);
+      mediaPatchConflictRebaseRef.current = 0;
       clearMediaPatchRetry();
       finishSave(true);
       broadcastMediaChange(snapshots.map((snapshot) => snapshot.id));
@@ -10035,6 +10151,21 @@ function CanvasViewInner({
           const node = latestById.get(id);
           return node ? [node] : [];
         });
+        // One transient conflict should not leave the editor permanently blocked.
+        // Rebase the queued local prompt/params onto the latest server revision
+        // and retry once; only a repeated conflict falls back to manual choice.
+        const remoteById = new Map(remote.map((node) => [node.id, node]));
+        if (mediaPatchConflictRebaseRef.current < 1 && local.length > 0 && local.every((node) => remoteById.has(node.id))) {
+          mediaPatchConflictRebaseRef.current += 1;
+          for (const node of local) {
+            const latest = remoteById.get(node.id)!;
+            pendingMediaPatchesRef.current.set(node.id, {...node, updatedAt: latest.updatedAt});
+            setMediaNodes((prev) => prev.map((item) => item.id === node.id ? {...item, updatedAt: latest.updatedAt} : item));
+          }
+          setSaveError('检测到节点已在其他页面更新，已自动合并并重试。');
+          scheduleMediaPatchFlush(120);
+          return;
+        }
         const conflict = {message, nodeIds: changedIds, localNodes: local, remoteNodes: remote};
         mediaSaveConflictRef.current = conflict;
         setMediaSaveConflict(conflict);
@@ -10515,8 +10646,10 @@ function CanvasViewInner({
   // 否则 openMediaModal 每次打开都会按残留连线把 refs 重新预填回来 → 用户感觉"删不掉"。
   const removeRefAndEdge = useCallback((targetNodeId: string, refNodeId: string) => {
     if (readOnly) return;
-    // 记入"已移除"黑名单 + 清 params.refs（两者都在 dropRefsForPairs 里）
-    dropRefsForPairs([{src: refNodeId, tgt: targetNodeId}]);
+    // Only unlink the edge and blacklist the pair here. The modal patches the
+    // node's prompt + params once, so we must not call dropRefsForPairs (which
+    // would persist a second, competing optimistic update).
+    markRefRemoved(session, targetNodeId, refNodeId);
     // 手动线：source=ref → target=当前节点（也可能反向，两种方向都清）
     const srcFlow = `media-${refNodeId}`;
     const tgtFlow = `media-${targetNodeId}`;
@@ -10528,7 +10661,7 @@ function CanvasViewInner({
     }
     // 自动线（refIds 派生那类）也一并标记删除，避免它重建后再把引用带回来
     setDeletedAutoEdgeIds((prev) => new Set(prev).add(`e-media-${targetNodeId}-${refNodeId}`));
-  }, [dropRefsForPairs, readOnly]);
+  }, [readOnly, session]);
 
   const persistNotes = useCallback((next: CanvasNote[], episodeId = currentEp) => {
     if (noteSaveTimer.current) clearTimeout(noteSaveTimer.current);
@@ -11222,6 +11355,23 @@ function CanvasViewInner({
       return next;
     });
   }, [flushMediaPatches, persistMediaNodes, persistMediaPositions]);
+
+  const updateMediaPositionsBatch = useCallback((positions: Map<string, {x: number; y: number}>) => {
+    if (!positions.size || readOnly) return;
+    const now = new Date().toISOString();
+    const moved = mediaNodesRef.current
+      .filter((node) => positions.has(node.id))
+      .map((node) => {
+        const pos = positions.get(node.id)!;
+        return {...node, x: pos.x, y: pos.y, updatedAt: now};
+      });
+    if (!moved.length) return;
+    setMediaNodes((prev) => prev.map((node) => {
+      const pos = positions.get(node.id);
+      return pos ? {...node, x: pos.x, y: pos.y, updatedAt: now} : node;
+    }));
+    persistMediaPositions([], moved);
+  }, [persistMediaPositions, readOnly]);
 
   const updateMediaAvailability = useCallback((
     nodeId: string,
@@ -13841,6 +13991,9 @@ function CanvasViewInner({
   //   handleNodesChange 收到的 position change 就是这一帧的最终值，在这里记下来，
   //   框用它来算，和卡片同帧、零延迟。拖动结束（onNodeDragStop）清空。
   const livePosRef = useRef<Map<string, {x: number; y: number}>>(new Map());
+  const dragStateRafRef = useRef<number | null>(null);
+  const heavyDragRef = useRef(false);
+  const pendingChildDragRef = useRef<{childId: string; parentId: string; childStart: {x: number; y: number}; next: {x: number; y: number}} | null>(null);
   // 编组外框的两个缓存（第 30 轮）：DOM 映射 + 上一帧写入的几何签名
   const groupFrameDomRef = useRef<{key: string; layer: HTMLElement; map: Map<string, HTMLElement>} | null>(null);
   const groupFrameSigRef = useRef<Map<string, string>>(new Map());
@@ -14031,6 +14184,8 @@ function CanvasViewInner({
   // 白屏 + 所有选择器失效），所以统一过 ref，effect 依赖只留 [rf]。
   const updateMediaNodeRef = useRef(updateMediaNode);
   updateMediaNodeRef.current = updateMediaNode;
+  const updateMediaPositionsBatchRef = useRef(updateMediaPositionsBatch);
+  updateMediaPositionsBatchRef.current = updateMediaPositionsBatch;
   const commitNotePositionsRef = useRef(commitNotePositions);
   commitNotePositionsRef.current = commitNotePositions;
   const persistLayoutRef = useRef(persistLayout);
@@ -14153,6 +14308,8 @@ function CanvasViewInner({
       const zoom = rf.getZoom() || 1;
       let moved = false;
       let raf = 0;
+      let lastDx = 0;
+      let lastDy = 0;
       const apply = (dx: number, dy: number) => {
         if (raf) return;
         raf = requestAnimationFrame(() => {
@@ -14168,24 +14325,21 @@ function CanvasViewInner({
           //     卡片和锚点在同一帧、同一条路径上更新。）
           //   修法：拖动期间**同时**用 setNodes 把位置写进 React Flow 的节点状态，
           //     让锚点和卡片在同一帧内一起动；updateMediaNode 仍负责写数据源（落盘用）。
+          // One React Flow update per frame for every media card and note in the
+          // group. Do not touch the mediaNodes/notes data sources here: those
+          // rebuild the whole flow graph and cause the group frame/edges to lag.
           setNodes((prev) => prev.map((item) => {
-            if (item.type !== 'media') return item;
-            const raw = item.id.startsWith('media-') ? item.id.slice('media-'.length) : '';
-            const p = startM.get(raw);
-            return p ? {...item, position: {x: p.x + dx, y: p.y + dy}} : item;
+            const raw = item.id.startsWith('media-')
+              ? item.id.slice('media-'.length)
+              : item.id.startsWith('note-')
+                ? item.id.slice('note-'.length)
+                : '';
+            const mediaPos = startM.get(raw);
+            if (mediaPos) return {...item, position: {x: mediaPos.x + dx, y: mediaPos.y + dy}};
+            const notePos = startN.get(raw);
+            if (notePos) return {...item, position: {x: notePos.x + dx, y: notePos.y + dy}};
+            return item;
           }));
-          for (const [id, p] of startM) {
-            updateMediaNodeRef.current(id, {x: p.x + dx, y: p.y + dy});
-          }
-          if (startN.size > 0) {
-            commitNotePositionsRef.current([...startN].map(([id, p]) => ({id, position: {x: p.x + dx, y: p.y + dy}})));
-            // 备注节点同样要同步进 React Flow 状态，否则连到备注的线也会滞后
-            setNodes((prev) => prev.map((item) => {
-              const raw = item.id.startsWith('note-') ? item.id.slice('note-'.length) : '';
-              const p = startN.get(raw);
-              return p ? {...item, position: {x: p.x + dx, y: p.y + dy}} : item;
-            }));
-          }
           syncGroupFramesRef.current();
         });
       };
@@ -14198,6 +14352,8 @@ function CanvasViewInner({
           pushHistory(userEdgesRef.current, notesRef.current);
         }
         moved = true;
+        lastDx = dx;
+        lastDy = dy;
         apply(dx, dy);
       };
       const onUp = () => {
@@ -14207,6 +14363,17 @@ function CanvasViewInner({
         document.body.style.cursor = prevCursor;
         if (raf) { cancelAnimationFrame(raf); raf = 0; }
         if (moved) {
+          const mediaUpdates = new Map<string, {x: number; y: number}>();
+          for (const [id, p] of startM) {
+            mediaUpdates.set(id, {x: p.x + lastDx, y: p.y + lastDy});
+          }
+          if (mediaUpdates.size) updateMediaPositionsBatchRef.current(mediaUpdates);
+          if (startN.size) {
+            commitNotePositionsRef.current([...startN].map(([id, p]) => ({
+              id,
+              position: {x: p.x + lastDx, y: p.y + lastDy},
+            })));
+          }
           // 落盘前先按最终位置重画一次框：
           // 拖动中框走的是 rAF 合批，最后一帧可能还没跑就被 pointerup 取消了 →
           // 框停在倒数第二帧的位置，和卡片差出整个末帧位移（实测差 54px）。
@@ -14341,6 +14508,14 @@ function CanvasViewInner({
     //   · 超出 glue 但在 release 内 → 修正量线性衰减，节点平滑滑出线
     //   · 超出 release → 完全跟随指针
     // 因为修正是「叠加」而非「替换」，整个过程连续无跳变。
+    const movingCount = allowed.filter((change) => change.type === 'position').length;
+    // Large multi-selection: alignment solving and per-frame group-frame reads
+    // cost O(N) and make whole-episode drags stutter. Prioritize raw tracking.
+    if (movingCount > 20) {
+      onNodesChange(allowed);
+      updateAlignGuides([]);
+      return;
+    }
     if (!alignSnapOn || !draggingRef.current) {
       if (draggingRef.current) updateAlignGuides([]);
       onNodesChange(allowed);
@@ -14457,6 +14632,11 @@ function CanvasViewInner({
     }
     // 新一轮拖动：清掉上一轮残留的实时位置
     livePosRef.current.clear();
+    if (dragStateRafRef.current !== null) {
+      window.cancelAnimationFrame(dragStateRafRef.current);
+      dragStateRafRef.current = null;
+      pendingChildDragRef.current = null;
+    }
     // 新一轮拖拽：重置磁吸状态与吸附坐标，避免上一轮的锁定/偏移残留
     alignStateRef.current = createAlignState();
     snappedPosRef.current.clear();
@@ -14465,6 +14645,7 @@ function CanvasViewInner({
     snapEaseRef.current = {x: 0, y: 0};
     snapResidualRef.current = {x: 0, y: 0};
     beginCanvasInteraction();
+    heavyDragRef.current = dragNodesRef.current.filter((item) => item.selected).length > 20 || node.type === 'ep-box';
     // Every draggable node type (media, segment, note, group frame, child card)
     // needs a position snapshot before the first movement. Media-only snapshots
     // left segments/groups/notes impossible to undo and caused the card to snap
@@ -14493,10 +14674,11 @@ function CanvasViewInner({
   }, [beginCanvasInteraction, pushHistory]);
 
   const onNodeDrag = useCallback((event: MouseEvent | TouchEvent, node: FlowNode) => {
+    syncModalAnchorDom();
     // ★ 编组外框必须**跟着节点一起动**（用户："编组框起来的节点拖动的时候框框不连节点一起动"）。
     //   旧实现只在 onNodeDragStop 里同步框 —— 拖动全程框钉在原地，松手才"啪"地跳过去，
     //   视觉上框和卡片彻底脱节，等于框没用。这里每帧都同步（内部 rAF 节流，不会掉帧）。
-    syncGroupFrames();
+    if (!heavyDragRef.current) syncGroupFrames();
     const drag = childDragRef.current;
     if (!drag || drag.childId !== node.id) {
       // 顶层节点（分组框 / 整集框 / 备注 / 分段卡）：持续同步 positionRef，
@@ -14514,16 +14696,30 @@ function CanvasViewInner({
       y: drag.parentStart.y + (pointer.y - drag.pointerStart.y) / zoom,
     };
     positionRef.current[drag.parentId] = next;
-    setNodes((prev) => prev.map((item) => {
-      if (item.id === drag.childId) return {...item, position: drag.childStart};
-      if (item.id === drag.parentId) return {...item, position: next};
-      return item;
-    }));
+    pendingChildDragRef.current = {
+      childId: drag.childId,
+      parentId: drag.parentId,
+      childStart: drag.childStart,
+      next,
+    };
+    if (dragStateRafRef.current !== null) return;
+    dragStateRafRef.current = window.requestAnimationFrame(() => {
+      dragStateRafRef.current = null;
+      const pending = pendingChildDragRef.current;
+      pendingChildDragRef.current = null;
+      if (!pending) return;
+      setNodes((prev) => prev.map((item) => {
+        if (item.id === pending.childId) return {...item, position: pending.childStart};
+        if (item.id === pending.parentId) return {...item, position: pending.next};
+        return item;
+      }));
+    });
   }, [rf, setNodes, syncGroupFrames]);
 
   const onNodeDragStop = useCallback((_: unknown, node: FlowNode) => {
     setDraggingNode(false);
     draggingRef.current = false;
+    heavyDragRef.current = false;
     resetCanvasInteraction();
     if (readOnly) {
       if (node.id.startsWith(MEDIA_PREFIX)) {
@@ -14537,6 +14733,11 @@ function CanvasViewInner({
     }
     // 拖动结束：实时位置表作废，之后一律读 store（store 此时已经是最新值）
     livePosRef.current.clear();
+    if (dragStateRafRef.current !== null) {
+      window.cancelAnimationFrame(dragStateRafRef.current);
+      dragStateRafRef.current = null;
+      pendingChildDragRef.current = null;
+    }
     // 拖动结束：参考线不立刻清 —— 先驻留 120ms 再淡出（见 releaseAlignGuides），
     // 否则松手瞬间线就没了，用户来不及确认"刚才到底吸到了哪几条边"。
     releaseAlignGuides();
@@ -14567,27 +14768,27 @@ function CanvasViewInner({
       if (parent) positionRef.current[drag.parentId] = {x: parent.position.x, y: parent.position.y};
       childDragRef.current = null;
     } else {
-      // 媒体卡片：位置同步回 mn（updateMediaNode → setMediaNodes → flowNodes 重建），
-      // 并持久化到载荷 node.position（刷新/切集后保持拖过的位置）；不写 positionRef。
+      // Batch all dragged media positions into one React update + one save request.
+      // The old loop called updateMediaNode per selected node, rebuilding the
+      // entire node array N times and flooding the save queue on release.
+      const mediaPositions = new Map<string, {x: number; y: number}>();
       if (node.id.startsWith('media-')) {
-        const mediaId = node.id.slice('media-'.length);
-        updateMediaNode(mediaId, {x: finalPos.x, y: finalPos.y});
+        mediaPositions.set(node.id.slice('media-'.length), {x: finalPos.x, y: finalPos.y});
       } else {
         positionRef.current[node.id] = {x: finalPos.x, y: finalPos.y};
       }
-      // 批量拖动：保存所有同时选中节点的位置（多段一起拖时其他段不丢位置）
       const selected = dragNodesRef.current.filter((n) => n.selected && n.id !== node.id);
       for (const sel of selected) {
         const selSnapped = snappedPosRef.current.get(sel.id);
         const selPos = selSnapped ?? sel.position;
-        // 同一批拖动共享同一个修正量，残差也一样
         const selFinal = {x: selPos.x + rx, y: selPos.y + ry};
         if (sel.id.startsWith('media-')) {
-          updateMediaNode(sel.id.slice('media-'.length), {x: selFinal.x, y: selFinal.y});
+          mediaPositions.set(sel.id.slice('media-'.length), {x: selFinal.x, y: selFinal.y});
         } else {
           positionRef.current[sel.id] = {x: selFinal.x, y: selFinal.y};
         }
       }
+      if (mediaPositions.size) updateMediaPositionsBatch(mediaPositions);
       // 段卡拖出父框范围时，动态撑开 ep-box 高度
       if (node.type === 'segment' && node.parentId) {
         const parent = dragNodesRef.current.find((n) => n.id === node.parentId);
@@ -14623,8 +14824,9 @@ function CanvasViewInner({
     //   ② rAF 再补一次：React 提交 + React Flow 重算 measured 之后的兜底，
     //      保证框和卡片像素级贴合（实测只有①时仍差 11px）。
     syncGroupFrames();
+    commitModalAnchor();
     requestAnimationFrame(() => syncGroupFrames());
-  }, [beginCanvasInteraction, commitNotePositions, endCanvasInteraction, persistLayout, readOnly, releaseAlignGuides, resetCanvasInteraction, setNodes, updateMediaNode, syncSelBar, syncGroupFrames]);
+  }, [beginCanvasInteraction, commitNotePositions, endCanvasInteraction, persistLayout, readOnly, releaseAlignGuides, resetCanvasInteraction, setNodes, updateMediaPositionsBatch, syncSelBar, syncGroupFrames]);
 
   const clearStuckDrag = useCallback(() => {
     // Run after React Flow's own pointer handlers. A normal drag has already
@@ -15400,12 +15602,19 @@ function CanvasViewInner({
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.code === 'Space') setPanning(false);
     };
+    // Space keyup can be lost when the window loses focus while the key is held.
+    // Reset on blur / visibility change so the canvas never gets stuck in pan mode.
+    const resetPanning = () => setPanning(false);
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', resetPanning);
+    document.addEventListener('visibilitychange', resetPanning);
     window.addEventListener('pointerdown', flushPendingMediaDeletes, true);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', resetPanning);
+      document.removeEventListener('visibilitychange', resetPanning);
       window.removeEventListener('pointerdown', flushPendingMediaDeletes, true);
     };
   }, [undo, redo, cutSelectedNodes, copySelectedNodes, pasteNodeClipboard, clipboard, addNote, notes, selectedId, episodeMenu,
@@ -15622,6 +15831,7 @@ function CanvasViewInner({
   // 镜像给 hook / 事件处理读最新值（它们不能依赖 state 闭包）
   editNodeRef.current = editNodeId;  // 弹窗锚点：点击卡片时记录卡片视口位置，弹窗直接贴在卡片正下方（不做全屏浮层）
   const [modalAnchor, setModalAnchor] = useState<{x: number; y: number; w: number; h: number} | null>(null);
+  const modalAnchorRafRef = useRef<number | null>(null);
   // 编组查表：flow id → 该组全部成员（只收 ≥2 人的组，单人组没意义）
   const groupMap = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -15701,17 +15911,63 @@ function CanvasViewInner({
   // ★ 此刻 pressGroup 已定义完成，可以安全赋给上面那个 ref（避开 TDZ）。
   pressGroupRef.current = pressGroup;
 
+  const readModalAnchor = useCallback((id: string) => {
+    const card = document.querySelector(
+      '[data-id="media-' + CSS.escape(id) + '"] .canvas-media-card',
+    ) as HTMLElement | null;
+    if (!card) return null;
+    const r = card.getBoundingClientRect();
+    return {x: r.left, y: r.top, w: r.width, h: r.height};
+  }, []);
+
+  // Keep the anchored popup attached to its card while the canvas pans/zooms.
+  // Direct CSS-variable writes avoid a React render for every viewport frame.
+  const syncModalAnchorDom = useCallback(() => {
+    if (!editNodeRef.current || modalAnchorRafRef.current !== null) return;
+    modalAnchorRafRef.current = window.requestAnimationFrame(() => {
+      modalAnchorRafRef.current = null;
+      const id = editNodeRef.current;
+      if (!id) return;
+      const bar = document.querySelector('.jim-bar') as HTMLElement | null;
+      if (!bar || bar.dataset.expanded === '1' || bar.dataset.ready === '0') return;
+      const anchor = readModalAnchor(id);
+      if (!anchor) return;
+      bar.style.setProperty('--jim-anchor-x', anchor.x + 'px');
+      bar.style.setProperty('--jim-anchor-bottom', (anchor.y + anchor.h) + 'px');
+      bar.style.setProperty('--jim-anchor-top', anchor.y + 'px');
+      bar.style.setProperty('--jim-anchor-w', anchor.w + 'px');
+      bar.style.setProperty('--jim-anchor-h', anchor.h + 'px');
+    });
+  }, [readModalAnchor]);
+
+  const commitModalAnchor = useCallback(() => {
+    const id = editNodeRef.current;
+    if (!id) return;
+    const bar = document.querySelector('.jim-bar') as HTMLElement | null;
+    if (bar?.dataset.expanded === '1') return;
+    const anchor = readModalAnchor(id);
+    if (anchor) setModalAnchor(anchor);
+  }, [readModalAnchor]);
+
   // 打开弹窗时：把画布上连到它的资产图/音色预填进 params.refs / voiceRef
   const openMediaModal = useCallback((node: CanvasMediaNode) => {
     // Open first. Reference reconciliation and DOM measurement are secondary
     // work; doing them before setEditNodeId delayed every click by hundreds
     // of milliseconds and made a second click look necessary.
-    const cardEl = document.querySelector(`[data-id="${CSS.escape(`media-${node.id}`)}"] .canvas-media-card`) as HTMLElement | null;
-    if (cardEl) {
-      const r = cardEl.getBoundingClientRect();
-      setModalAnchor({x: r.left, y: r.top, w: r.width, h: r.height});
+    const domAnchor = readModalAnchor(node.id);
+    if (domAnchor) {
+      setModalAnchor(domAnchor);
     } else {
-      setModalAnchor(null);
+      // Card may be virtualized or not committed yet. Derive a screen anchor from
+      // the node's world position so the popup still opens immediately.
+      const vp = viewportRef.current;
+      const dims = MEDIA_KIND_META[node.kind];
+      setModalAnchor({
+        x: node.x * vp.zoom + vp.x,
+        y: node.y * vp.zoom + vp.y,
+        w: dims.w * vp.zoom,
+        h: dims.h * vp.zoom,
+      });
     }
     setEditNodeId(node.id);
     setEditModalOpenToken((token) => token + 1);
@@ -18004,14 +18260,19 @@ function CanvasViewInner({
           )}
           <ReactFlow
             className={`canvas-flow ${draggingNode ? 'is-node-dragging' : ''} ${connecting ? 'is-connecting' : ''} ${selectedCount >= 2 ? 'has-multi-selection' : ''} ${edgesHidden ? 'is-edges-hidden' : ''}`}
-            viewport={canvasViewport}
+            defaultViewport={viewportRef.current}
             onViewportChange={(next) => {
               const valid = validRestoredViewport(next);
               if (!valid) return;
               viewportRef.current = valid;
-              setCanvasViewport(valid);
-              // React Flow updates the local viewport every frame; persistence
-              // is coalesced on gesture end instead of hitting the database.
+              // React Flow owns the transform during the gesture. Mirror it into
+              // React state only after the gesture settles (80ms trailing edge).
+              if (viewportUserInteractingRef.current) return;
+              if (viewportStateTimerRef.current !== null) window.clearTimeout(viewportStateTimerRef.current);
+              viewportStateTimerRef.current = window.setTimeout(() => {
+                viewportStateTimerRef.current = null;
+                setCanvasViewport(viewportRef.current);
+              }, 80);
             }}
             onConnectStart={() => setConnecting(true)}
             onConnectEnd={() => setConnecting(false)}
@@ -18060,12 +18321,14 @@ function CanvasViewInner({
             snapToGrid={snapGrid}
             snapGrid={CANVAS_SNAP_GRID}
             onMove={(_evt, viewport) => {
+              syncModalAnchorDom();
               if (zoomPctLabelRef.current) {
                 const label = `${Math.round(viewport.zoom * 100)}%`;
                 if (zoomPctLabelRef.current.textContent !== label) {
                   zoomPctLabelRef.current.textContent = label;
                 }
               }
+              if (viewportUserInteractingRef.current) return;
               updateLargeCanvasViewport(viewport);
               syncSelBar();
               syncGroupFrames();
@@ -18073,10 +18336,25 @@ function CanvasViewInner({
             onMoveStart={() => {
               viewportUserInteractingRef.current = true;
               beginCanvasInteraction();
+              document.body.setAttribute('data-canvas-panning', '1');
+              if (viewportStateTimerRef.current !== null) {
+                window.clearTimeout(viewportStateTimerRef.current);
+                viewportStateTimerRef.current = null;
+              }
             }}
             onMoveEnd={(_event, viewport) => {
               viewportUserInteractingRef.current = false;
               endCanvasInteraction();
+              document.body.removeAttribute('data-canvas-panning');
+              if (viewportStateTimerRef.current !== null) {
+                window.clearTimeout(viewportStateTimerRef.current);
+                viewportStateTimerRef.current = null;
+              }
+              setCanvasViewport(viewport);
+              commitModalAnchor();
+              updateLargeCanvasViewport(viewport);
+              syncSelBar();
+              syncGroupFrames();
               flushViewportNow();
             }}
             // 连线中点的剪断按钮挂在 EdgeLabelRenderer 里，会被画布的 zoom 一起缩放：
