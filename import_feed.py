@@ -94,7 +94,7 @@ def _explicit_asset_ref_codes(text):
     for match in re.finditer(
         r"@(?:"
         r"//(?:chr|scn|prp)\s*/\s*-\s*"
-        r"|(?:角色|群像|场景|道具|音频)\s*[｜|:：]\s*"
+        r"|(?:角色|群像|场景|道具)\s*[｜|:：]\s*"
         r")?"
         r"[^（(\n@<>]{1,80}?[（(](?:参考)?图\s*(\d+)[）)]",
         str(text or ""),
@@ -138,15 +138,134 @@ def _asset_identity(title, kind=""):
 def _asset_stable_identity(metadata) -> str:
     """Return the series identity that survives figure-code reassignment."""
     meta = metadata if isinstance(metadata, dict) else {}
-    for key in ("assetId", "seriesId"):
-        value = str(meta.get(key) or "").strip()
-        if value:
-            return (
-                f"{value}|{str(meta.get('variantKey') or 'default').strip()}"
-                if key == "seriesId"
-                else value
-            )
+    asset_id = str(meta.get("assetId") or "").strip()
+    if asset_id:
+        return asset_id
+    series_id = str(meta.get("seriesId") or "").strip()
+    if series_id:
+        variant_key = str(
+            meta.get("variantKey") or "default"
+        ).strip() or "default"
+        return f"{series_id}|{variant_key}"
     return ""
+
+
+def _asset_figure_code(title="", metadata=None):
+    meta = metadata if isinstance(metadata, dict) else {}
+    for value in (
+        meta.get("figure"),
+        meta.get("code"),
+        meta.get("img"),
+        title,
+    ):
+        match = re.search(r"图\s*\d+", str(value or ""))
+        if match:
+            return _canonical_figure(match.group(0))
+    return ""
+
+
+def _preserve_renamed_asset_title(title, display_name):
+    """Replace only the display segment of ``类型｜名称（图N）``."""
+    source = str(title or "").strip()
+    match = re.match(
+        r"^(?P<prefix>[^｜|]+)[｜|](?P<name>.+?)"
+        r"(?P<figure>[（(]\s*图\s*\d+\s*[）)])$",
+        source,
+    )
+    if not match or not str(display_name or "").strip():
+        return source
+    return (
+        f"{match.group('prefix').strip()}｜"
+        f"{str(display_name).strip()}"
+        f"{match.group('figure')}"
+    )
+
+
+def _asset_identity_for_code(payload, code, figure=""):
+    """Resolve the asset identity already registered for one figure slot."""
+    normalized_figure = _canonical_figure(figure or code)
+    for node in payload.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        asset_id = str(metadata.get("assetId") or "").strip()
+        if not asset_id:
+            continue
+        node_figure = ""
+        match = re.search(r"图\s*\d+", str(node.get("title") or ""))
+        if match:
+            node_figure = _canonical_figure(match.group(0))
+        if node_figure == normalized_figure:
+            return asset_id
+    return ""
+
+
+def _renamed_asset_identity_for_input(
+    existing_payload,
+    code,
+    name,
+    figure="",
+    node_type="",
+):
+    """Return a stable identity for a renamed asset re-imported by its old name."""
+    normalized_figure = _canonical_figure(figure or code)
+    normalized_name = re.sub(r"\s+", "", str(name or ""))
+    for node in (existing_payload or {}).get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        metadata = (
+            node.get("metadata")
+            if isinstance(node.get("metadata"), dict)
+            else {}
+        )
+        asset_id = str(metadata.get("assetId") or "").strip()
+        if not asset_id:
+            continue
+        if node_type and str(node.get("type") or "") != str(node_type):
+            continue
+        node_figure = _asset_figure_code(
+            node.get("title"),
+            metadata,
+        )
+        if normalized_figure and node_figure != normalized_figure:
+            continue
+        aliases = _asset_aliases(metadata)
+        if not aliases:
+            continue
+        alias_names = _asset_alias_names(metadata)
+        display_name = str(metadata.get("displayName") or "").strip()
+        if normalized_name and normalized_name in {
+            re.sub(r"\s+", "", alias)
+            for alias in [*alias_names, display_name]
+            if alias
+        }:
+            return asset_id
+        if normalized_figure and (
+            str(metadata.get("displayName") or "").strip()
+            != str(name or "").strip()
+        ):
+            return asset_id
+    return ""
+
+
+def _asset_aliases(metadata):
+    meta = metadata if isinstance(metadata, dict) else {}
+    aliases = meta.get("aliases")
+    return [
+        entry
+        for entry in (aliases if isinstance(aliases, list) else [])
+        if isinstance(entry, dict)
+    ]
+
+
+def _asset_alias_names(metadata):
+    names = []
+    for entry in _asset_aliases(metadata):
+        for key in ("newName", "oldName"):
+            name = str(entry.get(key) or "").strip()
+            if name and name not in names:
+                names.append(name)
+    return names
 
 
 def _asset_reference_identity(reference) -> str:
@@ -202,6 +321,19 @@ def _asset_contract_identity(kind, name, metadata=None):
     return asset_id, series_id, variant_key
 
 
+def _preserve_asset_identity(kind, name, metadata=None):
+    """Keep persisted identity; derive only when the asset is genuinely new."""
+    meta = metadata if isinstance(metadata, dict) else {}
+    asset_id = str(meta.get("assetId") or "").strip()
+    series_id = str(meta.get("seriesId") or "").strip()
+    variant_key = str(meta.get("variantKey") or "default").strip() or "default"
+    if asset_id:
+        if not series_id and ":" in asset_id:
+            series_id = asset_id.rsplit(":", 1)[0]
+        return asset_id, series_id, variant_key
+    return _asset_contract_identity(kind, name, meta)
+
+
 def _asset_node_identity(node) -> str:
     if not isinstance(node, dict):
         return ""
@@ -226,7 +358,7 @@ def _asset_ref_contract(node, label=""):
     if not isinstance(node, dict):
         return {}
     metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
-    identity = _asset_contract_identity(
+    identity = _preserve_asset_identity(
         _asset_kind_from_title(node.get("title")) or (
             "音色" if str(node.get("type") or "") == "audio" else ""
         ),
@@ -293,7 +425,7 @@ def _asset_pool(records, allow_idle_project_id=""):
             continue
         kind = _asset_kind_from_title(item.get("title"))
         key = _asset_identity(item.get("title"), kind)
-        if not key:
+        if not key and not str(item.get("assetId") or "").strip():
             continue
         pool.append({**item, "kind": kind, "assetKey": key, "content": content})
     return pool
@@ -593,7 +725,7 @@ def _image_size(ratio):
 
 def _short_asset_name(name):
     return re.sub(
-        r"[（(](?:角色立绘|场景母版|九宫格|道具设定图|群像设定图|群像资产卡)[^）)]*[）)]\s*$",
+        r"[（(](?:角色立绘|角色音色卡|音色卡|场景母版|九宫格|道具设定图|群像设定图|群像资产卡)[^）)]*[）)]\s*$",
         "",
         str(name or "").strip(),
     ).strip()
@@ -969,6 +1101,497 @@ def repair_reused_asset_prompts(payload):
     return changed
 
 
+def repair_missing_explicit_video_refs(payload):
+    """Reattach missing refs for explicit @ mentions carrying a figure code.
+
+    This runs after merge, when title labels may have been renamed while the
+    prompt still identifies the source by ``@...(图N)``. A bare name is ignored;
+    only explicit @ references are candidates.
+    """
+    nodes = [
+        node for node in payload.get("nodes") or []
+        if isinstance(node, dict)
+    ]
+    images_by_code = {}
+    for node in nodes:
+        if node.get("type") != "image":
+            continue
+        title = str(node.get("title") or "")
+        match = re.search(r"图\s*\d+", title)
+        if not match:
+            continue
+        code = _canonical_figure(match.group(0))
+        if code:
+            images_by_code.setdefault(code, []).append(node)
+
+    repaired = 0
+    for video in nodes:
+        if video.get("type") != "video":
+            continue
+        meta = video.setdefault("metadata", {})
+        params = meta.setdefault("params", {})
+        prompt = "\n".join(
+            part for part in (
+                str(meta.get("prompt") or ""),
+                str(meta.get("composerContent") or ""),
+            )
+            if part
+        )
+        codes = _explicit_asset_ref_codes(prompt)
+        if not codes:
+            continue
+        refs = params.get("refs")
+        refs = [ref for ref in refs if isinstance(ref, dict)] if isinstance(refs, list) else []
+        # A ref may be present in metadata.refs but absent from params.refs.
+        for ref in meta.get("refs") or []:
+            if (
+                isinstance(ref, dict)
+                and ref.get("nodeId")
+                and all(str(item.get("nodeId") or "") != str(ref.get("nodeId")) for item in refs)
+            ):
+                refs.append(dict(ref))
+        existing_ids = {
+            str(ref.get("nodeId") or "")
+            for ref in refs
+        }
+        for code in sorted(codes):
+            candidates = images_by_code.get(code) or []
+            if not candidates:
+                continue
+            source = candidates[0]
+            source_id = str(source.get("id") or "")
+            if not source_id or source_id in existing_ids:
+                continue
+            refs.append({
+                **_asset_ref_contract(source, source.get("title") or ""),
+                "nodeId": source_id,
+            })
+            existing_ids.add(source_id)
+            pair = (source_id, str(video.get("id") or ""))
+            connections = payload.setdefault("connections", [])
+            if not any(
+                isinstance(edge, dict)
+                and str(edge.get("fromNodeId") or "") == pair[0]
+                and str(edge.get("toNodeId") or "") == pair[1]
+                for edge in connections
+            ):
+                connections.append({
+                    "id": _rid_edge(),
+                    "fromNodeId": pair[0],
+                    "toNodeId": pair[1],
+                })
+            repaired += 1
+        # Also reconcile existing refs after renaming: an updated display name
+        # must remain bound to the same stable asset.
+        if refs:
+            refs = [
+                {
+                    **ref,
+                    **_asset_ref_contract(
+                        next(
+                            (
+                                item for item in nodes
+                                if str(item.get("id") or "")
+                                == str(ref.get("nodeId") or "")
+                            ),
+                            {},
+                        ),
+                        str(ref.get("label") or ""),
+                    ),
+                }
+                for ref in refs
+            ]
+        params["refs"] = refs
+        meta["refs"] = refs
+        for ref in refs:
+            if not isinstance(ref, dict) or not ref.get("nodeId"):
+                continue
+            pair = (str(ref["nodeId"]), str(video.get("id") or ""))
+            connections = payload.setdefault("connections", [])
+            if not any(
+                isinstance(edge, dict)
+                and str(edge.get("fromNodeId") or "") == pair[0]
+                and str(edge.get("toNodeId") or "") == pair[1]
+                for edge in connections
+            ):
+                connections.append({
+                    "id": _rid_edge(),
+                    "fromNodeId": pair[0],
+                    "toNodeId": pair[1],
+                })
+                repaired += 1
+    return repaired
+
+
+def normalize_asset_identity_types(payload):
+    """Prevent image/audio cards from inheriting each other's stable identity."""
+    nodes = [
+        node for node in payload.get("nodes") or []
+        if isinstance(node, dict)
+    ]
+    by_figure_type = {}
+    for node in nodes:
+        node_type = str(node.get("type") or "")
+        if node_type not in {"image", "audio"}:
+            continue
+        meta = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        asset_id = str(meta.get("assetId") or "").strip()
+        if node_type == "image" and asset_id.startswith("voice:"):
+            continue
+        if node_type == "audio" and not asset_id.startswith("voice:"):
+            continue
+        title = str(node.get("title") or "")
+        match = re.search(r"图\s*\d+", title)
+        if not match:
+            continue
+        by_figure_type.setdefault(
+            (node_type, _canonical_figure(match.group(0))),
+            [],
+        ).append(node)
+
+    changed = 0
+    for node in nodes:
+        node_type = str(node.get("type") or "")
+        if node_type not in {"image", "audio"}:
+            continue
+        meta = node.get("metadata")
+        meta = dict(meta) if isinstance(meta, dict) else {}
+        asset_id = str(meta.get("assetId") or "").strip()
+        if not asset_id:
+            continue
+        invalid = (
+            node_type == "image"
+            and asset_id.startswith("voice:")
+        ) or (
+            node_type == "audio"
+            and not asset_id.startswith("voice:")
+        )
+        if not invalid:
+            continue
+        title = str(node.get("title") or "")
+        match = re.search(r"图\s*\d+", title)
+        if not match:
+            continue
+        code = _canonical_figure(match.group(0))
+        candidates = by_figure_type.get((node_type, code)) or []
+        if candidates:
+            replacement = candidates[0]
+            replacement_meta = replacement.get("metadata") or {}
+            meta["assetId"] = replacement_meta.get("assetId") or (
+                f"voice:{_asset_title_base(title, audio=True)}:default"
+                if node_type == "audio"
+                else ""
+            )
+            meta["seriesId"] = replacement_meta.get("seriesId") or (
+                f"voice:{_asset_title_base(title, audio=True)}"
+                if node_type == "audio"
+                else ""
+            )
+            meta["variantKey"] = replacement_meta.get("variantKey") or "default"
+        else:
+            kind = _asset_kind_from_title(title)
+            name = _asset_title_base(
+                title,
+                audio=node_type == "audio",
+            ).split("·", 1)[0].strip()
+            if not name:
+                continue
+            asset_id_new, series_id_new, variant_key_new = _asset_contract_identity(
+                "音色" if node_type == "audio" else kind,
+                name,
+                {},
+            )
+            meta["assetId"] = asset_id_new
+            meta["seriesId"] = series_id_new
+            meta["variantKey"] = variant_key_new
+        node["metadata"] = meta
+        changed += 1
+    return changed
+
+
+def reconcile_unidentified_incoming_assets(existing, incoming):
+    """Restore stable asset identity for reused feed cards that omitted assetId.
+
+    Reused-only generator entries can omit canvas identity. A figure code is
+    safe only when it maps to exactly one existing asset of the same node type;
+    ambiguous collisions are left untouched for the validator to report.
+    """
+    existing_by_type_figure = {}
+    for node in (existing or {}).get("nodes") or []:
+        if not isinstance(node, dict) or node.get("type") not in {"image", "audio"}:
+            continue
+        meta = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        if not str(meta.get("assetId") or "").strip():
+            continue
+        figure = _asset_figure_code(node.get("title"), meta)
+        if figure:
+            existing_by_type_figure.setdefault(
+                (str(node.get("type") or ""), figure),
+                [],
+            ).append(node)
+    # Existing cards may be renamed; retain a figure-only index for unambiguous
+    # legacy feeds that omit assetId and still use the original display name.
+    existing_by_type_figure_any_name = {}
+    for node in (existing or {}).get("nodes") or []:
+        if not isinstance(node, dict) or node.get("type") not in {"image", "audio"}:
+            continue
+        meta = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        if not str(meta.get("assetId") or "").strip():
+            continue
+        figure = _asset_figure_code(node.get("title"), meta)
+        if figure:
+            existing_by_type_figure_any_name.setdefault(
+                (str(node.get("type") or ""), figure),
+                [],
+            ).append(node)
+
+    changed = 0
+    for node in (incoming or {}).get("nodes") or []:
+        if not isinstance(node, dict) or node.get("type") not in {"image", "audio"}:
+            continue
+        meta = node.get("metadata")
+        meta = dict(meta) if isinstance(meta, dict) else {}
+        incoming_asset_id = str(meta.get("assetId") or "").strip()
+        if incoming_asset_id:
+            # A malformed cross-type identity from an older feed must not be
+            # allowed to poison the merged asset.
+            if not (
+                (node.get("type") == "image" and incoming_asset_id.startswith("voice:"))
+                or (
+                    node.get("type") == "audio"
+                    and not incoming_asset_id.startswith("voice:")
+                )
+            ):
+                continue
+        figure = _asset_figure_code(node.get("title"), meta)
+        candidates = existing_by_type_figure.get(
+            (str(node.get("type") or ""), figure),
+            [],
+        )
+        if not candidates:
+            figure_only = existing_by_type_figure_any_name.get(
+                (str(node.get("type") or ""), figure),
+                [],
+            )
+            identities = {
+                str((candidate.get("metadata") or {}).get("assetId") or "")
+                for candidate in figure_only
+            }
+            if len(identities) == 1:
+                candidates = figure_only
+        if len(candidates) != 1:
+            continue
+        source = candidates[0]
+        source_meta = source.get("metadata") or {}
+        for key in (
+            "assetId",
+            "seriesId",
+            "variantKey",
+            "assetKey",
+            "displayName",
+            "aliases",
+        ):
+            if source_meta.get(key) not in (None, "", []):
+                meta[key] = copy.deepcopy(source_meta[key])
+        if node.get("type") == "audio":
+            meta["assetId"] = str(
+                source_meta.get("assetId")
+                or f"voice:{_asset_title_base(node.get('title'), audio=True)}:default"
+            )
+            meta["seriesId"] = str(
+                source_meta.get("seriesId")
+                or f"voice:{_asset_title_base(node.get('title'), audio=True)}"
+            )
+            meta["variantKey"] = str(
+                source_meta.get("variantKey") or "default"
+            )
+        display_name = str(meta.get("displayName") or "").strip()
+        if display_name:
+            preserved = _preserve_renamed_asset_title(
+                node.get("title"),
+                display_name,
+            )
+            if preserved:
+                node["title"] = preserved
+        node["metadata"] = meta
+        changed += 1
+    return changed
+
+
+def dedupe_unidentified_incoming_assets(incoming):
+    """Drop duplicate same-figure placeholders when a stable sibling exists."""
+    nodes = [
+        node for node in (incoming or {}).get("nodes") or []
+        if isinstance(node, dict)
+    ]
+    stable_keys = set()
+    for node in nodes:
+        if node.get("type") not in {"image", "audio"}:
+            continue
+        meta = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        if not str(meta.get("assetId") or "").strip():
+            continue
+        figure = _asset_figure_code(node.get("title"), meta)
+        if figure:
+            stable_keys.add((str(node.get("type") or ""), figure))
+    removable = []
+    for node in nodes:
+        if node.get("type") not in {"image", "audio"}:
+            continue
+        meta = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        if str(meta.get("assetId") or "").strip():
+            continue
+        figure = _asset_figure_code(node.get("title"), meta)
+        if figure and (str(node.get("type") or ""), figure) in stable_keys:
+            removable.append(str(node.get("id") or ""))
+    if not removable:
+        return 0
+    removable_set = set(removable)
+    incoming["nodes"] = [
+        node for node in incoming.get("nodes") or []
+        if str((node or {}).get("id") or "") not in removable_set
+    ]
+    for group in incoming.get("episodeImports") or []:
+        if not isinstance(group, dict):
+            continue
+        for key in ("nodeIds", "videoNodeIds"):
+            group[key] = [
+                node_id for node_id in group.get(key) or []
+                if str(node_id) not in removable_set
+            ]
+    incoming["connections"] = [
+        conn for conn in incoming.get("connections") or []
+        if str((conn or {}).get("fromNodeId") or "") not in removable_set
+        and str((conn or {}).get("toNodeId") or "") not in removable_set
+    ]
+    return len(removable)
+
+
+def dedupe_asset_nodes_by_stable_identity(payload):
+    """Remove only duplicates that prove they are the same stable identity.
+
+    A shared figure number is a slot, not identity. Two different assetIds on
+    the same slot are a real contract conflict and must stay visible so the
+    validator can reject them instead of silently redirecting references to the
+    wrong character.
+    """
+    nodes = [
+        node for node in (payload or {}).get("nodes") or []
+        if isinstance(node, dict)
+    ]
+    groups = {}
+    for node in nodes:
+        if node.get("type") not in {"image", "audio"}:
+            continue
+        meta = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        figure = _asset_figure_code(node.get("title"), meta)
+        if not figure:
+            continue
+        groups.setdefault(
+            (str(node.get("type") or ""), figure),
+            [],
+        ).append(node)
+    removable = set()
+    replacement_ids = {}
+    for nodes_group in groups.values():
+        stable = [
+            node for node in nodes_group
+            if str(((node.get("metadata") or {}).get("assetId") or "")).strip()
+        ]
+        stable_identities = {
+            str(((node.get("metadata") or {}).get("assetId") or "")).strip()
+            for node in stable
+        }
+        if len(stable_identities) != 1:
+            # Different assets sharing one figure code is a hard conflict. The
+            # final validator reports it; changing the graph here would hide it.
+            continue
+        kept_identity = next(iter(stable_identities))
+        kept = max(
+            stable,
+            key=lambda node: bool(
+                str(((node.get("metadata") or {}).get("content") or "")).strip()
+            ),
+        )
+        for node in stable:
+            if node is kept:
+                continue
+            remov = str(node.get("id") or "")
+            if remov:
+                removable.add(remov)
+                replacement_ids[remov] = str(kept.get("id") or "")
+        for node in nodes_group:
+            meta = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+            if not str(meta.get("assetId") or "").strip():
+                remov = str(node.get("id") or "")
+                if remov:
+                    removable.add(remov)
+                    replacement_ids[remov] = str(kept.get("id") or "")
+    if not removable:
+        return 0
+    for node in payload.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        meta = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        for key in ("refs", "voiceRefs"):
+            refs = meta.get(key)
+            if not isinstance(refs, list):
+                continue
+            rewritten = []
+            seen = set()
+            for ref in refs:
+                if not isinstance(ref, dict):
+                    continue
+                next_ref = dict(ref)
+                source_id = str(next_ref.get("nodeId") or "")
+                next_ref["nodeId"] = replacement_ids.get(source_id, source_id)
+                if not next_ref["nodeId"] or next_ref["nodeId"] in seen:
+                    continue
+                seen.add(next_ref["nodeId"])
+                rewritten.append(next_ref)
+            meta[key] = rewritten
+            params = meta.get("params")
+            if isinstance(params, dict) and key in params:
+                params[key] = copy.deepcopy(rewritten)
+            if key == "voiceRefs" and isinstance(params, dict):
+                params["voiceRef"] = rewritten[0] if rewritten else None
+        node["metadata"] = meta
+    for conn in payload.get("connections") or []:
+        if not isinstance(conn, dict):
+            continue
+        for field in ("fromNodeId", "toNodeId"):
+            value = str(conn.get(field) or "")
+            if value in replacement_ids:
+                conn[field] = replacement_ids[value]
+    payload["nodes"] = [
+        node for node in payload.get("nodes") or []
+        if str((node or {}).get("id") or "") not in removable
+    ]
+    deduped_conns = []
+    seen_pairs = set()
+    for conn in payload.get("connections") or []:
+        if not isinstance(conn, dict):
+            continue
+        pair = (
+            str(conn.get("fromNodeId") or ""),
+            str(conn.get("toNodeId") or ""),
+        )
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        deduped_conns.append(conn)
+    payload["connections"] = deduped_conns
+    for group in payload.get("episodeImports") or []:
+        if not isinstance(group, dict):
+            continue
+        for key in ("nodeIds", "videoNodeIds"):
+            group[key] = [
+                node_id for node_id in group.get(key) or []
+                if str(node_id) not in removable
+            ]
+    return len(removable)
+
+
 def detach_cross_project_reused_assets(payload, project_id):
     """Make legacy cross-project image links independent without deleting files."""
     project_id = str(project_id or "").strip()
@@ -1027,6 +1650,15 @@ def repair_payload_prompt_mentions(payload):
         for node in nodes
         if node.get("type") == "image"
         and str(node.get("title") or "").startswith("角色｜")
+    }
+    # 「只做声不出立绘」的音色卡没有图片节点：若说话人名单只从 image 节点推导，
+    # 这些角色会被判成「没开口」，其音色在下面的 voiceRefs 裁剪里被整条删掉
+    # （VOICE_REF_MISMATCH / VOICE_EDGE_MISMATCH）。音频节点标题同样是角色名来源。
+    role_names |= {
+        _asset_title_base(node.get("title"), audio=True).split("·", 1)[0]
+        for node in nodes
+        if node.get("type") == "audio"
+        and str(node.get("title") or "").startswith("音频｜")
     }
     allowed_audio_by_video = {}
     allowed_media_by_video = {}
@@ -1452,6 +2084,10 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
     for a in assets:
         code = a.get("code", "")
         name = a.get("name", "")
+        # 音色卡（只做声、不出立绘）不产图片节点：它只有声音资产，
+        # 建了图片节点就等于凭空多出一个「待生成」空卡（用户可感知的多余节点）。
+        if "音色卡" in str(name):
+            continue
         if (
             code in master_scene_codes
             and "九宫格" in str(name)
@@ -1481,7 +2117,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         else:
             kind, short_name = "道具", name.replace("（道具设定图）", "")
         asset_key = _asset_identity(short_name, kind)
-        asset_id, series_id, variant_key = _asset_contract_identity(
+        asset_id, series_id, variant_key = _preserve_asset_identity(
             kind,
             short_name,
             canvas_asset,
@@ -1673,7 +2309,8 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
         speaking |= _dialog_speaker_names(_s.get("raw", ""))
     character_names = {}
     for asset in assets:
-        if not isinstance(asset, dict) or "角色立绘" not in str(asset.get("name") or ""):
+        asset_name = str(asset.get("name") or "") if isinstance(asset, dict) else ""
+        if not isinstance(asset, dict) or not ("角色立绘" in asset_name or "音色卡" in asset_name):
             continue
         canvas = asset.get("canvas") if isinstance(asset.get("canvas"), dict) else {}
         role = str(canvas.get("name") or _short_asset_name(asset.get("name", ""))).strip()
@@ -1684,7 +2321,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
     for a in assets:
         code, name, raw = a.get("code", ""), a.get("name", ""), a.get("raw", "")
         role = character_names.get(code, "")
-        if not role or "角色立绘" not in name:
+        if not role or not ("角色立绘" in name or "音色卡" in name):
             continue
         if role not in speaking:
             continue
@@ -1784,6 +2421,18 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             continue
         speaking_in_segment = _dialog_speaker_names(raw)
         seen_a = set()
+        # 【音色引用】行显式点名的音频节点必须连线：这类角色（含「只做声不出立绘」
+        # 的音色卡）在画面行没有 @角色 图片引用，只靠图片图号反查永远连不上，
+        # 视频节点就会缺 voiceRefs（VOICE_REF_MISMATCH / VOICE_EDGE_MISMATCH）。
+        for _role, _code in canvas_feed_contract.audio_ref_entries(raw):
+            role_audio = audio_ids.get(_canonical_figure(_code)) or audio_by_role.get(_role)
+            if not role_audio:
+                continue
+            key = (role_audio, vid)
+            if key in seen_a:
+                continue
+            seen_a.add(key)
+            conns.append({"fromNodeId": role_audio, "id": _rid_edge(), "toNodeId": vid})
         for fig_no in _explicit_asset_ref_codes(raw):
             role = character_names.get(_canonical_figure(fig_no), "")
             if role not in speaking_in_segment:
@@ -2750,6 +3399,27 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
             existing = legacy_candidates[0]
             image_by_code[code] = existing
             return existing
+        code_pool = image_by_code.get(code)
+        if isinstance(code_pool, dict) and any(
+            isinstance(candidate, dict)
+            for candidate in code_pool.values()
+        ):
+            alias_candidates = [
+                candidate
+                for candidate in code_pool.values()
+                if isinstance(candidate, dict)
+            ]
+        else:
+            alias_candidates = []
+        for candidate in alias_candidates:
+            if not isinstance(candidate, dict):
+                continue
+            aliases = _asset_alias_names(
+                candidate.get("metadata") or {}
+            )
+            if name in aliases:
+                image_by_code[code] = candidate
+                return candidate
         return None
 
     def add_image(kind, name, code, video):
@@ -2758,6 +3428,9 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
         if source:
             kind = source["kind"] or kind
             name = source["name"] or name
+        existing = find_image(kind, name, code)
+        if existing:
+            return existing
         raw_prompt = source.get("raw", "") if source else ""
         canvas = source.get("canvas", {}) if source else {}
         title = f"{kind}｜{name}（{code}）"
@@ -3485,6 +4158,47 @@ def merge_payload_by_episode(existing, incoming):
     existing_nodes = [node for node in existing.get("nodes") or [] if isinstance(node, dict)]
     existing_by_id = {node.get("id"): node for node in existing_nodes if node.get("id")}
     incoming_nodes = [node for node in incoming.get("nodes") or [] if isinstance(node, dict)]
+    # Before any same-episode remapping, reconcile renamed existing assets with
+    # the incoming episode's original title. The incoming feed is generated from
+    # the script and legitimately still uses the old display name; assetId is
+    # the only stable bridge to the renamed card.
+    for incoming_node in incoming_nodes:
+        if incoming_node.get("type") not in {"image", "audio"}:
+            continue
+        incoming_meta = (
+            incoming_node.get("metadata")
+            if isinstance(incoming_node.get("metadata"), dict)
+            else {}
+        )
+        incoming_asset_id = str(incoming_meta.get("assetId") or "").strip()
+        if not incoming_asset_id:
+            continue
+        existing_match = next(
+            (
+                candidate for candidate in existing_nodes
+                if candidate.get("type") in {"image", "audio"}
+                and candidate.get("type") == incoming_node.get("type")
+                and str(
+                    (candidate.get("metadata") or {}).get("assetId") or ""
+                ).strip() == incoming_asset_id
+                and str(
+                    (candidate.get("metadata") or {}).get("displayName") or ""
+                ).strip()
+            ),
+            None,
+        )
+        if not existing_match:
+            continue
+        incoming_meta["displayName"] = str(
+            (existing_match.get("metadata") or {}).get("displayName") or ""
+        ).strip()
+        preserved_title = _preserve_renamed_asset_title(
+            incoming_node.get("title"),
+            incoming_meta["displayName"],
+        )
+        if preserved_title:
+            incoming_node["title"] = preserved_title
+        incoming_node["metadata"] = incoming_meta
 
     same_old_ids = set((same_old or {}).get("nodeIds") or [])
     same_old_nodes = [
@@ -3498,9 +4212,37 @@ def merge_payload_by_episode(existing, incoming):
             continue
         identity = _asset_node_stable_identity(old)
         if identity:
-            stable_existing_assets.setdefault(identity, []).append(old)
+            stable_existing_assets.setdefault(
+                (str(old.get("type") or ""), identity),
+                [],
+            ).append(old)
     stable_node_remap = {}
     claimed_old_ids = set()
+    # assetId is authoritative across display renames. Seed the remap before
+    # title/segment matching so a rebuilt image node with a fresh client id
+    # still resolves to the existing card.
+    for incoming_node in incoming_nodes:
+        if incoming_node.get("type") not in {"image", "audio"}:
+            continue
+        incoming_asset_id = str(
+            (incoming_node.get("metadata") or {}).get("assetId") or ""
+        ).strip()
+        if not incoming_asset_id:
+            continue
+        existing_match = next(
+            (
+                candidate for candidate in existing_nodes
+                if candidate.get("type") == incoming_node.get("type")
+                and str(
+                    (candidate.get("metadata") or {}).get("assetId") or ""
+                ).strip() == incoming_asset_id
+            ),
+            None,
+        )
+        if existing_match and existing_match.get("id"):
+            stable_node_remap[str(incoming_node.get("id") or "")] = str(
+                existing_match["id"]
+            )
     for node in incoming_nodes:
         node_type = node.get("type")
         if node_type not in {"image", "text", "video"} or not node.get("id"):
@@ -3513,19 +4255,58 @@ def merge_payload_by_episode(existing, incoming):
         if node_type == "image":
             stable_identity = _asset_node_stable_identity(node)
             if stable_identity:
-                candidates_by_identity = stable_existing_assets.get(stable_identity) or []
+                candidates_by_identity = stable_existing_assets.get(
+                    (str(node_type), stable_identity),
+                    [],
+                )
                 old = next(
                     (
                         candidate for candidate in candidates_by_identity
+                        if candidate.get("type") == node_type
                         if candidate.get("id") not in claimed_old_ids
                     ),
                     None,
                 )
+            if old is None:
+                old = next(
+                    (
+                        candidate for candidate in existing_nodes
+                        if candidate.get("type") == "image"
+                        and str(
+                            (candidate.get("metadata") or {}).get("assetId") or ""
+                        ).strip() == str(
+                            (node.get("metadata") or {}).get("assetId") or ""
+                        ).strip()
+                        and str(candidate.get("id") or "") not in claimed_old_ids
+                    ),
+                    None,
+                )
+            if old is None and not stable_identity:
+                incoming_metadata = node.get("metadata") or {}
+                incoming_figure = _asset_figure_code(
+                    node.get("title"),
+                    incoming_metadata,
+                )
+                if incoming_figure:
+                    old = next(
+                        (
+                            candidate
+                            for candidate in same_old_nodes
+                            if candidate.get("type") == "image"
+                            and candidate.get("id") not in claimed_old_ids
+                            and _asset_figure_code(
+                                candidate.get("title"),
+                                candidate.get("metadata") or {},
+                            ) == incoming_figure
+                        ),
+                        None,
+                    )
             asset_key = str((node.get("metadata") or {}).get("assetKey") or "")
             if old is None and not stable_identity and asset_key:
                 old = next(
                     (
                         candidate for candidate in candidates
+                        if candidate.get("type") == node_type
                         if str((candidate.get("metadata") or {}).get("assetKey") or "") == asset_key
                     ),
                     None,
@@ -3534,6 +4315,7 @@ def merge_payload_by_episode(existing, incoming):
                 old = next(
                     (
                         candidate for candidate in candidates
+                        if candidate.get("type") == node_type
                         if str(candidate.get("title") or "") == str(node.get("title") or "")
                     ),
                     None,
@@ -3572,8 +4354,58 @@ def merge_payload_by_episode(existing, incoming):
         if old and old.get("id") != node.get("id"):
             stable_node_remap[str(node["id"])] = str(old["id"])
             node["id"] = old["id"]
+        if old and old.get("type") != node.get("type"):
+            old = None
         if old:
-            claimed_old_ids.add(str(old["id"]))
+            old_meta = old.get("metadata") or {}
+            node_meta = node.setdefault("metadata", {})
+            if node.get("type") in {"image", "audio"}:
+                for key in (
+                    "assetId",
+                    "seriesId",
+                    "variantKey",
+                    "assetKey",
+                    "displayName",
+                    "aliases",
+                ):
+                    if old_meta.get(key) not in (None, "", []):
+                        node_meta[key] = copy.deepcopy(old_meta[key])
+            if old:
+                display_name = str(
+                    old_meta.get("displayName")
+                    or node_meta.get("displayName")
+                    or ""
+                ).strip()
+                if display_name:
+                    node_meta["displayName"] = display_name
+                    preserved = _preserve_renamed_asset_title(
+                        old.get("title") or node.get("title"),
+                        display_name,
+                    )
+                    if preserved:
+                        node["title"] = preserved
+                old_aliases = old_meta.get("aliases")
+                if isinstance(old_aliases, list) and old_aliases:
+                    node_meta["aliases"] = copy.deepcopy(old_aliases)
+                    alias_display_name = next(
+                        (
+                            str(item.get("newName") or "").strip()
+                            for item in reversed(old_aliases)
+                            if isinstance(item, dict)
+                            and str(item.get("newName") or "").strip()
+                        ),
+                        "",
+                    )
+                    if alias_display_name:
+                        node_meta["displayName"] = alias_display_name
+                        preserved = _preserve_renamed_asset_title(
+                            node.get("title") or old.get("title"),
+                            alias_display_name,
+                        )
+                        if preserved:
+                            node["title"] = preserved
+            if old:
+                claimed_old_ids.add(str(old["id"]))
     segment_chain_pairs = []
     for connection in incoming.get("connections") or []:
         if not isinstance(connection, dict):
@@ -3699,12 +4531,31 @@ def merge_payload_by_episode(existing, incoming):
         node_id = str(node.get("id") or "")
         if not node_id:
             continue
+        seeded_old_id = (
+            stable_node_remap.get(node_id)
+            or next(
+                (
+                    target_id
+                    for source_id, target_id in stable_node_remap.items()
+                    if source_id == node_id
+                    or target_id == node_id
+                ),
+                "",
+            )
+        )
+        if seeded_old_id:
+            image_remap[node_id] = str(seeded_old_id)
+            claimed_old_ids.add(str(seeded_old_id))
+            continue
         stable_identity = _asset_node_stable_identity(node)
         old = None
         if stable_identity:
             old = next(
                 (
-                    candidate for candidate in stable_existing_assets.get(stable_identity, [])
+                    candidate for candidate in stable_existing_assets.get(
+                        (str(node.get("type") or ""), stable_identity),
+                        [],
+                    )
                     if str(candidate.get("id") or "") not in claimed_old_ids
                 ),
                 None,
@@ -3721,6 +4572,24 @@ def merge_payload_by_episode(existing, incoming):
                 None,
             )
         if old is None and not stable_identity:
+            incoming_figure = _asset_figure_code(
+                node.get("title"),
+                node.get("metadata") or {},
+            )
+            if incoming_figure:
+                figure_candidates = [
+                    candidate
+                    for candidate in existing_nodes
+                    if candidate.get("type") == "image"
+                    and str(candidate.get("id") or "") not in claimed_old_ids
+                    and _asset_figure_code(
+                        candidate.get("title"),
+                        candidate.get("metadata") or {},
+                    ) == incoming_figure
+                ]
+                if len(figure_candidates) == 1:
+                    old = figure_candidates[0]
+        if old is None and not stable_identity:
             old = next(
                 (
                     candidate for candidate in existing_nodes
@@ -3733,6 +4602,10 @@ def merge_payload_by_episode(existing, incoming):
         if old and old.get("id") and str(old["id"]) != node_id:
             image_remap[node_id] = str(old["id"])
             claimed_old_ids.add(str(old["id"]))
+        if not old:
+            remapped_old_id = stable_node_remap.get(node_id)
+            if remapped_old_id:
+                image_remap[node_id] = str(remapped_old_id)
 
     reuse_remap = {**stable_node_remap, **image_remap, **audio_remap}
     incoming_ids_after_remap = {
@@ -3864,6 +4737,11 @@ def merge_payload_by_episode(existing, incoming):
             continue
         old_meta = old.get("metadata") or {}
         new_meta = node.get("metadata") or {}
+        # Preserve the last persisted display label before generated-state merge.
+        # Incoming feed titles are source labels and may still carry the old name
+        # after a user rename.
+        persisted_title = str(old.get("title") or "").strip()
+        persisted_display_name = str(old_meta.get("displayName") or "").strip()
         if node.get("type") in {"image", "audio"}:
             kind = (
                 _asset_title_base(node.get("title"), audio=True)
@@ -3885,7 +4763,7 @@ def merge_payload_by_episode(existing, incoming):
                     if value not in (None, "")
                 },
             }
-            asset_id, series_id, variant_key = _asset_contract_identity(
+            asset_id, series_id, variant_key = _preserve_asset_identity(
                 kind,
                 asset_name,
                 inherited_identity,
@@ -3898,6 +4776,29 @@ def merge_payload_by_episode(existing, incoming):
             }
             node["metadata"] = new_meta
         restored = _restore_generated_asset_prompt(old_meta, node.get("type"), old.get("title"))
+        inherited_aliases = old_meta.get("aliases")
+        if isinstance(inherited_aliases, list) and inherited_aliases:
+            node_meta = node.setdefault("metadata", {})
+            node_meta["aliases"] = copy.deepcopy(
+                inherited_aliases
+            )
+            display_name = next(
+                (
+                    str(entry.get("newName") or "").strip()
+                    for entry in reversed(inherited_aliases)
+                    if isinstance(entry, dict)
+                    and str(entry.get("newName") or "").strip()
+                ),
+                "",
+            )
+            if display_name:
+                node_meta["displayName"] = display_name
+                preserved_title = _preserve_renamed_asset_title(
+                    node.get("title"),
+                    display_name,
+                )
+                if preserved_title:
+                    node["title"] = preserved_title
         merged_meta = {**old_meta, **new_meta}
         old_prompt = str(old_meta.get("prompt") or "").strip()
         new_prompt = str(new_meta.get("prompt") or "").strip()
@@ -3955,6 +4856,14 @@ def merge_payload_by_episode(existing, incoming):
         for key in generated_keys:
             if old_meta.get(key) not in (None, "", [], {}):
                 merged_meta[key] = old_meta[key]
+        if persisted_display_name:
+            merged_meta["displayName"] = persisted_display_name
+            preserved_title = _preserve_renamed_asset_title(
+                persisted_title or node.get("title"),
+                persisted_display_name,
+            )
+            if preserved_title:
+                node["title"] = preserved_title
         if isinstance(old_meta.get("params"), dict) and isinstance(new_meta.get("params"), dict):
             merged_meta["params"] = {
                 **new_meta["params"],
@@ -4076,7 +4985,11 @@ def merge_payload_by_episode(existing, incoming):
     bind_shared_assets_for_episode(merged_payload, episode_id)
     _ensure_referenced_assets(merged_payload, episode_id)
     _prune_orphan_duplicate_assets(merged_payload)
+    repair_missing_explicit_video_refs(merged_payload)
     repair_payload_prompt_mentions(merged_payload)
+    normalize_asset_identity_types(merged_payload)
+    dedupe_asset_nodes_by_stable_identity(merged_payload)
+    repair_missing_explicit_video_refs(merged_payload)
     repair_reused_asset_prompts(merged_payload)
     for connection in merged_payload.get("connections") or []:
         if not isinstance(connection, dict):

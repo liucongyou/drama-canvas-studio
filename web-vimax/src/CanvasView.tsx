@@ -111,7 +111,7 @@ import {
   Share2,
   X,
 } from 'lucide-react';
-import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceMediaNodeSnapshot, getWorkspaceFacts, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, resolveGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, appendLocalMediaVersion, selectCanvasMediaVersion, deleteCanvasMediaNode, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, preserveSelectedMediaVersion, selectableMediaVersion, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
+import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceMediaNodeSnapshot, getWorkspaceFacts, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, resolveGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, appendLocalMediaVersion, selectCanvasMediaVersion, deleteCanvasMediaNode, renameCanvasAsset, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, preserveSelectedMediaVersion, selectableMediaVersion, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasAssetMediaItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {isMediaVersionSelectable} from './mediaVersions';
 import {canvasEventId, eventBelongsToEpisode, readCanvasEventCursor, shouldProcessCanvasEvent, writeCanvasEventCursor} from './canvasEventCursor';
 import {createCanvasEventLifecycle} from './canvasEventLifecycle';
@@ -1269,7 +1269,7 @@ function SegmentNode({data}: NodeProps<FlowNode<SegmentNodeData>>) {
   );
 }
 
-type AssetNodeData = {item: CanvasAssetItem; onZoom: (url: string) => void};
+type AssetNodeData = {item: CanvasAssetMediaItem; onZoom: (url: string) => void};
 
 function AssetNode({data, kind, selected}: NodeProps<FlowNode<AssetNodeData>> & {kind: 'char' | 'scene' | 'prop' | 'voice'}) {
   const {item, onZoom} = data;
@@ -1334,11 +1334,11 @@ function AssetGroupNode({data}: NodeProps<FlowNode<AssetGroupNodeData>>) {
 
 type AssetCardNodeData = {
   kindLabel: string;
-  item: CanvasAssetItem;
+  item: CanvasAssetMediaItem;
   refs: number;
   clips: number;
   contentVisible?: boolean;
-  onDetail: (kind: string, item: CanvasAssetItem) => void;
+  onDetail: (kind: string, item: CanvasAssetMediaItem) => void;
   onZoom: (url: string) => void;
 };
 
@@ -4286,7 +4286,7 @@ function AnchoredJimPopover({owner, className = '', children}: {
 }
 
 /** 媒体节点提示词栏（即梦风：底部居中浮动编辑栏 + 内联参数 pill + 图标下拉面板） */
-function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChange, onGenerate, onDelete, onClose, onRemoveRef, onUploadRef, onPickRef, onBackdropPick, onRevealAt, anchor, openToken}: {
+function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChange, onGenerate, onDelete, onClose, onRemoveRef, onUploadRef, onPickRef, onBackdropPick, onRevealAt, onRenameAsset, anchor, openToken}: {
   node: CanvasMediaNode | null;
   assets: CanvasMediaNode[];
   edges: Edge[];
@@ -4310,6 +4310,12 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   //   参数是画布 flow 节点 id（media-xxx）。返回 true 表示已接管这次点击。
   onBackdropPick?: (flowNodeId: string, closing: boolean) => boolean;
   onRevealAt?: (requiredBottom: number) => void;
+  onRenameAsset?: (
+    node: CanvasMediaNode,
+    prefix: string,
+    name: string,
+    figure: string,
+  ) => Promise<boolean>;
   anchor?: {x: number; y: number; w: number; h: number} | null;
   openToken: number;
 }) {
@@ -4383,6 +4389,9 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   const videoInputRef = useRef<HTMLInputElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLDivElement>(null);
+  const [assetTitleEditing, setAssetTitleEditing] = useState(false);
+  const [assetTitleDraft, setAssetTitleDraft] = useState(node?.title || '');
+  const [assetTitleSaving, setAssetTitleSaving] = useState(false);
   // ★ 所有 hook 必须在条件 return 之前调用（曾在此处踩坑：整树崩溃）
   const busy = Boolean(node?.status === 'generating' || isLiveProviderGeneration(node));
   const p = node?.params || {};
@@ -4600,6 +4609,8 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     setPrepareOpen(false);
     setPrepareSelected([]);
     setPrepareMessage('');
+    setAssetTitleEditing(false);
+    setAssetTitleDraft(node?.title || '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node?.id]);
 
@@ -5417,7 +5428,96 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
         {/* 顶部细行：节点信息 + 放大/收起 + 更多菜单（删除节点）
             放大按钮放这里而不是单独占一行 —— 成熟编辑器（即梦/Figma）都把它收进顶栏。 */}
         <div className="jim-bar-head">
-          <span className="jim-head-title" title={node.title}>{node.title || meta.label}</span>
+          {assetTitleEditing ? (
+            <form
+              className="jim-head-title-edit"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const draft = assetTitleDraft.trim();
+                const figureMatch = draft.match(/^(.*?)[（(]\s*(图\s*\d+)\s*[)）]\s*$/);
+                const titleBody = figureMatch ? figureMatch[1].trim() : draft;
+                const parts = titleBody.match(/^([^｜|]+)[｜|](.+)$/);
+                if (!parts) {
+                  setRefNotice('资产名称格式应为：角色｜名称（图N）');
+                  return;
+                }
+                const prefix = parts[1].trim();
+                const nextName = parts[2].trim();
+                const figure = figureMatch?.[2]?.replace(/\s+/g, '') || '';
+                const currentFigureMatch = node.title.match(
+                  /[（(]\s*(图\s*\d+)\s*[)）]\s*$/,
+                );
+                const currentFigure = currentFigureMatch?.[1]?.replace(/\s+/g, '') || '';
+                const currentTitleBody = currentFigureMatch
+                  ? node.title.slice(0, currentFigureMatch.index).trim()
+                  : node.title.trim();
+                const currentParts = currentTitleBody.match(/^([^｜|]+)[｜|](.+)$/);
+                if (!figure || (currentFigure && figure !== currentFigure)) {
+                  setRefNotice('图号不可修改，只能修改资产名称');
+                  return;
+                }
+                if (!['角色', '群像', '场景', '道具', '音频'].includes(prefix)) {
+                  setRefNotice('资产类型必须是角色、群像、场景、道具或音频');
+                  return;
+                }
+                if (!node.assetId || !nextName || nextName === currentParts?.[2]?.trim() || assetTitleSaving || !onRenameAsset) return;
+                setAssetTitleSaving(true);
+                void onRenameAsset(node, prefix, nextName, figure)
+                  .then((ok) => {
+                    if (!ok) return;
+                    setAssetTitleDraft(`${prefix}｜${nextName}（${figure}）`);
+                    setAssetTitleEditing(false);
+                  })
+                  .catch((error) => {
+                    setRefNotice(error instanceof Error ? error.message : '资产改名失败');
+                  })
+                  .finally(() => setAssetTitleSaving(false));
+              }}
+            >
+              <input
+                autoFocus
+                value={assetTitleDraft}
+                disabled={assetTitleSaving}
+                maxLength={100}
+                onChange={(event) => setAssetTitleDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    setAssetTitleDraft(node.title || '');
+                    setAssetTitleEditing(false);
+                  }
+                }}
+                aria-label="资产类型与名称"
+              />
+              <button type="submit" disabled={assetTitleSaving || !assetTitleDraft.trim()}>
+                {assetTitleSaving ? '保存中' : '保存'}
+              </button>
+              <button type="button" disabled={assetTitleSaving} onClick={() => {
+                setAssetTitleDraft(node.title || '');
+                setAssetTitleEditing(false);
+              }}>取消</button>
+            </form>
+          ) : (
+            <>
+              <span className="jim-head-title" title={node.title}>{node.title || meta.label}</span>
+              {(isImg || isAud) && (
+                <button
+                  type="button"
+                  className="jim-head-rename"
+                  disabled={readOnly || !node.assetId}
+                  title={readOnly ? '只读模式不能改名' : '修改资产名称'}
+                  aria-label="修改资产名称"
+                  onClick={() => {
+                    if (!node.title) return;
+                    setAssetTitleDraft(node.title);
+                    setAssetTitleEditing(true);
+                  }}
+                >
+                  <Pencil size={12} strokeWidth={1.9} aria-hidden="true" />
+                </button>
+              )}
+            </>
+          )}
           <span className={`jim-head-badge${overPromptLimit ? ' is-over-limit' : ''}`}>{isTxt ? `${(promptDraft || '').trim().length} / ${promptLimit} 字` : isAud ? (p.ttsMode === 'speech' ? `音色 ${p.voiceId || p.ttsVoice || '未设置'}` : '音色设计') : isVid ? `${ratioLabel} · ${resLabel}` : `${ratioLabel} · ${clarityLabel}`}</span>
           <div className="jim-head-tools">
             {!readOnly && <button type="button" className="is-clear" title="清空提示词" aria-label="清空提示词" onClick={() => { promptDraftRef.current = ''; promptDirtyRef.current = true; setPromptDraft(''); schedulePromptCommit(); }}><Eraser size={14} strokeWidth={1.7} aria-hidden="true" /></button>}
@@ -8924,7 +9024,10 @@ function CanvasViewInner({
     if (saveError) setSaveState('error');
   }, [saveError]);
   // 资产详情面板（点击资产节点弹出：类型/名称/描述词/大图/音频）
-  const [assetDetail, setAssetDetail] = useState<{kind: string; item: CanvasAssetItem} | null>(null);
+  const [assetDetail, setAssetDetail] = useState<{kind: string; item: CanvasAssetMediaItem} | null>(null);
+  const [assetRenameDraft, setAssetRenameDraft] = useState('');
+  const [assetRenameEditing, setAssetRenameEditing] = useState(false);
+  const [assetRenameSaving, setAssetRenameSaving] = useState(false);
   // 一集一画布：多集项目按集切换（避免几十集节点同屏卡死）
   const [currentEp, setCurrentEp] = useState<string | null>(() => {
     try {
@@ -15067,9 +15170,13 @@ function CanvasViewInner({
     if (node.type === 'media') return;
     // 点击资产节点 → 弹出资产详情面板（即梦式：类型/名称/描述词/大图/音频）
     if (node.type && ['char', 'scene', 'prop', 'voice'].includes(node.type)) {
-      const data = node.data as {item?: CanvasAssetItem; kind?: string};
+      const data = node.data as {item?: CanvasAssetMediaItem; kind?: string};
       const kind = node.type === 'char' ? '角色' : node.type === 'scene' ? '场景' : node.type === 'prop' ? '道具' : '音色';
-      if (data.item) setAssetDetail({kind, item: data.item});
+      if (data.item) {
+        setAssetDetail({kind, item: data.item});
+        setAssetRenameDraft(data.item.name);
+        setAssetRenameEditing(false);
+      }
     }
   }, []);
 
@@ -19595,12 +19702,90 @@ function CanvasViewInner({
       )}
 
       {assetDetail && (
-        <div className="canvas-inspector-backdrop" onClick={() => setAssetDetail(null)}>
+        <div className="canvas-inspector-backdrop" onClick={() => {
+          setAssetDetail(null);
+          setAssetRenameEditing(false);
+        }}>
           <div className="canvas-asset-detail" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
             <header>
               <span className={`canvas-kind ${assetDetail.kind === '角色' ? 'is-char' : assetDetail.kind === '场景' ? 'is-scene' : assetDetail.kind === '道具' ? 'is-prop' : 'is-voice'}`}>{assetDetail.kind}</span>
-              <strong>{assetDetail.item.name}</strong>
-              <button type="button" className="canvas-inspector-close" onClick={() => setAssetDetail(null)} aria-label="关闭"><X size={15} strokeWidth={2} aria-hidden="true" /></button>
+              {assetRenameEditing ? (
+                <form
+                  className="canvas-asset-rename"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const item = assetDetail.item;
+                    const name = assetRenameDraft.trim();
+                    if (!item.id || !name || name === item.name || assetRenameSaving) return;
+                    setAssetRenameSaving(true);
+                    void renameCanvasAsset(session, item.id, name, item.assetId)
+                      .then(async (result) => {
+                        setAssetDetail((current) => current && current.item.id === item.id
+                          ? {...current, item: {...current.item, name: result.newName}}
+                          : current);
+                        setAssetRenameDraft(result.newName);
+                        setAssetRenameEditing(false);
+                        setToast(`资产已改名为“${result.newName}”，同步 ${result.updatedNodes} 个节点、${result.updatedReferences} 处引用`);
+                        const refreshed = await getCanvas(session, currentEp);
+                        if ('empty' in refreshed || !currentEp) return;
+                        setCanvas(refreshed);
+                        const remoteNodes = await getCanvasMediaNodes(session, currentEp);
+                        setMediaNodes(remoteNodes);
+                      })
+                      .catch((error) => {
+                        setToast(error instanceof Error ? error.message : '资产改名失败');
+                      })
+                      .finally(() => setAssetRenameSaving(false));
+                  }}
+                >
+                  <input
+                    autoFocus
+                    value={assetRenameDraft}
+                    maxLength={80}
+                    disabled={assetRenameSaving}
+                    onChange={(event) => setAssetRenameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        event.preventDefault();
+                        setAssetRenameDraft(assetDetail.item.name);
+                        setAssetRenameEditing(false);
+                      }
+                    }}
+                    aria-label="资产名称"
+                  />
+                  <button type="submit" disabled={assetRenameSaving || !assetRenameDraft.trim() || assetRenameDraft.trim() === assetDetail.item.name}>
+                    {assetRenameSaving ? '保存中' : '保存'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={assetRenameSaving}
+                    onClick={() => {
+                      setAssetRenameDraft(assetDetail.item.name);
+                      setAssetRenameEditing(false);
+                    }}
+                  >
+                    取消
+                  </button>
+                </form>
+              ) : (
+                <>
+                  <strong>{assetDetail.item.name}</strong>
+                  <button
+                    type="button"
+                    className="canvas-asset-rename-trigger"
+                    onClick={() => {
+                      setAssetRenameDraft(assetDetail.item.name);
+                      setAssetRenameEditing(true);
+                    }}
+                  >
+                    改名
+                  </button>
+                </>
+              )}
+              <button type="button" className="canvas-inspector-close" onClick={() => {
+                setAssetDetail(null);
+                setAssetRenameEditing(false);
+              }} aria-label="关闭"><X size={15} strokeWidth={2} aria-hidden="true" /></button>
             </header>
             {assetDetail.item.image_url && (
               <div className="canvas-asset-detail-media">
@@ -19707,6 +19892,31 @@ function CanvasViewInner({
         onRemoveRef={(refNodeId) => { if (editNode) removeRefAndEdge(editNode.id, refNodeId); }}
         onUploadRef={uploadRefFile}
         onPickRef={(node, refNodeId) => addRefById(node, refNodeId)}
+        onRenameAsset={async (target, _prefix, name, _figure) => {
+          if (!target.assetId) {
+            setToast('该资产缺少稳定身份，无法安全改名');
+            return false;
+          }
+          try {
+            const result = await renameCanvasAsset(
+              session,
+              target.id,
+              name,
+              target.assetId,
+            );
+            setToast(`资产已改名为“${result.newName}”，同步 ${result.updatedNodes} 个节点、${result.updatedReferences} 处引用`);
+            const refreshed = await getCanvas(session, currentEp);
+            if (!('empty' in refreshed) && currentEp) {
+              setCanvas(refreshed);
+              const remoteNodes = await getCanvasMediaNodes(session, currentEp);
+              setMediaNodes(remoteNodes);
+            }
+            return true;
+          } catch (error) {
+            setToast(error instanceof Error ? error.message : '资产改名失败');
+            return false;
+          }
+        }}
         onBackdropPick={(flowId, closing) => {
           // 只处理媒体卡（media-xxx）；备注等其它类型照旧走"点外部即关闭"。
           if (!flowId.startsWith('media-')) return false;

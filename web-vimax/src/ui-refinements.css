@@ -2000,6 +2000,14 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 /* 顶部细行 */
 .jim-bar-head{display:flex;align-items:center;gap:9px;padding:11px 14px 0}
 .jim-head-title{font-size:12.5px;font-weight:600;color:#aeb9cf;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45%}
+.jim-head-title-edit{display:flex;align-items:center;gap:5px;min-width:0;flex:1;max-width:58%}
+.jim-head-title-edit input{min-width:0;flex:1;height:27px;border:1px solid var(--v-border,#323947);border-radius:6px;background:var(--v-surface-sunken,#171b23);color:var(--v-text,#e6e8ee);padding:0 8px;font-size:12px}
+.jim-head-title-edit button{height:27px;border:1px solid var(--v-border,#323947);border-radius:6px;background:transparent;color:var(--v-text-2,#b4bdcc);padding:0 8px;font-size:11px;cursor:pointer}
+.jim-head-title-edit button:hover{border-color:var(--acc);color:var(--acc)}
+.jim-head-title-edit button:disabled{opacity:.55;cursor:default}
+.jim-head-rename{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--v-text-4,#7c8799);cursor:pointer}
+.jim-head-rename:hover{background:var(--v-surface-sunken,#171b23);color:var(--acc)}
+.jim-head-rename:disabled{opacity:.45;cursor:default}
 .jim-head-badge{font-size:10.5px;color:#8fa3c0;background:#14171e;border:1px solid #262c38;border-radius:12px;padding:1px 9px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .jim-head-more{margin-left:auto;position:relative}
 .jim-head-more>button{background:none;border:none;color:#8a8a8f;font-size:15px;cursor:pointer;width:26px;height:26px;border-radius:7px;line-height:1;transition:background .15s,color .15s}

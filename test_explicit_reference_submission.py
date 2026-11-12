@@ -7,6 +7,81 @@ import tenant_context
 from test_generation_media_stress import GenerationMediaStressTests
 
 
+class RequestReferenceCandidateTests(unittest.TestCase):
+    def test_merges_meta_and_params_then_adds_linked_slots(self):
+        refs, explicit = server.request_reference_candidates(
+            params={
+                "refs": [{"nodeId": "params-only", "label": "旧请求快照"}],
+            },
+            meta={
+                "refs": [{"nodeId": "meta-only", "label": "当前卡片槽位"}],
+            },
+            node_type="video",
+            node_id="video-1",
+            connections=[
+                {
+                    "fromNodeId": "linked-only",
+                    "toNodeId": "video-1",
+                },
+            ],
+            nodes=[
+                {
+                    "id": "linked-only",
+                    "type": "image",
+                    "title": "角色｜背景角色（图16）",
+                    "metadata": {
+                        "assetId": "character:背景角色:default",
+                        "seriesId": "character:背景角色",
+                        "variantKey": "default",
+                    },
+                },
+            ],
+        )
+        self.assertTrue(explicit)
+        self.assertEqual(
+            [ref["nodeId"] for ref in refs],
+            ["meta-only", "params-only", "linked-only"],
+        )
+
+    def test_deduplicates_a_link_already_in_the_slot_list(self):
+        refs, explicit = server.request_reference_candidates(
+            params={
+                "refs": [{"nodeId": "asset-1", "label": "当前槽位"}],
+            },
+            meta={
+                "refs": [
+                    {"nodeId": "asset-1", "label": "当前槽位"},
+                    {"nodeId": "asset-2", "label": "第二个槽位"},
+                ],
+            },
+            node_type="video",
+            node_id="video-1",
+            connections=[
+                {"fromNodeId": "asset-1", "toNodeId": "video-1"},
+                {"fromNodeId": "asset-2", "toNodeId": "video-1"},
+            ],
+            nodes=[
+                {
+                    "id": "asset-1",
+                    "type": "image",
+                    "title": "角色｜一（图1）",
+                    "metadata": {"assetId": "character:一:default"},
+                },
+                {
+                    "id": "asset-2",
+                    "type": "image",
+                    "title": "角色｜二（图2）",
+                    "metadata": {"assetId": "character:二:default"},
+                },
+            ],
+        )
+        self.assertTrue(explicit)
+        self.assertEqual(
+            [ref["nodeId"] for ref in refs],
+            ["asset-1", "asset-2"],
+        )
+
+
 class ExplicitReferenceSubmissionTests(unittest.TestCase):
     def setUp(self):
         self.fixture = GenerationMediaStressTests('test_import_asset_reference_pipeline_stress_without_provider_calls')

@@ -11327,6 +11327,42 @@ body[data-canvas-interacting='1'] .canvas-edge-spark {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.canvas-asset-rename {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+.canvas-asset-rename input {
+  flex: 1;
+  min-width: 0;
+}
+.canvas-asset-rename button,
+.canvas-asset-rename-trigger,
+.jim-head-rename {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2, var(--surface));
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 7px;
+  cursor: pointer;
+}
+.canvas-asset-rename button:hover,
+.canvas-asset-rename-trigger:hover,
+.jim-head-rename:hover {
+  border-color: var(--acc);
+  color: var(--acc);
+}
+.canvas-asset-rename button:disabled,
+.canvas-asset-rename-trigger:disabled,
+.jim-head-rename:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
 .canvas-asset-detail-media {
   border-radius: 10px;
   overflow: hidden;

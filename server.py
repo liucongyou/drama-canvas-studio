@@ -106,33 +106,67 @@ def request_reference_candidates(
     explicit_reference_list = (
         params_refs is not None or isinstance(meta_refs, list)
     )
-    source_refs = params_refs if params_refs is not None else meta_refs
-    candidates = [
-        dict(ref)
-        for ref in source_refs or []
-        if isinstance(ref, dict)
-    ] if isinstance(source_refs, list) else []
-    if node_type != "video" or explicit_reference_list:
-        return candidates, explicit_reference_list
-
-    linked_node_ids = {
-        str(edge.get("fromNodeId") or "")
-        for edge in connections
-        if isinstance(edge, dict)
-        and str(edge.get("toNodeId") or "") == str(node_id or "")
-        and str(edge.get("fromNodeId") or "")
-    }
-    for source in nodes:
-        if not isinstance(source, dict):
+    # meta.refs is the canonical slot list produced by import and the asset
+    # picker. params.refs is often an older request snapshot. They must be
+    # combined, otherwise a server-side linked background asset disappears as
+    # soon as the card has a params.refs array.
+    source_refs: list[Any] = []
+    for collection in (meta_refs, params_refs):
+        if not isinstance(collection, list):
             continue
-        if str(source.get("id") or "") not in linked_node_ids:
+        for ref in collection:
+            if isinstance(ref, dict):
+                source_refs.append(ref)
+    candidates = []
+    seen_candidate_ids = set()
+    for source_ref in source_refs:
+        if not isinstance(source_ref, dict):
+            continue
+        ref = dict(source_ref)
+        key = (
+            str(ref.get("nodeId") or "")
+            or str(ref.get("assetId") or "")
+            or str(ref.get("label") or "")
+        )
+        if key in seen_candidate_ids:
+            continue
+        seen_candidate_ids.add(key)
+        candidates.append(ref)
+    for connection in connections:
+        if not isinstance(connection, dict):
+            continue
+        if str(connection.get("toNodeId") or "") != str(node_id or ""):
+            continue
+        source_id = str(connection.get("fromNodeId") or "")
+        if not source_id:
+            continue
+        source = next(
+            (
+                item for item in nodes
+                if isinstance(item, dict)
+                and str(item.get("id") or "") == source_id
+            ),
+            None,
+        )
+        if not source or str(source.get("type") or "") not in {
+            "image", "video", "text",
+        }:
             continue
         source_meta = source.get("metadata") or {}
+        source_asset_id = str(source_meta.get("assetId") or "")
+        key = source_id or source_asset_id
+        if key in seen_candidate_ids:
+            continue
+        seen_candidate_ids.add(key)
         candidates.append({
-            "nodeId": str(source.get("id") or ""),
-            "assetId": str(source_meta.get("assetId") or ""),
+            "nodeId": source_id,
+            "assetId": source_asset_id,
+            "seriesId": str(source_meta.get("seriesId") or ""),
+            "variantKey": str(source_meta.get("variantKey") or "default"),
             "label": str(source.get("title") or ""),
         })
+    if node_type != "video" or explicit_reference_list:
+        return candidates, explicit_reference_list
     return candidates, explicit_reference_list
 
 
@@ -8594,11 +8628,25 @@ class Handler(BaseHTTPRequestHandler):
             if not proj:
                 return self._send(404, {"error": "项目不存在"})
             payload = proj["payload"]
+            asset_aliases = [
+                entry
+                for entry in (payload.get("assetAliases") or [])
+                if isinstance(entry, dict)
+                and str(entry.get("assetId") or "").strip()
+            ]
             assets = []
+            active_asset_ids = set()
             for node in payload.get("nodes") or []:
                 if node.get("type") not in {"image", "audio", "video"}:
                     continue
                 meta = node.get("metadata") or {}
+                asset_id = str(
+                    meta.get("assetId")
+                    or (meta.get("params") or {}).get("assetId")
+                    or ""
+                ).strip()
+                if asset_id:
+                    active_asset_ids.add(asset_id)
                 params = meta.get("params") or {}
                 code_match = re.search(r"图\s*(\d+)", str(node.get("title") or ""))
                 versions = (
@@ -8623,7 +8671,7 @@ class Handler(BaseHTTPRequestHandler):
                     "title": node.get("title") or "",
                     "code": f"图{code_match.group(1)}" if code_match else "",
                     "assetKey": meta.get("assetKey") or "",
-                    "assetId": meta.get("assetId") or params.get("assetId") or "",
+                    "assetId": asset_id,
                     "seriesId": meta.get("seriesId") or params.get("seriesId") or "",
                     "variantKey": meta.get("variantKey") or params.get("variantKey") or "default",
                     "status": meta.get("status") or "idle",
@@ -8633,13 +8681,32 @@ class Handler(BaseHTTPRequestHandler):
                     "versions": versions,
                     "reusedAsset": meta.get("reusedAsset") or None,
                     "storage": meta.get("storage") or None,
+                    "displayName": meta.get("displayName") or "",
+                    "aliases": [
+                        entry
+                        for entry in asset_aliases
+                        if entry.get("assetId") == asset_id
+                    ],
                 })
+            reused_aliases = [
+                {
+                    "assetId": str(entry.get("assetId") or ""),
+                    "aliasOf": str(entry.get("aliasOf") or ""),
+                    "oldName": str(entry.get("oldName") or ""),
+                    "newName": str(entry.get("newName") or ""),
+                    "figure": str(entry.get("figure") or ""),
+                }
+                for entry in (payload.get("assetAliases") or [])
+                if isinstance(entry, dict)
+                and str(entry.get("assetId") or "") in active_asset_ids
+            ]
             return self._send(200, {
                 "schema": "drama-canvas-assets/v1",
                 "projectId": pid,
                 "title": proj.get("title") or payload.get("title") or "",
                 "revision": proj.get("revision"),
                 "exportedAt": store._now_iso(),
+                "reusedAliases": reused_aliases,
                 "episodes": [
                     {
                         "id": group.get("id") or "",
@@ -10044,6 +10111,85 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json()
         if path == "/api/preferences":
             return self._handle_tenant_preferences_update(body)
+        m = re.match(
+            r"^/api/projects/([^/]+)/assets/([^/]+)/rename$",
+            path,
+        )
+        if m:
+            pid, nid = unquote(m.group(1)), unquote(m.group(2))
+            if not isinstance(body, dict):
+                return self._send(400, {
+                    "error": "请求体必须是对象",
+                    "code": "ASSET_RENAME_INVALID",
+                })
+            project = store.get_project(pid)
+            if not project:
+                return self._send(404, {"error": "项目不存在"})
+            new_name = str(body.get("name") or "").strip()
+            expected_asset_id = str(body.get("assetId") or "").strip()
+            expected_revision = body.get("revision")
+            try:
+                result = store.rename_project_asset_atomic(
+                    pid,
+                    nid,
+                    new_name,
+                    expected_asset_id=expected_asset_id,
+                    expected_revision=(
+                        int(expected_revision)
+                        if expected_revision is not None
+                        else None
+                    ),
+                )
+            except ValueError as exc:
+                return self._send(400, {
+                    "error": str(exc),
+                    "code": "ASSET_RENAME_INVALID",
+                })
+            except store.RevisionConflictError:
+                return self._send(409, {
+                    "error": "项目已更新，请刷新后重试",
+                    "code": "ASSET_RENAME_CONFLICT",
+                })
+            if not result:
+                return self._send(404, {"error": "项目或资产不存在"})
+            if result.get("error"):
+                error_code = str(result["error"])
+                status = 404 if error_code == "node_not_found" else (
+                    409 if error_code in {
+                        "asset_identity_conflict",
+                        "asset_name_conflict",
+                    } else 400
+                )
+                messages = {
+                    "node_not_found": "资产节点不存在",
+                    "non_asset_node": "只有图片或音频资产节点可以改名",
+                    "asset_identity_conflict": "资产身份已经变化，请刷新后重试",
+                    "asset_title_invalid": "资产标题不符合“类型｜名称（图N）”格式",
+                    "asset_name_conflict": "该资产名称与同图号资产冲突",
+                }
+                return self._send(status, {
+                    "error": messages.get(error_code, "资产改名失败"),
+                    "code": error_code.upper(),
+                })
+            session = self._current_session() or {}
+            store.record_audit_event(
+                "asset.rename",
+                actor=str(session.get("account_username") or ""),
+                target_type="node",
+                target_id=nid,
+                details={
+                    "projectId": pid,
+                    "assetId": result.get("assetId") or "",
+                    "figure": result.get("figure") or "",
+                    "oldName": result.get("oldName") or "",
+                    "newName": result.get("newName") or "",
+                    "updatedNodes": result.get("updatedNodes") or 0,
+                    "updatedReferences": result.get("updatedReferences") or 0,
+                    "revision": result.get("revision"),
+                },
+            )
+            result["ok"] = True
+            return self._send(200, result)
         # 项目根：重命名标题（PUT /api/projects/{id}，body.title）
         m = re.match(r"^/api/projects/([^/]+)$", path)
         if m:

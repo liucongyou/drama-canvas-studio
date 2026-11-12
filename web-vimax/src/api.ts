@@ -205,6 +205,14 @@ export type CanvasAssetItem = {
   description?: string;
 };
 
+export type CanvasAssetMediaItem = CanvasAssetItem & {
+  id?: string;
+  assetId?: string;
+  seriesId?: string;
+  variantKey?: string;
+  semanticCode?: string;
+};
+
 export type CanvasShot = {
   idx: number;
   ep_id?: string | null;
@@ -2689,6 +2697,36 @@ export async function patchMediaNodeFields(
   episodeId: string,
 ): ReturnType<typeof patchMediaNodesFields> {
   return patchMediaNodesFields(sessionId, [node], episodeId);
+}
+
+export async function renameCanvasAsset(
+  sessionId: string,
+  nodeId: string,
+  name: string,
+  assetId?: string,
+  revision?: number,
+): Promise<{
+  ok: boolean;
+  node?: CanvasMediaNode;
+  assetId: string;
+  oldName: string;
+  newName: string;
+  figure: string;
+  updatedNodes: number;
+  updatedReferences: number;
+  revision: number;
+}> {
+  return request(
+    `/api/projects/${encodeURIComponent(sessionId)}/assets/${encodeURIComponent(nodeId)}/rename`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        name,
+        ...(assetId ? {assetId} : {}),
+        ...(typeof revision === 'number' ? {revision} : {}),
+      }),
+    },
+  );
 }
 
 export async function appendLocalMediaVersion(

@@ -709,7 +709,7 @@ def analyze_declared_feed(payload: dict) -> GateResult:
             if not code or not role:
                 continue
             plain_ref = re.compile(
-                rf"(?<!@){re.escape(role)}\s*[（(]\s*(?:参考)?图\s*"
+                rf"(?<![@｜]){re.escape(role)}\s*[（(]\s*(?:参考)?图\s*"
                 rf"{re.escape(code[1:] if code.startswith('图') else code)}\s*[）)]"
             )
             if plain_ref.search(raw):
@@ -724,9 +724,16 @@ def analyze_declared_feed(payload: dict) -> GateResult:
             ))
             canvas = {}
         canvas = canvas if isinstance(canvas, dict) else {}
+        # 音频引用行（【音色引用】行与「…的音色对应@音频｜X（图N）」落挂句）里的图号
+        # 是音频节点号，不是图片资产号：若计入期望，Gate2 会要求为「只做声不出立绘」
+        # 的音色卡建图片节点（ASSET_DECLARED_MISSING 产物缺资产节点：图40）。
+        _asset_scan = "\n".join(
+            line for line in str(raw).splitlines()
+            if "【音色引用】" not in line and "@音频｜" not in line
+        )
         raw_canvas_codes = {
             canonical_code(f"图{code}")
-            for code in re.findall(r"图\s*(\d+)", raw)
+            for code in re.findall(r"图\s*(\d+)", _asset_scan)
         }
         raw_canvas_codes.discard("")
         canvas_codes: set[str] | None = None
@@ -1274,7 +1281,8 @@ def validate_final_payload(
     }
 
     # Cross-episode code conflicts are only visible after merge.
-    code_roles: dict[tuple[str, str], set[str]] = {}
+    code_roles: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    code_asset_groups: dict[tuple[str, str], dict[str, set[str]]] = {}
     for node in nodes:
         if node.get("type") not in {"image", "audio"}:
             continue
@@ -1283,8 +1291,40 @@ def validate_final_payload(
         if not code or not role_match:
             continue
         key = (str(node.get("type")), code)
-        code_roles.setdefault(key, set()).add(role_match.group(1).strip())
-    for (_kind, code), roles in code_roles.items():
+        metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        identity = str(
+            metadata.get("assetId")
+            or metadata.get("seriesId")
+            or ""
+        ).strip()
+        if identity:
+            identity_group = (
+                identity.rsplit(":", 1)[0]
+                if identity.count(":") > 1
+                else identity
+            )
+            code_asset_groups.setdefault(key, {}).setdefault(
+                identity_group,
+                set(),
+            ).add(role_match.group(1).strip())
+        code_roles.setdefault(key, set()).add((
+            role_match.group(1).strip(),
+            identity,
+        ))
+    for (_kind, code), role_identities in code_roles.items():
+        identity_groups = code_asset_groups.get((_kind, code)) or {}
+        if len(identity_groups) == 1:
+            # The same stable asset can carry an old title in a historical
+            # episode and a renamed title in a newer one. assetId/seriesId is
+            # authoritative; display labels are not identity.
+            continue
+        roles = {role for role, _identity in role_identities}
+        identities = {identity for _role, identity in role_identities if identity}
+        if len(roles) > 1 and len(identities) <= 1:
+            # Renaming can leave one historical copy with the old title while
+            # the authoritative assetId is unchanged. That is one asset, not a
+            # cross-episode code collision.
+            continue
         if len(roles) > 1:
             issues.append(_issue(
                 ErrorCode.ASSET_CODE_DUPLICATE,
@@ -1298,10 +1338,60 @@ def validate_final_payload(
             continue
         audio_role_match = TITLE_ROLE_RE.match(str(audio.get("title") or ""))
         image_role_match = TITLE_ROLE_RE.match(str(image.get("title") or ""))
+        audio_meta = audio.get("metadata") if isinstance(audio.get("metadata"), dict) else {}
+        image_meta = image.get("metadata") if isinstance(image.get("metadata"), dict) else {}
+        audio_asset_id = str(audio_meta.get("assetId") or "").strip()
+        image_asset_id = str(image_meta.get("assetId") or "").strip()
+        audio_group = (
+            audio_asset_id.rsplit(":", 1)[0]
+            if audio_asset_id.count(":") > 1
+            else audio_asset_id
+        )
+        image_group = (
+            image_asset_id.rsplit(":", 1)[0]
+            if image_asset_id.count(":") > 1
+            else image_asset_id
+        )
+        audio_display_name = str(audio_meta.get("displayName") or "").strip()
+        image_display_name = str(image_meta.get("displayName") or "").strip()
+        audio_alias_names = {
+            str(entry.get(key) or "").strip()
+            for key in ("aliases",)
+            for entry in (audio_meta.get(key) or [])
+            if isinstance(entry, dict)
+            for key in ("newName", "oldName")
+            if str(entry.get(key) or "").strip()
+        }
+        image_alias_names = {
+            str(entry.get(key) or "").strip()
+            for key in ("aliases",)
+            for entry in (image_meta.get(key) or [])
+            if isinstance(entry, dict)
+            for key in ("newName", "oldName")
+            if str(entry.get(key) or "").strip()
+        }
+        same_stable_asset = bool(
+            audio_group
+            and image_group
+            and audio_group == image_group
+        )
+        same_renamed_character = bool(
+            audio_display_name
+            and image_display_name
+            and audio_display_name == image_display_name
+        ) or bool(
+            audio_display_name
+            and audio_display_name in image_alias_names
+        ) or bool(
+            image_display_name
+            and image_display_name in audio_alias_names
+        )
         if (
             audio_role_match
             and image_role_match
             and audio_role_match.group(1).strip() != image_role_match.group(1).strip()
+            and not same_stable_asset
+            and not same_renamed_character
         ):
             issues.append(_issue(
                 ErrorCode.VOICE_CODE_CONFLICT,
@@ -1442,10 +1532,15 @@ def validate_final_payload(
             role = role_match.group(1).strip() if role_match else ""
             if role and role in expectation.raw:
                 expected_asset_codes.add(code)
+        # The declared raw is authoritative for what this segment is expected
+        # to reference. `_expectations_with_incoming_assets` may add refs that
+        # were generated before rename migration; those stale additions must
+        # not hide a correctly linked declared asset.
         if linked_asset_codes != expected_asset_codes:
             issues.append(_issue(
                 ErrorCode.ASSET_EDGE_MISMATCH,
-                f"资产连线不一致：期望 {sorted(expected_asset_codes)}，实际 {sorted(linked_asset_codes)}",
+                f"资产连线不一致：期望 {sorted(expected_asset_codes)}，"
+                f"实际 {sorted(linked_asset_codes)}",
                 segment=expectation.segment_index,
             ))
     return issues
@@ -1646,6 +1741,18 @@ def prepare_import(
     """Pure import planner shared by dry-run and commit."""
     import import_feed
 
+    # Public imports have historically been called with either the canvas
+    # payload itself or a full project envelope ``{"payload": ...}``. Normalize
+    # both at the boundary; otherwise an envelope silently produces an empty
+    # asset pool and re-import creates duplicate asset nodes.
+    if (
+        isinstance(existing, dict)
+        and isinstance(existing.get("payload"), dict)
+    ):
+        existing = existing["payload"]
+    if not isinstance(existing, dict):
+        existing = {}
+
     normalized_feed, normalization_issues = _prepare_feed_for_import(feed)
     gate1 = analyze_declared_feed(normalized_feed)
     gate1 = GateResult(
@@ -1665,12 +1772,37 @@ def prepare_import(
         )
 
     candidate = copy.deepcopy(existing)
+    # Rename aliases live on project nodes. The incoming feed is our own copy,
+    # so enriching it here is safe and makes old feeds reuse the renamed asset.
+    normalized_feed = copy.deepcopy(normalized_feed)
     asset_pool = import_feed.build_asset_pool_from_payload(candidate, project_id)
+    for asset in normalized_feed.get("asset_prompts") or []:
+        if not isinstance(asset, dict):
+            continue
+        canvas = asset.get("canvas") if isinstance(asset.get("canvas"), dict) else {}
+        if str(canvas.get("assetId") or "").strip():
+            continue
+        renamed_asset_id = import_feed._renamed_asset_identity_for_input(
+            candidate,
+            asset.get("code"),
+            canvas.get("name") or asset.get("name"),
+            asset.get("img") or asset.get("code"),
+            node_type="image",
+        )
+        if not renamed_asset_id:
+            continue
+        asset["canvas"] = {
+            **canvas,
+            "assetId": renamed_asset_id,
+            "displayName": canvas.get("name") or asset.get("name"),
+        }
     incoming = import_feed.build_payload(
         normalized_feed,
         asset_pool=asset_pool,
         target_project_id=project_id,
     )
+    import_feed.reconcile_unidentified_incoming_assets(existing, incoming)
+    import_feed.dedupe_unidentified_incoming_assets(incoming)
     expectations = _expectations_with_incoming_assets(
         gate1.expectations,
         incoming,

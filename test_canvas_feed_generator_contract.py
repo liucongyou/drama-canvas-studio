@@ -180,10 +180,12 @@ feed = build_board_lite.enrich_canvas_contract({{
     "title": "生成导入联调",
     "meta": {{"画幅": "16:9", "模型版本": "2.0"}},
     "assets": [
-        {{"code": "CHR-001", "name": "赵铁柱（角色立绘）", "img": "图1"}},
+        {{"code": "CHR-001", "semanticCode": "CHR-001", "name": "赵铁柱（角色立绘）", "img": "图1"}},
     ],
     "asset_prompts": [{{
-        "code": "CHR-001",
+        "code": "图1",
+        "semanticCode": "CHR-001",
+        "img": "图1",
         "name": "赵铁柱（角色立绘）",
         "raw": (
             "一名 35 岁 男性。\\ncharacter sheet\\n"

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """canvas_store.py — 画布项目存取（SQLite · payload 整包模式，对齐 BeefTV schema）"""
+import copy
 import json
 import hashlib
 import os
@@ -62,6 +63,24 @@ def _asset_node_identity(metadata, node_type="", title=""):
         series_id = f"{kind}:{name}"
     variant_key = str(meta.get("variantKey") or "default").strip() or "default"
     asset_id = str(meta.get("assetId") or "").strip()
+    expected_prefixes = {
+        "character", "crowd", "scene", "prop", "voice",
+    }
+    if (
+        str(node_type or "") == "audio"
+        and asset_id
+        and not asset_id.startswith("voice:")
+    ):
+        asset_id = f"voice:{asset_id.partition(':')[2] or name}"
+        series_id = f"voice:{series_id.partition(':')[2] or name}"
+    elif (
+        str(node_type or "") == "image"
+        and asset_id
+        and asset_id.partition(":")[0] in expected_prefixes
+        and asset_id.partition(":")[0] == "voice"
+    ):
+        asset_id = f"{kind}:{asset_id.partition(':')[2] or name}"
+        series_id = f"{kind}:{series_id.partition(':')[2] or name}"
     if not asset_id and series_id:
         asset_id = f"{series_id}:{variant_key}"
     if asset_id:
@@ -111,6 +130,608 @@ def _ensure_asset_identities(payload):
         metadata["variantKey"] = variant_key
         node["metadata"] = metadata
     return changed
+
+
+_ASSET_TITLE_RE = re.compile(
+    r"^\s*(?P<prefix>角色|群像|场景|道具|音频)\s*[｜|]\s*"
+    r"(?P<name>.+?)\s*[（(]\s*(?P<figure>图\s*\d+)\s*[)）]\s*$"
+)
+
+
+def _asset_title_parts(title):
+    match = _ASSET_TITLE_RE.match(str(title or ""))
+    if not match:
+        return None
+    return (
+        match.group("prefix").strip(),
+        match.group("name").strip(),
+        re.sub(r"\s+", "", match.group("figure")),
+    )
+
+
+def _replace_asset_mention_text_with_count(
+    text,
+    prefix,
+    old_name,
+    figure,
+    new_name,
+):
+    """Migrate one asset mention without touching ordinary script text.
+
+    The generator has emitted three shapes over time:
+
+    * ``@角色｜旧名（图3）`` (current typed form)
+    * ``<旧名> 对应@角色｜旧名（图3）`` (material alias block)
+    * ``@旧名（图3）`` / a bare ``@旧名`` on a line carrying ``图3``
+
+    Renames must only rewrite explicit ``@`` mentions and the left-hand
+    ``<...>`` label in a material block. A plain name in dialogue is evidence,
+    not a reference, so it must remain byte-for-byte unchanged.
+    """
+    source = str(text or "")
+    if not source:
+        return source, 0
+
+    old = re.escape(old_name)
+    fig = re.escape(figure)
+    compatible_prefixes = {
+        "角色": ("角色", "音频"),
+        "音频": ("音频",),
+        "群像": ("群像",),
+        "场景": ("场景",),
+        "道具": ("道具",),
+    }.get(prefix, (prefix,))
+    typed_pattern = re.compile(
+        r"(?<![A-Za-z0-9_])@(?P<mention_prefix>"
+        + "|".join(re.escape(item) for item in compatible_prefixes)
+        + rf")[｜|]\s*{old}\s*[（(]\s*{fig}\s*[)）]"
+    )
+    short_with_figure_pattern = re.compile(
+        rf"(?<![A-Za-z0-9_])@{old}\s*[（(]\s*{fig}\s*[)）]"
+    )
+    bare_pattern = re.compile(
+        rf"(?<![A-Za-z0-9_])@{old}(?![A-Za-z0-9_（(])"
+    )
+    alias_pattern = re.compile(rf"<{old}>")
+    figure_value = figure[1:] if figure.startswith("图") else figure
+    figure_pattern = re.compile(rf"图\s*{re.escape(figure_value)}(?!\d)")
+    typed_replacement = f"@{prefix}｜{new_name}（{figure}）"
+    alias_replacement = f"<{new_name}>"
+    reference_count = 0
+    output = []
+
+    for line in source.splitlines(keepends=True):
+        rewritten = line
+        rewritten, typed_count = typed_pattern.subn(
+            lambda match: (
+                f"@{match.group('mention_prefix')}｜{new_name}（{figure}）"
+            ),
+            rewritten,
+        )
+        reference_count += typed_count
+
+        # Material blocks use the old name twice: once as the human-readable
+        # left label and once in the explicit @ reference on the right.
+        if "对应@" in rewritten and figure_pattern.search(rewritten):
+            rewritten, alias_count = alias_pattern.subn(
+                alias_replacement,
+                rewritten,
+            )
+            reference_count += alias_count
+
+        rewritten, short_count = short_with_figure_pattern.subn(
+            typed_replacement,
+            rewritten,
+        )
+        reference_count += short_count
+
+        # A bare @name is safe to convert only when the same line explicitly
+        # carries this asset's figure. This also handles legacy material lines
+        # that spell the figure outside the mention parentheses.
+        if figure_pattern.search(rewritten):
+            rewritten, bare_count = bare_pattern.subn(
+                typed_replacement,
+                rewritten,
+            )
+            reference_count += bare_count
+
+        output.append(rewritten)
+
+    return "".join(output), reference_count
+
+
+def _replace_asset_mention_text(text, prefix, old_name, figure, new_name):
+    """Return the migrated text while preserving the original helper API."""
+    rewritten, _count = _replace_asset_mention_text_with_count(
+        text,
+        prefix,
+        old_name,
+        figure,
+        new_name,
+    )
+    return rewritten
+
+
+def _rename_asset_identity_group(asset_id):
+    """Return the stable logical series key used by image and voice assets."""
+    value = str(asset_id or "").strip()
+    if not value:
+        return ""
+    head, _sep, _tail = value.partition(":")
+    if head in {"character", "voice"}:
+        return "character"
+    return head
+
+
+def _asset_title_base_name(title):
+    parts = _asset_title_parts(title)
+    return parts[1] if parts else ""
+
+
+def _asset_figure_from_node(node):
+    if not isinstance(node, dict):
+        return ""
+    for key in ("title", "label", "name", "displayName"):
+        match = re.search(
+            r"[（(]\s*(图\s*\d+)\s*[)）]",
+            str(node.get(key) or ""),
+        )
+        if match:
+            return re.sub(r"\s+", "", match.group(1))
+    metadata = node.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    for key in ("figure", "code", "img"):
+        match = re.search(r"图\s*\d+", str(metadata.get(key) or ""))
+        if match:
+            return re.sub(r"\s+", "", match.group(0))
+    return ""
+
+
+def _asset_display_name_from_node(node):
+    if not isinstance(node, dict):
+        return ""
+    parts = _asset_title_parts(str(node.get("title") or "").strip())
+    if parts:
+        return parts[1]
+    metadata = node.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    for value in (
+        metadata.get("displayName"),
+        metadata.get("name"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def rename_project_asset_atomic(
+    project_id,
+    node_id,
+    new_name,
+    *,
+    expected_asset_id="",
+    expected_revision=None,
+):
+    """Atomically rename an asset and migrate all display/reference contracts.
+
+    Stable media identity never changes. Image (``character:*``) and voice
+    (``voice:*``) assets are distinct identities that may share one visible
+    character name. Renaming either side updates the shared display label while
+    preserving each node's own assetId/seriesId.
+    """
+    normalized_name = str(new_name or "").strip()
+    if not normalized_name:
+        raise ValueError("资产名称不能为空")
+    if len(normalized_name) > 80:
+        raise ValueError("资产名称不能超过 80 个字符")
+    if any(char in normalized_name for char in "\r\n\t"):
+        raise ValueError("资产名称不能包含换行或制表符")
+    if any(char in normalized_name for char in "/\\"):
+        raise ValueError("资产名称不能包含斜杠")
+    if normalized_name in {"未命名", "未命名节点", "未命名资产"}:
+        raise ValueError("资产名称不能使用占位名称")
+
+    def write(con):
+        row = con.execute(
+            "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if not row:
+            return None
+        current_revision = int(row[2] or 0)
+        if expected_revision is not None and current_revision != int(expected_revision):
+            raise RevisionConflictError(
+                f"项目已更新：期望 revision={expected_revision}，实际 revision={current_revision}"
+            )
+        try:
+            payload = json.loads(row[1] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        _ensure_asset_identities(payload)
+        nodes = payload.get("nodes")
+        nodes = nodes if isinstance(nodes, list) else []
+        source = next(
+            (
+                node for node in nodes
+                if isinstance(node, dict)
+                and str(node.get("id") or "") == str(node_id)
+            ),
+            None,
+        )
+        if source is None:
+            return {"error": "node_not_found"}
+        source_type = str(source.get("type") or "")
+        if source_type not in {"image", "audio"}:
+            return {"error": "non_asset_node"}
+        source_meta = (
+            dict(source.get("metadata"))
+            if isinstance(source.get("metadata"), dict)
+            else {}
+        )
+        source_asset_id = str(source_meta.get("assetId") or "").strip()
+        if expected_asset_id and source_asset_id != expected_asset_id:
+            return {"error": "asset_identity_conflict"}
+        source_parts = _asset_title_parts(source.get("title") or "")
+        if not source_parts:
+            return {"error": "asset_title_invalid"}
+        source_prefix, old_name, figure = source_parts
+        if old_name == normalized_name:
+            return {
+                "unchanged": True,
+                "node": source,
+                "assetId": source_asset_id,
+                "oldName": old_name,
+                "newName": normalized_name,
+                "figure": figure,
+                "updatedNodes": 0,
+                "updatedReferences": 0,
+                "revision": current_revision,
+            }
+
+        conflicting_titles = {
+            parts[1]
+            for node in nodes
+            if isinstance(node, dict)
+            and str(node.get("type") or "") in {"image", "audio"}
+            and str(node.get("id") or "") != str(node_id)
+            and (parts := _asset_title_parts(node.get("title") or ""))
+            and parts[2] == figure
+        }
+        if normalized_name in conflicting_titles:
+            return {"error": "asset_name_conflict"}
+
+        identity_kind = _rename_asset_identity_group(source_asset_id)
+        if source_prefix == "角色":
+            identity_kind = "character"
+        elif source_prefix == "音频":
+            identity_kind = "voice"
+
+        affected_ids = set()
+        alias_entry = {
+            "oldName": old_name,
+            "newName": normalized_name,
+            "figure": figure,
+            "kind": source_prefix,
+            "renamedAt": _now_iso(),
+        }
+
+        targets = []
+        source_series_id = str(source_meta.get("seriesId") or "").strip()
+        if not source_series_id:
+            source_series_id = (
+                source_asset_id.rsplit(":", 1)[0]
+                if source_asset_id.count(":") > 1
+                and source_asset_id.partition(":")[0] in {
+                    "character", "voice", "crowd", "scene", "prop",
+                }
+                else ""
+            )
+        source_display_name = str(
+            source_meta.get("displayName") or old_name
+        ).strip()
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            node_type = str(node.get("type") or "")
+            if node_type not in {"image", "audio"}:
+                continue
+            parts = _asset_title_parts(node.get("title") or "")
+            if not parts or parts[2] != figure:
+                continue
+            node_meta = node.get("metadata")
+            node_meta = dict(node_meta) if isinstance(node_meta, dict) else {}
+            node_aliases = node_meta.get("aliases")
+            node_alias_names = {
+                str(entry.get(key) or "").strip()
+                for entry in (
+                    node_aliases
+                    if isinstance(node_aliases, list)
+                    else []
+                )
+                if isinstance(entry, dict)
+                for key in ("oldName", "newName")
+                if str(entry.get(key) or "").strip()
+            }
+            node_asset_id = str(node_meta.get("assetId") or "").strip()
+            node_series_id = str(node_meta.get("seriesId") or "").strip()
+            if not node_series_id and node_asset_id.count(":") > 1:
+                node_series_id = node_asset_id.rsplit(":", 1)[0]
+            node_display_name = str(
+                node_meta.get("displayName") or ""
+            ).strip()
+            same_series = (
+                _rename_asset_identity_group(node_asset_id) == identity_kind
+            )
+            # Voice cards and image cards intentionally carry different
+            # assetIds. Bind them by the same source character series, not by
+            # a mutable title. The project can contain historical copies with
+            # the old title and the new title at the same figure number.
+            same_visible_character = (
+                source_prefix in {"角色", "音频"}
+                and parts[0] in {"角色", "音频"}
+                and (
+                    (
+                        source_series_id.startswith("character:")
+                        and source_series_id
+                        == node_series_id.replace("voice:", "character:", 1)
+                    )
+                    or (
+                        source_series_id.startswith("voice:")
+                        and source_series_id.replace("voice:", "character:", 1)
+                        == node_series_id
+                    )
+                    or (
+                        source_display_name
+                        and (
+                            parts[1] == source_display_name
+                            or source_display_name in node_alias_names
+                        )
+                    )
+                )
+            )
+            visible_pair = (
+                source_prefix == "角色"
+                and parts[0] == "音频"
+                and node_type == "audio"
+            ) or (
+                source_prefix == "音频"
+                and parts[0] == "角色"
+                and node_type == "image"
+            )
+            same_name_variant = (
+                parts[1] in {old_name, normalized_name}
+                or normalized_name in node_alias_names
+                or (
+                    node_display_name
+                    and node_display_name in {old_name, normalized_name}
+                )
+            )
+            if not (
+                same_series
+                or (same_visible_character and visible_pair)
+                or (same_name_variant and same_series)
+            ):
+                continue
+            targets.append((node, node_type, parts[0], node_meta, node_asset_id))
+        if source not in [item[0] for item in targets]:
+            targets.append((
+                source,
+                source_type,
+                source_prefix,
+                source_meta,
+                source_asset_id,
+            ))
+
+        project_aliases = payload.setdefault("assetAliases", [])
+        project_aliases = (
+            list(project_aliases)
+            if isinstance(project_aliases, list)
+            else []
+        )
+        for node, node_type, node_prefix, node_meta, node_asset_id in targets:
+            if _asset_title_parts(node.get("title") or "") is None:
+                continue
+            node_parts = _asset_title_parts(node.get("title") or "")
+            if not node_parts:
+                continue
+            node["title"] = (
+                f"{node_parts[0]}｜{normalized_name}（{node_parts[2]}）"
+            )
+            node_meta["displayName"] = normalized_name
+            if node_type == "audio":
+                node_meta["assetKey"] = f"音色:{normalized_name}"
+            else:
+                node_meta["assetKey"] = f"{node_parts[0]}:{normalized_name}"
+            node_alias = {
+                **alias_entry,
+                "assetId": node_asset_id,
+                "aliasOf": node_asset_id,
+                "kind": node_prefix,
+            }
+            aliases = node_meta.get("aliases")
+            aliases = list(aliases) if isinstance(aliases, list) else []
+            aliases.append(copy.deepcopy(node_alias))
+            node_meta["aliases"] = aliases[-1:]
+            node["metadata"] = node_meta
+            affected_ids.add(str(node.get("id") or ""))
+            if node_asset_id:
+                project_aliases.append(copy.deepcopy(node_alias))
+        deduped_aliases = []
+        seen_aliases = set()
+        for entry in project_aliases:
+            if not isinstance(entry, dict):
+                continue
+            key = (
+                str(entry.get("assetId") or ""),
+                str(entry.get("figure") or ""),
+                str(entry.get("oldName") or ""),
+                str(entry.get("newName") or ""),
+            )
+            if key in seen_aliases:
+                continue
+            seen_aliases.add(key)
+            deduped_aliases.append(entry)
+        payload["assetAliases"] = deduped_aliases[-200:]
+
+        updated_references = 0
+
+        def migrate_text(text, owner_id):
+            nonlocal updated_references
+            before = str(text or "")
+            after, count = _replace_asset_mention_text_with_count(
+                before,
+                source_prefix,
+                old_name,
+                figure,
+                normalized_name,
+            )
+            # Referenced-asset discovery accepts typed mentions and short
+            # mentions, but downstream graph repair needs one canonical shape.
+            # Normalize both the newly migrated and pre-existing new-name
+            # mentions so reimport never leaves an unlinked short @ alias.
+            canonical_mention = f"@{source_prefix}｜{normalized_name}（{figure}）"
+            short_new_pattern = re.compile(
+                rf"(?<![A-Za-z0-9_])@{re.escape(normalized_name)}"
+                rf"\s*[（(]\s*{re.escape(figure)}\s*[)）]"
+            )
+            after, short_new_count = short_new_pattern.subn(
+                canonical_mention,
+                after,
+            )
+            if short_new_count:
+                count += short_new_count
+            if count:
+                updated_references += count
+                if owner_id:
+                    affected_ids.add(str(owner_id))
+            return after
+
+        def visit(value, owner_id=""):
+            if isinstance(value, dict):
+                for key, child in list(value.items()):
+                    if key in {
+                        "prompt", "composerContent", "fixed_block", "description",
+                    } and isinstance(child, str):
+                        value[key] = migrate_text(child, owner_id)
+                    else:
+                        value[key] = visit(child, owner_id)
+                return value
+            if isinstance(value, list):
+                for index, child in enumerate(value):
+                    value[index] = visit(child, owner_id)
+                return value
+            return value
+
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            visit(node, str(node.get("id") or ""))
+
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            node_meta = node.get("metadata")
+            node_meta = dict(node_meta) if isinstance(node_meta, dict) else {}
+            for key in ("refs", "voiceRefs"):
+                refs = node_meta.get(key)
+                if not isinstance(refs, list):
+                    continue
+                changed_refs = []
+                for ref in refs:
+                    if not isinstance(ref, dict):
+                        changed_refs.append(ref)
+                        continue
+                    next_ref = dict(ref)
+                    ref_node = next(
+                        (
+                            candidate for candidate in nodes
+                            if str(candidate.get("id") or "")
+                            == str(ref.get("nodeId") or "")
+                        ),
+                        None,
+                    )
+                    ref_meta = (
+                        ref_node.get("metadata")
+                        if isinstance(ref_node, dict)
+                        and isinstance(ref_node.get("metadata"), dict)
+                        else {}
+                    )
+                    ref_asset_id = str(
+                        ref.get("assetId")
+                        or ref_meta.get("assetId")
+                        or ""
+                    ).strip()
+                    affected_identity = (
+                        ref_asset_id
+                        and ref_asset_id in {
+                            value for value in (
+                                str(item[3].get("assetId") or "")
+                                for item in targets
+                            )
+                            if value
+                        }
+                    )
+                    if affected_identity:
+                        if str(next_ref.get("label") or "") != normalized_name:
+                            next_ref["label"] = normalized_name
+                            updated_references += 1
+                            affected_ids.add(str(node.get("id") or ""))
+                    changed_refs.append(next_ref)
+                node_meta[key] = changed_refs
+            node["metadata"] = node_meta
+
+        stamp = _now_iso()
+        source["updatedAt"] = stamp
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            if str(node.get("id") or "") not in affected_ids:
+                continue
+            node["updatedAt"] = stamp
+            ep_id = str(
+                node.get("episodeId")
+                or (node.get("metadata") or {}).get("episodeId")
+                or source.get("episodeId")
+                or source_meta.get("episodeId")
+                or ""
+            ).strip().upper()
+            sync_projection_node(
+                con,
+                project_id,
+                node,
+                episode_id=ep_id or _UNASSIGNED_EPISODE_ID,
+                updated_at=stamp,
+            )
+        payload["revision"] = current_revision + 1
+        payload["updatedAt"] = stamp
+        con.execute(
+            "UPDATE canvas_projects SET payload_json=?,revision=?,updated_at=? "
+            "WHERE id=?",
+            (
+                json.dumps(payload, ensure_ascii=False),
+                current_revision + 1,
+                stamp,
+                project_id,
+            ),
+        )
+        sync_projection_meta(con, project_id, payload, updated_at=stamp)
+        return {
+            "unchanged": False,
+            "node": source,
+            "assetId": source_asset_id,
+            "oldName": old_name,
+            "newName": normalized_name,
+            "figure": figure,
+            "updatedNodes": len(affected_ids),
+            "updatedReferences": updated_references,
+            "revision": current_revision + 1,
+            "updatedAt": stamp,
+        }
+
+    return _run_write_transaction(write)
 
 
 _SCHEMA_READY = False
@@ -186,11 +807,24 @@ def _connect():
     global _SCHEMA_READY
     path = _db_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    # SQLite can spill temp b-trees for large payload/projection writes.
+    # Relying on the host TEMP directory caused cross-episode imports to fail
+    # midway with "unable to open database file" even though the tenant DB was
+    # writable. Keep both DB and SQLite temp files inside the tenant boundary.
+    temp_dir = os.path.join(_tenant_data_dir(), "tmp")
+    os.makedirs(temp_dir, exist_ok=True)
+    os.environ["SQLITE_TMPDIR"] = temp_dir
+    postgres = pg_compat.postgres_enabled()
     con = (
         pg_compat.connect_path(path, "canvas")
-        if pg_compat.postgres_enabled()
+        if postgres
         else sqlite3.connect(path, timeout=30)
     )
+    if not postgres:
+        # PRAGMA values cannot use bound parameters. Escape the single path
+        # literal explicitly and keep it inside the tenant-owned directory.
+        temp_dir_sql = temp_dir.replace(os.sep, "/").replace("'", "''")
+        con.execute(f"PRAGMA temp_store_directory='{temp_dir_sql}'")
     con.execute("PRAGMA busy_timeout=30000")
     con.execute("PRAGMA foreign_keys=ON")
     con.execute(
@@ -6625,7 +7259,7 @@ def list_audit_events(
             params.append(str(actor).strip())
         if str(status or "").strip():
             clauses.append("status=?")
-            params.append(str(status).strip().lower())
+            params.append(str(status).strip())
         if str(since or "").strip():
             clauses.append("created_at>=?")
             params.append(str(since).strip())
