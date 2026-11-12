@@ -37,6 +37,7 @@
 """
 
 import argparse
+import copy
 import html
 import json
 import re
@@ -104,6 +105,39 @@ def _canvas_asset_kind(name):
     if "场景" in text or "母版" in text or "九宫格" in text:
         return "scene"
     return "prop"
+
+
+def _canvas_explicit_kind(value):
+    """Return a kind only when the text explicitly names an asset family."""
+    text = str(value or "").strip()
+    normalized = text.casefold()
+    if normalized in {"crowd", "group", "群像"}:
+        return "crowd"
+    if normalized in {"character", "role", "角色"}:
+        return "character"
+    if normalized in {"scene", "场景"}:
+        return "scene"
+    if normalized in {"prop", "property", "道具"}:
+        return "prop"
+    if "群像" in text or re.search(r"\bGRP-?\d+", text):
+        return "crowd"
+    if "角色" in text:
+        return "character"
+    if "场景" in text:
+        return "scene"
+    if "道具" in text:
+        return "prop"
+    return ""
+
+
+def _canvas_record_kind(asset):
+    """Resolve type from explicit labels, not layout words such as 4 View."""
+    view = str(asset.get("view") or "").strip()
+    return (
+        _canvas_explicit_kind(view)
+        or _canvas_explicit_kind(asset.get("name"))
+        or _canvas_asset_kind(asset.get("name"))
+    )
 
 
 def _canvas_asset_name(name):
@@ -184,7 +218,7 @@ def _canvas_source_manifest(data):
         figure = _canvas_reference_code(asset)
         semantic = _canvas_semantic_code(asset)
         if not semantic and re.fullmatch(r"图\s*\d+", figure):
-            kind = _canvas_asset_kind(asset.get("name"))
+            kind = _canvas_record_kind(asset)
             prefix = {
                 "character": "CHR",
                 "scene": "SCN",
@@ -192,14 +226,119 @@ def _canvas_source_manifest(data):
                 "crowd": "GRP",
             }.get(kind, "AST")
             semantic = f"{prefix}-{int(figure[1:]):03d}"
-            asset["semanticCode"] = semantic
         if semantic and re.fullmatch(r"图\s*\d+", figure):
             manifest[semantic] = re.sub(r"\s+", "", figure)
     return manifest
 
 
+def _canvas_clean_asset_columns(asset):
+    """Recover identity columns when several P2 tables use different schemas.
+
+    A source may contain both ``图号 | 名称 | 类型 | 用途`` and
+    ``图号 | 名称 | 语义码 | 类型 | 用途``. The latter must not shift name
+    and type into unrelated columns. Prefer explicit semantic codes and
+    complete the missing fields from the matching asset prompt.
+    """
+    code = str(asset.get("code") or "").strip()
+    name = str(asset.get("name") or "").strip()
+    view = str(asset.get("view") or "").strip()
+    img = str(asset.get("img") or "").strip()
+    semantic = _canvas_semantic_code(asset)
+    parts = [
+        str(part or "").strip()
+        for part in (asset.get("extra") or [])
+        if str(part or "").strip()
+    ]
+
+    semantic_pattern = r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*"
+    if not semantic:
+        semantic = next(
+            (
+                part.upper()
+                for part in parts
+                if re.fullmatch(semantic_pattern, part.upper())
+            ),
+            "",
+        )
+
+    figure = ""
+    for value in (code, img, *parts):
+        match = re.search(r"图\s*\d+", value)
+        if match:
+            figure = re.sub(r"\s+", "", match.group(0))
+            break
+
+    if re.fullmatch(r"图\s*\d+", code):
+        figure = figure or re.sub(r"\s+", "", code)
+    if not figure and re.fullmatch(r"图\s*\d+", img):
+        figure = re.sub(r"\s+", "", img)
+
+    def is_json_name(value):
+        return bool(
+            value
+            and not re.fullmatch(r"图\s*\d+", value)
+            and not re.fullmatch(semantic_pattern, value.upper())
+            and not re.search(r"(?:段\s*\d|本集|用途|复用)", value)
+        )
+
+    if not is_json_name(name) or name.startswith(("角色", "场景", "道具", "群像")):
+        name = next((part for part in parts if is_json_name(part)), name)
+
+    if not view and re.fullmatch(r"(?:角色|场景|道具|群像).*", name):
+        view = name.split("（", 1)[0].split("(", 1)[0]
+
+    # A reused asset row may intentionally have no P2.5 prompt. Its source
+    # table already carries name/type and must not be reclassified by prompt
+    # presence. Infer the semantic family from that explicit type instead.
+    if view:
+        kind = _canvas_record_kind(asset)
+        prefix = {
+            "character": "CHR",
+            "scene": "SCN",
+            "prop": "PRP",
+            "crowd": "GRP",
+        }.get(kind, "")
+        if prefix and (
+            not semantic
+            or not semantic.startswith(f"{prefix}-")
+        ):
+            semantic = f"{prefix}-{int(figure[1:]):03d}"
+
+    if isinstance(asset.get("extra"), list):
+        asset["extra"] = [
+            part
+            for part in parts
+            if part != figure and part.upper() != semantic
+        ]
+
+    if figure:
+        asset["img"] = figure
+    if semantic:
+        asset["semanticCode"] = semantic
+        asset["code"] = semantic
+    asset["name"] = name
+    if view:
+        asset["view"] = view
+    return asset
+
+
 def validate_export_contract(data):
     """Reject exports whose asset identity fields would contradict each other."""
+    for asset in data.get("assets") or []:
+        if isinstance(asset, dict):
+            _canvas_clean_asset_columns(asset)
+    for prompt in data.get("asset_prompts") or []:
+        if not isinstance(prompt, dict):
+            continue
+        semantic = str(prompt.get("semanticCode") or "").strip().upper()
+        if semantic:
+            prompt["semanticCode"] = semantic
+        figure_match = re.search(
+            r"图\s*\d+",
+            str(prompt.get("img") or ""),
+        )
+        if figure_match:
+            prompt["code"] = re.sub(r"\s+", "", figure_match.group(0))
     errors = []
     assets = [
         item
@@ -230,6 +369,31 @@ def validate_export_contract(data):
             )
         if semantic and figure:
             by_figure[re.sub(r"\s+", "", figure)] = semantic
+    for index, segment in enumerate(data.get("segments") or [], start=1):
+        if not isinstance(segment, dict):
+            continue
+        canvas = segment.get("canvas")
+        if not isinstance(canvas, dict):
+            continue
+        codes = {
+            re.sub(r"\s+", "", str(code or ""))
+            for code in (canvas.get("asset_codes") or [])
+            if str(code or "").strip()
+        }
+        refs = {
+            re.sub(
+                r"\s+",
+                "",
+                str(ref.get("code") or ""),
+            )
+            for ref in (canvas.get("asset_refs") or [])
+            if isinstance(ref, dict) and str(ref.get("code") or "").strip()
+        }
+        if codes != refs:
+            errors.append(
+                f"段{index} canvas.asset_codes 与 asset_refs 不一致："
+                f"{', '.join(sorted(codes ^ refs))}"
+            )
     for prompt in prompts:
         figure = _canvas_reference_code(prompt)
         semantic = _canvas_semantic_code(prompt)
@@ -274,7 +438,10 @@ def validate_export_contract(data):
 
 
 def _canvas_asset_identity(asset):
-    kind = _canvas_asset_kind(asset.get("name"))
+    # P2 rows carry an explicit type. Resolve it before the name so a
+    # reusable row such as ``贾富贵 / 角色（复用）`` cannot be misclassified
+    # by later text or by the absence of a P2.5 image prompt.
+    kind = _canvas_record_kind(asset)
     name = _canvas_asset_name(asset.get("name"))
     name = re.sub(r"[·・](?:母版|九宫格)$", "", name).strip()
     variant = "master" if kind == "scene" else _canvas_variant_key(asset)
@@ -307,7 +474,7 @@ def _canvas_variant_key(asset):
 
 def _canvas_asset_title(asset):
     source_name = str(asset.get("name") or "")
-    kind = _canvas_asset_kind(source_name)
+    kind = _canvas_record_kind(asset)
     name = _canvas_asset_name(asset.get("name"))
     name = re.sub(r"[·・](?:母版|九宫格)$", "", name).strip()
     variant = _canvas_variant_key(asset)
@@ -315,7 +482,8 @@ def _canvas_asset_title(asset):
         name = f"{name}·母版"
     elif variant != "default" and variant not in {"master", "grid"} and f"·{variant}" not in name:
         name = f"{name}·{variant}"
-    return f"{_canvas_kind_label(kind)}｜{name}（{asset.get('code') or ''}）"
+    figure = _canvas_reference_code(asset)
+    return f"{_canvas_kind_label(kind)}｜{name}（{figure}）"
 
 
 def _load_canvas_asset_ledger(paths):
@@ -351,6 +519,11 @@ def _load_canvas_asset_ledger(paths):
         try:
             payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("asset_prompts"),
+            list,
+        ):
             continue
         for asset in payload.get("asset_prompts") or []:
             identity = _canvas_asset_identity(asset)
@@ -755,12 +928,14 @@ def _normalize_asset_prompt_contract(prompt):
 
 
 def _generator_metadata():
-    root = Path(__file__).resolve().parents[2]
     data = {}
-    try:
-        data = json.loads((root / "VERSION.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        pass
+    script = Path(__file__).resolve()
+    for root in (script.parents[2], script.parents[1]):
+        try:
+            data = json.loads((root / "VERSION.json").read_text(encoding="utf-8"))
+            break
+        except (OSError, json.JSONDecodeError):
+            continue
     return {
         "name": "build_board_lite.py",
         "skillVersion": str(data.get("version") or "7.4.30"),
@@ -947,7 +1122,12 @@ def enrich_canvas_contract(data, asset_ledger=None):
     canvas import from depending on hard-coded 图1~图5 role assignments or
     natural-language reference syntax.
     """
-    assets = data.setdefault("asset_prompts", [])
+    # P2 is the canonical asset manifest. P2.5 only supplies image prompts;
+    # reused assets legitimately have no P2.5 entry and must still survive
+    # into the canvas payload.
+    prompt_assets = data.setdefault("asset_prompts", [])
+    manifest_assets = data.setdefault("assets", [])
+    assets = manifest_assets if manifest_assets else prompt_assets
     manifest_figure_by_semantic = _canvas_source_manifest(data)
     ledger = dict(asset_ledger or {})
     aliases_by_identity = {}
@@ -1003,25 +1183,93 @@ def enrich_canvas_contract(data, asset_ledger=None):
             "voiceGender": str(entry.get("voiceGender") or ""),
             "voiceDialect": str(entry.get("voiceDialect") or ""),
         }
+    prompts_by_figure = {}
+    for prompt in prompt_assets:
+        figure = _canvas_reference_code(prompt)
+        if figure:
+            prompts_by_figure.setdefault(figure, prompt)
+
+    referenced_figures = {
+        re.sub(r"\s+", "", f"图{number}")
+        for segment in data.get("segments") or []
+        for number in re.findall(r"图\s*(\d+)", str(segment.get("raw") or ""))
+    }
+    known_figures = {
+        _canvas_reference_code(asset)
+        for asset in assets
+    }
+    for figure in sorted(referenced_figures, key=_canvas_figure_number):
+        if figure in known_figures:
+            continue
+        ledger_entry = ledger_assets_by_code.get(figure)
+        if not ledger_entry:
+            continue
+        assets.append(
+            {
+                "code": str(ledger_entry.get("semanticCode") or figure),
+                "semanticCode": str(ledger_entry.get("semanticCode") or ""),
+                "name": str(ledger_entry.get("name") or ""),
+                "view": str(
+                    ledger_entry.get("kind") or ""
+                ),
+                "img": figure,
+                "extra": [],
+                "_reused_only": True,
+            }
+        )
+
     by_identity = {}
     for asset in assets:
         identity = _canvas_asset_identity(asset)
         if not identity:
             continue
+        _canvas_clean_asset_columns(asset)
+        figure = _canvas_reference_code(asset)
+        prompt = prompts_by_figure.get(figure)
+        if prompt:
+            if not asset.get("raw"):
+                asset["raw"] = prompt.get("raw") or ""
+            if not asset.get("fence_body"):
+                asset["fence_body"] = prompt.get("fence_body") or []
         by_identity.setdefault(identity, []).append(asset)
 
     selected_assets = []
     for identity, candidates in by_identity.items():
-        kind = _canvas_asset_kind(candidates[0].get("name"))
+        kind = _canvas_record_kind(candidates[0])
         if kind == "scene":
             master = next((asset for asset in candidates if "母版" in str(asset.get("name") or "")), None)
             chosen = master or candidates[0]
         else:
             chosen = candidates[0]
+        # Normalize the table row before it becomes a series identity or
+        # voice binding. Reused rows often have no P2.5 prompt, but still
+        # carry an explicit type (角色/场景/道具/群像), which is the source of
+        # truth for their semantic family.
+        source_code = str(chosen.get("code") or "").strip()
+        source_name = str(chosen.get("name") or "").strip()
+        source_view = str(chosen.get("view") or "").strip()
+        source_img = str(chosen.get("img") or "").strip()
+        _canvas_clean_asset_columns(chosen)
         canonical = ledger.get(identity) or {}
         computed_voice = _canvas_voice_fields(chosen.get("raw"))
-        original_code = str(chosen.get("code") or "").strip()
+        original_code = str(chosen.get("code") or source_code or "").strip()
         chosen_semantic = _canvas_semantic_code(chosen)
+        if not chosen_semantic and source_view and re.fullmatch(
+            r"图\s*\d+", source_code
+        ):
+            kind = _canvas_record_kind(
+                {"name": source_name, "view": source_view}
+            )
+            prefix = {
+                "character": "CHR",
+                "scene": "SCN",
+                "prop": "PRP",
+                "crowd": "GRP",
+            }.get(kind, "")
+            if prefix:
+                chosen_semantic = (
+                    f"{prefix}-{int(source_code[1:]):03d}"
+                )
         ledger_figure = re.search(r"图\s*\d+", str(canonical.get("code") or ""))
         manifest_figure = manifest_figure_by_semantic.get(chosen_semantic)
         figure_code = (
@@ -1052,15 +1300,21 @@ def enrich_canvas_contract(data, asset_ledger=None):
                 _canvas_reference_code(chosen),
             )
             if figure_code_match:
+                # A table row with an explicit type wins; otherwise keep the
+                # original prompt-based classification.
+                semantic_kind = (
+                    _canvas_record_kind(
+                        {"name": source_name, "view": source_view}
+                    )
+                    if source_view
+                    else _canvas_record_kind(chosen)
+                )
                 prefix = {
                     "character": "CHR",
                     "scene": "SCN",
                     "prop": "PRP",
                     "crowd": "GRP",
-                }.get(
-                    _canvas_asset_kind(chosen.get("name")),
-                    "AST",
-                )
+                }.get(semantic_kind, "AST")
                 chosen["semanticCode"] = (
                     f"{prefix}-{int(figure_code_match.group(1)):03d}"
                 )
@@ -1070,6 +1324,9 @@ def enrich_canvas_contract(data, asset_ledger=None):
             )
         if re.fullmatch(r"图\s*\d+", figure_code):
             chosen["code"] = re.sub(r"\s+", "", figure_code)
+        chosen["name"] = source_name or chosen.get("name")
+        chosen["view"] = source_view or chosen.get("view")
+        chosen["img"] = source_img or figure_code
         for source_asset in data.get("assets") or []:
             if not isinstance(source_asset, dict):
                 continue
@@ -1082,18 +1339,36 @@ def enrich_canvas_contract(data, asset_ledger=None):
         base = re.sub(r"[·・](?:母版|九宫格)$", "", base).strip()
         aliases_by_identity[identity] = {
             "identity": identity,
-            "kind": _canvas_asset_kind(chosen.get("name")),
+            "kind": _canvas_record_kind(chosen),
             "base": base,
             "title": _canvas_asset_title(chosen),
             "semanticCode": str(chosen.get("semanticCode") or ""),
             "codes": {
-                code
+                match.group(1)
                 for candidate in candidates
-                for code in [re.sub(r"\D", "", str(candidate.get("code") or ""))]
-                if code
+                for match in [
+                    re.search(
+                        r"图\s*(\d+)",
+                        " ".join(
+                            str(candidate.get(key) or "")
+                            for key in ("code", "img")
+                        ),
+                    )
+                ]
+                if match
             } | {
-                re.search(r"图\s*(\d+)", chosen.get("code") or "").group(1)
-            } if re.search(r"图\s*(\d+)", chosen.get("code") or "") else set(),
+                match.group(1)
+                for match in [
+                    re.search(
+                        r"图\s*(\d+)",
+                        " ".join(
+                            str(chosen.get(key) or "")
+                            for key in ("code", "img")
+                        ),
+                    )
+                ]
+                if match
+            },
             "voicePrompt": str(
                 (canonical.get("voicePrompt") if canonical else "")
                 or computed_voice.get("voicePrompt")
@@ -1145,11 +1420,25 @@ def enrich_canvas_contract(data, asset_ledger=None):
             ).splitlines()
     aliases = list(aliases_by_identity.values())
     voice_prompts = []
+    selected_voice_keys = {
+        _canvas_reference_code(asset)
+        for asset in selected_assets
+    } | {
+        str(asset.get("semanticCode") or "").upper()
+        for asset in selected_assets
+    }
     for alias in aliases:
         if alias.get("kind") != "character" or not alias.get("voicePrompt"):
             continue
         code_match = re.search(r"图\s*\d+", str(alias.get("title") or ""))
         if not code_match:
+            continue
+        voice_code = re.sub(r"\s+", "", code_match.group(0))
+        voice_semantic = str(alias.get("semanticCode") or "").upper()
+        if (
+            voice_code not in selected_voice_keys
+            and voice_semantic not in selected_voice_keys
+        ):
             continue
         prompt = str(alias.get("voicePrompt") or "")
         description = str(alias.get("voiceDescription") or "")
@@ -1158,8 +1447,8 @@ def enrich_canvas_contract(data, asset_ledger=None):
                 f"音色 Audio Prompt 不完整：{alias.get('title') or alias.get('identity')}"
             )
         voice_prompts.append({
-            "code": code_match.group(0),
-            "semanticCode": _canvas_semantic_code(
+            "code": voice_code,
+            "semanticCode": voice_semantic or _canvas_semantic_code(
                 {"title": alias.get("title"), "semanticCode": alias.get("semanticCode")}
             ),
             "name": alias.get("base") or "",
@@ -1174,10 +1463,60 @@ def enrich_canvas_contract(data, asset_ledger=None):
             "dialect": alias.get("voiceDialect") or "",
         })
     data["voice_prompts"] = sorted(
-        voice_prompts,
+        {
+            str(item.get("code") or ""): item
+            for item in voice_prompts
+            if item.get("code")
+        }.values(),
         key=lambda item: _canvas_figure_number(item.get("code")),
     )
-    data["asset_prompts"] = selected_assets
+    # Only genuine P2.5 entries belong in asset_prompts. Reused P2 assets
+    # without an image prompt remain in assets[] and are still usable by the
+    # canvas reference graph.
+    data["asset_prompts"] = [
+        copy.deepcopy(asset)
+        for asset in selected_assets
+        if str(asset.get("raw") or "").strip()
+        or str(asset.get("fence_body") or "").strip()
+    ]
+    for asset in data["asset_prompts"]:
+        source_code = str(asset.get("code") or "").strip()
+        source_img = str(asset.get("img") or "").strip()
+        semantic = _canvas_semantic_code(asset)
+        figure_match = re.search(
+            r"图\s*\d+",
+            source_code or source_img,
+        )
+        if figure_match:
+            figure = re.sub(r"\s+", "", figure_match.group(0))
+            asset["code"] = figure
+            asset["img"] = figure
+            if not semantic:
+                semantic = next(
+                    (
+                        str(candidate.get("semanticCode") or "")
+                        for candidate in selected_assets
+                        if _canvas_reference_code(candidate) == figure
+                    ),
+                    "",
+                )
+            if semantic:
+                asset["semanticCode"] = semantic
+    assets = selected_assets
+    for prompt_asset in data["asset_prompts"]:
+        if isinstance(prompt_asset.get("canvas"), dict):
+            continue
+        match = next(
+            (
+                asset
+                for asset in selected_assets
+                if _canvas_reference_code(asset)
+                == _canvas_reference_code(prompt_asset)
+            ),
+            None,
+        )
+        if match and isinstance(match.get("canvas"), dict):
+            prompt_asset["canvas"] = copy.deepcopy(match["canvas"])
     assets = selected_assets
     for segment in data.setdefault("segments", []):
         segment["raw"] = _normalize_canvas_prompt(segment.get("raw"), aliases)
@@ -1193,11 +1532,16 @@ def enrich_canvas_contract(data, asset_ledger=None):
             ).splitlines()
 
     by_code = dict(ledger_assets_by_code)
+    canvas_by_figure = {}
+    for code, item in ledger_assets_by_code.items():
+        if re.fullmatch(r"图\s*\d+", code):
+            canvas_by_figure[re.sub(r"\s+", "", code)] = copy.deepcopy(item)
     for asset in assets:
+        figure = _canvas_reference_code(asset)
         code = str(asset.get("code") or "")
-        if not re.fullmatch(r"图\s*\d+", code):
+        if not re.fullmatch(r"图\s*\d+", figure):
             continue
-        kind = _canvas_asset_kind(asset.get("name"))
+        kind = _canvas_record_kind(asset)
         variant = _canvas_variant_key(asset)
         display_name = _canvas_asset_name(asset.get("name"))
         if kind == "scene" and "母版" in str(asset.get("name") or ""):
@@ -1220,7 +1564,24 @@ def enrich_canvas_contract(data, asset_ledger=None):
             "variantKey": variant,
         }
         asset["canvas"] = item
-        by_code[code] = item
+        canvas_by_figure[figure] = copy.deepcopy(item)
+        by_code[figure] = canvas_by_figure[figure]
+    for prompt_asset in data["asset_prompts"]:
+        match = next(
+            (
+                asset
+                for asset in selected_assets
+                if _canvas_reference_code(asset)
+                == _canvas_reference_code(prompt_asset)
+            ),
+            None,
+        )
+        if match and isinstance(match.get("canvas"), dict):
+            prompt_asset["canvas"] = copy.deepcopy(match["canvas"])
+        figure = _canvas_reference_code(prompt_asset)
+        if re.fullmatch(r"图\s*\d+", figure):
+            prompt_asset["code"] = figure
+            prompt_asset["img"] = figure
 
     video_aspect = _canvas_aspect((data.get("meta") or {}).get("画幅"), "16:9")
     video_model = _canvas_video_model((data.get("meta") or {}).get("模型版本"))
@@ -1269,12 +1630,31 @@ def enrich_canvas_contract(data, asset_ledger=None):
             token = f"图{code}"
             if token not in codes:
                 codes.append(token)
+        missing_codes = [code for code in codes if code not in by_code]
+        if missing_codes:
+            raise ValueError(
+                "段级画布资产引用未在资产表登记："
+                + "、".join(missing_codes)
+            )
+        asset_refs = []
+        for code in codes:
+            item = copy.deepcopy(
+                canvas_by_figure.get(code)
+                or by_code.get(code)
+                or {}
+            )
+            semantic = str(item.get("semanticCode") or "")
+            item["code"] = code
+            item["img"] = code
+            if semantic:
+                item["semanticCode"] = semantic
+            asset_refs.append(item)
         segment["canvas"] = {
             "ratio": _canvas_aspect(segment.get("raw"), video_aspect),
             "model": video_model,
             "duration": duration,
             "asset_codes": codes,
-            "asset_refs": [by_code[code] for code in codes if code in by_code],
+            "asset_refs": asset_refs,
         }
     return data
 
@@ -1332,7 +1712,29 @@ HEAD_ALIAS = {
     "name": ["名字", "名称", "角色", "人物", "资产", "name", "资产名"],
     "view": ["视图", "出图", "出图类型", "规格", "类型", "view"],
     "img":  ["@图片n", "图号", "图片", "参考图", "img", "绑定图"],
+    "semanticCode": ["语义码", "资产码", "semanticcode", "semantic"],
 }
+
+
+def _asset_table_headers(cells):
+    """Detect only genuine asset headers, never data rows."""
+    normalized = [
+        re.sub(r"[\s*`_@]", "", str(cell or "")).lower()
+        for cell in cells
+    ]
+    header_words = {
+        re.sub(r"[\s*`_@]", "", alias).lower()
+        for aliases in HEAD_ALIAS.values()
+        for alias in aliases
+    }
+    if len(set(normalized) & header_words) < 2:
+        return None
+    if not any(
+        token in normalized
+        for token in ("图号", "编码", "资产编码", "code", "code")
+    ):
+        return None
+    return normalized
 
 
 def map_head(cells):
@@ -1505,6 +1907,13 @@ def parse_md(md_text: str, asset_ledger=None) -> dict:
                     _push_tbl(pending_tbl[:-1], z)
                     pending_tbl = [head]
                 continue
+            if "---" in s and z == "assets":
+                # Every P2 subtable starts a new schema. Keeping the previous
+                # header here shifts a later "semantic code" column into the
+                # name/type fields.
+                data["_head"] = None
+                data["_asset_head_key"] = None
+                continue
             rows = table_rows([s])
             if rows:
                 cells = rows[0]
@@ -1522,28 +1931,65 @@ def parse_md(md_text: str, asset_ledger=None) -> dict:
                     flush_plain()            # 先落之前挂着的正文，保原文顺序
                     pending_tbl.append(cells)
                 elif z == "assets":
-                    head = map_head(cells)   # 表头探测只在资产区生效（防止吞掉剧本区表头行）
+                    table_headers = _asset_table_headers(cells)
+                    head = map_head(cells) if table_headers else None
                     if head is not None:
                         data["_head"] = head
+                        data["_asset_head_key"] = tuple(table_headers)
                         continue
                     h = data.get("_head")
                     if h:
                         g = lambda f: cells[h[f]] if f in h and h[f] < len(cells) else ""
-                        row = {"code": g("code") or cells[0], "name": g("name"),
-                               "view": g("view"), "img": g("img"), "extra": []}
+                        row = {
+                            "code": g("code") or cells[0],
+                            "name": g("name"),
+                            "view": g("view"),
+                            "img": g("img"),
+                            "semanticCode": g("semanticCode"),
+                            "extra": [],
+                        }
                         used = set(h.values())
                         row["extra"] = [c for i, c in enumerate(cells)
                                         if i not in used and c and c not in ("类", "编码")]
                     else:
-                        row = {"code": cells[0], "name": cells[1] if len(cells) > 1 else "",
-                               "view": cells[2] if len(cells) > 2 else "",
-                               "img": cells[3] if len(cells) > 3 else "", "extra": []}
+                        # Positional fallback for sources without a header.
+                        # Accept ``图号 | 名称 | 语义码 | 类型 | 用途`` too.
+                        values = [str(cell or "").strip() for cell in cells]
+                        semantic = next(
+                            (
+                                value
+                                for value in values
+                                if re.fullmatch(
+                                    r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*",
+                                    value.upper(),
+                                )
+                            ),
+                            "",
+                        )
+                        figure = next(
+                            (re.sub(r"\s+", "", m.group(0)) for value in values
+                             for m in [re.search(r"图\s*\d+", value)] if m),
+                            "",
+                        )
+                        row = {
+                            "code": figure or (values[0] if values else ""),
+                            "name": values[1] if len(values) > 1 else "",
+                            "view": values[3] if len(values) > 3 and semantic else (
+                                values[2] if len(values) > 2 and not semantic else ""
+                            ),
+                            "img": figure,
+                            "semanticCode": semantic,
+                            "extra": [],
+                        }
                     if row["code"] and row["code"] not in ("编码",):
+                        semantic_value = str(
+                            row.get("semanticCode") or row["code"]
+                        ).strip().upper()
                         row["semanticCode"] = (
-                            row["code"]
+                            semantic_value
                             if re.fullmatch(
                                 r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*",
-                                str(row["code"]).upper(),
+                                semantic_value,
                             )
                             else ""
                         )
@@ -2309,6 +2755,16 @@ def self_test():
             "name": "办事员（角色立绘）",
             "raw": "站姿端坐桌前，禁止坐姿。",
             "fence_body": ["站姿端坐桌前，禁止坐姿。"],
+        }, {
+            "code": "图2",
+            "name": "清算组登记表（道具）",
+            "raw": "清算组登记表道具设定图，纸面有注册日期字样。",
+            "fence_body": ["清算组登记表道具设定图，纸面有注册日期字样。"],
+        }, {
+            "code": "图3",
+            "name": "庆典横幅（道具）",
+            "raw": "庆典横幅道具设定图，印有改制庆典字样。",
+            "fence_body": ["庆典横幅道具设定图，印有改制庆典字样。"],
         }],
         "segments": [{
             "name": "段1 · 文字合同",
@@ -2330,6 +2786,74 @@ def self_test():
     )
     assert "站姿站立于桌前" in _material_data["asset_prompts"][0]["raw"]
     assert "站姿站立于桌前" in _material_data["asset_prompts"][0]["fence_body"][0]
+    _material_canvas = _material_data["segments"][0]["canvas"]
+    assert _material_canvas["asset_codes"] == ["图2", "图3"]
+    assert [
+        item["code"] for item in _material_canvas["asset_refs"]
+    ] == ["图2", "图3"]
+
+    # Regression for episode-style P2 tables:
+    #   reused: 图号 | 名称 | 类型 | 用途
+    #   new:    图号 | 名称 | 语义码 | 类型 | 用途
+    # Reused rows have no P2.5 prompt. They must remain in assets[], not shift
+    # the name/type columns and not leak into asset_prompts with empty raw.
+    _reuse_source = r"""
+# 复用资产回归
+【画幅】：16:9
+【模型版本】：2.5
+
+## P2 · 资产清单
+
+### 本集复用
+
+| 图号 | 名称 | 类型 | 本集用途 |
+|---|---|---|---|
+| 图3 | 贾富贵 | 角色（复用） | 段1 |
+
+### 本集新增
+
+| 图号 | 名称 | 语义码 | 类型 | 本集用途 |
+|---|---|---|---|---|
+| 图36 | 厂办办公室 | SCN-036 | 场景 | 段1 |
+
+## P2.5 · 资产出图提示词
+
+### 图36 · 厂办办公室（场景母版 · 室内中型 S2）
+
+```text
+Factory office scene, 1998, 36 square metres, empty of people.
+```
+
+## P4 · 投喂提示词
+
+### 段1
+
+```text
+【场景资产】@场景｜厂办办公室·母版（图36）
+【核心人物】@角色｜贾富贵（图3）
+【站位声明】贾富贵站在办公桌后方。
+[0-3秒] 中景·平视·固定。贾富贵推门进入办公室。
+```
+"""
+    _reuse_data = parse_md(_reuse_source, {})
+    _reuse_assets = {
+        asset["img"]: asset
+        for asset in _reuse_data["assets"]
+    }
+    assert set(_reuse_assets) == {"图3", "图36"}
+    assert _reuse_assets["图3"]["name"] == "贾富贵"
+    assert _reuse_assets["图3"]["view"] == "角色（复用）"
+    assert _reuse_assets["图3"]["code"] == "CHR-003"
+    assert _reuse_assets["图3"]["semanticCode"] == "CHR-003"
+    assert _reuse_assets["图36"]["name"] == "厂办办公室"
+    assert _reuse_assets["图36"]["code"] == "SCN-036"
+    assert [asset["code"] for asset in _reuse_data["asset_prompts"]] == ["图36"]
+    assert _reuse_data["asset_prompts"][0]["semanticCode"] == "SCN-036"
+    _reuse_canvas = _reuse_data["segments"][0]["canvas"]
+    assert _reuse_canvas["asset_codes"] == ["图3", "图36"]
+    assert [
+        item["img"] for item in _reuse_canvas["asset_refs"]
+    ] == ["图3", "图36"]
 
     print("[+] build_board_lite self-test PASSED")
     return 0
