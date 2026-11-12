@@ -150,6 +150,7 @@ import {
   isSettledMediaCard,
   liveGenerationCount,
   mediaGenerationVisualState,
+  preserveActiveGenerationStatus,
   projectGenerationState,
   type OptimisticGenerationSubmission,
 } from './generationPresentation';
@@ -2198,6 +2199,7 @@ function RichPromptEditor({
   onRendered,
   onMentionPreview,
   onMentionRemoved,
+  onScrollStateChange,
 }: {
   editorRef: RefObject<HTMLDivElement>;
   value: string;
@@ -2210,6 +2212,7 @@ function RichPromptEditor({
   onRendered?: () => void;
   onMentionPreview?: (preview: ({url: string; label: string} & PreviewPlacement) | null) => void;
   onMentionRemoved?: (labels: string[]) => void;
+  onScrollStateChange?: (state: {scrollTop: number; scrollHeight: number; clientHeight: number}) => void;
 }) {
   const mentionSignature = mentions.map((item) => `${item.kind}:${item.role || ''}:${item.label}:${item.url || ''}`).join('|');
   const lastEditorValueRef = useRef('');
@@ -2249,6 +2252,15 @@ function RichPromptEditor({
       aria-multiline="true"
       aria-label={placeholder}
       data-placeholder={placeholder}
+        onScroll={(event) => {
+          const editor = event.currentTarget;
+          onMentionPreview?.(null);
+          onScrollStateChange?.({
+            scrollTop: editor.scrollTop,
+            scrollHeight: editor.scrollHeight,
+            clientHeight: editor.clientHeight,
+          });
+        }}
       onCompositionStart={() => { composingRef.current = true; }}
       onCompositionEnd={(event) => {
         composingRef.current = false;
@@ -2332,7 +2344,6 @@ function RichPromptEditor({
         if (chip && (!next || !chip.contains(next))) onMentionPreview?.(null);
       }}
       onMouseLeave={() => onMentionPreview?.(null)}
-      onScroll={() => onMentionPreview?.(null)}
     />
   );
 }
@@ -4339,6 +4350,11 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   const [promptDraft, setPromptDraft] = useState(node?.prompt ?? '');
   const promptDraftRef = useRef(node?.prompt ?? '');
   const promptDirtyRef = useRef(false);
+  const [promptScrollbar, setPromptScrollbar] = useState({
+    scrollTop: 0,
+    scrollHeight: 0,
+    clientHeight: 0,
+  });
   const promptNodeRef = useRef<string | null>(node?.id ?? null);
   const promptOpenTokenRef = useRef(openToken);
   const promptCommitTimerRef = useRef<number | null>(null);
@@ -4753,6 +4769,9 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       promptDirtyRef.current = false;
       promptDraftRef.current = node.prompt;
       setPromptDraft(node.prompt);
+      setPromptScrollbar({scrollTop: 0, scrollHeight: 0, clientHeight: 0});
+      const editor = taRef.current;
+      if (editor) editor.scrollTop = 0;
       return;
     }
     if (!promptDirtyRef.current && promptDraftRef.current !== node.prompt) {
@@ -5153,6 +5172,22 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       growLastHeightRef.current = next;
       ta.style.height = `${next}px`;
     });
+  };
+  const syncPromptScrollbar = () => {
+    const editor = taRef.current;
+    if (!editor) return;
+    const next = {
+      scrollTop: editor.scrollTop,
+      scrollHeight: editor.scrollHeight,
+      clientHeight: editor.clientHeight,
+    };
+    setPromptScrollbar((current) => (
+      current.scrollTop === next.scrollTop
+      && current.scrollHeight === next.scrollHeight
+      && current.clientHeight === next.clientHeight
+        ? current
+        : next
+    ));
   };
   // 展开/收起：直接把高度切到目标值，不依赖 onChange 时机
   const applyTaHeight = (expanded: boolean) => {
@@ -5562,6 +5597,40 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
             }}
           />}
           <div className="jim-prompt-row">
+            {promptScrollbar.clientHeight > 0
+              && promptScrollbar.scrollHeight > promptScrollbar.clientHeight + 1 && (
+              <span
+                className="jim-prompt-scrollbar"
+                aria-hidden="true"
+                data-visible="1"
+              >
+                <i
+                  style={{
+                    height: `${Math.max(
+                      18,
+                      (promptScrollbar.clientHeight / promptScrollbar.scrollHeight)
+                        * promptScrollbar.clientHeight,
+                    )}px`,
+                    transform: `translateY(${
+                      (promptScrollbar.scrollTop
+                        / Math.max(
+                          1,
+                          promptScrollbar.scrollHeight - promptScrollbar.clientHeight,
+                        ))
+                      * Math.max(
+                        0,
+                        promptScrollbar.clientHeight
+                          - Math.max(
+                            18,
+                            (promptScrollbar.clientHeight / promptScrollbar.scrollHeight)
+                              * promptScrollbar.clientHeight,
+                          ),
+                      )
+                    }px)`,
+                  }}
+                />
+              </span>
+            )}
             <RichPromptEditor
               editorRef={taRef}
               value={promptDraft}
@@ -5618,7 +5687,11 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                   }
                 }
               }}
-              onRendered={() => window.requestAnimationFrame(growTa)}
+              onRendered={() => window.requestAnimationFrame(() => {
+                growTa();
+                syncPromptScrollbar();
+              })}
+              onScrollStateChange={setPromptScrollbar}
               onMentionPreview={setMentionPreview}
               onMentionRemoved={(labels) => {
                 const targets = labels
@@ -9707,6 +9780,8 @@ function CanvasViewInner({
   );
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
   const [generationBusyIds, setGenerationBusyIds] = useState<Set<string>>(() => new Set());
+  const generationBusyIdsRef = useRef(generationBusyIds);
+  generationBusyIdsRef.current = generationBusyIds;
   // 事件流是否在线：在线时轮询降级成兜底对账，离线时恢复 1.5s 的密集轮询。
   const [eventsConnected, setEventsConnected] = useState(false);
   const mediaNodesRef = useRef<CanvasMediaNode[]>([]);
@@ -9803,10 +9878,9 @@ function CanvasViewInner({
         const availability = remote.mediaUrl === local.mediaUrl
           ? local.mediaAvailability
           : 'unknown';
-        // workspace-nodes is the card's sole state authority. Local state may
-        // preserve an unsaved prompt/params draft and screen position, but it
-        // must never override the backend status, media URL or generation
-        // result. This removes the old "不确定提示先出现、图片后到" race.
+        // workspace-nodes is the card's state authority, except while its
+        // task ledger still says a generation is active. A refresh can briefly
+        // return a pre-submit row; do not let it make the card flicker back.
         const preserveSelection = preserveSelectedMediaVersion(local, remote);
         const confirmedVersionSelection = (
           local._mediaVersionSelection === true
@@ -9814,9 +9888,13 @@ function CanvasViewInner({
           && String(local.params?.activeVersionId || '').trim()
             === String(remote.params?.activeVersionId || '').trim()
         );
+        const projectedRemote = preserveActiveGenerationStatus(
+          remote,
+          generationBusyIdsRef.current,
+        );
         return {
           ...local,
-          ...remote,
+          ...projectedRemote,
           ...(availability ? {mediaAvailability: availability} : {mediaAvailability: undefined}),
           ...preserveSelection,
           x: local.x,
@@ -9902,12 +9980,13 @@ function CanvasViewInner({
     );
     const {retainedOptimistic: retainedOptimisticStarts} = projection;
     optimisticGenerationStartsRef.current = retainedOptimisticStarts;
-    // Only the submission initiated by this tab can temporarily lock a card.
-    // The task ledger is display history for the task center; it must never
-    // make a card look busy when the backend node row already has a terminal
-    // state. A genuinely active task is projected into node.status by the
-    // backend workspace endpoint.
+    // Keep both the local optimistic submission and active server tasks in
+    // this set. Workspace refreshes can briefly return a pre-submit row; the
+    // active task is the authority until it reaches a terminal state.
     const optimisticBusyIds = new Set(retainedOptimisticStarts.keys());
+    for (const nodeId of projection.activeNodeIds) {
+      optimisticBusyIds.add(nodeId);
+    }
     setGenerationBusyIds((prev) => {
       // This set must be projected from the current task snapshot. Mutating a
       // previous set by only adding active tasks leaves stale node ids forever
@@ -12314,9 +12393,13 @@ function CanvasViewInner({
           && String(local.params?.activeVersionId || '').trim()
             === String(remote.params?.activeVersionId || '').trim()
         );
+        const projectedRemote = preserveActiveGenerationStatus(
+          remote,
+          generationBusyIdsRef.current,
+        );
         return {
           ...local,
-          ...remote,
+          ...projectedRemote,
           ...preserveSelection,
           x: local.x,
           y: local.y,

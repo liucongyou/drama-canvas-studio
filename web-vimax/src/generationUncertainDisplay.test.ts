@@ -42,12 +42,12 @@ describe('generation error presentation', () => {
     );
   });
 
-  it('keeps the workspace node row as the sole card status authority', () => {
+  it('keeps an active task from being erased by a stale workspace row', () => {
     expect(source).toContain(
-      'workspace-nodes is the card\'s sole state authority.',
+      'workspace-nodes is the card\'s state authority, except while its',
     );
-    expect(source).not.toMatch(
-      /generationTasks\s*\.filter\(\(item\) => item\.node_id === mn\.id\)/,
+    expect(source).toContain(
+      'generationBusyIdsRef.current',
     );
   });
 

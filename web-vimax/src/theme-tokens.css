@@ -2319,13 +2319,13 @@ html[data-theme='dark'][data-variant='immersive'] .canvas-node.canvas-media-node
 }
 
 
-/* Theme-aware inline @ mention chips. Each media kind keeps its own hue while
-   the fill/border always mix with the active surface and text tokens. */
+/* Inline @ mentions stay text-first: the type icon keeps its hue, while the
+   surrounding body has no chip fill or border. */
 .jim-prompt-mention{
   --mention: var(--v-accent);
   color: color-mix(in srgb, var(--mention) 58%, var(--v-text)) !important;
-  border-color: color-mix(in srgb, var(--mention) 36%, transparent) !important;
-  background: color-mix(in srgb, var(--mention) 13%, var(--v-surface)) !important;
+  border: 0 !important;
+  background: transparent !important;
 }
 .jim-prompt-mention.is-image{--mention:var(--v-accent)}
 .jim-prompt-mention.is-audio{--mention:#a78bfa}
@@ -2339,19 +2339,19 @@ html[data-theme='dark'][data-variant='immersive'] .canvas-node.canvas-media-node
 }
 .jim-prompt-mention:hover{
   color: color-mix(in srgb, var(--mention) 45%, var(--v-text)) !important;
-  border-color: color-mix(in srgb, var(--mention) 58%, transparent) !important;
-  background: color-mix(in srgb, var(--mention) 23%, var(--v-surface)) !important;
+  border: 0 !important;
+  background: transparent !important;
 }
 html[data-theme='light'][data-variant='light'] .jim-prompt-mention{
   color: color-mix(in srgb, var(--mention) 64%, var(--v-text)) !important;
-  border-color: color-mix(in srgb, var(--mention) 34%, transparent) !important;
-  background: color-mix(in srgb, var(--mention) 10%, var(--v-surface)) !important;
+  border: 0 !important;
+  background: transparent !important;
 }
 html[data-theme='light'][data-variant='light'] .jim-prompt-mention.is-audio{--mention:#7c5fd3}
 html[data-theme='light'][data-variant='light'] .jim-prompt-mention.is-video{--mention:#0f8f83}
 html[data-theme='light'][data-variant='light'] .jim-prompt-mention.is-text{--mention:var(--v-warn)}
 html[data-theme='light'][data-variant='light'] .jim-prompt-mention:hover{
-  background: color-mix(in srgb, var(--mention) 16%, var(--v-surface)) !important;
+  background: transparent !important;
 }
 /* Validation notices should follow the theme's danger token, not hard-coded red. */
 .jim-validation-notes>div{
@@ -2467,64 +2467,14 @@ html[data-theme='light'][data-variant='light'] .jim-prompt{
   opacity: 0 !important;
 }
 
-/* Prompt editor: overlay-thin scrollbar, no reserved gutter. */
+/* Prompt editor uses the overlay indicator in CanvasView; hide native rails. */
 .jim-prompt{
   overflow-y: auto;
   padding-right: 0 !important;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,.20) transparent;
+  scrollbar-width: none !important;
 }
 .jim-prompt::-webkit-scrollbar{
-  width: 3px;
-  height: 3px;
-}
-.jim-prompt::-webkit-scrollbar-track{
-  background: transparent;
-  border: 0;
-}
-.jim-prompt::-webkit-scrollbar-thumb{
-  background: rgba(255,255,255,.20);
-  border-radius: 99px;
-  border: 0;
-}
-.jim-prompt::-webkit-scrollbar-thumb:hover{
-  background: rgba(255,255,255,.34);
-}
-html[data-theme='light'][data-variant='light'] .jim-prompt{
-  scrollbar-color: rgba(15,23,42,.22) transparent;
-}
-html[data-theme='light'][data-variant='light'] .jim-prompt::-webkit-scrollbar-thumb{
-  background: rgba(15,23,42,.22);
-}
-
-/* Final override: 2px overlay-style scrollbar, transparent rail. */
-.jim-prompt{
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,.24) transparent;
-}
-.jim-prompt::-webkit-scrollbar{
-  width: 2px !important;
-  height: 2px !important;
-  background: transparent !important;
-}
-.jim-prompt::-webkit-scrollbar-track,
-.jim-prompt::-webkit-scrollbar-track-piece,
-.jim-prompt::-webkit-scrollbar-corner{
-  background: transparent !important;
-  border: 0 !important;
-}
-.jim-prompt::-webkit-scrollbar-thumb{
-  background: rgba(255,255,255,.24) !important;
-  border: 0 !important;
-  border-radius: 99px !important;
-}
-.jim-prompt::-webkit-scrollbar-thumb:hover{
-  background: rgba(255,255,255,.42) !important;
-}
-html[data-theme='light'][data-variant='light'] .jim-prompt{
-  scrollbar-color: rgba(15,23,42,.24) transparent;
-}
-html[data-theme='light'][data-variant='light'] .jim-prompt::-webkit-scrollbar-thumb{
-  background: rgba(15,23,42,.24) !important;
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }

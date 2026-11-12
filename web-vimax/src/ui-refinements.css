@@ -2017,12 +2017,31 @@ html, html[data-theme='dark'][data-variant='immersive'] { --canvas: #121212; }
 .jim-ref-thumb i{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-style:normal;font-size:10px;color:#7fb0ff}
 .jim-ref-thumb button{position:absolute;top:0;right:0;width:13px;height:13px;border:none;border-radius:0 0 0 5px;background:rgba(10,12,17,.9);color:#e07878;font-size:8px;line-height:1;cursor:pointer;padding:0;opacity:0;transition:opacity .12s}
 .jim-ref-thumb:hover button{opacity:1}
-.jim-prompt-row{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.jim-prompt-row{position:relative;display:flex;align-items:flex-start;gap:8px;min-width:0}
+.jim-prompt-scrollbar{
+  position:absolute;
+  top:2px;
+  right:3px;
+  bottom:2px;
+  width:2px;
+  border-radius:99px;
+  background:transparent;
+  pointer-events:none;
+  z-index:2;
+}
+.jim-prompt-scrollbar>i{
+  display:block;
+  width:2px;
+  border-radius:99px;
+  background:color-mix(in srgb,var(--v-text-3) 34%,transparent);
+}
 .jim-prompt{
   flex:1;min-width:0;background:transparent;border:none;color:#e8eef9;
   font-size:14px;line-height:1.62;resize:none;min-height:56px;max-height:132px;
   font-family:inherit;padding:2px 0;overflow-y:auto;
+  scrollbar-width:none;
 }
+.jim-prompt::-webkit-scrollbar{display:none;width:0;height:0}
 .jim-prompt:focus{outline:none}
 .jim-prompt::placeholder{color:#5b6a86}
 .jim-prompt-side{
@@ -4663,14 +4682,10 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 /* 7) 提示词可读性：原文 128px 上限只能显示 3 行，长提示词（412px）几乎全被裁掉，
       又不敢改结构 —— 只把上限放开到 30vh 并给一点内部滚动余量，弹窗整体高度自适应。 */
 .jim-prompt{max-height:min(30vh,300px)}
-/* 滚动条：即梦式覆盖式细条，不占正文宽度。 */
-.jim-prompt{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--v-text-3) 34%,transparent) transparent}
-.jim-prompt::-webkit-scrollbar{width:3px;height:3px;background:transparent}
-.jim-prompt::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--v-text-3) 34%,transparent);border:0;border-radius:99px;background-clip:border-box}
-.jim-prompt::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--v-text-2) 52%,transparent);background-clip:border-box}
-.jim-prompt::-webkit-scrollbar-track,
-.jim-prompt::-webkit-scrollbar-track-piece,
-.jim-prompt::-webkit-scrollbar-corner{background:transparent;border:0}
+/* Native scrollbars can render platform arrows even at "thin"; the editor uses
+   the overlay indicator rendered in CanvasView instead. */
+.jim-prompt{scrollbar-width:none}
+.jim-prompt::-webkit-scrollbar{display:none;width:0;height:0}
 /* 8) 长提示词时滚动到底部会贴住工具栏，补一点内边距 */
 .jim-prompt-area{padding-bottom:6px}
 /* 9) 清空按钮（Eraser）常态颜色过暗，深色底上几乎看不见 —— 提到次级文字色，
@@ -12253,44 +12268,35 @@ button.jim-dependency-prepare-item:disabled{
 
 /* @ mentions: make the inline reference read as a chip instead of low-contrast text. */
 .jim-prompt-mention{
-  height:23px;
-  padding:0 7px 0 2px;
-  border-radius:6px;
-  border:1px solid rgba(122,146,255,.28);
-  background:rgba(122,146,255,.13);
-  color:#dbe4ff;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.055);
-  transition:background .14s ease,border-color .14s ease,color .14s ease;
+  height:20px;
+  padding:0;
+  border-radius:0;
+  border:0;
+  background:transparent;
+  box-shadow:none;
+  transition:color .14s ease;
 }
 .jim-prompt-mention.is-image{
-  border-color:rgba(108,154,255,.34);
-  background:rgba(88,133,255,.17);
   color:#dce8ff;
 }
 .jim-prompt-mention.is-audio{
-  border-color:rgba(176,132,255,.32);
-  background:rgba(146,104,255,.14);
   color:#eadfff;
 }
 .jim-prompt-mention.is-video{
-  border-color:rgba(83,204,191,.30);
-  background:rgba(62,186,172,.13);
   color:#d8fff8;
 }
 .jim-prompt-mention.is-text{
-  border-color:rgba(238,184,93,.30);
-  background:rgba(225,166,67,.13);
   color:#ffeccf;
 }
 .jim-prompt-mention:hover{
-  background:rgba(122,146,255,.24);
-  border-color:rgba(150,170,255,.48);
+  background:transparent;
+  border:0;
   color:#fff;
 }
-.jim-prompt-mention.is-image:hover{background:rgba(88,133,255,.26);border-color:rgba(139,174,255,.55)}
-.jim-prompt-mention.is-audio:hover{background:rgba(146,104,255,.24);border-color:rgba(190,158,255,.52)}
-.jim-prompt-mention.is-video:hover{background:rgba(62,186,172,.23);border-color:rgba(115,222,210,.50)}
-.jim-prompt-mention.is-text:hover{background:rgba(225,166,67,.22);border-color:rgba(246,201,127,.48)}
+.jim-prompt-mention.is-image:hover,
+.jim-prompt-mention.is-audio:hover,
+.jim-prompt-mention.is-video:hover,
+.jim-prompt-mention.is-text:hover{background:transparent;border:0}
 
 /* The validation hint and the "prepare missing assets" action are one group;
    the flex gap was making them consume an extra row of height. */

@@ -196,6 +196,29 @@ export function liveGenerationCount(
     .filter(isGenerationTaskActive).length;
 }
 
+/**
+ * While the task ledger says a node is active, a workspace snapshot may still
+ * be older than the submit response. Keep the card in its busy projection
+ * until a terminal task snapshot releases the node.
+ */
+export function preserveActiveGenerationStatus<T extends {
+  id: string;
+  status?: string;
+  providerTaskStatus?: string;
+}>(
+  remote: T,
+  activeNodeIds: ReadonlySet<string>,
+): T {
+  if (!activeNodeIds.has(remote.id) || remote.status === 'generating') {
+    return remote;
+  }
+  return {
+    ...remote,
+    status: 'generating',
+    providerTaskStatus: remote.providerTaskStatus || 'queued',
+  };
+}
+
 export function mediaGenerationVisualState(input: {
   status?: string;
   mediaUrl?: string;

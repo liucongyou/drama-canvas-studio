@@ -8,10 +8,10 @@ describe('generation authority boundary', () => {
 
   it('does not derive terminal card state from a task snapshot', () => {
     expect(source).toContain(
-      'The task ledger is display history for the task center',
+      'Keep both the local optimistic submission and active server tasks',
     );
     expect(source).toContain(
-      'workspace-nodes is the card\'s sole state authority',
+      '// active task is the authority until it reaches a terminal state.',
     );
   });
 

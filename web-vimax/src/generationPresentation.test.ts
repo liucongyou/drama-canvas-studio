@@ -10,10 +10,29 @@ import {
   latestTaskByNode,
   liveGenerationCount,
   mediaGenerationVisualState,
+  preserveActiveGenerationStatus,
   projectGenerationState,
   retainOptimisticGenerationSubmissions,
 } from './generationPresentation';
 import type {GenerationTask} from './api';
+
+describe('active task status projection', () => {
+  it('keeps an active task node generating when a stale workspace row says done', () => {
+    expect(preserveActiveGenerationStatus(
+      {id: 'node-a', status: 'done'},
+      new Set(['node-a']),
+    )).toMatchObject({
+      id: 'node-a',
+      status: 'generating',
+      providerTaskStatus: 'queued',
+    });
+  });
+
+  it('does not alter a terminal node after the active task is released', () => {
+    const remote = {id: 'node-a', status: 'done'};
+    expect(preserveActiveGenerationStatus(remote, new Set())).toBe(remote);
+  });
+});
 
 describe('generation presentation', () => {
   it('treats stage-only values as non-progress', () => {
