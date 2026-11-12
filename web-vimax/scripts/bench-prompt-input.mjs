@@ -76,7 +76,7 @@ try {
       active: document.activeElement === element,
     };
   }, editor);
-  await page.waitForTimeout(350);
+  await page.waitForTimeout(500);
   const synced = await page.evaluate(() => ({
     sync: document.querySelector('.canvas-status-trigger')?.textContent || '',
     overflow: document.querySelector('.agent-panel')?.scrollWidth || 0,

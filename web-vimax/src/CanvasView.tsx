@@ -2197,6 +2197,7 @@ function RichPromptEditor({
   placeholder,
   editable = true,
   onChange,
+  onBlur,
   onKeyDown,
   onRendered,
   onMentionPreview,
@@ -2208,6 +2209,7 @@ function RichPromptEditor({
   placeholder: string;
   editable?: boolean;
   onChange: (value: string) => void;
+  onBlur?: () => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
   onRendered?: (mode?: 'sync' | 'deferred') => void;
   onMentionPreview?: (preview: ({url: string; label: string} & PreviewPlacement) | null) => void;
@@ -2312,6 +2314,7 @@ function RichPromptEditor({
         event.currentTarget.dataset.promptValue = next;
         lastEditorValueRef.current = next;
         onChange(next);
+        onBlur?.();
       }}
       onKeyDown={(event) => {
         onKeyDown(event);
@@ -4364,6 +4367,8 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   const suppressBackdropClickUntilRef = useRef(0);
   const [durationDraft, setDurationDraft] = useState('');
   const commitDurationRef = useRef<(raw: string) => void>(() => {});
+  const promptDraftRef = useRef(node?.prompt || '');
+  const promptCommitTimerRef = useRef<number | null>(null);
   // 提示词框默认 4 行，点放大按钮才撑到 30vh；之前是无条件自适应，一打开就铺满半屏。
   const [taExpanded, setTaExpanded] = useState(false);
   // 弹窗贴卡片下方还是上方：由渲染后的实际高度决定（下方放不下就翻上去）
@@ -4438,12 +4443,15 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
         window.clearTimeout(closeTimerRef.current);
         closeTimerRef.current = null;
       }
+      if (node && promptDraftRef.current !== node.prompt) {
+        onChange(node.id, {prompt: promptDraftRef.current});
+      }
       onClose(reason);
     };
     if (el) el.addEventListener('animationend', finish, {once: true});
     // Unlock the canvas immediately; only the visual exit is deferred.
     closeTimerRef.current = window.setTimeout(finish, 120);
-  }, [closing, onClose]);
+  }, [closing, node, onChange, onClose]);
   useEffect(() => () => {
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
   }, []);
@@ -4458,6 +4466,30 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   // 最近一次写入的 params：同一 tick 内连发 patch（选比例 = ratio + size）时要基于它叠加，
   // 否则第二份快照里的旧值会把第一次写的覆盖掉（★ hook 必须在条件 return 之前）
   const paramsRef = useRef<CanvasMediaParams>(node?.params || {});
+
+  const flushPromptDraft = useCallback(() => {
+    if (promptCommitTimerRef.current !== null) {
+      window.clearTimeout(promptCommitTimerRef.current);
+      promptCommitTimerRef.current = null;
+    }
+    if (!node) return;
+    const next = promptDraftRef.current;
+    if (next === node.prompt) return;
+    onChange(node.id, {prompt: next});
+  }, [node?.id, node?.prompt, onChange]);
+
+  const schedulePromptCommit = (next: string) => {
+    promptDraftRef.current = next;
+    if (promptCommitTimerRef.current !== null) {
+      window.clearTimeout(promptCommitTimerRef.current);
+    }
+    promptCommitTimerRef.current = window.setTimeout(() => {
+      promptCommitTimerRef.current = null;
+      if (!node) return;
+      if (promptDraftRef.current === node.prompt) return;
+      onChange(node.id, {prompt: promptDraftRef.current});
+    }, 120);
+  };
 
   // 提示词框高度：**由内容决定**（对齐即梦 —— 用户明确要求"没内容的时候高度和有内容的高度不一样"）。
   //   空态只有一行占位文案 → 框很矮；写下内容后随行数长高，到上限才内部滚动。
@@ -4488,6 +4520,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   // 只有主动点击输入框后才出现编辑光标。
   useEffect(() => {
     if (!node) return;
+    promptDraftRef.current = node.prompt;
     setTaExpanded(false);
     setMentionPreview(null);
     const ta = taRef.current;
@@ -4502,6 +4535,16 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node?.id]);
+  useEffect(() => {
+    if (!node) return;
+    promptDraftRef.current = node.prompt;
+  }, [node?.id, node?.prompt]);
+  useEffect(() => () => {
+    if (promptCommitTimerRef.current !== null) {
+      window.clearTimeout(promptCommitTimerRef.current);
+      promptCommitTimerRef.current = null;
+    }
+  }, []);
 
   // Esc 逐层关闭：下拉面板 / + 菜单 / 画布选择 → @ 候选 → 整栏
   useEffect(() => {
@@ -4634,7 +4677,11 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
 
   const nodeKind = node?.kind ?? 'image';
   const generateAndClose = async () => {
-    if (node && await onGenerate(node, {
+    flushPromptDraft();
+    const latestNode = node
+      ? {...node, prompt: promptDraftRef.current}
+      : null;
+    if (latestNode && await onGenerate(latestNode, {
       entry: 'prompt-modal',
       confirmed: true,
     })) requestClose();
@@ -5507,7 +5554,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
               placeholder={promptPlaceholder}
               onChange={(next) => {
                 const limited = next.slice(0, promptLimit);
-                onChange(node.id, {prompt: limited});
+                schedulePromptCommit(limited);
                 const editor = taRef.current;
                 const followsAt = Boolean(editor && promptCaretFollowsAt(editor, limited));
                 if (followsAt && editor) {
@@ -5553,6 +5600,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                 }
               }}
               onMentionPreview={setMentionPreview}
+              onBlur={flushPromptDraft}
               onMentionRemoved={(labels) => {
                 for (const label of labels) {
                   const ref = refEntries.find((item) => refLabel(item) === label);
