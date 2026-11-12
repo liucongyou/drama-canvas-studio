@@ -39,7 +39,7 @@ try {
     );
   }
 
-  const projectId = await page.evaluate(async () => {
+  const projectId = process.env.PROJECT_ID || await page.evaluate(async () => {
     const response = await fetch('/api/projects', {credentials: 'same-origin'});
     const body = await response.json();
     return body.projects?.[0]?.id || '';
@@ -49,7 +49,7 @@ try {
     waitUntil: 'domcontentloaded',
     timeout: 60_000,
   });
-  await page.waitForSelector('.react-flow', {timeout: 60_000});
+  await page.waitForSelector('.react-flow__node', {timeout: 60_000});
   const target = await page.$('.react-flow__node');
   if (!target) throw new Error('no canvas node');
   const focusStart = performance.now();
@@ -58,6 +58,7 @@ try {
   const focusMs = performance.now() - focusStart;
   const editor = await page.$('.jim-prompt[contenteditable="true"]');
   if (!editor) throw new Error('prompt editor missing');
+  const originalText = await editor.evaluate((element) => element.textContent || '');
   await editor.click();
 
   const inputResult = await page.evaluate(async (element) => {
@@ -76,15 +77,41 @@ try {
       active: document.activeElement === element,
     };
   }, editor);
-  await page.waitForTimeout(500);
-  const synced = await page.evaluate(() => ({
-    sync: document.querySelector('.canvas-status-trigger')?.textContent || '',
-    overflow: document.querySelector('.agent-panel')?.scrollWidth || 0,
-  }));
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const restored = await page.evaluate((expected) => {
+    const editor = document.querySelector('.jim-prompt[contenteditable="true"]');
+    return Boolean(editor && (editor.textContent || '') === expected);
+  }, originalText);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  if (!restored) {
+    throw new Error('prompt benchmark did not restore the original text');
+  }
+  const synced = await page.evaluate((expectedText) => {
+    const editor = document.querySelector('.jim-prompt[contenteditable="true"]');
+    return {
+      sync: document.querySelector('.canvas-status-trigger')?.textContent || '',
+      text: editor?.textContent || '',
+      containsExpected: Boolean(editor?.textContent?.includes(expectedText)),
+    };
+  }, inputResult.text);
   console.log(JSON.stringify({projectId, focusMs, inputResult, synced, errors}, null, 2));
   if (inputResult.timings.some((value) => value > 120)) {
     throw new Error(`input frame latency too high: ${inputResult.timings.join(',')}`);
   }
+  if (!synced.containsExpected) {
+    throw new Error('prompt draft was not committed after debounce');
+  }
+  await page.evaluate((element, original) => {
+    element.focus();
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    document.execCommand('insertText', false, original);
+    element.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText'}));
+  }, editor, originalText);
+  await new Promise((resolve) => setTimeout(resolve, 500));
 } finally {
   await browser.close();
 }
