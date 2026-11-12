@@ -3,6 +3,16 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.12.07',
+    date: '2026-11-12',
+    title: '修复弹窗打开时的 Hook 顺序崩溃',
+    releasedAt: '2026-11-12 17:34:00 +08:00',
+    changes: [
+      '将提示词编辑器的滚动计算和窗口尺寸监听 Hook 全部移到节点空值早退之前，打开或关闭弹窗时 Hook 数量保持稳定。',
+      '新增 Hook 顺序门禁，任何在弹窗 early return 之后新增 Hook 的改动都会在测试阶段被拦截。',
+    ],
+  },
+  {
     version: '2026.11.12.06',
     date: '2026-11-12',
     title: '提示词细轨适配窗口缩放',

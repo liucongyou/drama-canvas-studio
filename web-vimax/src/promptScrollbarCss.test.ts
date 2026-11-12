@@ -56,4 +56,12 @@ describe('prompt editor scrollbar', () => {
     expect(source).toContain("window.addEventListener('resize', scheduleSync)");
     expect(source).toContain('editor.scrollTop = 0');
   });
+
+  it('registers resize hooks before the modal early return', () => {
+    const earlyReturn = source.indexOf('if (!node) return null;');
+    const effect = source.indexOf('new ResizeObserver(scheduleSync)');
+    expect(earlyReturn).toBeGreaterThan(0);
+    expect(effect).toBeGreaterThan(0);
+    expect(effect).toBeLessThan(earlyReturn);
+  });
 });
