@@ -2,6 +2,7 @@
 import unittest
 from unittest import mock
 
+import canvas_store
 import server
 
 
@@ -50,6 +51,16 @@ class AccessLogPolicyTests(unittest.TestCase):
         ), mock.patch.object(server.threading, "Thread") as thread:
             server.start_wal_maintenance()
             thread.assert_called_once()
+
+    def test_write_transaction_does_not_reenter_active_postgres_transaction(self):
+        connection = mock.Mock()
+        connection.in_transaction = True
+        connection.execute.return_value.fetchone.return_value = None
+        with mock.patch.object(canvas_store, "_connect", return_value=connection):
+            canvas_store._run_write_transaction(lambda con: "ok")
+        executed = [call.args[0] for call in connection.execute.call_args_list]
+        self.assertNotIn("BEGIN IMMEDIATE", executed)
+        connection.commit.assert_called_once()
 
 
 if __name__ == "__main__":

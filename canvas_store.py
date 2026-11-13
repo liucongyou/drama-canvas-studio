@@ -3765,7 +3765,11 @@ def _run_write_transaction(callback):
             delay = min(_WRITE_RETRY_MAX_DELAY, delay * 2)
             continue
         try:
-            con.execute("BEGIN IMMEDIATE")
+            # PostgreSQL's pooled connection may still carry an implicit
+            # transaction from a preceding statement. SQLite needs the explicit
+            # writer lock; PostgreSQL only needs BEGIN when currently idle.
+            if not con.in_transaction:
+                con.execute("BEGIN IMMEDIATE")
             result = callback(con)
             con.commit()
             # PASSIVE never blocks writers or readers. A soft hard-limit check
