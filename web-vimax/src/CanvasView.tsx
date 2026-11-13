@@ -113,6 +113,11 @@ import {
 } from 'lucide-react';
 import {getCanvas, getCanvasNotes, getCanvasMediaNodes, getSharedCanvasWorkspace, getWorkspaceIndex, getWorkspaceNodes, getWorkspaceMediaNodes, getWorkspaceMediaNodeSnapshot, getWorkspaceFacts, getWorkspaceShell, getCanvasEpisodeWorkspace, projectEventsUrl, shareEventsUrl, projectCursorStorageKey, mediaSourceUrl, getCanvasWorkspace, getGenerationTasks, cancelGenerationTask, resolveGenerationTask, getModelCatalog, getQualityReport, markRefRemoved, clearRefRemoved, recomputeQualityReport, saveCanvasNotes, saveCanvasMediaNodes, saveCanvasMediaNodePositions, saveCanvasEpisodeViewport, saveCanvasConnections, createCanvasEpisode, deleteCanvasEpisode, patchMediaNodeFields, patchMediaNodesFields, appendLocalMediaVersion, selectCanvasMediaVersion, deleteCanvasMediaNode, renameCanvasAsset, saveCanvasShot, sendMessage, generateCanvasNodeNow, recoverCanvasNodeMedia, isLiveProviderGeneration, subscribeToEvents, uploadWorkspaceFile, uploadWorkspaceFileWithProgress, voiceRefList, withVoiceRefs, assetRefFromNode, mediaVersionList, activeMediaVersionIndex, preserveSelectedMediaVersion, selectableMediaVersion, createMediaDownloadUrl, type Canvas, type CanvasAssetItem, type CanvasAssetMediaItem, type CanvasNote, type CanvasMediaNode, type CanvasMediaNodeKind, type CanvasMediaParams, type CanvasSegment, type CanvasShot, type GenerationTask, type ModelCatalog, type ModelSpec, type QualityReport, type WorkspaceProjectMeta} from './api';
 import {isMediaVersionSelectable} from './mediaVersions';
+import {
+  mediaReadinessClass,
+  mediaReadinessLabel,
+  mediaReadinessPhase,
+} from './mediaReadiness';
 import {canvasEventId, eventBelongsToEpisode, readCanvasEventCursor, shouldProcessCanvasEvent, writeCanvasEventCursor} from './canvasEventCursor';
 import {createCanvasEventLifecycle} from './canvasEventLifecycle';
 import {generationCostAmount, generationCostHint, modelPricingNote, pricingCurrencySymbol} from './modelPricing';
@@ -159,10 +164,7 @@ import {
   inheritModelParams,
   migrateUnavailableModelParams,
 } from './modelParamInheritance';
-import {
-  isTransientMediaError,
-  shouldIgnorePlaybackInterruption,
-} from './mediaLoadRecovery';
+import {shouldIgnorePlaybackInterruption} from './mediaLoadRecovery';
 import {
   activeProviderGroup,
   favoriteModelsForProvider,
@@ -794,9 +796,11 @@ function LazyCanvasImage({
 
 function VideoCoverImage({
   src,
+  onLoad,
   onFailure,
 }: {
   src: string;
+  onLoad: () => void;
   onFailure: () => void;
 }) {
   const [loaded, setLoaded] = useState(false);
@@ -815,7 +819,10 @@ function VideoCoverImage({
         alt=""
         draggable={false}
         decoding="async"
-        onLoad={() => setLoaded(true)}
+        onLoad={() => {
+          setLoaded(true);
+          onLoad();
+        }}
         onError={() => {
           setLoaded(false);
           setFailed(true);
@@ -2564,9 +2571,12 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const [mediaLoaded, setMediaLoaded] = useState(false);
   const [videoSourceReady, setVideoSourceReady] = useState(false);
   const [videoCoverUrl, setVideoCoverUrl] = useState('');
+  const [videoCoverReady, setVideoCoverReady] = useState(false);
   const [videoFrameReady, setVideoFrameReady] = useState(false);
+  const [videoMetadataReady, setVideoMetadataReady] = useState(false);
   const [videoIntrinsicRatio, setVideoIntrinsicRatio] = useState(0);
   const [videoFullscreen, setVideoFullscreen] = useState(false);
+  const [audioReady, setAudioReady] = useState(false);
   // A video task can be done before its poster has been extracted. Keep the
   // loading layer until either the persisted/derived poster paints or poster
   // extraction explicitly fails. A timer must not turn "still waiting" into
@@ -2719,10 +2729,12 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   }, [node.id, node.mediaUrl, node.mediaAvailability]);
   const handleMediaLoadError = (event?: SyntheticEvent<HTMLMediaElement>) => {
     const mediaError = event?.currentTarget?.error;
-    if (isTransientMediaError(mediaError)) {
+    const mediaErrorName = String(
+      (mediaError as {name?: unknown} | null)?.name || '',
+    );
+    if (mediaErrorName === 'AbortError') {
       // A freshly reloaded page can abort a metadata/preload request while the
-      // browser is switching network connections. That is not proof that the
-      // stored asset is gone.
+      // browser is switching sources. This is not a failed asset load.
       setMediaLoaded(false);
       return;
     }
@@ -2734,18 +2746,14 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
       setMediaRetryUrl(cacheBustedMediaUrl(node.mediaUrl || '', failures));
       return;
     }
-    if (!mediaMissingFromBackend(mediaAvailabilityRef.current)) {
-      // A browser error is not backend confirmation. The server owns whether
-      // stored bytes exist; until workspace-nodes says "missing", keep the
-      // state as a recoverable load failure instead of branding the asset lost.
-      setMediaLoadFailed(false);
-      return;
-    }
+    // Browser failure is not proof that the server lost the file. Keep the
+    // backend's "missing" state separate, but still surface an actionable
+    // local load failure after retries are exhausted.
+    setMediaLoadFailed(true);
     if (shouldMarkMediaMissing(
       failures,
-      true,
+      mediaMissingFromBackend(mediaAvailabilityRef.current),
     )) {
-      setMediaLoadFailed(true);
       onMediaAvailability?.(node.id, 'missing');
     }
   };
@@ -2756,10 +2764,25 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     // Availability is backend-owned. A successful browser load is useful UI
     // evidence but must not start a client-side availability state machine.
   };
+  const retryMediaLoad = () => {
+    setMediaLoaded(false);
+    setMediaLoadFailed(false);
+    setMediaLoadFailureCount(0);
+    setVideoCoverReady(false);
+    setVideoFrameReady(false);
+    setVideoMetadataReady(false);
+    setVideoCoverUnavailable(false);
+    setVideoCoverUrl('');
+    setAudioReady(false);
+    setMediaRetryUrl(cacheBustedMediaUrl(node.mediaUrl || '', Date.now()));
+  };
   useEffect(() => {
     setMediaLoaded(false);
     setVideoSourceReady(false);
+    setVideoCoverReady(false);
     setVideoFrameReady(false);
+    setVideoMetadataReady(false);
+    setAudioReady(false);
     setVideoCoverUrl('');
     setVideoCoverUnavailable(false);
   }, [node.mediaUrl]);
@@ -2767,6 +2790,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     if (node.kind !== 'video') return;
     const persisted = String(node.thumbUrl || '').trim();
     if (persisted) {
+      setVideoCoverReady(false);
       setVideoCoverUrl(persisted);
       setVideoCoverUnavailable(false);
     }
@@ -3061,7 +3085,23 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const videoCoverVisible = node.kind === 'video'
     && Boolean(videoCoverUrl)
     && !videoFrameReady;
-  const done = node.status === 'done' && !liveProviderGeneration && !mediaMissing && !generationFailed;
+  const mediaReady = isText || (
+    node.kind === 'image'
+      ? mediaLoaded
+      : node.kind === 'video'
+        ? (videoCoverReady || videoFrameReady || (videoCoverUnavailable && videoMetadataReady))
+        : node.kind === 'audio'
+          ? audioReady
+          : false
+  );
+  const mediaPhase = mediaReadinessPhase({
+    kind: node.kind,
+    status: liveProviderGeneration ? 'generating' : node.status,
+    hasMedia: Boolean(node.mediaUrl),
+    mediaMissing,
+    mediaReady,
+    loadFailed: mediaLoadFailed && !mediaMissing,
+  });
   // The node row is the card's terminal authority. Once a new image/video has
   // been persisted and the node is done, an older uncertain task row for the
   // same node must stay visible only in Task Center. Otherwise a false
@@ -3202,7 +3242,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
   const cardStyle = {width: size.width, height: size.height};
   const cardMenuButtonCount = isText
     ? (readOnly ? 2 : 4)
-    : mediaViewerAction && !mediaMissing
+    : mediaViewerAction && !mediaMissing && mediaReady
       ? (readOnly ? 2 : 4)
       : (readOnly ? 1 : 3);
   const cardMenuBasis = cardMenuButtonCount * 22 + Math.max(0, cardMenuButtonCount - 1) * 4;
@@ -3263,8 +3303,20 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
       : node.kind === 'audio'
         ? (p.ttsMode === 'speech' ? `音色 ${p.voiceId || p.ttsVoice || '未设置'}` : '音色设计')
         : `${(node.prompt || '').trim().length} / ${cardPromptLimit} 字`;
+  const mediaLoading = mediaPhase === 'loading';
+  const mediaLoadFailure = mediaPhase === 'load_failed';
+  const mediaUnavailableWithoutUrl = mediaLoadFailure && !node.mediaUrl;
+  const mediaPhaseLabel = mediaUnavailableWithoutUrl
+    ? '生成结果不可用'
+    : mediaReadinessLabel(mediaPhase, node.kind);
   const footSubText = mediaMissing
     ? '原文件已不存在，请重新生成或导入本地文件'
+    : mediaUnavailableWithoutUrl
+      ? '后端没有返回可播放的素材地址，请重新生成'
+      : mediaLoadFailure
+      ? '浏览器未能加载素材，点击状态栏重试'
+      : mediaLoading
+        ? '正在读取并渲染生成结果'
     : failed && node.lastError
       ? friendlyTaskError(node.lastError)
       : failed
@@ -3283,11 +3335,11 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     : busy && node.providerTaskStatus === 'retrying'
       ? '查询重试中'
     : isText
-    ? (busy ? '生成中' : outcomePending ? '结果待确认' : failed ? '生成失败' : done ? '已生成' : '文本')
-    : busy ? '生成中' : outcomePending ? '结果待确认' : failed ? '生成失败' : done ? '已生成' : '待生成';
+    ? (busy ? '生成中' : outcomePending ? '结果待确认' : failed ? '生成失败' : mediaPhaseLabel)
+    : busy ? '生成中' : outcomePending ? '结果待确认' : mediaPhaseLabel;
   const statusCls = mediaMissing
     ? 'is-failed'
-    : localUploading || busy ? 'is-busy' : failed ? 'is-failed' : done ? 'is-done' : 'is-idle';
+    : localUploading || busy ? 'is-busy' : mediaReadinessClass(mediaPhase);
   if (renderMode === 'overview' && !active) {
     return (
       <div
@@ -3489,7 +3541,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           // 双击进入文本编辑；Shift/Ctrl 双击是"多选"，不抢
           if (e.shiftKey || e.ctrlKey || e.metaKey) return;
           e.stopPropagation();
-          if ((node.kind === 'image' || node.kind === 'video') && node.mediaUrl) {
+          if ((node.kind === 'image' || node.kind === 'video') && node.mediaUrl && mediaReady) {
             cancelOpen();
             if (node.kind === 'image') onZoom(node.mediaUrl);
             else toggleVideoFullscreen();
@@ -3586,7 +3638,14 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                   {videoCoverVisible && (
                     <VideoCoverImage
                       src={videoCoverUrl}
-                      onFailure={() => setVideoCoverUrl('')}
+                      onLoad={() => {
+                        setVideoCoverReady(true);
+                        handleMediaLoadSuccess();
+                      }}
+                      onFailure={() => {
+                        setVideoCoverReady(false);
+                        setVideoCoverUrl('');
+                      }}
                     />
                   )}
                   {!videoFrameReady && !videoCoverUrl && !videoCoverUnavailable && (
@@ -3612,6 +3671,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                       const intrinsicRatio = event.currentTarget.videoHeight > 0
                         ? event.currentTarget.videoWidth / event.currentTarget.videoHeight
                         : 0;
+                      setVideoMetadataReady(true);
                       setVideoIntrinsicRatio(Number.isFinite(intrinsicRatio) ? intrinsicRatio : 0);
                       setVideoDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
                       handleMediaLoadSuccess();
@@ -3628,6 +3688,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                     }}
                     onPlaying={() => {
                       const video = videoRef.current;
+                      setVideoMetadataReady(true);
                       if (video && typeof video.requestVideoFrameCallback === 'function') {
                         video.requestVideoFrameCallback(() => setVideoFrameReady(true));
                       } else {
@@ -3651,6 +3712,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                   <button
                     type="button"
                     className="canvas-video-center-play nodrag"
+                    style={{display: (videoMetadataReady || videoFrameReady) ? undefined : 'none'}}
                     title={videoPlaying ? '暂停预览（双击视频全屏）' : '播放预览（双击视频全屏）'}
                     aria-label={videoPlaying ? '暂停预览' : '播放预览'}
                     onClick={(event) => {
@@ -3672,6 +3734,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                   </button>
                   <div
                     className="canvas-video-controls nodrag"
+                    style={{display: (videoMetadataReady || videoFrameReady) ? undefined : 'none'}}
                     onClick={(event) => event.stopPropagation()}
                     onDoubleClick={(event) => event.stopPropagation()}
                     onPointerDown={(event) => event.stopPropagation()}
@@ -3767,10 +3830,14 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                       src={mediaRetryUrl || node.mediaUrl}
                       preload="metadata"
                       onLoadedMetadata={(event) => {
+                        setAudioReady(true);
                         setAudioDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
                         handleMediaLoadSuccess();
                       }}
-                      onError={handleMediaLoadError}
+                      onError={(event) => {
+                        setAudioReady(false);
+                        handleMediaLoadError(event);
+                      }}
                       onDurationChange={(event) => {
                         setAudioDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
                       }}
@@ -3798,6 +3865,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                     </div>
                     <div
                       className="canvas-audio-controls nodrag"
+                      style={{display: audioReady ? undefined : 'none'}}
                       onClick={(event) => event.stopPropagation()}
                       onDoubleClick={(event) => event.stopPropagation()}
                       onPointerDown={(event) => event.stopPropagation()}
@@ -3938,7 +4006,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                 <Copy size={13} strokeWidth={1.9} aria-hidden="true" />
               </button>
             </>
-          ) : mediaViewerAction && !mediaMissing ? (
+          ) : mediaViewerAction && !mediaMissing && mediaReady ? (
             <button
               type="button"
               className="nodrag"
@@ -4014,7 +4082,31 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
       <div className="canvas-media-foot">
         <KindIcon kind={node.kind} className="canvas-media-foot-ico" />
         <span className="canvas-media-foot-text">
-          <span className={`canvas-media-foot-main ${statusCls}`}><i className="canvas-media-dot" />{statusText}</span>
+          {mediaLoadFailure && node.mediaUrl ? (
+            <button
+              type="button"
+              className={`canvas-media-foot-main canvas-media-retry nodrag ${statusCls}`}
+              title="重新加载生成结果"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                retryMediaLoad();
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <i className="canvas-media-dot" />
+              {statusText}
+            </button>
+          ) : (
+            <span
+              className={`canvas-media-foot-main ${statusCls}`}
+              role={mediaLoading ? 'status' : undefined}
+              aria-live={mediaLoading ? 'polite' : undefined}
+            >
+              <i className="canvas-media-dot" />
+              {statusText}
+            </span>
+          )}
           <span className={`canvas-media-foot-sub${mediaMissing || (failed && node.lastError) ? ' is-error' : ''}`} title={footSubText}>{footSubText}</span>
         </span>
           {!readOnly && !isText && mediaVersions.length > 1 && (
@@ -19583,8 +19675,15 @@ function CanvasViewInner({
                             }}>取消排队</button>
                           )}
                           {canResolveManually && (
-                            <button type="button" onClick={() => {
-                              if (!window.confirm('确认原任务不会再返回结果，并将它标记为失败？此操作允许重新生成。')) return;
+                            <button type="button" onClick={async () => {
+                              const confirmed = await dialog.confirm({
+                                title: '确认原任务失败？',
+                                message: '仅在确认原任务不会再有结果时继续。标记失败后会允许重新生成，系统不会自动重提。',
+                                confirmText: '确认失败',
+                                cancelText: '返回查看',
+                                tone: 'danger',
+                              });
+                              if (!confirmed) return;
                               void resolveGenerationTask(task.id)
                                 .then((result) => {
                                   setGenerationTasks((prev) => prev.map((item) => (

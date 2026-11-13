@@ -3943,6 +3943,22 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 /* 状态点 */
 .canvas-media-meta-sub.is-done .canvas-media-dot,
 .canvas-media-foot-main.is-done .canvas-media-dot{background:#6fd39c;box-shadow:0 0 6px rgba(111,211,156,.6)}
+.canvas-media-foot-main.is-loading{color:var(--v-accent)}
+.canvas-media-foot-main.is-loading .canvas-media-dot{
+  background:var(--v-accent);
+  box-shadow:0 0 6px color-mix(in srgb,var(--v-accent) 64%,transparent);
+  animation:canvas-busy-dot 1.35s ease-in-out infinite;
+}
+.canvas-media-retry{
+  appearance:none;
+  border:0;
+  background:transparent;
+  padding:0;
+  font:inherit;
+  text-align:left;
+  cursor:pointer;
+}
+.canvas-media-retry:hover{text-decoration:underline;text-underline-offset:2px}
 .canvas-media-meta-sub.is-busy .canvas-media-dot,
 .canvas-media-foot-main.is-busy .canvas-media-dot{background:#e0b46a;box-shadow:0 0 6px rgba(224,180,106,.6)}
 .canvas-media-meta-sub.is-failed .canvas-media-dot,
@@ -3951,6 +3967,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
    这里显式把 border-color 钉成 transparent —— 这几条规则的优先级比主规则高，
    留着旧的 border-color 会把边框"画回来"。 */
 .canvas-media-node.is-busy .canvas-media-card{border-color:transparent}
+.canvas-media-node.is-loading .canvas-media-card{border-color:transparent}
 .canvas-media-node.is-done .canvas-media-card{border-color:transparent}
 .canvas-media-node.is-failed .canvas-media-card{border-color:transparent}
 

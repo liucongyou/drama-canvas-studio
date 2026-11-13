@@ -12,7 +12,10 @@ describe('video cover loading state', () => {
       /!loaded && <span className="canvas-image-loading" aria-hidden="true" \/>/,
     );
     expect(canvas).toMatch(
-      /<VideoCoverImage\s+src=\{videoCoverUrl\}\s+onFailure=\{\(\) => setVideoCoverUrl\(''\)\}/s,
+      /<VideoCoverImage\s+src=\{videoCoverUrl\}\s+onLoad=\{\(\) => \{[\s\S]{0,160}setVideoCoverReady\(true\)/s,
+    );
+    expect(canvas).toMatch(
+      /onFailure=\{\(\) => \{[\s\S]{0,100}setVideoCoverReady\(false\);[\s\S]{0,100}setVideoCoverUrl\(''\)/s,
     );
     expect(canvas).toMatch(
       /!videoFrameReady && !videoCoverUrl && !videoCoverUnavailable[\s\S]*canvas-video-cover-pending/,
@@ -69,5 +72,18 @@ describe('video cover loading state', () => {
     expect(canvas).toMatch(
       /className="canvas-video-center-play nodrag"[\s\S]{0,600}toggleVideoPlayback\(\)/,
     );
+  });
+
+  it('only shows video controls after metadata or a frame is ready', () => {
+    expect(canvas).toContain(
+      "style={{display: (videoMetadataReady || videoFrameReady) ? undefined : 'none'}}",
+    );
+    expect(canvas).toContain('setVideoMetadataReady(true)');
+  });
+
+  it('surfaces exhausted media loads with a retry action', () => {
+    expect(canvas).toContain('mediaLoadFailure && node.mediaUrl');
+    expect(canvas).toContain('canvas-media-retry');
+    expect(canvas).toContain('retryMediaLoad();');
   });
 });
