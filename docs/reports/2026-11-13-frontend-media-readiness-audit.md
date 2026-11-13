@@ -28,3 +28,12 @@
 - 前端生产构建：通过，入口为 `index-oNU3O9MS.js`。
 
 本次只修改前端展示和就绪状态，不改供应商接口，不触发任何图片、音频或视频生成。
+
+## 线上发布
+
+- 代码提交：`03d747c fix: gate completed media on browser readiness`
+- 线上发布号：`03d747c`
+- 线上入口：`/assets/index-oNU3O9MS.js`
+- 线上备份：`/www/wwwroot/yj.pduoduo.vip/app/backups/frontend-media-readiness-03d747c-20261113-211553`
+- `index.html`、入口 JS、CSS 本地与线上 SHA-256 一致。
+- `drama-canvas-yj.service`、`drama-canvas-agent.service` 均为 `active`。
