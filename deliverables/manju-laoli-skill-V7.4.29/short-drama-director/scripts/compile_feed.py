@@ -208,7 +208,7 @@ def self_test():
 
 
 def main():
-    ap = argparse.ArgumentParser(description="漫剧老李 V7.4.30 P4 投喂自动装配编译器")
+    ap = argparse.ArgumentParser(description="漫剧老李 V7.4.31 P4 投喂自动装配编译器")
     ap.add_argument("--state", help="project_state.json 路径")
     ap.add_argument("--out", help="输出投喂稿 .md 路径（不指定则打印到标准输出）")
     ap.add_argument("--self-test", action="store_true")

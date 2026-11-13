@@ -119,7 +119,7 @@ import py_compile
 import subprocess
 import warnings
 
-VERSION = "7.4.30"
+VERSION = "7.4.31"
 EXPECTED_REFS = 51   # 递归计数（41 份顶层规则库 + style-bible 10 份）。2026-11-11 新增 runtime-quality-contract.md。
 SUB_SKILLS = [
     "sd-decision-engine", "sd-recon-engine", "sd-script-engine", "sd-overseas-engine",
@@ -447,8 +447,14 @@ check("validate_prompt.py 存在（稿件级出稿门禁）", os.path.exists(vp)
 vp_src = read(vp) if os.path.exists(vp) else ""
 if os.path.exists(vp):
     try:
-        r = subprocess.run([sys.executable, vp, "--self-test"],
-                           capture_output=True, text=True, timeout=60)
+        r = subprocess.run(
+            [sys.executable, vp, "--self-test"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        )
         check("validate_prompt.py --self-test 通过", r.returncode == 0,
               (r.stdout or r.stderr)[-200:])
     except Exception as e:  # noqa: BLE001
@@ -2322,7 +2328,7 @@ section("[E*33] 四大进阶进化能力互锁域（sd_core / slice_context / co
 
 # ◓6 进化一：sd_core.py 公共解析与状态台账内核存在且自测通过，validate_prompt 支持 --state 对账
 _sd_core_p = os.path.join(BASE, "scripts", "sd_core.py")
-_r_sdc = subprocess.run([sys.executable, _sd_core_p, "--self-test"], capture_output=True, text=True) if os.path.isfile(_sd_core_p) else None
+_r_sdc = subprocess.run([sys.executable, _sd_core_p, "--self-test"], capture_output=True, text=True, encoding="utf-8", errors="replace") if os.path.isfile(_sd_core_p) else None
 check("◓6 sd_core.py 公共解析与 project_state.json 状态台账内核在位且 --self-test 通过",
       _r_sdc is not None and _r_sdc.returncode == 0 and "PASSED" in (_r_sdc.stdout or ""),
       (_r_sdc.stdout or _r_sdc.stderr) if _r_sdc else "缺失 sd_core.py")
@@ -2331,14 +2337,14 @@ check("◓6 validate_prompt.py 已接入 --state 跨阶段状态台账对账模�
 
 # ◓7 进化二：slice_context.py 动态原文切片器存在且 P0~P5 全阶段自测通过
 _slice_p = os.path.join(BASE, "scripts", "slice_context.py")
-_r_slc = subprocess.run([sys.executable, _slice_p, "--self-test"], capture_output=True, text=True) if os.path.isfile(_slice_p) else None
+_r_slc = subprocess.run([sys.executable, _slice_p, "--self-test"], capture_output=True, text=True, encoding="utf-8", errors="replace") if os.path.isfile(_slice_p) else None
 check("◓7 slice_context.py 动态原文切片器在位且 P0~P5 全阶段 --self-test 通过",
       _r_slc is not None and _r_slc.returncode == 0 and "PASSED" in (_r_slc.stdout or ""),
       (_r_slc.stdout or _r_slc.stderr) if _r_slc else "缺失 slice_context.py")
 
 # ◓8 进化三：compile_feed.py P4 自动装配编译器存在且编译产物 100% 过 validate_prompt 与 gate_check
 _comp_p = os.path.join(BASE, "scripts", "compile_feed.py")
-_r_cmp = subprocess.run([sys.executable, _comp_p, "--self-test"], capture_output=True, text=True) if os.path.isfile(_comp_p) else None
+_r_cmp = subprocess.run([sys.executable, _comp_p, "--self-test"], capture_output=True, text=True, encoding="utf-8", errors="replace") if os.path.isfile(_comp_p) else None
 check("◓8 compile_feed.py P4 投喂自动装配编译器在位且 --self-test 双门全过",
       _r_cmp is not None and _r_cmp.returncode == 0 and "PASSED" in (_r_cmp.stdout or ""),
       (_r_cmp.stdout or _r_cmp.stderr) if _r_cmp else "缺失 compile_feed.py")
@@ -2353,7 +2359,7 @@ check("◓9 多模态拉片诊改协议在案（quality-gate-review.md §四 12 
 
 # ◓10 进化四（下）：build_board_lite.py 支持一键导出 SRT 字幕 / 剪辑时间线 CSV / API 载荷 JSON 且 --self-test 通过
 _bbl_p = os.path.join(BASE, "scripts", "build_board_lite.py")
-_r_bbl = subprocess.run([sys.executable, _bbl_p, "--self-test"], capture_output=True, text=True) if os.path.isfile(_bbl_p) else None
+_r_bbl = subprocess.run([sys.executable, _bbl_p, "--self-test"], capture_output=True, text=True, encoding="utf-8", errors="replace") if os.path.isfile(_bbl_p) else None
 check("◓10 build_board_lite.py 支持一键导出 SRT/CSV/JSON 且 --self-test 通过",
       _r_bbl is not None and _r_bbl.returncode == 0 and "PASSED" in (_r_bbl.stdout or "")
       and all(k in _bbl_txt for k in ("exportSRT()", "exportTimelineCSV()", "exportPayloadJSON()", "--export-srt", "--export-csv")),
@@ -2410,7 +2416,7 @@ check("◓18 运镜动静随剧情自然发生锁：废除「其余镜头一律�
       "其余镜头一律写固定" not in _cam_sys
       and "_c18j_ratio_cap = CAM_FIXED_RATIO_MAX if _combat_on(text, combat) else 0.85" in _vp3)
 _ac_p = os.path.join(BASE, "scripts", "audit_contract.py")
-_r_ac = subprocess.run([sys.executable, _ac_p, "--self-test"], capture_output=True, text=True) if os.path.isfile(_ac_p) else None
+_r_ac = subprocess.run([sys.executable, _ac_p, "--self-test"], capture_output=True, text=True, encoding="utf-8", errors="replace") if os.path.isfile(_ac_p) else None
 check("◓19 全流程交付契约与权威源核销器 audit_contract.py 在位且 --self-test 通过（联动 validate_prompt C31 与 SKILL 三防铁律）",
       _r_ac is not None and _r_ac.returncode == 0 and "PASSED" in (_r_ac.stdout or "")
       and "C31" in _vp3 and "audit_contract.py" in _master,

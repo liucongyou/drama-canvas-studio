@@ -938,7 +938,7 @@ def _generator_metadata():
             continue
     return {
         "name": "build_board_lite.py",
-        "skillVersion": str(data.get("version") or "7.4.30"),
+        "skillVersion": str(data.get("version") or "7.4.31"),
         "packageRevision": str(data.get("packageRevision") or "20261028-r10"),
     }
 

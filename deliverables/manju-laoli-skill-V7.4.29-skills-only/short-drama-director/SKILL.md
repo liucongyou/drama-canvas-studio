@@ -1,13 +1,13 @@
 ---
 name: short-drama-director
 metadata:
-  version: "7.4.30"
-description: "【漫剧老李AIGC 全流程Skill · V7.4.30 多技能套装版】抖音/红果爆款短剧与漫剧的工业化编剧＋视听导演系统（1 总控 + 12 子技能 · 四层纵深）。走通剧本开发 → 分镜 → 资产提示词 → 打戏 → 投喂稿 → 出稿质检全链路，产出可直接投喂 Seedance 2.5 / 2.0 的严格 JSON。内置规则冲突权威表、平台节奏锁、全局视听锁、空间与多人连续性、逐镜 15 项 fail-closed 自检、成片状态覆盖与 Retake 协议。动手前六道前置锁、画风锁和素材形态锁必须问；不得默认跳过。触发场景：短剧剧本、小说改编、分集大纲、分镜、资产提示词、打戏、方言配音、投喂稿、画布 JSON 与出稿质检。"
+  version: "7.4.31"
+description: "【漫剧老李AIGC 全流程Skill · V7.4.31 多技能套装版】抖音/红果爆款短剧与漫剧的工业化编剧＋视听导演系统（1 总控 + 12 子技能 · 四层纵深）。走通剧本开发 → 分镜 → 资产提示词 → 打戏 → 投喂稿 → 出稿质检全链路，产出可直接投喂 Seedance 2.5 / 2.0 的严格 JSON。内置规则冲突权威表、平台节奏锁、全局视听锁、空间与多人连续性、逐镜 15 项 fail-closed 自检、成片状态覆盖与 Retake 协议。动手前六道前置锁、画风锁和素材形态锁必须问；不得默认跳过。触发场景：短剧剧本、小说改编、分集大纲、分镜、资产提示词、打戏、方言配音、投喂稿、画布 JSON 与出稿质检。"
 ---
 
-# 漫剧老李 AIGC 全流程 Skill · V7.4.30 多技能套装版（四层纵深架构 · 全平台与多模型工业级导演系统 · Short-Drama Director Suite）
+# 漫剧老李 AIGC 全流程 Skill · V7.4.31 多技能套装版（四层纵深架构 · 全平台与多模型工业级导演系统 · Short-Drama Director Suite）
 
-版本：V7.4.30 多技能套装版（Suite）· 现行唯一版本口径。本版保留上一版全部子技能和机检，并新增运行时质量合同：权威裁决、平台节奏、全局视听、15 项逐镜自检、成片状态 canon 与 Retake 协议。
+版本：V7.4.31 多技能套装版（Suite）· 现行唯一版本口径。本版保留上一版全部子技能和机检，并新增运行时质量合同：权威裁决、平台节奏、全局视听、15 项逐镜自检、成片状态 canon 与 Retake 协议。
 
 现行口径要点（一眼看清当前状态）：
 
@@ -16,7 +16,7 @@ description: "【漫剧老李AIGC 全流程Skill · V7.4.30 多技能套装版�
 - **四层纵深**：L0 总控 `short-drama-director` → L1 决策层 `sd-decision-engine` → L2 生产层（`sd-recon-engine` / `sd-script-engine` / `sd-overseas-engine` / `sd-jieshuo-engine` / `sd-asset-engine` / `sd-storyboard-engine` / `sd-combat-engine` / `sd-xuanhuan-engine` / `sd-real-engine`，共 9 个）→ L3 交付层（`sd-feed-engine` / `sd-qc-engine`）。
 - **共享权威**：运行时质量 `references/runtime-quality-contract.md`（规则冲突、平台节奏、视听锁、15 项自检、canon/Retake）、赛道分流 `references/track-routing.md`、锁系统〇节、**素材形态 `references/asset-delivery-modes.md`**、七段式 `model-adapters.md` §5、H3 `h3-adapter.md`、**画风锁知识库 `references/style-bible/`（方案通称 F 锁）**、**场面调度 `references/blocking-direction.md`**、**故事板图 `sd-storyboard-engine/references/storyboard-sheet-template.md`**、**剧情分镜格（推演宫格 · 条件必出）`sd-storyboard-engine/references/plot-deduction-grid.md`**、**预演故事板（P4.5 · 交付标配 · 默认必出 · 只出提示词不出图）`sd-storyboard-engine/references/p45-previs-storyboard.md`**、**51 份规则库（含 style-bible 画风锁知识库 10 份）**、`scripts/` 机检全家桶（`validate_prompt.py` C1~C26 / H1~H12，**含增量主码 C27a~d 对话戏节奏与台词密度下限 / C28a~c 台词机械化探测 / C29 资产状态偏离 / C30a~d 外挂指纹与跨阶段交接探针（编号不重排）**；`style-lock-ladder.py` / `style-lock-recommend.py` 画风锁引擎；`check_package.py` 包级自检；`sd-feed-engine/scripts/gate_check.py` 六道闸门含素材形态一致性**＋闸门6C 段级挂接双向一致（★2026-10-20 本地增强 · 投喂执行前挂接核对自动化）**）。**权威归属表见 §一「现行规则域总览 · 唯一权威归属表」**。子技能路由表见「五、多技能套装路由」。
 
-> **运行时硬门（V7.4.30）**：进入分镜、视频提示词或画布 Feed 前，必须读取并执行 `references/runtime-quality-contract.md`。输出 `drama-canvas-feed/v2` 时必须经过同一份共享 schema、共享解析器和画布导入预检；任何 `@` 图片绑定不得靠裸名、缩略图或标题模糊匹配。预检失败时保留草稿并定位到段号、角色和图号，禁止删段、删角或删台词来消除错误。
+> **运行时硬门（V7.4.31）**：进入分镜、视频提示词或画布 Feed 前，必须读取并执行 `references/runtime-quality-contract.md`。输出 `drama-canvas-feed/v2` 时必须经过同一份共享 schema、共享解析器和画布导入预检；任何 `@` 图片绑定不得靠裸名、缩略图或标题模糊匹配。预检失败时保留草稿并定位到段号、角色和图号，禁止删段、删角或删台词来消除错误。
 
 > ⚠️ **④ 的病灶与修法（务必理解，否则会改回去）**：「资产图册＝唯一事实来源」与「无图不进分镜」＋ 本包自身「默认只出提示词、不调出图工具」铁律——**三者并存 → 执行者要么卡死、要么假装通过**。而**用户的真实工作流是「拿提示词去平台自己跑图、图不回传」**——「图」这个实体从不进入本包上下文。**因此「图片入库」从「前置阻塞条件」降级为「可选的登记动作」**，并设 M0/M1/M2 三形态与《素材接线单》作为其正向替代物。
 
@@ -325,7 +325,7 @@ skills/
 | 16 | 连续性 / 剪辑转场 / 声音 / 后期音乐 | `sd-qc-engine/` | P0~P2 门禁仍以 `quality-gate-review.md` 为准 |
 | 17 | 出稿机检 | `scripts/validate_prompt.py`（C1~C26＋增量主码 C27a~d 对话戏节奏 / C28a~c 台词机械化 / C29 资产状态偏离 / C30a~d 外挂指纹探针 / C14n / H1~H12 / `--track 1\|2\|3\|4` / `--combat` / `--c23` / `--plugin`） | 使用手册在 `sd-qc-engine/references/machine-check-manual.md`；赛道③ 走 C14n，豁免口径权威在 `sd-jieshuo-engine/` §八 |
 | 18 | 包级自检 | `scripts/check_package.py` | 本文件索引区只写"打包时跑" |
-| 19 | 版本口径 | 本文件 frontmatter + `README.md` | **全包只允许「本文件 frontmatter 所声明的版本」一个版本串**（当前为 `V7.4.30`，以 frontmatter 常量为准，不在正文写死）；沿革记录不参与 CURRENT 判定 |
+| 19 | 版本口径 | 本文件 frontmatter + `README.md` | **全包只允许「本文件 frontmatter 所声明的版本」一个版本串**（当前为 `V7.4.31`，以 frontmatter 常量为准，不在正文写死）；沿革记录不参与 CURRENT 判定 |
 | **20** | **场面调度与站位决策** | **`references/blocking-direction.md`** | 站位「怎么写进提示词」归 `asset-spatial-ledger.md` §三 + `model-adapters.md` §5.0；本域只管**怎么决定**（平面图/权力几何/节拍闭环/道具账/策略模式） |
 | **21** | **故事板图（面板链）· SHOT_TEXT 卡 · 剧情分镜格** | **`sd-storyboard-engine/references/storyboard-sheet-template.md`**（§十一 = SHOT_TEXT 卡版式）/ **`plot-deduction-grid.md`**（剧情分镜格） | **SHOT_TEXT 分镜线稿卡**（俯视走位图 + 逐镜卡 · 给人看的预演件 · **不进投喂/不入册/不占参考图槽**）归 §十一；九宫格场景图归 `sd-asset-engine`（纯场景无人）；HTML 看板归 `references/storyboard-board-lite.md`；15 格动作 PREVIS 归 `sd-combat-engine/`；**剧情分镜格（推演宫格 · 每场一张连续叙事 · **条件必出**：重场戏/≥2人对手戏/用户点名即出，豁免须列清单）归同目录 `plot-deduction-grid.md`**。**六者互不替代** |
 | **22** | **场景空间事实与状态变体** | **`references/asset-spatial-ledger.md` §四**（场景域） | 玄幻战力尺度表现归 `sd-xuanhuan-engine`；本域管**坐标系 / SET_STATE / 空气介质 / 尺度参照 / 年代锚（ERA_ANCHOR，与剧本层《世界锚卡》同源）** 的登记口径** |
