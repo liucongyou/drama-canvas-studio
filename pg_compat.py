@@ -495,6 +495,12 @@ class PGConnection:
         return self.raw.info.transaction_status != TransactionStatus.IDLE
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> PGCursor:
+        if re.fullmatch(r"BEGIN\s+IMMEDIATE", str(sql or "").strip(), re.I):
+            # SQLite's explicit writer lock has no PostgreSQL equivalent.
+            # psycopg opens a transaction lazily on the next statement, so
+            # issuing it here creates nested-BEGIN warnings in production.
+            # The subsequent write starts the transaction when needed.
+            return PGCursor(self)
         cursor = PGCursor(self)
         return cursor.execute(sql, params)
 
@@ -513,7 +519,13 @@ class PGConnection:
             return
         self._returned_to_pool = True
         try:
-            self.raw.rollback()
+            # A pooled PostgreSQL connection must be transaction-clean before
+            # another caller can reuse it. Read-only call sites historically
+            # closed without rollback, leaving the backend idle-in-transaction;
+            # the next writer then opened a nested BEGIN and flooded logs with
+            # "there is already a transaction in progress".
+            if self.in_transaction:
+                self.raw.rollback()
         except psycopg.Error:
             try:
                 self.raw.close()

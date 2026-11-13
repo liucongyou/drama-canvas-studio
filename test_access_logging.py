@@ -3,6 +3,7 @@ import unittest
 from unittest import mock
 
 import canvas_store
+import pg_compat
 import server
 
 
@@ -61,6 +62,14 @@ class AccessLogPolicyTests(unittest.TestCase):
         executed = [call.args[0] for call in connection.execute.call_args_list]
         self.assertNotIn("BEGIN IMMEDIATE", executed)
         connection.commit.assert_called_once()
+
+    def test_postgres_begin_immediate_is_a_noop(self):
+        connection = object.__new__(pg_compat.PGConnection)
+        connection.raw = mock.Mock()
+        connection.kind = "canvas"
+        connection.schema = "public"
+        cursor = connection.execute("BEGIN IMMEDIATE")
+        self.assertIsInstance(cursor, pg_compat.PGCursor)
 
 
 if __name__ == "__main__":
