@@ -550,6 +550,23 @@ MAX_JSON_DEPTH = max(
     8,
     int(os.environ.get("CANVAS_MAX_JSON_DEPTH", "64")),
 )
+# Successful browser traffic is already captured by the product audit store
+# and nginx access logs. Echoing every request to systemd journal caused
+# hundreds of thousands of nearly identical lines per week.
+CANVAS_ACCESS_LOG_MODE = os.environ.get(
+    "CANVAS_ACCESS_LOG_MODE",
+    "errors",
+).strip().lower()
+
+
+def access_log_enabled(status_code: int) -> bool:
+    if CANVAS_ACCESS_LOG_MODE in {"all", "1", "true", "yes"}:
+        return True
+    if CANVAS_ACCESS_LOG_MODE in {"off", "0", "false", "no", "none"}:
+        return False
+    # Default: keep failed requests and server errors, suppress expected 2xx
+    # polling/playback traffic. This preserves diagnosis without journal noise.
+    return int(status_code or 0) >= 400
 
 
 class RequestBoundaryError(ValueError):
@@ -6538,9 +6555,19 @@ class Handler(BaseHTTPRequestHandler):
         super().__init__(*args, **kwargs)
         self._audit_request_scope = None
         self._share_access = None
+        self._response_status = 0
 
     def log_message(self, fmt, *args):
-        sys.stdout.write("[%s] %s\n" % (self.server.server_address, fmt % args))
+        if access_log_enabled(self._response_status):
+            sys.stderr.write("%s - - [%s] %s\n" % (
+                self.client_address[0],
+                self.log_date_time_string(),
+                fmt % args,
+            ))
+
+    def send_response(self, code, message=None):
+        self._response_status = int(code)
+        return super().send_response(code, message)
 
     # ---------- helpers ----------
     def parse_request(self):
