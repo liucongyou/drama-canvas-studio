@@ -76,4 +76,16 @@ describe('prompt editor scrollbar', () => {
     expect(effect).toBeGreaterThan(0);
     expect(effect).toBeLessThan(earlyReturn);
   });
+
+  it('restores the editor scroll anchor after content-height measurement', () => {
+    const grow = source.slice(
+      source.indexOf('const growTa = () =>'),
+      source.indexOf('const applyTaHeight ='),
+    );
+    expect(grow).toContain('capturePromptScroll(ta)');
+    expect(grow).toContain('restorePromptScroll(ta, scrollSnapshot)');
+    expect(grow.indexOf('calcTaHeight(ta, cap)')).toBeLessThan(
+      grow.indexOf('restorePromptScroll(ta, scrollSnapshot)'),
+    );
+  });
 });

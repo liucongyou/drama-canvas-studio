@@ -4,6 +4,8 @@ import {describe, expect, it} from 'vitest';
 
 describe('media card pointer contract', () => {
   const source = readFileSync(resolve(__dirname, 'CanvasView.tsx'), 'utf8');
+  const refinements = readFileSync(resolve(__dirname, 'ui-refinements.css'), 'utf8');
+  const tokens = readFileSync(resolve(__dirname, 'theme-tokens.css'), 'utf8');
 
   it('opens the media modal on a single click, not the second click of a double click', () => {
     expect(source).toContain('if (e.detail >= 2) return;');
@@ -19,6 +21,18 @@ describe('media card pointer contract', () => {
   it('prevents the browser native context menu on the canvas', () => {
     expect(source).toContain(
       "document.addEventListener('contextmenu', suppressNativeMenu, true)",
+    );
+  });
+
+  it('keeps the delete action as a compact icon button with a soft danger hover', () => {
+    expect(source).toContain(
+      'className="nodrag is-del" hidden={readOnly} title="删除节点" aria-label="删除节点"',
+    );
+    expect(tokens).toMatch(
+      /\.canvas-media-card-menu button\.is-del:hover\s*\{[\s\S]*?background:\s*color-mix\(in srgb, var\(--v-danger\) 14%/s,
+    );
+    expect(refinements).toMatch(
+      /\.canvas-media-card-menu button\.is-del:hover\{[\s\S]*?color:var\(--v-danger\);[\s\S]*?background:color-mix\(in srgb,var\(--v-danger\) 14%/s,
     );
   });
 });

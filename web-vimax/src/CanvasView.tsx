@@ -235,6 +235,10 @@ import {
 } from './mediaSaveCoordinator';
 import {mediaDownloadFilename} from './mediaDownloadName';
 import {
+  capturePromptScroll,
+  restorePromptScroll,
+} from './promptScrollAnchor';
+import {
   canvasUploadKind,
   prepareCanvasUploadFiles,
   shouldArmCanvasFileDrop,
@@ -4050,7 +4054,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
           >
             <RotateCw size={13} strokeWidth={1.9} aria-hidden="true" />
           </button>
-          <button type="button" className="nodrag is-del" hidden={readOnly} title="删除节点" onClick={(e) => { e.stopPropagation(); onDelete(node.id); }}>
+          <button type="button" className="nodrag is-del" hidden={readOnly} title="删除节点" aria-label="删除节点" onClick={(e) => { e.stopPropagation(); onDelete(node.id); }}>
             <X size={13} strokeWidth={2.1} aria-hidden="true" />
           </button>
         </div>
@@ -5312,11 +5316,16 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       growRafRef.current = null;
       const ta = taRef.current;
       if (!ta) return;
+      const scrollSnapshot = capturePromptScroll(ta);
       const cap = taExpandedRef.current ? EXPANDED_CAP() : collapsedH();
       const next = calcTaHeight(ta, cap);
-      if (Math.abs(next - growLastHeightRef.current) < 1) return;
-      growLastHeightRef.current = next;
-      ta.style.height = `${next}px`;
+      if (Math.abs(next - growLastHeightRef.current) >= 1) {
+        growLastHeightRef.current = next;
+        ta.style.height = `${next}px`;
+      }
+      // calcTaHeight temporarily switches height to auto. Restore the original
+      // scroll anchor afterwards so deleting at the end does not jump to top.
+      restorePromptScroll(ta, scrollSnapshot);
     });
   };
   // 展开/收起：直接把高度切到目标值，不依赖 onChange 时机

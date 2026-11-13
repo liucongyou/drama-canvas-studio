@@ -4092,7 +4092,11 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
 .jim-at-flag{color:#6fd39c;background:rgba(111,211,156,.12)}
 .jim-pop-more button.is-del:hover,
 .canvas-media-foot-pop button.is-del:hover{background:var(--v-danger-soft)}
-.canvas-media-card-menu button.is-del:hover{background:color-mix(in srgb, var(--v-danger) 28%, transparent);border-color:var(--v-danger)}
+.canvas-media-card-menu button.is-del:hover{
+  color:var(--v-danger);
+  background:color-mix(in srgb,var(--v-danger) 14%,transparent);
+  border-color:color-mix(in srgb,var(--v-danger) 52%,transparent);
+}
 .jim-tool.is-ghost:hover{color:#e07878;background:rgba(224,120,120,.10);border-color:rgba(224,120,120,.35)}
 
 @media (prefers-reduced-motion: reduce){

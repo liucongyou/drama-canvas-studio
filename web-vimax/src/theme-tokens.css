@@ -1710,8 +1710,11 @@ html[data-theme='light'][data-variant='light'] .canvas-media-card-menu button {
 
 .canvas-node.canvas-media-node .canvas-media-card-menu button.is-del:hover {
   color: var(--v-danger) !important;
-  background: var(--v-danger) !important;
-  border-color: var(--v-danger) !important;
+  background: color-mix(in srgb, var(--v-danger) 14%, var(--v-surface)) !important;
+  border-color: color-mix(in srgb, var(--v-danger) 52%, var(--v-border-hair)) !important;
+  box-shadow:
+    0 4px 12px color-mix(in srgb, var(--v-shadow-panel) 58%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--v-danger) 16%, transparent) !important;
 }
 
 .canvas-flow .canvas-node.canvas-media-node .canvas-media-port::before {
