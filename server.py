@@ -132,6 +132,12 @@ def request_reference_candidates(
             continue
         seen_candidate_ids.add(key)
         candidates.append(ref)
+    if node_type == "video" and explicit_reference_list:
+        # Video references are an explicit slot contract. Canvas links describe
+        # story order, not model input. Merging every incoming media node here
+        # silently feeds adjacent shot videos into the next segment, which can
+        # copy that segment's dialogue and action into the wrong shot.
+        return candidates, True
     for connection in connections:
         if not isinstance(connection, dict):
             continue
@@ -165,8 +171,6 @@ def request_reference_candidates(
             "variantKey": str(source_meta.get("variantKey") or "default"),
             "label": str(source.get("title") or ""),
         })
-    if node_type != "video" or explicit_reference_list:
-        return candidates, explicit_reference_list
     return candidates, explicit_reference_list
 
 
