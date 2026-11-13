@@ -1,0 +1,9 @@
+[Unit]
+Description=Prune Drama Canvas PostgreSQL logs
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/drama-canvas-postgres-log-retention
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
