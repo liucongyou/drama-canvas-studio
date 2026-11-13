@@ -49,6 +49,18 @@ describe('prompt editor scrollbar', () => {
     expect(ui).toMatch(
       /\.jim-prompt\{[^}]*padding:2px 4px 2px 0;[^}]*overflow-y:auto/s,
     );
+    expect(ui).toMatch(
+      /\.jim-prompt-scrollbar\{[^}]*right:-2px;/s,
+    );
+  });
+
+  it('keeps the final theme token panel slightly translucent', () => {
+    expect(tokens).toMatch(
+      /\.jim-bar\{[^}]*background:\s*color-mix\(in srgb, var\(--v-surface\) 56%, transparent\) !important;/s,
+    );
+    expect(ui).toMatch(
+      /\.jim-backdrop:has\(\.jim-bar\[data-expanded='1'\]\)\{background:rgba\(0,0,0,\.42\)\}/,
+    );
   });
 
   it('remeasures the rail when the browser or editor is resized', () => {

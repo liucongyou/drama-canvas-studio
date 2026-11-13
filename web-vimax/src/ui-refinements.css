@@ -7340,7 +7340,7 @@ html[data-theme='dark'][data-variant='immersive']{background:#121212}
   to{opacity:1;transform:translate(-50%,-50%) scale(1)}
 }
 /* 放大态的背景更暗一点，把注意力收进浮层里 */
-.jim-backdrop:has(.jim-bar[data-expanded='1']){background:rgba(0,0,0,.62)}
+.jim-backdrop:has(.jim-bar[data-expanded='1']){background:rgba(0,0,0,.42)}
 /* 放大态下输入框吃满可用高度 */
 .jim-bar[data-expanded='1'] .jim-prompt{
   min-height:min(46vh,420px);
@@ -12319,3 +12319,9 @@ button.jim-dependency-prepare-item:disabled{
 /* Reference row labels: readable at a glance, with room for the color coding. */
 .jim-ref-item{gap:5px}
 .jim-ref-role{max-width:60px;font-size:9.5px;line-height:1.2}
+
+/* Prompt rail: shift the 2px thumb into the existing right gutter so the
+   text has 2px more breathing room without changing the editor width. */
+.jim-prompt-scrollbar{
+  right:-2px;
+}

@@ -2460,7 +2460,7 @@ html[data-theme='light'][data-variant='light'] .jim-prompt{
 
 /* Flat translucent prompt panel — no gradient background. */
 .jim-bar{
-  background: color-mix(in srgb, var(--v-surface) 88%, transparent) !important;
+  background: color-mix(in srgb, var(--v-surface) 56%, transparent) !important;
 }
 .jim-bar::before{
   background: none !important;
@@ -2477,4 +2477,19 @@ html[data-theme='light'][data-variant='light'] .jim-prompt{
   display: none !important;
   width: 0 !important;
   height: 0 !important;
+}
+
+/* Keep the prompt scrollbar inside the panel even after the browser is resized. */
+.jim-bar{
+  overflow: hidden;
+  max-height: calc(100vh - 16px);
+}
+.jim-prompt{
+  max-height: min(168px, calc(100vh - 260px)) !important;
+}
+.jim-bar[data-kind='text'] .jim-prompt{
+  max-height: min(256px, calc(100vh - 260px)) !important;
+}
+.jim-bar[data-expanded='1'] .jim-prompt{
+  max-height: min(56vh, calc(100vh - 160px)) !important;
 }
