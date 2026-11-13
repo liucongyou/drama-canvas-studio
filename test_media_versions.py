@@ -50,6 +50,95 @@ class MediaVersionTests(unittest.TestCase):
 
         self.assertEqual(active["versionId"], "image:current")
 
+    def test_duplicate_provider_id_prefers_real_durable_copy(self):
+        meta = {
+            "content": "/uploads/local.mp4",
+            "params": {
+                "activeVersionId": "video:duplicate",
+                "mediaVersions": [
+                    {
+                        "versionId": "video:duplicate",
+                        "url": "/uploads/local.mp4",
+                        "sourceType": "generated",
+                    },
+                    {
+                        "versionId": "video:duplicate",
+                        "url": "https://provider.example/video.mp4",
+                        "storage": {
+                            "status": "stored",
+                            "key": "durable/video.mp4",
+                        },
+                    },
+                ],
+            },
+        }
+
+        def resolve(_meta, version):
+            if str(version.get("url") or "").startswith("/uploads/"):
+                return None, "/uploads/local.mp4", "", "available"
+            return (
+                {"status": "stored", "key": "durable/video.mp4"},
+                "https://tos.example/video.mp4",
+                "",
+                "available",
+            )
+
+        with mock.patch.object(
+            server.media_storage,
+            "resolve_version_media",
+            side_effect=resolve,
+        ):
+            server._select_media_version(
+                meta,
+                "video",
+                "video:duplicate",
+            )
+
+        versions = meta["params"]["mediaVersions"]
+        self.assertIs(versions[0].get("active"), True)
+        self.assertIs(versions[1].get("active"), False)
+        self.assertEqual(meta["content"], "/uploads/local.mp4")
+
+    def test_duplicate_provider_id_honors_explicit_remote_url_hint(self):
+        meta = {
+            "content": "/uploads/local.mp4",
+            "params": {
+                "activeVersionId": "video:duplicate",
+                "mediaVersions": [
+                    {
+                        "versionId": "video:duplicate",
+                        "url": "/uploads/local.mp4",
+                        "sourceType": "generated",
+                    },
+                    {
+                        "versionId": "video:duplicate",
+                        "url": "https://provider.example/video.mp4",
+                    },
+                ],
+            },
+        }
+
+        def resolve(_meta, version):
+            if str(version.get("url") or "").startswith("/uploads/"):
+                return None, "/uploads/local.mp4", "", "available"
+            return None, "https://provider.example/video.mp4", "", "available"
+
+        with mock.patch.object(
+            server.media_storage,
+            "resolve_version_media",
+            side_effect=resolve,
+        ):
+            server._select_media_version(
+                meta,
+                "video",
+                "video:duplicate",
+                "https://provider.example/video.mp4",
+            )
+
+        versions = meta["params"]["mediaVersions"]
+        self.assertIs(versions[0].get("active"), False)
+        self.assertIs(versions[1].get("active"), True)
+
     def test_explicit_selection_persists_and_rejects_unknown_url(self):
         meta = {
             "content": "/uploads/v1.png",

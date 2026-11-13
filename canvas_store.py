@@ -7727,6 +7727,136 @@ def backfill_ignored_duplicate_generation_tasks():
     return _run_write_transaction(write)
 
 
+def backfill_succeeded_delivery_evidence():
+    """Close successful legacy receipts only when node bytes prove delivery.
+
+    Older synchronous tasks were marked succeeded before delivery receipts were
+    introduced. A pending receipt must not be guessed ready merely because the
+    task status says succeeded. This migration chooses exactly one local media
+    URL from the node, preferring a version bound to the same provider task.
+    """
+    def is_local_media(value):
+        url = str(value or "").strip()
+        if not url.startswith("/uploads/"):
+            return False
+        name = url.rsplit("/", 1)[-1]
+        if not name or name.endswith(("-thumb.jpg", "-cover.jpg")):
+            return False
+        path = tenant_context.current_upload_dir() / name
+        return path.is_file() and path.stat().st_size > 0
+
+    def node_local_urls(node):
+        meta = node.get("metadata") if isinstance(node, dict) else {}
+        meta = meta if isinstance(meta, dict) else {}
+        params = meta.get("params") if isinstance(meta.get("params"), dict) else {}
+        versions = params.get("mediaVersions")
+        if not isinstance(versions, list):
+            versions = params.get("videoVersions")
+        versions = versions if isinstance(versions, list) else []
+        urls = []
+        candidates = [
+            str(meta.get("content") or "").strip(),
+            str((meta.get("storage") or {}).get("url") or "").strip()
+            if isinstance(meta.get("storage"), dict) else "",
+            str(
+                ((meta.get("storage") or {}).get("source") or {}).get("url")
+                or ""
+            ).strip() if isinstance(meta.get("storage"), dict) else "",
+        ]
+        for version in versions:
+            if not isinstance(version, dict):
+                continue
+            candidates.append(str(version.get("url") or "").strip())
+            candidates.append(str(
+                ((version.get("storage") or {}).get("source") or {}).get("url")
+                or ""
+            ).strip())
+        for url in candidates:
+            if is_local_media(url) and url not in urls:
+                urls.append(url)
+        return meta, versions, urls
+
+    def write(con):
+        columns = [
+            item[0] for item in con.execute(
+                "SELECT * FROM generation_tasks LIMIT 0"
+            ).description
+        ]
+        pending_rows = con.execute(
+            "SELECT * FROM generation_tasks "
+            "WHERE status='succeeded' "
+            "AND COALESCE(delivery_status,'pending')='pending' "
+            "ORDER BY created_at,rowid"
+        ).fetchall()
+        pending_tasks = [dict(zip(columns, row)) for row in pending_rows]
+        task_count_by_node = {}
+        for task in pending_tasks:
+            key = (task.get("project_id"), task.get("node_id"))
+            task_count_by_node[key] = task_count_by_node.get(key, 0) + 1
+
+        changed = 0
+        now = _now_iso()
+        for task in pending_tasks:
+            project_id = str(task.get("project_id") or "")
+            node_id = str(task.get("node_id") or "")
+            if not project_id or not node_id:
+                continue
+            node_row = con.execute(
+                "SELECT node_json FROM canvas_projection_nodes "
+                "WHERE project_id=? AND node_id=?",
+                (project_id, node_id),
+            ).fetchone()
+            if not node_row:
+                continue
+            try:
+                node = json.loads(node_row[0] or "{}")
+            except (TypeError, ValueError):
+                continue
+            meta, versions, local_urls = node_local_urls(node)
+            if not local_urls:
+                continue
+            provider_task_id = str(task.get("provider_task_id") or "").strip()
+            provider_result_url = str(task.get("provider_result_url") or "").strip()
+            node_task_id = str(meta.get("taskId") or "").strip()
+            if node_task_id and provider_task_id and node_task_id != provider_task_id:
+                continue
+
+            matched_url = ""
+            if provider_task_id:
+                for version in versions:
+                    if not isinstance(version, dict):
+                        continue
+                    if str(version.get("taskId") or "").strip() != provider_task_id:
+                        continue
+                    for candidate in (
+                        version.get("url"),
+                        ((version.get("storage") or {}).get("source") or {}).get("url"),
+                    ):
+                        if is_local_media(candidate):
+                            matched_url = str(candidate).strip()
+                            break
+                    if matched_url:
+                        break
+            if not matched_url and task_count_by_node[(project_id, node_id)] == 1:
+                matched_url = local_urls[0]
+            if not matched_url:
+                continue
+
+            updated = con.execute(
+                "UPDATE generation_tasks SET "
+                "delivery_status='ready',local_result_url=?,"
+                "node_written_at=COALESCE(NULLIF(node_written_at,''),?),"
+                "updated_at=? "
+                "WHERE id=? AND status='succeeded' "
+                "AND COALESCE(delivery_status,'pending')='pending'",
+                (matched_url, now, now, task.get("id")),
+            )
+            changed += updated.rowcount
+        return changed
+
+    return _run_write_transaction(write)
+
+
 # 每个画布保留的快照条数上限。
 #
 # ★ 为什么必须限制（2026-10-25 第二次踩同一个坑）：

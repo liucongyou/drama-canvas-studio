@@ -8840,7 +8840,17 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
     () => new Set(readyCandidates.map((item) => item.node.id)),
   );
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchProgress, setBatchProgress] = useState({
+    completed: 0,
+    total: 0,
+    started: 0,
+  });
+  const [batchError, setBatchError] = useState('');
+  const [submittedIds, setSubmittedIds] = useState<Set<string>>(() => new Set());
+  const stopBatchRef = useRef(false);
   const selected = candidates.filter((item) => item.state === 'ready' && selectedIds.has(item.node.id));
+  const pendingSelected = selected.filter((item) => !submittedIds.has(item.node.id));
   const runningCount = candidates.filter((item) => item.state === 'running').length;
   const blockedCount = candidates.filter((item) => item.state === 'blocked').length;
   const allReadySelected = readyCandidates.length > 0
@@ -8946,19 +8956,57 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
           <span className="canvas-batch-gen-cost">
             <span className="canvas-batch-gen-selection">已选 <b>{selected.length}</b> 项</span>
             <em>
-              {selected.length === 0
+              {batchRunning
+                ? `正在提交 ${batchProgress.completed}/${batchProgress.total}，已受理 ${batchProgress.started}`
+                : batchError
+                  ? batchError
+                  : selected.length === 0
                 ? '未选择'
                 : unknownCostCount > 0
                   ? `${unknownCostCount} 项按供应商账单`
                   : `预估 ≈${currency}${knownCost.toFixed(knownCost < 1 ? 3 : 2)}`}
             </em>
+            {batchRunning && (
+              <span
+                className="canvas-batch-gen-progress"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={batchProgress.total}
+                aria-valuenow={batchProgress.completed}
+              >
+                <i
+                  style={{
+                    width: `${batchProgress.total > 0
+                      ? Math.round(batchProgress.completed / batchProgress.total * 100)
+                      : 0}%`,
+                  }}
+                />
+              </span>
+            )}
           </span>
           <span className="canvas-batch-gen-actions">
-            <button type="button" onClick={onClose}>取消</button>
+            <button
+              type="button"
+              disabled={batchRunning}
+              onClick={onClose}
+            >
+              取消
+            </button>
+            {batchRunning && (
+              <button
+                type="button"
+                onClick={() => {
+                  stopBatchRef.current = true;
+                  setBatchError('已停止提交剩余节点');
+                }}
+              >
+                停止剩余
+              </button>
+            )}
             <button
               type="button"
               className="is-primary"
-              disabled={selected.length === 0}
+              disabled={pendingSelected.length === 0 || batchRunning}
               onClick={async () => {
                 const costText = unknownCostCount > 0
                   ? `${selected.length} 项，其中 ${unknownCostCount} 项按供应商账单`
@@ -8969,21 +9017,66 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
                   confirmText: `生成 ${selected.length} 项`,
                 });
                 if (!confirmed) return;
+                const queue = [...pendingSelected];
+                if (!queue.length) return;
                 let started = 0;
-                const batchId = `batch-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-                for (const candidate of selected) {
-                  if (await onGenerate(candidate.node, {
-                    entry: 'batch',
-                    batchId,
-                    confirmed: true,
-                  })) started += 1;
+                const batchId = newCanvasEntityId('batch');
+                stopBatchRef.current = false;
+                setBatchRunning(true);
+                setBatchError('');
+                setBatchProgress({completed: 0, total: queue.length, started: 0});
+                try {
+                  for (let index = 0; index < queue.length; index += 1) {
+                    if (stopBatchRef.current) break;
+                    const candidate = queue[index];
+                    let accepted = false;
+                    let failureReason = '';
+                    try {
+                      accepted = await onGenerate(candidate.node, {
+                        entry: 'batch',
+                        batchId,
+                        confirmed: true,
+                      });
+                    } catch (error) {
+                      failureReason = error instanceof Error
+                        ? `提交中止：${error.message}`
+                        : '提交中止，请检查网络后重试剩余项';
+                    }
+                    if (accepted) {
+                      started += 1;
+                      setSubmittedIds((previous) => {
+                        const next = new Set(previous);
+                        next.add(candidate.node.id);
+                        return next;
+                      });
+                    } else {
+                      setBatchError(
+                        failureReason
+                        || '提交中止，请检查当前节点状态后重试剩余项',
+                      );
+                    }
+                    setBatchProgress({
+                      completed: index + 1,
+                      total: queue.length,
+                      started,
+                    });
+                    if (!accepted) break;
+                  }
+                } finally {
+                  setBatchRunning(false);
                 }
-                onSubmitted(started, selected.length);
-                onClose();
+                onSubmitted(started, queue.length);
+                if (started === queue.length && !stopBatchRef.current) {
+                  onClose();
+                }
               }}
             >
               <Wand2 size={14} strokeWidth={1.9} aria-hidden="true" />
-              生成选中 {selected.length} 项
+              {batchRunning
+                ? `提交中 ${batchProgress.completed}/${batchProgress.total}`
+                : pendingSelected.length < selected.length
+                  ? `重试剩余 ${pendingSelected.length} 项`
+                  : `生成选中 ${selected.length} 项`}
             </button>
           </span>
         </footer>

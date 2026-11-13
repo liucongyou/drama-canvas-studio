@@ -3,6 +3,19 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.14.02',
+    date: '2026-11-14',
+    title: '批量生成闭环、版本消歧与安全入口加固',
+    releasedAt: '2026-11-14 08:00:00 +08:00',
+    changes: [
+      '批量生成增加逐项进度、停止剩余、异常中止说明和防重复点击；中断后只重试尚未受理的节点，不会重复提交已成功受理项。',
+      '批量 ID 改用统一实体 ID 降级工具，非安全上下文或旧浏览器缺少 randomUUID 时不再直接崩溃。',
+      '历史成功任务仅在节点存在可验证的本地媒体字节时补写 delivery ready；多结果节点或无法证明归属的回执保持 pending，不伪造成功。',
+      '重复 versionId 同时存在本地和供应商副本时，优先切换到有存储回执或真实本地字节的版本，并同步清理重复项的旧 active 标记。',
+      '主站静态入口补齐 HSTS、CSP、X-Frame-Options、nosniff、Referrer-Policy 和 Permissions-Policy。',
+    ],
+  },
+  {
     version: '2026.11.14.01',
     date: '2026-11-14',
     title: '图片缩略图、任务语义与历史快照治理',

@@ -10364,6 +10364,21 @@ body,
   font-style:normal;
   white-space:nowrap;
 }
+.canvas-batch-gen-progress{
+  width:min(240px,42vw);
+  height:3px;
+  display:block;
+  overflow:hidden;
+  border-radius:999px;
+  background:color-mix(in srgb, var(--v-border) 65%, transparent);
+}
+.canvas-batch-gen-progress > i{
+  height:100%;
+  display:block;
+  border-radius:inherit;
+  background:var(--v-accent);
+  transition:width 180ms ease;
+}
 .canvas-batch-gen-actions{
   display:inline-flex;
   align-items:center;

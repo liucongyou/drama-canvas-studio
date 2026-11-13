@@ -3411,6 +3411,7 @@ def _select_media_version(meta, node_type, version_id, version_url=""):
         key=lambda item: (
             0 if item["expected_match"] else 1,
             0 if item["availability"] == "available" else 1,
+            0 if "sourceType" in item["version"] else 1,
             0 if item["durable_local"] else 1,
             item["index"],
         ),
@@ -3472,6 +3473,13 @@ def _select_media_version(meta, node_type, version_id, version_url=""):
     )
     meta["storageError"] = ""
     meta["providerResultUrl"] = str(selected.get("providerResultUrl") or "")
+    for index, version in enumerate(versions):
+        if (
+            isinstance(version, dict)
+            and str(version.get("versionId") or "").strip()
+            == requested_id
+        ):
+            version["active"] = index == selected_index
     for key in ("provider", "model"):
         if selected.get(key):
             meta[key] = str(selected[key])
@@ -13223,6 +13231,14 @@ def main():
         if ignored_duplicates:
             print(
                 f"[schema] normalized {ignored_duplicates} ignored duplicate tasks",
+                file=sys.stderr,
+            )
+        evidenced_delivery = _run_for_active_tenants(
+            store.backfill_succeeded_delivery_evidence
+        )
+        if evidenced_delivery:
+            print(
+                f"[schema] closed {evidenced_delivery} evidenced delivery receipts",
                 file=sys.stderr,
             )
         pruned_snapshots = _run_for_active_tenants(

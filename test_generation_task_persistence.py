@@ -395,6 +395,104 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             ("manual", 7),
         ])
 
+    def test_succeeded_delivery_backfill_requires_unambiguous_node_media(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("delivery-evidence")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "delivery-node",
+                    "type": "image",
+                    "title": "生成图片",
+                    "metadata": {
+                        "status": "done",
+                        "content": "/uploads/evidence.png",
+                        "taskId": "",
+                        "params": {
+                            "mediaVersions": [{
+                                "versionId": "image:evidence",
+                                "url": "/uploads/evidence.png",
+                            }],
+                        },
+                    },
+                }],
+                episode_id="EP001",
+            )
+            task = canvas_store.create_generation_task(
+                project_id,
+                "delivery-node",
+                kind="image",
+                episode_id="EP001",
+            )
+            (self.context.upload_dir / "evidence.png").write_bytes(b"evidence")
+            canvas_store.update_generation_task(
+                task["id"],
+                status="succeeded",
+                phase="已完成",
+                delivery_status="pending",
+            )
+            changed = canvas_store.backfill_succeeded_delivery_evidence()
+            updated = canvas_store.get_generation_task(task["id"])
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(updated["delivery_status"], "ready")
+        self.assertEqual(updated["local_result_url"], "/uploads/evidence.png")
+        self.assertTrue(updated["node_written_at"])
+
+    def test_succeeded_delivery_backfill_skips_ambiguous_node_results(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("delivery-evidence-ambiguous")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "ambiguous-node",
+                    "type": "image",
+                    "title": "多结果图片",
+                    "metadata": {
+                        "status": "done",
+                        "content": "/uploads/latest.png",
+                        "params": {
+                            "mediaVersions": [
+                                {"versionId": "v1", "url": "/uploads/old.png"},
+                                {"versionId": "v2", "url": "/uploads/latest.png"},
+                            ],
+                        },
+                    },
+                }],
+                episode_id="EP001",
+            )
+            first = canvas_store.create_generation_task(
+                project_id,
+                "ambiguous-node",
+                kind="image",
+                episode_id="EP001",
+            )
+            canvas_store.update_generation_task(
+                first["id"],
+                status="succeeded",
+                phase="已完成",
+                delivery_status="pending",
+            )
+            second = canvas_store.create_generation_task(
+                project_id,
+                "ambiguous-node",
+                kind="image",
+                episode_id="EP001",
+            )
+            canvas_store.update_generation_task(
+                second["id"],
+                status="succeeded",
+                phase="已完成",
+                delivery_status="pending",
+            )
+            changed = canvas_store.backfill_succeeded_delivery_evidence()
+            first_after = canvas_store.get_generation_task(first["id"])
+            second_after = canvas_store.get_generation_task(second["id"])
+
+        self.assertEqual(changed, 0)
+        self.assertEqual(first_after["delivery_status"], "pending")
+        self.assertEqual(second_after["delivery_status"], "pending")
+
     def test_all_async_task_callbacks_require_successful_persistence(self):
         callback = mock.Mock(side_effect=RuntimeError("database is locked"))
         payload = {"taskId": "task-123", "status": "queued"}
