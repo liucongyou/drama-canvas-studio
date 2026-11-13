@@ -1830,6 +1830,11 @@ def repair_payload_prompt_mentions(payload):
 
 
 def _segment_duration(segment, max_seconds):
+    timeline_duration = canvas_feed_contract.segment_timeline_duration_seconds(
+        segment.get("raw")
+    )
+    if timeline_duration is not None:
+        return max(4, min(max_seconds, timeline_duration))
     ends = []
     for shot in segment.get("shots") or []:
         try:

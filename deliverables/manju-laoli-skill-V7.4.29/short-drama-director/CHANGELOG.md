@@ -9,6 +9,15 @@
 > `_skill_backups/sd-changelog-archive-20261014/CHANGELOG_HISTORY_ARCHIVE.md`。
 > 需要查早期某版改了什么 → 到该归档文件检索；**不要**把归档内容拷回本文件。
 
+## V7.4.32 · 分段时长按时间轴自动识别
+
+- 新增共享函数 `segment_timeline_duration_seconds()`，统一从分段 `raw` 中最后一条镜头时间码读取总时长，同时支持 `MM:SS` 与 `秒` 两种时间轴。
+- `build_board_lite.py` 导出时强制双写 `segments[].durationSec` 与 `segments[].canvas.duration`，不再依赖模型或旧默认值填写。
+- 画布共享契约在没有顶层 `assets` 时也执行时长归一化，修复旧技能 JSON 因提前返回而未识别分段时长的问题。
+- 旧 JSON 缺少两个时长字段但正文时间轴完整时，导入器按时间轴自动补齐并给出 `WARN_SEGMENT_DURATION_DERIVED` 警告；声明值与时间轴冲突时以时间轴为准。
+- 导入器兜底也直接解析 raw 时间轴，不再只依赖解析后的 `shots`，避免镜行对象缺失时静默回退到 4 秒。
+- 新增生成、契约与导入联调测试，验证 10 秒时间轴生成 10 秒视频节点参数。
+
 ## V7.4.31 · 发布画布载荷生成器资产表兼容修复
 
 - 发布技能包 `7.4.31`，包修订 `20261113-r17`；保留 `7.4.30-r15` 作为线上回滚版本。

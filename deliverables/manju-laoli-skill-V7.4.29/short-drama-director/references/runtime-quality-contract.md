@@ -104,6 +104,7 @@
 - 唯一格式：`drama-canvas-feed/v2`。
 - 顶层必须有 `canvas_contract / asset_prompts / voice_prompts / segments`。
 - `code` 只能是 `图N`；语义码放 `semanticCode`，不得混用。
+- 每段 `durationSec` 与 `canvas.duration` 必须由 `raw` 时间轴的最后一个镜头结束秒自动计算并双写，禁止手填或回退到默认 4 秒。
 - 每个有台词角色必须有完整 `voice_prompts`，图号、角色名、声线引用和音频绑定一致。
 - 输出前必须经过同一个共享 schema、共享解析器和共享导入预检。
 - Agent 自动修复只能修机械字段、缺失声明和明确语法；不得删除用户已确认的段落、角色、台词或关键动作。

@@ -119,7 +119,7 @@ import py_compile
 import subprocess
 import warnings
 
-VERSION = "7.4.31"
+VERSION = "7.4.32"
 EXPECTED_REFS = 51   # 递归计数（41 份顶层规则库 + style-bible 10 份）。2026-11-11 新增 runtime-quality-contract.md。
 SUB_SKILLS = [
     "sd-decision-engine", "sd-recon-engine", "sd-script-engine", "sd-overseas-engine",

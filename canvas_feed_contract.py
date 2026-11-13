@@ -6,6 +6,7 @@ import re
 import copy
 import hashlib
 import json
+import math
 from functools import lru_cache
 from pathlib import Path
 from dataclasses import dataclass
@@ -44,6 +45,7 @@ class WarningCode(StrEnum):
     WARN_CODE_CANONICALIZED = "WARN_CODE_CANONICALIZED"
     WARN_RETRIED_AFTER_REVISION = "WARN_RETRIED_AFTER_REVISION"
     WARN_ASSET_IDENTITY_AUTO_CORRECTED = "WARN_ASSET_IDENTITY_AUTO_CORRECTED"
+    WARN_SEGMENT_DURATION_DERIVED = "WARN_SEGMENT_DURATION_DERIVED"
 
 
 @dataclass(frozen=True)
@@ -149,6 +151,20 @@ CODE_RE = re.compile(r"图\s*(\d+)")
 SEMANTIC_CODE_RE = re.compile(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*")
 TITLE_CODE_RE = re.compile(r"[（(]图\s*(\d+)[）)]")
 TITLE_ROLE_RE = re.compile(r"^(?:音频|角色|场景|道具|群像)｜([^（(\n]+)")
+TIMELINE_CLOCK_RANGE_RE = re.compile(
+    r"(?m)^\s*\[?\s*"
+    r"(\d{1,2}):(\d{2})(?:\.(\d+))?"
+    r"\s*[-~～—–→]\s*"
+    r"(\d{1,2}):(\d{2})(?:\.(\d+))?"
+    r"\s*\]?"
+)
+TIMELINE_SECONDS_RANGE_RE = re.compile(
+    r"(?m)^\s*\[?\s*"
+    r"(\d+(?:\.\d+)?)\s*(?:秒|s)\s*[-~～—–→]\s*"
+    r"(\d+(?:\.\d+)?)\s*(?:秒|s)?"
+    r"\s*\]?",
+    re.IGNORECASE,
+)
 BAD_AGE_RE = re.compile(
     r"A \d+(?:-\d+)?-year-old (?:male|female)|A (?:male|female) in his ",
     re.IGNORECASE,
@@ -173,6 +189,91 @@ def canonical_semantic_code(value: Any) -> str:
     """Return a stable asset code such as CHR-001 when one is present."""
     text = str(value or "").strip().upper()
     return text if SEMANTIC_CODE_RE.fullmatch(text) else ""
+
+
+def segment_timeline_duration_seconds(raw: Any) -> int | None:
+    """Return the segment duration from its final shot end timecode."""
+    text = str(raw or "")
+    ends: list[float] = []
+    for match in TIMELINE_CLOCK_RANGE_RE.finditer(text):
+        minutes, seconds, fraction = match.group(4, 5, 6)
+        ends.append(
+            int(minutes) * 60
+            + int(seconds)
+            + (float(f"0.{fraction}") if fraction else 0.0)
+        )
+    for match in TIMELINE_SECONDS_RANGE_RE.finditer(text):
+        ends.append(float(match.group(2)))
+    if not ends:
+        return None
+    return max(4, math.ceil(max(ends) - 1e-9))
+
+
+def _declared_segment_duration(value: Any) -> int | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric) or numeric <= 0:
+        return None
+    return max(4, math.ceil(numeric - 1e-9))
+
+
+def _normalize_segment_durations(
+    payload: dict[str, Any],
+    issues: list[ValidationIssue],
+) -> None:
+    for index, segment in enumerate(payload.get("segments") or []):
+        if not isinstance(segment, dict):
+            continue
+        path = f"segments[{index}]"
+        derived = segment_timeline_duration_seconds(segment.get("raw"))
+        canvas = segment.get("canvas")
+        if canvas is not None and not isinstance(canvas, dict):
+            continue
+        canvas = canvas if isinstance(canvas, dict) else {}
+        declared = {
+            duration
+            for duration in (
+                _declared_segment_duration(segment.get("durationSec")),
+                _declared_segment_duration(canvas.get("duration")),
+            )
+            if duration is not None
+        }
+        if derived is None:
+            if not declared:
+                continue
+            if len(declared) > 1:
+                issues.append(_issue(
+                    ErrorCode.SEGMENT_INVALID,
+                    "durationSec 与 canvas.duration 不一致，且没有时间轴可用于裁决",
+                    path=path,
+                    segment=index,
+                ))
+                continue
+            duration = next(iter(declared))
+        else:
+            duration = derived
+            if not declared:
+                issues.append(_issue(
+                    WarningCode.WARN_SEGMENT_DURATION_DERIVED,
+                    f"分段时长缺失，已按时间轴识别为 {duration} 秒",
+                    path=path,
+                    segment=index,
+                ))
+            elif declared != {duration}:
+                issues.append(_issue(
+                    WarningCode.WARN_SEGMENT_DURATION_DERIVED,
+                    f"声明时长 {sorted(declared)} 秒与时间轴 {duration} 秒不一致，已按时间轴纠正",
+                    path=path,
+                    segment=index,
+                ))
+        segment["durationSec"] = duration
+        if canvas or "canvas" in segment:
+            canvas["duration"] = duration
+            segment["canvas"] = canvas
 
 
 def dialogue_speakers(text: str) -> set[str]:
@@ -875,6 +976,7 @@ def _prepare_feed_for_import(payload: Any) -> tuple[Any, list[ValidationIssue]]:
 
     normalized = copy.deepcopy(payload)
     issues: list[ValidationIssue] = []
+    _normalize_segment_durations(normalized, issues)
     contract = normalized.get("canvas_contract")
     ledger = contract.get("asset_ledger") if isinstance(contract, dict) else None
     conflicts = contract.get("ageConflicts") if isinstance(contract, dict) else None

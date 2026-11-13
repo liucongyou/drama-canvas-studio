@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import copy
 import hashlib
 import json
 import os
@@ -216,6 +217,69 @@ print(json.dumps(feed, ensure_ascii=False))
 
         self.assertEqual(feed["asset_prompts"][0]["code"], "图1")
         self.assertEqual(feed["asset_prompts"][0]["semanticCode"], "CHR-001")
+
+    def test_generator_and_import_derive_duration_from_timecodes(self):
+        script = """
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(r"{skill_root}") / "scripts"))
+import build_board_lite
+
+feed = build_board_lite.enrich_canvas_contract({{
+    "title": "时长识别联调",
+    "meta": {{"画幅": "9:16", "模型版本": "2.0"}},
+    "asset_prompts": [],
+    "voice_prompts": [],
+    "segments": [{{
+        "no": 1,
+        "name": "段1",
+        "raw": (
+            "【时间轴分镜】\\n"
+            "00:00-00:04 [镜头1] 中景。\\n"
+            "00:04-00:07 [镜头2] 近景。\\n"
+            "00:07-00:10 [镜头3] 特写。"
+        ),
+        "shots": [],
+    }}],
+}})
+print(json.dumps(feed, ensure_ascii=False))
+""".format(skill_root=str(SKILL_ROOT))
+        result = run_python(["-c", script])
+        self.assertEqual(result.returncode, 0, (result.stdout or "") + (result.stderr or ""))
+        feed = json.loads(result.stdout)
+        self.assertEqual(feed["segments"][0]["durationSec"], 10)
+        self.assertEqual(feed["segments"][0]["canvas"]["duration"], 10)
+        self.assertEqual(canvas_feed_contract.validate_declared_feed(feed), [])
+
+        # Older skill exports may omit both duration fields. The shared
+        # importer must derive them from the raw timeline instead of silently
+        # falling back to the 4-second UI default.
+        legacy = copy.deepcopy(feed)
+        legacy["segments"][0].pop("durationSec", None)
+        legacy["segments"][0]["canvas"].pop("duration", None)
+        issues = canvas_feed_contract.validate_declared_feed(legacy)
+        self.assertFalse([
+            item for item in issues
+            if isinstance(item.code, canvas_feed_contract.ErrorCode)
+        ])
+        self.assertIn(
+            canvas_feed_contract.WarningCode.WARN_SEGMENT_DURATION_DERIVED,
+            {item.code for item in issues},
+        )
+        plan = prepare_import(
+            {"nodes": [], "connections": [], "episodeImports": []},
+            legacy,
+            "duration-detection-project",
+            1,
+        )
+        self.assertTrue(plan.ok, [issue_dict(item) for item in plan.errors])
+        video = next(
+            node for node in plan.merged_payload["nodes"]
+            if node.get("type") == "video"
+        )
+        self.assertEqual(video["metadata"]["params"]["duration"], 10)
 
     def test_generated_feed_contains_material_reference_contract(self):
         script = """

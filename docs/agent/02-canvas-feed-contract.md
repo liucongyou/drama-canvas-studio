@@ -47,6 +47,7 @@
 - `asset_prompts`：资产提示词数组；角色/场景/道具/群像。
 - `voice_prompts`：所有有对白角色的完整英文音色定义。
 - `segments`：至少 1 段，每段含 `raw` 投喂正文。
+- `segments[].durationSec` 与 `segments[].canvas.duration`：必须由该段 raw 最后一条镜头结束时间码自动计算并双写；旧 JSON 缺字段时由共享契约自动补齐。
 
 ## 3. Agent 可以追加、但不能改语义的字段
 
@@ -101,6 +102,7 @@
 - 音色引用与角色图号一致；
 - `### 素材引用` 位置与绑定；
 - `segments[].canvas.asset_codes/asset_refs` 与正文是否一致。
+- 段时长是否与 raw 时间轴最后结束秒一致。
 
 ### Gate 2：产物层
 
@@ -127,7 +129,7 @@ VOICE_DECLARED_MISSING / VOICE_REF_MISMATCH / VOICE_EDGE_MISMATCH
 REVISION_CONFLICT
 ```
 
-警告码：`WARN_DEPRECATED_VOICE_FIELD`、`WARN_DERIVED_DIALECT`、`WARN_GENERATOR_METADATA_MISSING`、`WARN_CODE_CANONICALIZED`、`WARN_RETRIED_AFTER_REVISION`、`WARN_ASSET_IDENTITY_AUTO_CORRECTED`。
+警告码：`WARN_DEPRECATED_VOICE_FIELD`、`WARN_DERIVED_DIALECT`、`WARN_GENERATOR_METADATA_MISSING`、`WARN_CODE_CANONICALIZED`、`WARN_RETRIED_AFTER_REVISION`、`WARN_ASSET_IDENTITY_AUTO_CORRECTED`、`WARN_SEGMENT_DURATION_DERIVED`。
 
 ## 6. Agent 的校验 / 修复循环
 
@@ -206,5 +208,6 @@ Agent 建议额外在 `agent_imports` 表记录：
 - [ ] 每个 `segments[].raw` 有且仅有一份 `### 素材引用`，位置正确
 - [ ] 正文引用全部为完整 `@类型｜名称（图N）`
 - [ ] `segments[].canvas.asset_codes/asset_refs` 与正文双向一致
+- [ ] `segments[].durationSec === segments[].canvas.duration === raw 时间轴最后结束秒`
 - [ ] `prepare_import` 无 error（warning 可接受但必须展示）
 - [ ] feed sha256 已记录

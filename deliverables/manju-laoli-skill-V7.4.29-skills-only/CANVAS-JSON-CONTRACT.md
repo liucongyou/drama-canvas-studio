@@ -168,6 +168,8 @@ POST /api/projects/{id}/import
 
 `segments[].canvas.asset_codes` 与 `asset_refs` 如存在，必须与正文全部 `图N` 双向一致；导入器会拒绝漂移声明。
 
+`segments[].durationSec` 与 `segments[].canvas.duration` 必须由该段 `raw` 的最后一条镜头结束时间码自动计算并双写，不得由模型手填或回退到前端默认 4 秒。例如 `00:00-00:04 / 00:04-00:07 / 00:07-00:10` 必须得到 10 秒。旧 JSON 缺这两个字段时，导入器会按时间轴自动补齐；声明值与时间轴冲突时以时间轴为准并记录 `WARN_SEGMENT_DURATION_DERIVED`。
+
 ## 资产记录导出
 
 ```text

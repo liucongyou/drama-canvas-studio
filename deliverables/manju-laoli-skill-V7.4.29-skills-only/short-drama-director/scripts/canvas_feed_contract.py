@@ -6,6 +6,9 @@ import re
 import copy
 import hashlib
 import json
+import math
+from functools import lru_cache
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -14,8 +17,11 @@ from typing import Any
 
 class ErrorCode(StrEnum):
     FEED_PARSE_ERROR = "FEED_PARSE_ERROR"
+    SCHEMA_VALIDATION_FAILED = "SCHEMA_VALIDATION_FAILED"
     SCHEMA_VERSION_UNSUPPORTED = "SCHEMA_VERSION_UNSUPPORTED"
+    FEED_PATH_FORBIDDEN = "FEED_PATH_FORBIDDEN"
     SEGMENT_INVALID = "SEGMENT_INVALID"
+    SEGMENT_NO_DUPLICATE = "SEGMENT_NO_DUPLICATE"
     ASSET_CODE_INVALID = "ASSET_CODE_INVALID"
     ASSET_CODE_DUPLICATE = "ASSET_CODE_DUPLICATE"
     ASSET_DECLARED_MISSING = "ASSET_DECLARED_MISSING"
@@ -30,14 +36,16 @@ class ErrorCode(StrEnum):
     VOICE_REF_MISMATCH = "VOICE_REF_MISMATCH"
     VOICE_EDGE_MISMATCH = "VOICE_EDGE_MISMATCH"
     REVISION_CONFLICT = "REVISION_CONFLICT"
-    MATERIAL_CONTRACT_MISSING = "MATERIAL_CONTRACT_MISSING"
-    MATERIAL_CONTRACT_UNBOUND = "MATERIAL_CONTRACT_UNBOUND"
 
 
 class WarningCode(StrEnum):
     WARN_DEPRECATED_VOICE_FIELD = "WARN_DEPRECATED_VOICE_FIELD"
     WARN_DERIVED_DIALECT = "WARN_DERIVED_DIALECT"
+    WARN_GENERATOR_METADATA_MISSING = "WARN_GENERATOR_METADATA_MISSING"
+    WARN_CODE_CANONICALIZED = "WARN_CODE_CANONICALIZED"
     WARN_RETRIED_AFTER_REVISION = "WARN_RETRIED_AFTER_REVISION"
+    WARN_ASSET_IDENTITY_AUTO_CORRECTED = "WARN_ASSET_IDENTITY_AUTO_CORRECTED"
+    WARN_SEGMENT_DURATION_DERIVED = "WARN_SEGMENT_DURATION_DERIVED"
 
 
 @dataclass(frozen=True)
@@ -64,6 +72,7 @@ class SegmentExpectation:
 class DeclaredExpectations:
     segments: tuple[SegmentExpectation, ...]
     warnings: tuple[ValidationIssue, ...]
+    has_incoming_assets: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +121,7 @@ def issue_dict(issue: ValidationIssue) -> dict:
 
 
 SCHEMA_VERSION = "drama-canvas-feed/v2"
+AUDIO_PROMPT_FORMAT = "audio-prompt-v1"
 AUDIO_PROMPT_SUFFIX = (
     "short drama dubbing reference clip, 4.5 seconds clean voice, no background noise."
 )
@@ -138,12 +148,132 @@ LEGACY_ASSET_REF_RE = re.compile(
     r"@//(?:chr|scn|prp)\s*/\s*-\s*[^（(\n]+[（(](?:参考)?图\s*(\d+)[）)]"
 )
 CODE_RE = re.compile(r"图\s*(\d+)")
+SEMANTIC_CODE_RE = re.compile(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*")
 TITLE_CODE_RE = re.compile(r"[（(]图\s*(\d+)[）)]")
 TITLE_ROLE_RE = re.compile(r"^(?:音频|角色|场景|道具|群像)｜([^（(\n]+)")
+TIMELINE_CLOCK_RANGE_RE = re.compile(
+    r"(?m)^\s*\[?\s*"
+    r"(\d{1,2}):(\d{2})(?:\.(\d+))?"
+    r"\s*[-~～—–→]\s*"
+    r"(\d{1,2}):(\d{2})(?:\.(\d+))?"
+    r"\s*\]?"
+)
+TIMELINE_SECONDS_RANGE_RE = re.compile(
+    r"(?m)^\s*\[?\s*"
+    r"(\d+(?:\.\d+)?)\s*(?:秒|s)\s*[-~～—–→]\s*"
+    r"(\d+(?:\.\d+)?)\s*(?:秒|s)?"
+    r"\s*\]?",
+    re.IGNORECASE,
+)
 BAD_AGE_RE = re.compile(
     r"A \d+(?:-\d+)?-year-old (?:male|female)|A (?:male|female) in his ",
     re.IGNORECASE,
 )
+SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "canvas_feed.schema.json"
+
+
+def canonical_code(value: Any) -> str:
+    """Normalize asset codes so 图9, 图09, and 图 9 share one identity."""
+    match = CODE_RE.fullmatch(str(value or "").strip())
+    if not match:
+        return ""
+    return f"图{int(match.group(1))}"
+
+
+def canonical_code_from_text(value: Any) -> str:
+    match = CODE_RE.search(str(value or ""))
+    return canonical_code(match.group(0)) if match else ""
+
+
+def canonical_semantic_code(value: Any) -> str:
+    """Return a stable asset code such as CHR-001 when one is present."""
+    text = str(value or "").strip().upper()
+    return text if SEMANTIC_CODE_RE.fullmatch(text) else ""
+
+
+def segment_timeline_duration_seconds(raw: Any) -> int | None:
+    """Return the segment duration from its final shot end timecode."""
+    text = str(raw or "")
+    ends: list[float] = []
+    for match in TIMELINE_CLOCK_RANGE_RE.finditer(text):
+        minutes, seconds, fraction = match.group(4, 5, 6)
+        ends.append(
+            int(minutes) * 60
+            + int(seconds)
+            + (float(f"0.{fraction}") if fraction else 0.0)
+        )
+    for match in TIMELINE_SECONDS_RANGE_RE.finditer(text):
+        ends.append(float(match.group(2)))
+    if not ends:
+        return None
+    return max(4, math.ceil(max(ends) - 1e-9))
+
+
+def _declared_segment_duration(value: Any) -> int | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric) or numeric <= 0:
+        return None
+    return max(4, math.ceil(numeric - 1e-9))
+
+
+def _normalize_segment_durations(
+    payload: dict[str, Any],
+    issues: list[ValidationIssue],
+) -> None:
+    for index, segment in enumerate(payload.get("segments") or []):
+        if not isinstance(segment, dict):
+            continue
+        path = f"segments[{index}]"
+        derived = segment_timeline_duration_seconds(segment.get("raw"))
+        canvas = segment.get("canvas")
+        if canvas is not None and not isinstance(canvas, dict):
+            continue
+        canvas = canvas if isinstance(canvas, dict) else {}
+        declared = {
+            duration
+            for duration in (
+                _declared_segment_duration(segment.get("durationSec")),
+                _declared_segment_duration(canvas.get("duration")),
+            )
+            if duration is not None
+        }
+        if derived is None:
+            if not declared:
+                continue
+            if len(declared) > 1:
+                issues.append(_issue(
+                    ErrorCode.SEGMENT_INVALID,
+                    "durationSec 与 canvas.duration 不一致，且没有时间轴可用于裁决",
+                    path=path,
+                    segment=index,
+                ))
+                continue
+            duration = next(iter(declared))
+        else:
+            duration = derived
+            if not declared:
+                issues.append(_issue(
+                    WarningCode.WARN_SEGMENT_DURATION_DERIVED,
+                    f"分段时长缺失，已按时间轴识别为 {duration} 秒",
+                    path=path,
+                    segment=index,
+                ))
+            elif declared != {duration}:
+                issues.append(_issue(
+                    WarningCode.WARN_SEGMENT_DURATION_DERIVED,
+                    f"声明时长 {sorted(declared)} 秒与时间轴 {duration} 秒不一致，已按时间轴纠正",
+                    path=path,
+                    segment=index,
+                ))
+        segment["durationSec"] = duration
+        if canvas or "canvas" in segment:
+            canvas["duration"] = duration
+            segment["canvas"] = canvas
 
 
 def dialogue_speakers(text: str) -> set[str]:
@@ -161,16 +291,25 @@ def dialogue_speakers(text: str) -> set[str]:
 
 
 def asset_ref_codes(text: str) -> set[str]:
-    codes = {f"图{code}" for code in ASSET_REF_RE.findall(str(text or ""))}
-    codes.update(f"图{code}" for code in LEGACY_ASSET_REF_RE.findall(str(text or "")))
+    codes = {
+        canonical_code(f"图{code}")
+        for code in ASSET_REF_RE.findall(str(text or ""))
+    }
+    codes.update(
+        canonical_code(f"图{code}")
+        for code in LEGACY_ASSET_REF_RE.findall(str(text or ""))
+    )
+    codes.discard("")
     return codes
 
 
 def audio_ref_entries(text: str) -> set[tuple[str, str]]:
-    return {
-        (match.group(1).strip(), f"图{match.group(2)}")
-        for match in AUDIO_REF_RE.finditer(str(text or ""))
-    }
+    entries = set()
+    for match in AUDIO_REF_RE.finditer(str(text or "")):
+        code = canonical_code(f"图{match.group(2)}")
+        if code:
+            entries.add((match.group(1).strip(), code))
+    return entries
 
 
 def _issue(
@@ -192,151 +331,151 @@ def _issue(
     )
 
 
-MATERIAL_CONTRACT_HEAD = re.compile(r"(?m)^###\s*素材引用\s*$")
-MATERIAL_CONTRACT_GROUPS = ("【人物】", "【群像】", "【场景】", "【道具】", "【声音】")
-# 契约条目是「别名 → 素材」两段式（对齐短剧创作台真实格式）：
-#   <钱万金> 对应@角色｜钱万金（图2），仅采用…
-# 左侧尖括号只放别名（纯资产名），右侧 `对应@类型｜资产名（图N）` 才是素材绑定。
-# 旧体例 `<角色｜钱万金（图2）> 对应角色参考图` 把图号写在左侧别名里、右侧无图号，
-# 平台解析时左侧当别名、右边找不到素材 → 图挂不上。两种体例都要能校验，
-# 但只认「右侧绑定了图号」的才算合格。
-MATERIAL_CONTRACT_ENTRY = re.compile(
-    r"<(?P<alias>[^<>\n]{1,64})>"
-    r"(?P<mid>[^\n]{0,24}?)"
-    r"对应\s*@(?P<kind>角色|场景|道具|音频|群像)｜(?P<name>[^；\n@（]{1,48}?)（图\s*(?P<code>\d+)）"
-)
-# 旧体例（左侧带类型前缀+图号、右侧无图号）——兼容识别，但会单独告警
-MATERIAL_CONTRACT_LEGACY = re.compile(
-    r"<((?:角色|场景|道具|音频|群像)｜[^；\n<>（]{1,48}?（图\s*\d+）)>\s*对应"
-)
-# 类型 → 该类型条目必须出现的分组标题
-MATERIAL_GROUP_OF = {
-    "角色": "【人物】",
-    "群像": "【群像】",
-    "场景": "【场景】",
-    "道具": "【道具】",
-    "音频": "【声音】",
-}
+@lru_cache(maxsize=1)
+def load_feed_schema() -> dict:
+    try:
+        payload = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"无法加载画布载荷 Schema：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("画布载荷 Schema 根节点必须是对象")
+    return payload
 
 
-def _material_contract_span(text: str, head: re.Match) -> tuple[int, int]:
-    """返回契约块 [start, end)：从 `### 素材引用` 起，到下一个非素材分组标题止。
-
-    契约 2026-11-05 移到【场景资产】之前（段末模型读不到），所以正文引用
-    既可能在契约前、也可能在契约后。判定「哪个图号被引用了」必须先把
-    契约块整块剔除，否则契约自己写的图号会被误当成正文引用。
-    """
-    lines = text[head.end():].split("\n")
-    offset = head.end()
-    consumed = 0
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            offset += len(line) + 1
-            consumed += 1
-            continue
-        if stripped.startswith("【") and not stripped.startswith(MATERIAL_CONTRACT_GROUPS):
-            break
-        if stripped.startswith("#") or stripped.startswith("```"):
-            break
-        offset += len(line) + 1
-        consumed += 1
-    return head.start(), offset
+def _schema_type_matches(value: Any, expected: str) -> bool:
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "null":
+        return value is None
+    return True
 
 
-def _check_material_contract(raw: str, index: int, path: str, issues: list[ValidationIssue]) -> None:
-    """素材引用身份契约机检（SKILL.md §16 · 2026-11-05）。
-
-    规则要求分段提示词带唯一 `### 素材引用`，且角色/场景/道具/声音
-    「都必须以完整资产标题绑定，不得只给图片顺序号」。
-
-    2026-11-05 二次修订：条目必须是「<别名> 对应@类型｜资产名（图N）」，
-    图号绑在右侧素材位，不能只写在左侧别名里（那样平台挂不上图）。
-    三次修订：契约位置由段末改为【场景资产】之前（段末是最低注意力区，
-    模型读不到身份约束），校验不再假设契约在末尾。
-    """
-    text = str(raw or "")
-    heads = list(MATERIAL_CONTRACT_HEAD.finditer(text))
-    if not heads:
-        issues.append(_issue(
-            ErrorCode.MATERIAL_CONTRACT_MISSING,
-            "缺 `### 素材引用` 身份契约（SKILL.md §16：必须按【人物】/【场景】/【道具】/【声音】分组声明资产用途，位置在【场景资产】之前）",
-            path=f"{path}.raw",
-            segment=index,
-        ))
+def _schema_validate(
+    value: Any,
+    schema: dict,
+    path: str,
+    issues: list[ValidationIssue],
+) -> None:
+    if not isinstance(schema, dict):
         return
-    if len(heads) > 1:
-        issues.append(_issue(
-            ErrorCode.MATERIAL_CONTRACT_UNBOUND,
-            f"`### 素材引用` 出现 {len(heads)} 次——只允许唯一一份，禁止重复追加",
-            path=f"{path}.raw",
-            segment=index,
-        ))
-    start, end = _material_contract_span(text, heads[-1])
-    body = text[heads[-1].end():end]
-    entries = list(MATERIAL_CONTRACT_ENTRY.finditer(body))
-    if not entries:
-        legacy = MATERIAL_CONTRACT_LEGACY.search(body)
-        if legacy:
+    expected_type = schema.get("type")
+    if expected_type:
+        expected_types = (
+            expected_type if isinstance(expected_type, list) else [expected_type]
+        )
+        if not any(_schema_type_matches(value, str(item)) for item in expected_types):
             issues.append(_issue(
-                ErrorCode.MATERIAL_CONTRACT_UNBOUND,
-                f"契约条目「{legacy.group(1)}」把图号写在左侧别名里、右侧没有绑定素材——"
-                "应为 `<别名> 对应@类型｜资产名（图N）`，否则平台挂不上图",
-                path=f"{path}.raw",
-                segment=index,
+                ErrorCode.SCHEMA_VALIDATION_FAILED,
+                f"字段类型应为 {'/'.join(map(str, expected_types))}",
+                path=path or "$",
             ))
-        else:
-            issues.append(_issue(
-                ErrorCode.MATERIAL_CONTRACT_UNBOUND,
-                "`### 素材引用` 块内没有任何 `<别名> 对应@类型｜资产名（图N）` 条目"
-                "——不得只给图片顺序号，也不得把图号写进左侧别名",
-                path=f"{path}.raw",
-                segment=index,
-            ))
-    # 契约块位置：必须在【场景资产】之前（段末模型读不到身份约束）
-    scene_asset = re.search(r"(?m)^【场景资产】", text)
-    if scene_asset and start > scene_asset.start():
+            return
+    if "const" in schema and value != schema["const"]:
         issues.append(_issue(
-            ErrorCode.MATERIAL_CONTRACT_UNBOUND,
-            "`### 素材引用` 挂在【场景资产】之后——必须移到【场景资产】之前，"
-            "否则模型展开资产时读不到身份绑定，等于没写",
-            path=f"{path}.raw",
-            segment=index,
+            ErrorCode.SCHEMA_VALIDATION_FAILED,
+            f"字段必须等于 {schema['const']!r}",
+            path=path or "$",
         ))
-    # 段内实际引用的资产图号，必须全部在契约条目里出现（漏绑 = 模型拿不到用途约束）
-    outside = (text[:start] + text[end:]).strip()
-    cited_codes = set()
-    for pattern in (ASSET_REF_RE, LEGACY_ASSET_REF_RE):
-        cited_codes |= {f"图{m.group(1)}" for m in pattern.finditer(outside)}
-    bound_codes = {f"图{m.group('code')}" for m in entries}
-    missing = sorted(cited_codes - bound_codes, key=lambda c: int(re.sub(r"\D", "", c) or 0))
-    if missing:
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and value not in enum_values:
         issues.append(_issue(
-            ErrorCode.MATERIAL_CONTRACT_UNBOUND,
-            f"正文引用了 {'、'.join(missing)} 但 `素材引用` 契约未绑定——每个被引用的资产都必须在契约里出现",
-            path=f"{path}.raw",
-            segment=index,
+            ErrorCode.SCHEMA_VALIDATION_FAILED,
+            f"字段值必须是 {enum_values!r} 之一",
+            path=path or "$",
         ))
-    # 分组必须与类型一致（人物条目落在【场景】下 = 契约自相矛盾）
-    current_group = ""
-    for line in body.splitlines():
-        stripped = line.strip()
-        for group in MATERIAL_CONTRACT_GROUPS:
-            if stripped.startswith(group):
-                current_group = group
-                break
-        match = MATERIAL_CONTRACT_ENTRY.search(stripped)
-        if not match or not current_group:
-            continue
-        asset_kind = match.group("kind")
-        expected = MATERIAL_GROUP_OF.get(asset_kind)
-        if expected and expected != current_group:
+    if isinstance(value, str):
+        minimum_length = schema.get("minLength")
+        if isinstance(minimum_length, int) and len(value) < minimum_length:
             issues.append(_issue(
-                ErrorCode.MATERIAL_CONTRACT_UNBOUND,
-                f"契约条目「{match.group('name')}（图{match.group('code')}）」挂在 {current_group} 下，应挂在 {expected}",
-                path=f"{path}.raw",
-                segment=index,
+                ErrorCode.SCHEMA_VALIDATION_FAILED,
+                f"字符串长度不能小于 {minimum_length}",
+                path=path or "$",
             ))
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str):
+            try:
+                matches = re.fullmatch(pattern, value) is not None
+            except re.error:
+                matches = True
+            if not matches:
+                issues.append(_issue(
+                    ErrorCode.SCHEMA_VALIDATION_FAILED,
+                    f"字符串格式不匹配：{pattern}",
+                    path=path or "$",
+                ))
+    if isinstance(value, dict):
+        required = schema.get("required")
+        if isinstance(required, list):
+            for key in required:
+                if key not in value:
+                    child = f"{path}.{key}" if path else str(key)
+                    issues.append(_issue(
+                        ErrorCode.SCHEMA_VALIDATION_FAILED,
+                        f"缺少必填字段：{key}",
+                        path=child,
+                    ))
+        properties = schema.get("properties")
+        properties = properties if isinstance(properties, dict) else {}
+        for key, child_schema in properties.items():
+            if key in value:
+                child = f"{path}.{key}" if path else key
+                _schema_validate(value[key], child_schema, child, issues)
+        if schema.get("additionalProperties") is False:
+            for key in sorted(set(value) - set(properties)):
+                child = f"{path}.{key}" if path else str(key)
+                issues.append(_issue(
+                    ErrorCode.SCHEMA_VALIDATION_FAILED,
+                    f"不允许的字段：{key}",
+                    path=child,
+                ))
+    if isinstance(value, list):
+        minimum_items = schema.get("minItems")
+        if isinstance(minimum_items, int) and len(value) < minimum_items:
+            issues.append(_issue(
+                ErrorCode.SCHEMA_VALIDATION_FAILED,
+                f"数组至少需要 {minimum_items} 项",
+                path=path or "$",
+            ))
+        if schema.get("uniqueItems") is True:
+            serialized = [
+                json.dumps(item, ensure_ascii=False, sort_keys=True)
+                for item in value
+            ]
+            if len(serialized) != len(set(serialized)):
+                issues.append(_issue(
+                    ErrorCode.SCHEMA_VALIDATION_FAILED,
+                    "数组项不能重复",
+                    path=path or "$",
+                ))
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                _schema_validate(
+                    item,
+                    item_schema,
+                    f"{path}[{index}]" if path else f"[{index}]",
+                    issues,
+                )
+
+
+def validate_feed_schema(payload: Any) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    try:
+        schema = load_feed_schema()
+    except RuntimeError as exc:
+        return [_issue(ErrorCode.SCHEMA_VALIDATION_FAILED, str(exc), path="$")]
+    _schema_validate(payload, schema, "", issues)
+    return issues
 
 
 def _canonical_field(
@@ -377,9 +516,62 @@ def _normalize_age(value: Any) -> str:
     return re.sub(r"\s*[~～—–-]\s*", "-", str(value or "").strip())
 
 
+def _age_span(value: Any) -> tuple[int, int] | None:
+    match = re.fullmatch(
+        r"\s*(\d{1,3})(?:\s*-\s*(\d{1,3}))?\s*",
+        str(value or ""),
+    )
+    if not match:
+        return None
+    start = int(match.group(1))
+    end = int(match.group(2) or start)
+    return min(start, end), max(start, end)
+
+
+def _age_values_conflict(visual_age: Any, voice_age: Any) -> bool:
+    left = _normalize_age(visual_age)
+    right = _normalize_age(voice_age)
+    if not left or not right or left == right:
+        return False
+    left_span = _age_span(left)
+    right_span = _age_span(right)
+    if left_span is None or right_span is None:
+        return True
+    return max(left_span[0], right_span[0]) > min(left_span[1], right_span[1])
+
+
+def _append_age_conflict_issues(
+    conflicts: Any,
+    semantic_to_figure: dict[str, str],
+    issues: list[ValidationIssue],
+) -> None:
+    if not isinstance(conflicts, dict):
+        return
+    for semantic, conflict in conflicts.items():
+        if not isinstance(conflict, dict):
+            continue
+        visual_age = _normalize_age(conflict.get("visualAge"))
+        voice_age = _normalize_age(conflict.get("voiceAge"))
+        if not _age_values_conflict(visual_age, voice_age):
+            continue
+        figure = semantic_to_figure.get(str(semantic).strip().upper(), "")
+        issues.append(_issue(
+            WarningCode.WARN_ASSET_IDENTITY_AUTO_CORRECTED,
+            f"{semantic} 视觉年龄 {visual_age} 与声线年龄 {voice_age} 冲突，"
+            "已保留图像/声线各自明确值；请在源稿统一",
+            path=f"canvas_contract.ageConflicts.{semantic}",
+            node_code=figure,
+        ))
+
+
 def analyze_declared_feed(payload: dict) -> GateResult:
     """Gate 1: validate declarations without touching store or derived edges."""
-    issues: list[ValidationIssue] = []
+    issues: list[ValidationIssue] = validate_feed_schema(payload)
+    if not isinstance(payload, dict):
+        return GateResult(
+            issues=tuple(issues),
+            expectations=DeclaredExpectations(segments=(), warnings=()),
+        )
     contract = payload.get("canvas_contract") if isinstance(payload, dict) else None
     schema = str((contract or {}).get("schema") or "") if isinstance(contract, dict) else ""
     if schema != SCHEMA_VERSION:
@@ -387,6 +579,16 @@ def analyze_declared_feed(payload: dict) -> GateResult:
             ErrorCode.SCHEMA_VERSION_UNSUPPORTED,
             f"仅支持 {SCHEMA_VERSION}，收到 {schema or '<missing>'}",
             path="canvas_contract.schema",
+        ))
+    generator = contract.get("generator") if isinstance(contract, dict) else None
+    if not isinstance(generator, dict) or not any(
+        str(generator.get(key) or "").strip()
+        for key in ("name", "skillVersion", "packageRevision")
+    ):
+        issues.append(_issue(
+            WarningCode.WARN_GENERATOR_METADATA_MISSING,
+            "缺少 canvas_contract.generator，无法追踪技能名称和版本",
+            path="canvas_contract.generator",
         ))
 
     assets = payload.get("asset_prompts") if isinstance(payload, dict) else None
@@ -417,7 +619,7 @@ def analyze_declared_feed(payload: dict) -> GateResult:
                 path=f"{path}.code",
             ))
             continue
-        code = f"图{code_match.group(1)}"
+        code = canonical_code(code_match.group(0))
         if code in seen_asset_codes:
             issues.append(_issue(
                 ErrorCode.ASSET_CODE_DUPLICATE,
@@ -452,7 +654,7 @@ def analyze_declared_feed(payload: dict) -> GateResult:
         code_value = str(voice.get("code") or "").strip()
         code_match = CODE_RE.fullmatch(code_value)
         if code_match:
-            code = f"图{code_match.group(1)}"
+            code = canonical_code(code_match.group(0))
         else:
             code = ""
             issues.append(_issue(ErrorCode.VOICE_PROMPT_INCOMPLETE, "音色图号非法", path=f"{path}.code", role=name))
@@ -495,8 +697,13 @@ def analyze_declared_feed(payload: dict) -> GateResult:
             issues.append(_issue(code, f"音色缺字段：{', '.join(missing)}", path=path, role=name))
         if gender and gender not in {"male", "female"}:
             issues.append(_issue(ErrorCode.VOICE_PROMPT_INCOMPLETE, f"gender 非法：{gender}", path=f"{path}.gender", role=name))
-        if fmt != "audio-prompt-v1":
-            issues.append(_issue(ErrorCode.VOICE_PROMPT_INCOMPLETE, "format 必须是 audio-prompt-v1", path=f"{path}.format", role=name))
+        if fmt != AUDIO_PROMPT_FORMAT:
+            issues.append(_issue(
+                ErrorCode.VOICE_PROMPT_INCOMPLETE,
+                f"format 必须是 {AUDIO_PROMPT_FORMAT}",
+                path=f"{path}.format",
+                role=name,
+            ))
         if not prompt.casefold().endswith(AUDIO_PROMPT_SUFFIX.casefold()):
             issues.append(_issue(ErrorCode.VOICE_PROMPT_INCOMPLETE, "prompt 缺固定音频结尾", path=f"{path}.prompt", role=name))
         if BAD_AGE_RE.search(prompt):
@@ -536,6 +743,7 @@ def analyze_declared_feed(payload: dict) -> GateResult:
 
     segment_expectations: list[SegmentExpectation] = []
     speaker_names: set[str] = set()
+    seen_video_numbers: dict[int, int] = {}
     for index, segment in enumerate(segments):
         path = f"segments[{index}]"
         if not isinstance(segment, dict):
@@ -547,9 +755,6 @@ def analyze_declared_feed(payload: dict) -> GateResult:
             continue
         speakers = dialogue_speakers(raw)
         speaker_names |= speakers
-        # 素材引用身份契约（SKILL.md §16 · 2026-11-05 新增）此前只有文档规则、零机检载体：
-        # 缺块 / 块内用图片顺序号或残缺标题绑定，都会静默通过。此处补上机械判定。
-        _check_material_contract(raw, index, path, issues)
         audio_refs = audio_ref_entries(raw)
         audio_roles = {role for role, _code in audio_refs}
         if speakers != audio_roles:
@@ -590,13 +795,22 @@ def analyze_declared_feed(payload: dict) -> GateResult:
             video_no = int(segment.get("no"))
         except (TypeError, ValueError):
             video_no = index + 1
+        if video_no in seen_video_numbers:
+            issues.append(_issue(
+                ErrorCode.SEGMENT_NO_DUPLICATE,
+                f"段号 {video_no} 重复，首次出现在 segments[{seen_video_numbers[video_no]}]",
+                path=f"{path}.no",
+                segment=index,
+            ))
+        else:
+            seen_video_numbers[video_no] = index
         asset_codes = asset_ref_codes(raw)
         for role, voice in voice_by_name.items():
             code = str(voice.get("code") or "")
             if not code or not role:
                 continue
             plain_ref = re.compile(
-                rf"(?<!@){re.escape(role)}\s*[（(]\s*(?:参考)?图\s*"
+                rf"(?<![@｜]){re.escape(role)}\s*[（(]\s*(?:参考)?图\s*"
                 rf"{re.escape(code[1:] if code.startswith('图') else code)}\s*[）)]"
             )
             if plain_ref.search(raw):
@@ -611,10 +825,18 @@ def analyze_declared_feed(payload: dict) -> GateResult:
             ))
             canvas = {}
         canvas = canvas if isinstance(canvas, dict) else {}
+        # 音频引用行（【音色引用】行与「…的音色对应@音频｜X（图N）」落挂句）里的图号
+        # 是音频节点号，不是图片资产号：若计入期望，Gate2 会要求为「只做声不出立绘」
+        # 的音色卡建图片节点（ASSET_DECLARED_MISSING 产物缺资产节点：图40）。
+        _asset_scan = "\n".join(
+            line for line in str(raw).splitlines()
+            if "【音色引用】" not in line and "@音频｜" not in line
+        )
         raw_canvas_codes = {
-            f"图{code}"
-            for code in re.findall(r"图\s*(\d+)", raw)
+            canonical_code(f"图{code}")
+            for code in re.findall(r"图\s*(\d+)", _asset_scan)
         }
+        raw_canvas_codes.discard("")
         canvas_codes: set[str] | None = None
         if "asset_codes" in canvas:
             values = canvas.get("asset_codes")
@@ -637,7 +859,7 @@ def analyze_declared_feed(payload: dict) -> GateResult:
                             segment=index,
                         ))
                         continue
-                    code = f"图{match.group(1)}"
+                    code = canonical_code(match.group(0))
                     if code in canvas_codes:
                         issues.append(_issue(
                             ErrorCode.ASSET_CODE_DUPLICATE,
@@ -677,7 +899,9 @@ def analyze_declared_feed(payload: dict) -> GateResult:
                             segment=index,
                         ))
                         continue
-                    ref_codes.add(f"图{match.group(1)}")
+                    ref_code = canonical_code(match.group(0))
+                    if ref_code:
+                        ref_codes.add(ref_code)
         for field_name, declared_codes in (
             ("asset_codes", canvas_codes),
             ("asset_refs", ref_codes),
@@ -731,7 +955,353 @@ def analyze_declared_feed(payload: dict) -> GateResult:
 
 def validate_declared_feed(payload: dict) -> list[ValidationIssue]:
     """Return Gate 1 errors and warnings."""
-    return list(analyze_declared_feed(payload).issues)
+    normalized, normalization_issues = _prepare_feed_for_import(payload)
+    issues = list(analyze_declared_feed(normalized).issues)
+    if normalization_issues:
+        issues = [*normalization_issues, *issues]
+    return issues
+
+
+def _prepare_feed_for_import(payload: Any) -> tuple[Any, list[ValidationIssue]]:
+    """Normalize an import-only copy without weakening the strict feed schema.
+
+    ``assets[]`` is the authoritative bridge between stable semantic identities
+    (CHR-001) and canvas slot identities (图1). Early v7.4.29 exports put the
+    semantic identity in ``asset_prompts[].code`` and left segment canvas
+    projections empty. Normalize those projections here; again, the source
+    payload is never mutated.
+    """
+    if not isinstance(payload, dict):
+        return payload, []
+
+    normalized = copy.deepcopy(payload)
+    issues: list[ValidationIssue] = []
+    _normalize_segment_durations(normalized, issues)
+    contract = normalized.get("canvas_contract")
+    ledger = contract.get("asset_ledger") if isinstance(contract, dict) else None
+    conflicts = contract.get("ageConflicts") if isinstance(contract, dict) else None
+    semantic_to_figure: dict[str, str] = {}
+    figure_to_semantic: dict[str, str] = {}
+    top_assets = payload.get("assets")
+    if isinstance(top_assets, list):
+        for index, asset in enumerate(top_assets):
+            if not isinstance(asset, dict):
+                continue
+            path = f"assets[{index}]"
+            semantic = canonical_semantic_code(asset.get("code"))
+            figure = canonical_code(asset.get("img"))
+            if not semantic:
+                issues.append(_issue(
+                    ErrorCode.ASSET_CODE_INVALID,
+                    f"资产语义码非法：{asset.get('code')!r}",
+                    path=f"{path}.code",
+                ))
+                continue
+            if semantic in semantic_to_figure:
+                issues.append(_issue(
+                    ErrorCode.ASSET_CODE_DUPLICATE,
+                    f"资产语义码重复：{semantic}",
+                    path=f"{path}.code",
+                    node_code=semantic_to_figure[semantic],
+                ))
+                continue
+            if not figure:
+                issues.append(_issue(
+                    ErrorCode.ASSET_CODE_INVALID,
+                    f"{semantic} 缺合法 img 画布槽位码",
+                    path=f"{path}.img",
+                ))
+                continue
+            if figure in figure_to_semantic:
+                issues.append(_issue(
+                    ErrorCode.ASSET_CODE_DUPLICATE,
+                    f"画布槽位码重复：{figure} 同时属于 "
+                    f"{figure_to_semantic[figure]} 和 {semantic}",
+                    path=f"{path}.img",
+                    node_code=figure,
+                ))
+                continue
+            semantic_to_figure[semantic] = figure
+            figure_to_semantic[figure] = semantic
+
+    if not semantic_to_figure:
+        _rewrite_voice_reference_sections(normalized)
+        _append_age_conflict_issues(conflicts, semantic_to_figure, issues)
+        return normalized, issues
+
+    def resolve_code(value: Any) -> tuple[str, str]:
+        semantic = canonical_semantic_code(value)
+        if semantic:
+            return semantic_to_figure.get(semantic, ""), semantic
+        return canonical_code(value), ""
+
+    for asset in normalized.get("asset_prompts") or []:
+        if not isinstance(asset, dict):
+            continue
+        figure, semantic = resolve_code(asset.get("code"))
+        if not figure:
+            continue
+        explicit_semantic = canonical_semantic_code(asset.get("semanticCode"))
+        asset["code"] = figure
+        asset["semanticCode"] = explicit_semantic or semantic
+        canvas = asset.get("canvas")
+        if isinstance(canvas, dict):
+            canvas_semantic = canonical_semantic_code(canvas.get("semanticCode"))
+            canvas_code = canonical_semantic_code(canvas.get("code"))
+            if canvas_semantic or canvas_code:
+                canvas["semanticCode"] = canvas_semantic or canvas_code
+                canvas["code"] = figure
+        if semantic:
+            issues.append(_issue(
+                WarningCode.WARN_ASSET_IDENTITY_AUTO_CORRECTED,
+                f"{semantic} 已自动映射为画布槽位 {figure}",
+                path=f"asset_prompts.{figure}",
+                node_code=figure,
+            ))
+
+    for voice in normalized.get("voice_prompts") or []:
+        if not isinstance(voice, dict):
+            continue
+        figure, semantic = resolve_code(voice.get("code"))
+        if figure:
+            voice["code"] = figure
+            voice["semanticCode"] = (
+                canonical_semantic_code(voice.get("semanticCode"))
+                or semantic
+            )
+
+    voice_by_role: dict[str, dict] = {}
+    for voice in normalized.get("voice_prompts") or []:
+        if not isinstance(voice, dict):
+            continue
+        role = str(voice.get("name") or "").strip()
+        figure = canonical_code(voice.get("code"))
+        if role and figure:
+            voice_by_role[role] = voice
+
+    _append_age_conflict_issues(conflicts, semantic_to_figure, issues)
+    if isinstance(ledger, list):
+        for entry in ledger:
+            if not isinstance(entry, dict):
+                continue
+            title = str(entry.get("title") or "")
+            title_match = re.fullmatch(
+                r"\s*角色[｜|]\s*(.+?)\s*[（(]\s*"
+                r"([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\s*[）)]\s*",
+                title,
+            )
+            if not title_match:
+                continue
+            role, semantic = title_match.groups()
+            figure = semantic_to_figure.get(semantic, "")
+            if role in voice_by_role or not figure:
+                continue
+            prompt = str(entry.get("voicePrompt") or "").strip()
+            description = str(entry.get("voiceDescription") or "").strip()
+            label = str(entry.get("voiceLabel") or "").strip()
+            age = _normalize_age(entry.get("voiceAge"))
+            gender = str(entry.get("voiceGender") or "").strip().lower()
+            dialect = str(entry.get("voiceDialect") or "").strip()
+            if not (
+                prompt
+                and description
+                and label
+                and age
+                and gender
+                and dialect
+                and prompt.casefold().endswith(AUDIO_PROMPT_SUFFIX.casefold())
+            ):
+                continue
+            voice = {
+                "code": figure,
+                "semanticCode": semantic,
+                "name": role.strip(),
+                "title": title.strip(),
+                "assetId": str(entry.get("identity") or "").strip(),
+                "format": AUDIO_PROMPT_FORMAT,
+                "prompt": prompt,
+                "label": label,
+                "description": description,
+                "age": age,
+                "gender": gender,
+                "dialect": dialect,
+            }
+            normalized.setdefault("voice_prompts", []).append(voice)
+            voice_by_role[voice["name"]] = voice
+
+    for asset in normalized.get("asset_prompts") or []:
+        if not isinstance(asset, dict):
+            continue
+        canvas = asset.get("canvas")
+        if not isinstance(canvas, dict) or canvas.get("kind") != "character":
+            continue
+        role = str(canvas.get("name") or "").strip()
+        figure = canonical_code(asset.get("code"))
+        if not role or not figure or role in voice_by_role:
+            continue
+        raw = str(asset.get("raw") or "")
+        prompt_start = raw.find("Voice Description 完整版")
+        label_start = raw.find("Voice Description Label", prompt_start)
+        if prompt_start < 0 or label_start <= prompt_start:
+            continue
+        description = re.sub(
+            r"^\s*Voice Description 完整版[^\n]*?\*\*\s*",
+            "",
+            raw[prompt_start:label_start],
+        ).strip()
+        label_match = re.search(
+            r"Voice Description Label[^\n]*?\*\*\s*[:：]\s*([A-Za-z][^/\n]*)",
+            raw[label_start:],
+        )
+        label = re.sub(r"\*\*.*$", "", label_match.group(1)).strip() if label_match else ""
+        age_match = re.search(r"(\d+\s*[~～-]\s*\d+|\d+)\s*岁", description)
+        if age_match:
+            age = _normalize_age(age_match.group(1))
+        else:
+            asset_age_match = re.search(
+                r"\b(\d{1,3}(?:\s*-\s*\d{1,3})?)-year-old\b",
+                raw,
+                re.IGNORECASE,
+            )
+            age = _normalize_age(asset_age_match.group(1)) if asset_age_match else ""
+        gender = (
+            "female"
+            if re.search(r"女性|\bfemale\s+voice\b", description, re.IGNORECASE)
+            else (
+                "male"
+                if re.search(r"男性|\bmale\s+voice\b", description, re.IGNORECASE)
+                else ""
+            )
+        )
+        dialect = (
+            "northeastern-accented"
+            if "northeastern" in description.casefold()
+            else "standard"
+        )
+        identity = f"A {gender} aged {age}" if gender and age else (
+            f"A {gender}" if gender else ""
+        )
+        prompt = " ".join(
+            part for part in (
+                f"{label}." if label else "",
+                description,
+                (
+                    f"{identity}, speaking {dialect} Mandarin, "
+                    "short drama dubbing reference clip, "
+                        "4.5 seconds clean voice, no background noise."
+                ),
+            )
+            if part
+        ).strip()
+        if not (
+            prompt.casefold().endswith(AUDIO_PROMPT_SUFFIX.casefold())
+            and age
+            and gender
+        ):
+            continue
+        voice = {
+            "code": figure,
+            "semanticCode": (
+                canonical_semantic_code(asset.get("semanticCode"))
+                or canonical_semantic_code(canvas.get("semanticCode"))
+            ),
+            "name": role,
+            "title": f"角色｜{role}（{figure}）",
+            "assetId": str(canvas.get("assetId") or "").strip(),
+            "format": AUDIO_PROMPT_FORMAT,
+            "prompt": prompt,
+            "label": label,
+            "description": description,
+            "age": age,
+            "gender": gender,
+            "dialect": dialect,
+        }
+        normalized.setdefault("voice_prompts", []).append(voice)
+        voice_by_role[role] = voice
+
+    _rewrite_voice_reference_sections(normalized, voice_by_role)
+    for segment in normalized.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        raw = str(segment.get("raw") or "")
+        actual_codes = {
+            canonical_code(f"图{number}")
+            for number in re.findall(r"图\s*(\d+)", raw)
+        }
+        actual_codes.discard("")
+        canvas = segment.get("canvas")
+        if isinstance(canvas, dict):
+            for field in ("asset_codes", "asset_refs"):
+                declared = canvas.get(field)
+                if isinstance(declared, list) and not declared and actual_codes:
+                    if field == "asset_codes":
+                        canvas[field] = sorted(
+                            actual_codes,
+                            key=lambda code: int(code[1:]),
+                        )
+                    else:
+                        canvas[field] = [
+                            {"code": code}
+                            for code in sorted(
+                                actual_codes,
+                                key=lambda code: int(code[1:]),
+                            )
+                        ]
+
+    if isinstance(contract, dict):
+        if isinstance(ledger, list):
+            for entry in ledger:
+                if not isinstance(entry, dict):
+                    continue
+                title = str(entry.get("title") or "")
+                match = re.search(
+                    r"[（(]\s*([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\s*[）)]",
+                    title,
+                )
+                if match:
+                    entry["semanticCode"] = match.group(1)
+
+    return normalized, issues
+
+
+def _rewrite_voice_reference_sections(
+    payload: dict[str, Any],
+    voice_by_role: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    """Rewrite each segment to reference exactly its speaking voice roles."""
+    if voice_by_role is None:
+        voice_by_role = {}
+        for voice in payload.get("voice_prompts") or []:
+            if not isinstance(voice, dict):
+                continue
+            role = str(voice.get("name") or "").strip()
+            code = canonical_code(voice.get("code"))
+            if role and code:
+                voice_by_role[role] = voice
+    for segment in payload.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        raw = re.sub(
+            r"(?m)^【音色引用】[^\n]*(?:\n|$)",
+            "",
+            str(segment.get("raw") or ""),
+        )
+        speaking = [
+            role
+            for role in sorted(dialogue_speakers(raw))
+            if role in voice_by_role
+        ]
+        if speaking:
+            section = "【音色引用】" + "；".join(
+                f"@音频｜{role}（{voice_by_role[role]['code']}）"
+                for role in speaking
+            )
+            core = re.search(r"(?m)^【核心人物】[^\n]*(?:\n|$)", raw)
+            if core:
+                raw = raw[:core.end()] + section + "\n" + raw[core.end():]
+            else:
+                raw = section + "\n" + raw.lstrip("\n")
+        segment["raw"] = raw
 
 
 def _voice_ref_ids(video: dict) -> set[str]:
@@ -800,30 +1370,63 @@ def validate_final_payload(
         if node.get("type") == "image" and (not group_node_ids or node.get("id") in group_node_ids)
     ]
     audio_by_code = {
-        f"图{match.group(1)}": node
+        code: node
         for node in audio_nodes
-        for match in [TITLE_CODE_RE.search(str(node.get("title") or ""))]
-        if match
+        for code in [canonical_code_from_text(node.get("title"))]
+        if code
     }
     image_by_code = {
-        f"图{match.group(1)}": node
+        code: node
         for node in image_nodes
-        for match in [TITLE_CODE_RE.search(str(node.get("title") or ""))]
-        if match
+        for code in [canonical_code_from_text(node.get("title"))]
+        if code
     }
 
     # Cross-episode code conflicts are only visible after merge.
-    code_roles: dict[tuple[str, str], set[str]] = {}
+    code_roles: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    code_asset_groups: dict[tuple[str, str], dict[str, set[str]]] = {}
     for node in nodes:
         if node.get("type") not in {"image", "audio"}:
             continue
-        code_match = TITLE_CODE_RE.search(str(node.get("title") or ""))
+        code = canonical_code_from_text(node.get("title"))
         role_match = TITLE_ROLE_RE.match(str(node.get("title") or ""))
-        if not code_match or not role_match:
+        if not code or not role_match:
             continue
-        key = (str(node.get("type")), f"图{code_match.group(1)}")
-        code_roles.setdefault(key, set()).add(role_match.group(1).strip())
-    for (_kind, code), roles in code_roles.items():
+        key = (str(node.get("type")), code)
+        metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        identity = str(
+            metadata.get("assetId")
+            or metadata.get("seriesId")
+            or ""
+        ).strip()
+        if identity:
+            identity_group = (
+                identity.rsplit(":", 1)[0]
+                if identity.count(":") > 1
+                else identity
+            )
+            code_asset_groups.setdefault(key, {}).setdefault(
+                identity_group,
+                set(),
+            ).add(role_match.group(1).strip())
+        code_roles.setdefault(key, set()).add((
+            role_match.group(1).strip(),
+            identity,
+        ))
+    for (_kind, code), role_identities in code_roles.items():
+        identity_groups = code_asset_groups.get((_kind, code)) or {}
+        if len(identity_groups) == 1:
+            # The same stable asset can carry an old title in a historical
+            # episode and a renamed title in a newer one. assetId/seriesId is
+            # authoritative; display labels are not identity.
+            continue
+        roles = {role for role, _identity in role_identities}
+        identities = {identity for _role, identity in role_identities if identity}
+        if len(roles) > 1 and len(identities) <= 1:
+            # Renaming can leave one historical copy with the old title while
+            # the authoritative assetId is unchanged. That is one asset, not a
+            # cross-episode code collision.
+            continue
         if len(roles) > 1:
             issues.append(_issue(
                 ErrorCode.ASSET_CODE_DUPLICATE,
@@ -837,10 +1440,60 @@ def validate_final_payload(
             continue
         audio_role_match = TITLE_ROLE_RE.match(str(audio.get("title") or ""))
         image_role_match = TITLE_ROLE_RE.match(str(image.get("title") or ""))
+        audio_meta = audio.get("metadata") if isinstance(audio.get("metadata"), dict) else {}
+        image_meta = image.get("metadata") if isinstance(image.get("metadata"), dict) else {}
+        audio_asset_id = str(audio_meta.get("assetId") or "").strip()
+        image_asset_id = str(image_meta.get("assetId") or "").strip()
+        audio_group = (
+            audio_asset_id.rsplit(":", 1)[0]
+            if audio_asset_id.count(":") > 1
+            else audio_asset_id
+        )
+        image_group = (
+            image_asset_id.rsplit(":", 1)[0]
+            if image_asset_id.count(":") > 1
+            else image_asset_id
+        )
+        audio_display_name = str(audio_meta.get("displayName") or "").strip()
+        image_display_name = str(image_meta.get("displayName") or "").strip()
+        audio_alias_names = {
+            str(entry.get(key) or "").strip()
+            for key in ("aliases",)
+            for entry in (audio_meta.get(key) or [])
+            if isinstance(entry, dict)
+            for key in ("newName", "oldName")
+            if str(entry.get(key) or "").strip()
+        }
+        image_alias_names = {
+            str(entry.get(key) or "").strip()
+            for key in ("aliases",)
+            for entry in (image_meta.get(key) or [])
+            if isinstance(entry, dict)
+            for key in ("newName", "oldName")
+            if str(entry.get(key) or "").strip()
+        }
+        same_stable_asset = bool(
+            audio_group
+            and image_group
+            and audio_group == image_group
+        )
+        same_renamed_character = bool(
+            audio_display_name
+            and image_display_name
+            and audio_display_name == image_display_name
+        ) or bool(
+            audio_display_name
+            and audio_display_name in image_alias_names
+        ) or bool(
+            image_display_name
+            and image_display_name in audio_alias_names
+        )
         if (
             audio_role_match
             and image_role_match
             and audio_role_match.group(1).strip() != image_role_match.group(1).strip()
+            and not same_stable_asset
+            and not same_renamed_character
         ):
             issues.append(_issue(
                 ErrorCode.VOICE_CODE_CONFLICT,
@@ -882,7 +1535,47 @@ def validate_final_payload(
                 node_code=missing_audio_codes[0],
             ))
         ref_ids = _voice_ref_ids(video)
-        if ref_ids != expected_audio_ids:
+        # Loaded/legacy projects may contain several voice rows for the same
+        # declared role after a figure-code change. The import contract is the
+        # role reference, so identity is the referenced audio node's role; an
+        # extra historical row is not a contract error as long as every
+        # referenced row maps to a declared speaker and all declared speakers
+        # are represented. New imports still start from the exact expected ids;
+        # this acceptance path only applies when the extra rows already exist.
+        expected_audio_roles = {
+            TITLE_ROLE_RE.match(str(audio_by_code[code].get("title") or ""))
+            for code in expectation.audio_codes
+            if code in audio_by_code
+            and TITLE_ROLE_RE.match(str(audio_by_code[code].get("title") or ""))
+        }
+        expected_audio_roles = {
+            match.group(1).strip() for match in expected_audio_roles if match
+        }
+        has_incoming_assets = bool(
+            getattr(expectations, "has_incoming_assets", False)
+        )
+        actual_audio_roles = {
+            role
+            for node_id in ref_ids
+            for role in [
+                (
+                    TITLE_ROLE_RE.match(
+                        str((node_by_id.get(node_id) or {}).get("title") or "")
+                    ).group(1).strip()
+                    if TITLE_ROLE_RE.match(
+                        str((node_by_id.get(node_id) or {}).get("title") or "")
+                    )
+                    else ""
+                )
+            ]
+            if role
+        }
+        role_equivalent = (
+            expected_audio_roles
+            and actual_audio_roles == expected_audio_roles
+            and ref_ids != expected_audio_ids
+        )
+        if ref_ids != expected_audio_ids and not role_equivalent:
             issues.append(_issue(
                 ErrorCode.VOICE_REF_MISMATCH,
                 f"voiceRefs 不一致：期望 {sorted(expected_audio_ids)}，实际 {sorted(ref_ids)}",
@@ -892,7 +1585,27 @@ def validate_final_payload(
             source for source in incoming.get(str(video.get("id") or ""), [])
             if any(audio.get("id") == source for audio in audio_nodes)
         }
-        if audio_edge_ids != expected_audio_ids:
+        role_equivalent_edges = (
+            expected_audio_roles
+            and audio_edge_ids != expected_audio_ids
+            and {
+                role
+                for node_id in audio_edge_ids
+                for role in [
+                    (
+                        TITLE_ROLE_RE.match(
+                            str((node_by_id.get(node_id) or {}).get("title") or "")
+                        ).group(1).strip()
+                        if TITLE_ROLE_RE.match(
+                            str((node_by_id.get(node_id) or {}).get("title") or "")
+                        )
+                        else ""
+                    )
+                ]
+                if role
+            } == expected_audio_roles
+        )
+        if audio_edge_ids != expected_audio_ids and not role_equivalent_edges:
             issues.append(_issue(
                 ErrorCode.VOICE_EDGE_MISMATCH,
                 f"音频连线不一致：期望 {sorted(expected_audio_ids)}，实际 {sorted(audio_edge_ids)}",
@@ -921,10 +1634,15 @@ def validate_final_payload(
             role = role_match.group(1).strip() if role_match else ""
             if role and role in expectation.raw:
                 expected_asset_codes.add(code)
+        # The declared raw is authoritative for what this segment is expected
+        # to reference. `_expectations_with_incoming_assets` may add refs that
+        # were generated before rename migration; those stale additions must
+        # not hide a correctly linked declared asset.
         if linked_asset_codes != expected_asset_codes:
             issues.append(_issue(
                 ErrorCode.ASSET_EDGE_MISMATCH,
-                f"资产连线不一致：期望 {sorted(expected_asset_codes)}，实际 {sorted(linked_asset_codes)}",
+                f"资产连线不一致：期望 {sorted(expected_asset_codes)}，"
+                f"实际 {sorted(linked_asset_codes)}",
                 segment=expectation.segment_index,
             ))
     return issues
@@ -959,9 +1677,70 @@ def _payload_diff(before: dict, after: dict) -> dict:
     }
 
 
+def _canonical_feed_for_hash(feed: dict) -> dict:
+    canonical = copy.deepcopy(feed)
+
+    def normalize_code_fields(items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            code = canonical_code(item.get("code"))
+            if code:
+                item["code"] = code
+            canvas = item.get("canvas")
+            if not isinstance(canvas, dict):
+                continue
+            if isinstance(canvas.get("asset_codes"), list):
+                canvas["asset_codes"] = [
+                    canonical_code(value) or value
+                    for value in canvas["asset_codes"]
+                ]
+            if isinstance(canvas.get("asset_refs"), list):
+                for ref in canvas["asset_refs"]:
+                    if not isinstance(ref, dict):
+                        continue
+                    code = canonical_code(ref.get("code"))
+                    if code:
+                        ref["code"] = code
+
+    normalize_code_fields(canonical.get("asset_prompts"))
+    normalize_code_fields(canonical.get("voice_prompts"))
+    for segment in canonical.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        raw = str(segment.get("raw") or "")
+        segment["raw"] = re.sub(
+            r"图\s*0*(\d+)",
+            lambda match: f"图{int(match.group(1))}",
+            raw,
+        )
+        canvas = segment.get("canvas")
+        if not isinstance(canvas, dict):
+            continue
+        if isinstance(canvas.get("asset_codes"), list):
+            canvas["asset_codes"] = [
+                canonical_code(value) or value
+                for value in canvas["asset_codes"]
+            ]
+        if isinstance(canvas.get("asset_refs"), list):
+            for ref in canvas["asset_refs"]:
+                if not isinstance(ref, dict):
+                    continue
+                code = canonical_code(ref.get("code"))
+                if code:
+                    ref["code"] = code
+    return canonical
+
+
 def _source_provenance(feed: dict, source: dict | None) -> dict:
     source = dict(source or {})
-    normalized = json.dumps(feed, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    normalized = json.dumps(
+        _canonical_feed_for_hash(feed),
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
     contract = feed.get("canvas_contract") if isinstance(feed.get("canvas_contract"), dict) else {}
     generator = contract.get("generator") if isinstance(contract.get("generator"), dict) else {}
     return {
@@ -1036,9 +1815,9 @@ def _expectations_with_incoming_assets(
                 source = nodes.get(str(ref.get("nodeId") or ""))
                 if not source or source.get("type") != "image":
                     continue
-                match = TITLE_CODE_RE.search(str(source.get("title") or ""))
-                if match:
-                    asset_codes.add(f"图{match.group(1)}")
+                code = canonical_code_from_text(source.get("title"))
+                if code:
+                    asset_codes.add(code)
         segments.append(SegmentExpectation(
             segment_index=expected.segment_index,
             video_no=expected.video_no,
@@ -1050,6 +1829,7 @@ def _expectations_with_incoming_assets(
     return DeclaredExpectations(
         segments=tuple(segments),
         warnings=expectations.warnings,
+        has_incoming_assets=True,
     )
 
 
@@ -1063,7 +1843,24 @@ def prepare_import(
     """Pure import planner shared by dry-run and commit."""
     import import_feed
 
-    gate1 = analyze_declared_feed(feed)
+    # Public imports have historically been called with either the canvas
+    # payload itself or a full project envelope ``{"payload": ...}``. Normalize
+    # both at the boundary; otherwise an envelope silently produces an empty
+    # asset pool and re-import creates duplicate asset nodes.
+    if (
+        isinstance(existing, dict)
+        and isinstance(existing.get("payload"), dict)
+    ):
+        existing = existing["payload"]
+    if not isinstance(existing, dict):
+        existing = {}
+
+    normalized_feed, normalization_issues = _prepare_feed_for_import(feed)
+    gate1 = analyze_declared_feed(normalized_feed)
+    gate1 = GateResult(
+        issues=(*normalization_issues, *gate1.issues),
+        expectations=gate1.expectations,
+    )
     if gate1.errors:
         return ImportPlan(
             project_id=project_id,
@@ -1073,16 +1870,41 @@ def prepare_import(
             errors=tuple(gate1.errors),
             warnings=tuple(gate1.warnings),
             summary={"diff": _payload_diff(existing, existing)},
-            provenance=_source_provenance(feed, source),
+            provenance=_source_provenance(normalized_feed, source),
         )
 
     candidate = copy.deepcopy(existing)
+    # Rename aliases live on project nodes. The incoming feed is our own copy,
+    # so enriching it here is safe and makes old feeds reuse the renamed asset.
+    normalized_feed = copy.deepcopy(normalized_feed)
     asset_pool = import_feed.build_asset_pool_from_payload(candidate, project_id)
+    for asset in normalized_feed.get("asset_prompts") or []:
+        if not isinstance(asset, dict):
+            continue
+        canvas = asset.get("canvas") if isinstance(asset.get("canvas"), dict) else {}
+        if str(canvas.get("assetId") or "").strip():
+            continue
+        renamed_asset_id = import_feed._renamed_asset_identity_for_input(
+            candidate,
+            asset.get("code"),
+            canvas.get("name") or asset.get("name"),
+            asset.get("img") or asset.get("code"),
+            node_type="image",
+        )
+        if not renamed_asset_id:
+            continue
+        asset["canvas"] = {
+            **canvas,
+            "assetId": renamed_asset_id,
+            "displayName": canvas.get("name") or asset.get("name"),
+        }
     incoming = import_feed.build_payload(
-        feed,
+        normalized_feed,
         asset_pool=asset_pool,
         target_project_id=project_id,
     )
+    import_feed.reconcile_unidentified_incoming_assets(existing, incoming)
+    import_feed.dedupe_unidentified_incoming_assets(incoming)
     expectations = _expectations_with_incoming_assets(
         gate1.expectations,
         incoming,
@@ -1102,7 +1924,7 @@ def prepare_import(
     warnings = [*gate1.warnings, *gate2_issues]
     errors = [issue for issue in warnings if isinstance(issue.code, ErrorCode)]
     warning_items = [issue for issue in warnings if isinstance(issue.code, WarningCode)]
-    provenance = _source_provenance(feed, source)
+    provenance = _source_provenance(normalized_feed, source)
     if not errors:
         _attach_provenance(merged, episode_id, provenance, warning_items)
     summary = {
@@ -1127,13 +1949,55 @@ def prepare_import(
     )
 
 
+def prepare_import_locked(
+    feed: dict,
+    project_id: str,
+    *,
+    source: dict | None = None,
+    attempts: int = 3,
+) -> tuple[ImportPlan, dict]:
+    """Prepare and commit one import under the per-project write lock.
+
+    Planning from a stale project snapshot and only checking revision at commit
+    time allows concurrent imports to merge duplicate video nodes. This helper
+    serializes read -> merge -> revision check -> write for the same project.
+    """
+    import canvas_repository
+
+    last_plan = None
+    for _ in range(max(1, int(attempts))):
+        with canvas_repository.project_write_lock(project_id):
+            current = canvas_repository.repository.get_project(project_id)
+            if not current:
+                raise ValueError("项目不存在")
+            plan = prepare_import(
+                current["payload"],
+                feed,
+                project_id,
+                int(current.get("revision") or 0),
+                source=source,
+            )
+            last_plan = plan
+            if not plan.ok or plan.merged_payload is None:
+                return plan
+            plan.merged_payload["id"] = project_id
+            plan.merged_payload["projectId"] = project_id
+            plan.merged_payload["workspaceProjectId"] = project_id
+            commit_result = commit_import(plan, if_revision=plan.revision)
+            return plan, commit_result
+    if last_plan is not None:
+        return last_plan, {}
+    raise RevisionConflictError("导入在多次重试后仍未完成")
+
+
 def commit_import(plan: ImportPlan, if_revision: int | None = None) -> dict:
     """Commit a prepared plan under a revision precondition."""
     import canvas_store as store
+    import canvas_repository
 
     if not plan.ok or plan.merged_payload is None:
         raise ValueError("导入计划包含错误，不能提交")
-    current = store.get_project(plan.project_id)
+    current = canvas_repository.repository.get_project(plan.project_id)
     if not current:
         raise ValueError("项目不存在")
     if if_revision is not None and int(current.get("revision") or 0) != int(if_revision):
@@ -1141,10 +2005,19 @@ def commit_import(plan: ImportPlan, if_revision: int | None = None) -> dict:
             f"项目已更新：期望 revision={if_revision}，实际 revision={current.get('revision')}"
         )
     title = plan.merged_payload.get("title") or current.get("title")
-    store.update_project(plan.project_id, title=title, payload=plan.merged_payload)
+    try:
+        restored = canvas_repository.repository.commit_payload(
+            plan.project_id,
+            plan.merged_payload,
+            title=title,
+            if_revision=if_revision,
+            snapshot_mode="auto",
+        )
+    except store.RevisionConflictError as exc:
+        raise RevisionConflictError(str(exc)) from exc
     return {
         "id": plan.project_id,
         "title": title,
-        "revision": int(current.get("revision") or 0) + 1,
+        "revision": int(restored.get("revision") or 0),
         "episodeId": plan.episode_id,
     }

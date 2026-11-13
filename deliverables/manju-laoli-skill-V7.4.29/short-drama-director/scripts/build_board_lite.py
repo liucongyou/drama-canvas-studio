@@ -50,6 +50,7 @@ try:
         AUDIO_PROMPT_FORMAT,
         AUDIO_PROMPT_SUFFIX,
         SCHEMA_VERSION,
+        segment_timeline_duration_seconds,
     )
 except ImportError:
     AUDIO_PROMPT_FORMAT = "audio-prompt-v1"
@@ -57,6 +58,8 @@ except ImportError:
         "short drama dubbing reference clip, 4.5 seconds clean voice, no background noise."
     )
     SCHEMA_VERSION = "drama-canvas-feed/v2"
+    def segment_timeline_duration_seconds(raw):
+        return None
 
 # 兼容三种镜行写法：本包原生 `00:00-00:05 [镜头1] …` / `[00:00-00:05] …` / `[0-3秒] …`
 TS_RE = re.compile(
@@ -374,7 +377,28 @@ def validate_export_contract(data):
             continue
         canvas = segment.get("canvas")
         if not isinstance(canvas, dict):
+            errors.append(f"段{index} 缺 canvas 对象")
             continue
+        timeline_duration = segment_timeline_duration_seconds(
+            segment.get("raw")
+        )
+        declared = {
+            int(value)
+            for value in (
+                segment.get("durationSec"),
+                canvas.get("duration"),
+            )
+            if isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and int(value) > 0
+        }
+        if timeline_duration is None and not declared:
+            errors.append(f"段{index} 无法识别分段时长")
+        elif timeline_duration is not None and declared != {timeline_duration}:
+            errors.append(
+                f"段{index} durationSec/canvas.duration "
+                f"{sorted(declared)} 与时间轴 {timeline_duration} 秒不一致"
+            )
         codes = {
             re.sub(r"\s+", "", str(code or ""))
             for code in (canvas.get("asset_codes") or [])
@@ -938,7 +962,7 @@ def _generator_metadata():
             continue
     return {
         "name": "build_board_lite.py",
-        "skillVersion": str(data.get("version") or "7.4.31"),
+        "skillVersion": str(data.get("version") or "7.4.32"),
         "packageRevision": str(data.get("packageRevision") or "20261028-r10"),
     }
 
@@ -1617,14 +1641,23 @@ def enrich_canvas_contract(data, asset_ledger=None):
         ],
     }
     for segment in data.setdefault("segments", []):
-        ends = []
-        for shot in segment.get("shots") or []:
-            try:
-                ends.append(float(shot.get("end")))
-            except (TypeError, ValueError):
-                continue
         max_seconds = 30 if video_model == "doubao-seedance-2-5" else 15
-        duration = max(4, min(max_seconds, int(max(ends, default=4) + 0.999)))
+        timeline_duration = segment_timeline_duration_seconds(
+            segment.get("raw")
+        )
+        if timeline_duration is not None:
+            duration = max(4, min(max_seconds, timeline_duration))
+        else:
+            ends = []
+            for shot in segment.get("shots") or []:
+                try:
+                    ends.append(float(shot.get("end")))
+                except (TypeError, ValueError):
+                    continue
+            duration = max(
+                4,
+                min(max_seconds, int(max(ends, default=4) + 0.999)),
+            )
         codes = []
         for code in re.findall(r"图\s*(\d+)", segment.get("raw", "")):
             token = f"图{code}"
@@ -1656,6 +1689,7 @@ def enrich_canvas_contract(data, asset_ledger=None):
             "asset_codes": codes,
             "asset_refs": asset_refs,
         }
+        segment["durationSec"] = duration
     return data
 
 
@@ -2506,6 +2540,25 @@ def self_test():
     assert d["canvas_contract"]["schema"] == "drama-canvas-feed/v2"
     assert d["segments"][0]["canvas"]["model"] == "doubao-seedance-2-0"
     assert d["segments"][0]["canvas"]["duration"] == 8
+    assert d["segments"][0]["durationSec"] == 8
+
+    # 时间码是分段时长的第一权威：即使镜行对象被上游省略，
+    # 只要 raw 里存在完整时间轴，也必须识别出最后结束秒并双写 duration。
+    timeline_only = enrich_canvas_contract({
+        "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+        "asset_prompts": [],
+        "segments": [{
+            "raw": (
+                "【时间轴分镜】\n"
+                "00:00-00:04 [镜头1] 中景。\n"
+                "00:04-00:07 [镜头2] 近景。\n"
+                "00:07-00:10 [镜头3] 特写。"
+            ),
+            "shots": [],
+        }],
+    }, {})
+    assert timeline_only["segments"][0]["durationSec"] == 10
+    assert timeline_only["segments"][0]["canvas"]["duration"] == 10
     srt = export_srt_text(d)
     csv_txt = export_timeline_csv_text(d)
     html = build_html(d)
