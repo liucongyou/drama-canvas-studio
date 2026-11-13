@@ -193,6 +193,8 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         self.root_override = patch.dict(
             "os.environ",
             {
+                "CANVAS_ALLOW_SQLITE": "1",
+                "CANVAS_DB_BACKEND": "sqlite",
                 "CANVAS_MULTI_TENANT": "1",
                 "CANVAS_TENANT_DATA_ROOT": self.temp.name,
             },
@@ -210,6 +212,188 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
         tenant_context.set_tenant(None)
         self.root_override.stop()
         self.temp.cleanup()
+
+    def test_local_image_version_records_thumbnail_receipt(self):
+        upload_name = "thumbnail-source.png"
+        upload_path = self.context.upload_dir / upload_name
+        upload_path.write_bytes(b"image-bytes")
+        meta = {
+            "content": "",
+            "params": {
+                "mediaVersions": [],
+            },
+        }
+
+        with (
+            tenant_context.use_context(self.context),
+            patch.object(
+                server,
+                "ensure_image_thumbnail",
+                return_value="/uploads/thumbnail-source-thumb.jpg",
+            ),
+        ):
+            result = server._append_local_media_version(
+                meta,
+                "image",
+                {
+                    "url": f"/uploads/{upload_name}",
+                    "sha256": "a" * 64,
+                    "fileName": upload_name,
+                    "mime": "image/png",
+                    "size": upload_path.stat().st_size,
+                },
+            )
+
+        version = meta["params"]["mediaVersions"][-1]
+        self.assertEqual(result["versionId"], version["versionId"])
+        self.assertEqual(
+            version["thumbUrl"],
+            "/uploads/thumbnail-source-thumb.jpg",
+        )
+        self.assertEqual(
+            meta["params"]["thumbUrl"],
+            "/uploads/thumbnail-source-thumb.jpg",
+        )
+
+    def test_image_thumbnail_backfill_updates_active_version(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("image-thumbnail-backfill")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "image-node",
+                    "type": "image",
+                    "title": "角色｜缩略图",
+                    "metadata": {
+                        "status": "done",
+                        "content": "/uploads/source.png",
+                        "params": {
+                            "activeVersionId": "image:1",
+                            "mediaVersionIndex": 0,
+                            "mediaVersions": [
+                                {
+                                    "versionId": "image:1",
+                                    "url": "/uploads/source.png",
+                                },
+                            ],
+                        },
+                    },
+                }],
+                episode_id="EP001",
+            )
+            (self.context.upload_dir / "source.png").write_bytes(b"image-bytes")
+            with patch.object(
+                server,
+                "ensure_image_thumbnail",
+                return_value="/uploads/source-thumb.jpg",
+            ):
+                updated = server.backfill_generated_image_thumbnails()
+            project = canvas_store.get_project(project_id)
+            node = next(
+                item for item in project["payload"]["nodes"]
+                if item["id"] == "image-node"
+            )
+
+        self.assertGreaterEqual(updated, 1)
+        params = node["metadata"]["params"]
+        self.assertEqual(params["thumbUrl"], "/uploads/source-thumb.jpg")
+        self.assertEqual(
+            params["mediaVersions"][0]["thumbUrl"],
+            "/uploads/source-thumb.jpg",
+        )
+
+    def test_ignored_duplicate_tasks_leave_uncertain_queue(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("ignored-duplicate-tasks")
+            canvas_store.insert_project_nodes(
+                project_id,
+                [{
+                    "id": "task-node",
+                    "type": "image",
+                    "title": "图片任务",
+                    "metadata": {"status": "idle", "episodeId": "EP001"},
+                }],
+                episode_id="EP001",
+            )
+            duplicate = canvas_store.create_generation_task(
+                project_id,
+                "task-node",
+                kind="image",
+                episode_id="EP001",
+            )
+            canvas_store.update_generation_task(
+                duplicate["id"],
+                status="interrupted",
+                phase="重复提交已忽略",
+                error="该节点已有任务正在生成，本次重复提交已忽略",
+                delivery_status="failed",
+            )
+            genuine = canvas_store.create_generation_task(
+                project_id,
+                "task-node",
+                kind="image",
+                episode_id="EP001",
+            )
+            canvas_store.update_generation_task(
+                genuine["id"],
+                status="interrupted",
+                phase="结果待确认",
+                error="供应商请求已发出，但未收到可确认结果",
+                delivery_status="failed",
+            )
+            changed = canvas_store.backfill_ignored_duplicate_generation_tasks()
+            duplicate_after = canvas_store.get_generation_task(duplicate["id"])
+            genuine_after = canvas_store.get_generation_task(genuine["id"])
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(duplicate_after["status"], "failed")
+        self.assertEqual(duplicate_after["phase"], "重复提交已忽略")
+        self.assertEqual(genuine_after["status"], "interrupted")
+        self.assertEqual(genuine_after["phase"], "结果待确认")
+
+    def test_prune_auto_snapshots_preserves_manual_history(self):
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project("snapshot-retention")
+            project = canvas_store.get_project(project_id)
+            con = canvas_store._connect()
+            try:
+                for revision in range(1, 7):
+                    canvas_store._snapshot(
+                        con,
+                        project_id,
+                        project["title"],
+                        project["payload"],
+                        revision,
+                        kind="auto",
+                    )
+                canvas_store._snapshot(
+                    con,
+                    project_id,
+                    project["title"],
+                    project["payload"],
+                    7,
+                    kind="manual",
+                )
+                con.commit()
+            finally:
+                con.close()
+            deleted = canvas_store.prune_auto_snapshots(2)
+            con = canvas_store._connect()
+            try:
+                rows = con.execute(
+                    "SELECT kind,revision FROM canvas_snapshots "
+                    "WHERE canvas_id=? ORDER BY kind,revision DESC",
+                    (project_id,),
+                ).fetchall()
+            finally:
+                con.close()
+
+        self.assertEqual(deleted, 5)
+        self.assertEqual([(row[0], row[1]) for row in rows], [
+            ("auto", 6),
+            ("auto", 5),
+            ("manual", 7),
+        ])
 
     def test_all_async_task_callbacks_require_successful_persistence(self):
         callback = mock.Mock(side_effect=RuntimeError("database is locked"))

@@ -1,6 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import {
   GENERATION_OWNED_MEDIA_PARAMS,
+  mediaVersionList,
   mediaPatchMetadataForStorage,
   preserveSelectedMediaVersion,
   type CanvasMediaNode,
@@ -32,6 +33,25 @@ function node(overrides: Partial<CanvasMediaNode> = {}): CanvasMediaNode {
 
 
 describe('preserveSelectedMediaVersion', () => {
+  it('binds the current image thumbnail to the URL-matched duplicate id', () => {
+    const versions = mediaVersionList(node({
+      kind: 'image',
+      mediaUrl: '/uploads/local.png',
+      thumbUrl: '/uploads/local-thumb.jpg',
+      params: {
+        activeVersionId: 'dup',
+        mediaVersionIndex: 1,
+        mediaVersions: [
+          {versionId: 'dup', url: 'https://provider.example/expired.png'},
+          {versionId: 'dup', url: '/uploads/local.png'},
+        ],
+      },
+    }));
+
+    expect(versions[0].thumbUrl).toBeFalsy();
+    expect(versions[1].thumbUrl).toBe('/uploads/local-thumb.jpg');
+  });
+
   it('keeps an in-flight local version selection during workspace refresh', () => {
     const local = node({
       mediaUrl: '/uploads/v2.jpg',

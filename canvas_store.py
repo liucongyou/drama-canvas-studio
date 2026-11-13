@@ -7700,6 +7700,33 @@ def backfill_generation_delivery_status():
     return changed
 
 
+def backfill_ignored_duplicate_generation_tasks():
+    """Remove historical duplicate-submit noise from the uncertain queue.
+
+    These rows never received a provider task id and were explicitly rejected
+    before submission. Keeping them as ``interrupted`` makes Task Center count
+    them as "result pending" even though no billable request existed.
+    """
+    finished_at = _now_iso()
+
+    def write(con):
+        updated = con.execute(
+            "UPDATE generation_tasks SET "
+            "status='failed',phase='重复提交已忽略',"
+            "delivery_status='failed',"
+            "finished_at=COALESCE(NULLIF(finished_at,''),?),"
+            "updated_at=? "
+            "WHERE status='interrupted' "
+            "AND COALESCE(provider_task_id,'')='' "
+            "AND (phase='重复提交已忽略' "
+            "OR error LIKE '%本次重复提交已忽略%')",
+            (finished_at, finished_at),
+        )
+        return updated.rowcount
+
+    return _run_write_transaction(write)
+
+
 # 每个画布保留的快照条数上限。
 #
 # ★ 为什么必须限制（2026-10-25 第二次踩同一个坑）：
@@ -7711,7 +7738,7 @@ def backfill_generation_delivery_status():
 #
 # 为什么是 30：快照只为「误删/误改兜底」，不是版本历史。
 #   30 条足够覆盖一次连续误操作的回退窗口，同时把库稳定在几 MB 量级。
-AUTO_SNAPSHOT_KEEP = 30
+AUTO_SNAPSHOT_KEEP = 12
 AUTO_SNAPSHOT_MIN_INTERVAL_SECONDS = 30
 AUTO_SNAPSHOT_MIN_REVISIONS = 20
 
@@ -7841,6 +7868,40 @@ def _snapshot(con, pid, title, payload, revision, kind="auto"):
         ")",
         (pid, pid, AUTO_SNAPSHOT_KEEP),
     )
+
+
+def prune_auto_snapshots(keep=AUTO_SNAPSHOT_KEEP):
+    """Apply the current automatic-snapshot retention to existing projects."""
+    keep = max(1, min(int(keep or AUTO_SNAPSHOT_KEEP), 100))
+
+    def write(con):
+        project_rows = con.execute(
+            "SELECT DISTINCT canvas_id FROM canvas_snapshots WHERE kind='auto'"
+        ).fetchall()
+        deleted = 0
+        for row in project_rows:
+            project_id = str(row[0] or "")
+            if not project_id:
+                continue
+            snapshot_rows = con.execute(
+                "SELECT id FROM canvas_snapshots "
+                "WHERE canvas_id=? AND kind='auto' "
+                "ORDER BY revision DESC, created_at DESC, rowid DESC",
+                (project_id,),
+            ).fetchall()
+            for stale in snapshot_rows[keep:]:
+                snapshot_id = str(stale[0] or "")
+                if not snapshot_id:
+                    continue
+                result = con.execute(
+                    "DELETE FROM canvas_snapshots "
+                    "WHERE id=? AND canvas_id=? AND kind='auto'",
+                    (snapshot_id, project_id),
+                )
+                deleted += result.rowcount
+        return deleted
+
+    return _run_write_transaction(write)
 
 
 def _maybe_snapshot(con, pid, title, payload, revision, mode="auto", now=None):

@@ -357,6 +357,8 @@ export type CanvasMediaParams = {
   duration?: number;    // 秒（video）
   count?: number;       // 生成数量（供应商支持时）
   refs?: CanvasAssetRef[];   // 资产/参考图引用
+  /** Canvas links explicitly removed by the user; never resurrect them. */
+  removedRefNodeIds?: string[];
   voiceRef?: CanvasAssetRef; // 角色音色引用（旧版单值字段，仅为兼容历史数据保留，读取请用下面两个）
   /**
    * ★★ 音色引用的**多值**字段（第 17 轮修「连了 4 个节点，弹窗只显示 1 个引用」）。
@@ -819,19 +821,31 @@ export function mediaVersionList(node: CanvasMediaNode): CanvasVideoVersion[] {
   });
   const currentUrl = mediaSourceUrl(node.mediaUrl);
   const currentVersionId = String(node.params?.activeVersionId || '').trim();
-  const currentIdIndex = currentVersionId
-    ? versions.findIndex((version) => version.versionId === currentVersionId)
-    : -1;
-  const currentUrlIndex = currentIdIndex < 0 && currentUrl
+  const exactCurrentUrlIndex = currentUrl
     ? versions.findIndex((version) => version.url === currentUrl)
-    : currentIdIndex;
-  if (currentUrlIndex >= 0 && !versions[currentUrlIndex].thumbUrl) {
+    : -1;
+  const currentUrlIndex = exactCurrentUrlIndex >= 0
+    ? exactCurrentUrlIndex
+    : resolveMediaVersionIndex(
+        currentUrl,
+        versions,
+        {
+          activeVersionId: currentVersionId,
+          index: node.params?.mediaVersionIndex ?? node.params?.videoVersionIndex,
+        },
+      );
+  if (
+    versions.length > 0
+    && currentUrlIndex >= 0
+    && currentUrlIndex < versions.length
+    && !versions[currentUrlIndex].thumbUrl
+  ) {
     const currentThumb = mediaSourceUrl(node.thumbUrl);
     if (currentThumb) versions[currentUrlIndex].thumbUrl = currentThumb;
   }
   if (
     currentUrl
-    && currentUrlIndex < 0
+    && !versions.some((version) => version.url === currentUrl)
   ) {
     versions.push({
       versionId: currentVersionId || `current:${currentUrl}`,
@@ -2059,10 +2073,16 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
   const normalizedMediaUrl = /^(?:https?:\/\/|\/uploads\/|\/api\/share\/[^/]+\/media\/|data:|blob:)/.test(mediaUrl)
     ? mediaUrl
     : '';
-  const videoThumbUrl = kind === 'video'
-    && typeof rawParams.thumbUrl === 'string'
-    && /^(?:https?:\/\/|\/uploads\/|\/api\/share\/[^/]+\/media\/|data:|blob:)/.test(rawParams.thumbUrl)
-    ? rawParams.thumbUrl
+  const rawMediaThumbUrl = (
+    typeof rawParams.thumbUrl === 'string'
+      ? rawParams.thumbUrl
+      : typeof (m as Record<string, unknown>).thumbnail === 'string'
+        ? String((m as Record<string, unknown>).thumbnail)
+        : ''
+  );
+  const mediaThumbUrl = (kind === 'video' || kind === 'image')
+    && /^(?:https?:\/\/|\/uploads\/|\/api\/share\/[^/]+\/media\/|data:|blob:)/.test(rawMediaThumbUrl)
+    ? rawMediaThumbUrl
     : undefined;
   return {
     id: n.id,
@@ -2070,7 +2090,9 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
     title: n.title || '',
     prompt: m.prompt || '',
     mediaUrl: normalizedMediaUrl || undefined,
-    thumbUrl: kind === 'video' && normalizedMediaUrl ? videoThumbUrl : undefined,
+    thumbUrl: (kind === 'video' || kind === 'image') && normalizedMediaUrl
+      ? mediaThumbUrl
+      : undefined,
     // Legacy persisted rows may still say "error"; normalize that at the raw
     // boundary before the client-facing union narrows it to terminal states.
     status: (

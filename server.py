@@ -103,6 +103,11 @@ def request_reference_candidates(
 ) -> tuple[list[dict[str, Any]], bool]:
     params_refs = params.get("refs")
     meta_refs = meta.get("refs")
+    removed_ref_ids = {
+        str(node_id or "").strip()
+        for node_id in (params.get("removedRefNodeIds") or [])
+        if str(node_id or "").strip()
+    }
     explicit_reference_list = (
         params_refs is not None or isinstance(meta_refs, list)
     )
@@ -114,9 +119,10 @@ def request_reference_candidates(
     for collection in (meta_refs, params_refs):
         if not isinstance(collection, list):
             continue
-        for ref in collection:
-            if isinstance(ref, dict):
-                source_refs.append(ref)
+        source_refs.extend(
+            ref for ref in collection
+            if isinstance(ref, dict)
+        )
     candidates = []
     seen_candidate_ids = set()
     for source_ref in source_refs:
@@ -130,14 +136,10 @@ def request_reference_candidates(
         )
         if key in seen_candidate_ids:
             continue
+        if str(ref.get("nodeId") or "").strip() in removed_ref_ids:
+            continue
         seen_candidate_ids.add(key)
         candidates.append(ref)
-    if node_type == "video" and explicit_reference_list:
-        # Video references are an explicit slot contract. Canvas links describe
-        # story order, not model input. Merging every incoming media node here
-        # silently feeds adjacent shot videos into the next segment, which can
-        # copy that segment's dialogue and action into the wrong shot.
-        return candidates, True
     for connection in connections:
         if not isinstance(connection, dict):
             continue
@@ -145,6 +147,8 @@ def request_reference_candidates(
             continue
         source_id = str(connection.get("fromNodeId") or "")
         if not source_id:
+            continue
+        if source_id in removed_ref_ids:
             continue
         source = next(
             (
@@ -157,6 +161,16 @@ def request_reference_candidates(
         if not source or str(source.get("type") or "") not in {
             "image", "video", "text",
         }:
+            continue
+        source_type = str(source.get("type") or "")
+        if (
+            node_type == "video"
+            and explicit_reference_list
+            and source_type == "video"
+        ):
+            # Canvas video links describe story order. An adjacent shot must
+            # never become a provider reference unless it was explicitly
+            # selected as a video slot.
             continue
         source_meta = source.get("metadata") or {}
         source_asset_id = str(source_meta.get("assetId") or "")
@@ -2012,12 +2026,172 @@ def ensure_video_thumbnail(url):
             pass
 
 
+def ensure_image_thumbnail(url):
+    """Create a small persisted preview for a local image."""
+    raw = str(url or "").strip()
+    if not raw.startswith("/uploads/"):
+        return ""
+    path = os.path.join(_upload_dir(), raw[len("/uploads/"):])
+    if not os.path.isfile(path):
+        return ""
+    stem, _ext = os.path.splitext(path)
+    thumb_path = f"{stem}-thumb.jpg"
+    if os.path.isfile(thumb_path) and os.path.getsize(thumb_path) > 0:
+        return f"/uploads/{os.path.basename(thumb_path)}"
+    ffmpeg = provider_client._ffmpeg_executable()
+    if not ffmpeg:
+        return ""
+    temp_path = f"{thumb_path}.tmp.jpg"
+    try:
+        proc = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                path,
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale='min(640,iw)':-2",
+                "-q:v",
+                "4",
+                temp_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if proc.returncode != 0 or not os.path.isfile(temp_path):
+            raise RuntimeError((proc.stderr or "ffmpeg 未生成图片缩略图").strip()[:300])
+        os.replace(temp_path, thumb_path)
+        return f"/uploads/{os.path.basename(thumb_path)}"
+    except Exception as exc:
+        print(f"[image-thumbnail] {raw[:120]}: {exc}", file=sys.stderr)
+        return ""
+    finally:
+        try:
+            if os.path.isfile(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+
+
 def _video_thumbnail_is_usable(url):
     raw = str(url or "").strip()
     if not raw.startswith("/uploads/"):
         return False
     path = os.path.join(_upload_dir(), raw[len("/uploads/"):])
     return os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+def _image_thumbnail_is_usable(url):
+    raw = str(url or "").strip()
+    if not raw.startswith("/uploads/"):
+        return False
+    path = os.path.join(_upload_dir(), raw[len("/uploads/"):])
+    return os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+def rebuild_image_thumbnail_metadata(meta):
+    """Return a params patch with durable thumbnails for image versions."""
+    if not isinstance(meta, dict):
+        return {}
+    params = meta.get("params") if isinstance(meta.get("params"), dict) else {}
+    versions = params.get("mediaVersions")
+    if not isinstance(versions, list):
+        return {}
+    patched_versions = []
+    changed = False
+    for item in versions:
+        if not isinstance(item, dict):
+            patched_versions.append(item)
+            continue
+        version = dict(item)
+        url = str(version.get("url") or "").strip()
+        thumb = str(version.get("thumbUrl") or "").strip()
+        if url.startswith("/uploads/") and not _image_thumbnail_is_usable(thumb):
+            generated = ensure_image_thumbnail(url)
+            if generated:
+                version["thumbUrl"] = generated
+                changed = True
+        patched_versions.append(version)
+    patch = {"mediaVersions": patched_versions} if changed else {}
+    active_version_id = str(params.get("activeVersionId") or "").strip()
+    active = next(
+        (
+            item for item in patched_versions
+            if isinstance(item, dict)
+            and (
+                (
+                    active_version_id
+                    and str(item.get("versionId") or "") == active_version_id
+                )
+                or (
+                    not active_version_id
+                    and str(item.get("url") or "") == str(meta.get("content") or "")
+                )
+            )
+        ),
+        None,
+    )
+    if isinstance(active, dict) and str(active.get("thumbUrl") or "").strip():
+        thumb = str(active["thumbUrl"]).strip()
+        if thumb != str(params.get("thumbUrl") or "").strip():
+            patch["thumbUrl"] = thumb
+    return patch
+
+
+def backfill_generated_image_thumbnails():
+    updated = 0
+    for project_row in store.list_projects():
+        project = store.get_project(project_row.get("id"))
+        if not project:
+            continue
+        for node in project["payload"].get("nodes", []):
+            if node.get("type") != "image":
+                continue
+            patch = rebuild_image_thumbnail_metadata(node.get("metadata"))
+            if not patch:
+                continue
+            commit_node_metadata(project["id"], node["id"], {
+                "_paramsPatch": patch,
+            })
+            updated += 1
+    if updated:
+        print(f"[image-thumbnail] backfilled {updated}", file=sys.stderr)
+    return updated
+
+
+_IMAGE_THUMBNAIL_BACKFILL_LOCK = threading.Lock()
+_IMAGE_THUMBNAIL_BACKFILL_STARTED = False
+
+
+def start_image_thumbnail_backfill():
+    """Backfill legacy image previews without delaying API startup."""
+    global _IMAGE_THUMBNAIL_BACKFILL_STARTED
+    with _IMAGE_THUMBNAIL_BACKFILL_LOCK:
+        if _IMAGE_THUMBNAIL_BACKFILL_STARTED:
+            return False
+        _IMAGE_THUMBNAIL_BACKFILL_STARTED = True
+
+    def run():
+        try:
+            updated = _run_for_active_tenants(backfill_generated_image_thumbnails)
+            if updated:
+                print(f"已补齐 {updated} 个历史图片缩略图", file=sys.stderr)
+        except Exception as exc:
+            print(f"[image-thumbnail] 回填失败：{exc}", file=sys.stderr)
+
+    threading.Thread(
+        target=run,
+        name="image-thumbnail-backfill",
+        daemon=True,
+    ).start()
+    return True
 
 
 def rebuild_video_thumbnail_metadata(meta):
@@ -2997,6 +3171,13 @@ def _append_local_media_version(meta, node_type, upload):
             params.pop("thumbUrl", None)
         params["videoVersions"] = [dict(item) for item in versions]
         params["videoVersionIndex"] = selected_index
+    elif kind == "image":
+        thumb = ensure_image_thumbnail(url)
+        if thumb:
+            version["thumbUrl"] = thumb
+            params["thumbUrl"] = thumb
+        else:
+            params.pop("thumbUrl", None)
     ratio = str(upload.get("ratio") or "").strip()
     if ratio and kind in {"image", "video"}:
         params["ratio"] = ratio
@@ -3322,6 +3503,9 @@ def _record_media_version(
     thumb_url="",
 ):
     media_params = meta.setdefault("params", {})
+    resolved_thumb_url = str(thumb_url or "").strip()
+    if kind == "image" and not resolved_thumb_url:
+        resolved_thumb_url = ensure_image_thumbnail(generated_url)
     _normalize_media_versions(meta, kind)
     source_versions = media_params.get("mediaVersions")
     if not source_versions and kind == "video":
@@ -3380,8 +3564,8 @@ def _record_media_version(
     }
     if isinstance(storage, dict):
         current_version["storage"] = storage
-    if str(thumb_url or "").strip():
-        current_version["thumbUrl"] = str(thumb_url).strip()
+    if resolved_thumb_url:
+        current_version["thumbUrl"] = resolved_thumb_url
     versions.append(current_version)
     for offset, item in enumerate(versions):
         if not str(item.get("versionId") or "").strip():
@@ -3393,8 +3577,8 @@ def _record_media_version(
             )
     versions = versions[-MAX_MEDIA_VERSIONS:]
     media_params["mediaVersions"] = versions
-    if str(thumb_url or "").strip():
-        media_params["thumbUrl"] = str(thumb_url).strip()
+    if resolved_thumb_url:
+        media_params["thumbUrl"] = resolved_thumb_url
     media_params["activeVersionId"] = str(
         current_version.get("versionId") or ""
     )
@@ -13033,6 +13217,22 @@ def main():
                 f"[schema] backfilled {delivery_backfilled} task delivery receipts",
                 file=sys.stderr,
             )
+        ignored_duplicates = _run_for_active_tenants(
+            store.backfill_ignored_duplicate_generation_tasks
+        )
+        if ignored_duplicates:
+            print(
+                f"[schema] normalized {ignored_duplicates} ignored duplicate tasks",
+                file=sys.stderr,
+            )
+        pruned_snapshots = _run_for_active_tenants(
+            store.prune_auto_snapshots
+        )
+        if pruned_snapshots:
+            print(
+                f"[schema] pruned {pruned_snapshots} excess auto snapshots",
+                file=sys.stderr,
+            )
     except Exception as exc:
         print(f"[schema] tenant migration failed: {exc}", file=sys.stderr)
 
@@ -13144,6 +13344,7 @@ def main():
             print(f"已补齐 {covers} 个历史视频封面")
     except Exception as exc:
         print(f"[video-thumbnail] 回填失败：{exc}", file=sys.stderr)
+    start_image_thumbnail_backfill()
     try:
         _run_for_active_tenants(store.interrupt_orphan_generation_tasks)
     except Exception as exc:

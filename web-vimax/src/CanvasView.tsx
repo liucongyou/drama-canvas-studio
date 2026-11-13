@@ -3604,7 +3604,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
             ? <span className={`canvas-media-image-frame${mediaLoaded ? ' is-loaded' : ' is-loading'}`}>
                 <LazyCanvasImage
                   className="canvas-media-preview is-photo"
-                  src={mediaRetryUrl || node.mediaUrl}
+                  src={mediaRetryUrl || node.thumbUrl || node.mediaUrl}
                   alt={node.title}
                   onLoad={() => {
                     setMediaLoaded(true);
@@ -5224,6 +5224,10 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       voiceRefList(paramsRef.current).filter((item) => !removedIds.has(item.nodeId)),
     );
     next.refs = (next.refs || refs).filter((item) => !removedIds.has(item.nodeId));
+    next.removedRefNodeIds = [...new Set([
+      ...(next.removedRefNodeIds || []),
+      ...removedIds,
+    ])];
     paramsRef.current = next;
     let nextPrompt = promptDraftRef.current;
     for (const ref of unique) nextPrompt = removePromptMention(nextPrompt, refLabel(ref));
@@ -5377,7 +5381,16 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     if (!(isVid && a.kind === 'audio') && !nextRefs.some((r) => r.nodeId === a.id)) {
       nextRefs.push({nodeId: a.id, label: a.title || a.kind, url: a.mediaUrl});
     }
-    const params: CanvasMediaParams = {...p, refs: nextRefs};
+    const remainingRemoved = new Set(p.removedRefNodeIds || []);
+    remainingRemoved.delete(a.id);
+    const params: CanvasMediaParams = {
+      ...p,
+      refs: nextRefs,
+      ...(remainingRemoved.size
+        ? {removedRefNodeIds: [...remainingRemoved]}
+        : {}),
+    };
+    if (!remainingRemoved.size) delete params.removedRefNodeIds;
     // ★ 第 17 轮：@ 引用音频时同样**累加**（旧写法整体覆盖 voiceRef，连多个音色只剩最后一个）
     const finalParams = (isVid && a.kind === 'audio')
       ? withVoiceRefs(params, [...voiceRefList(params), {nodeId: a.id, label: a.title || a.kind, url: a.mediaUrl}])

@@ -69,5 +69,47 @@ class VideoThumbnailTests(unittest.TestCase):
         ensure.assert_not_called()
 
 
+class ImageThumbnailTests(unittest.TestCase):
+    def test_returns_existing_image_thumbnail_without_running_ffmpeg(self):
+        with mock.patch.object(server.os.path, "isfile", return_value=True), \
+             mock.patch.object(server.os.path, "getsize", return_value=2048), \
+             mock.patch.object(server.provider_client, "_ffmpeg_executable") as ffmpeg:
+            result = server.ensure_image_thumbnail("/uploads/test.png")
+        self.assertEqual(result, "/uploads/test-thumb.jpg")
+        ffmpeg.assert_not_called()
+
+    def test_rebuilds_each_local_image_version_and_active_thumbnail(self):
+        stale = "/uploads/stale-thumb.jpg"
+        meta = {
+            "content": "/uploads/current.png",
+            "params": {
+                "thumbUrl": stale,
+                "activeVersionId": "v2",
+                "mediaVersions": [
+                    {"versionId": "v1", "url": "/uploads/v1.png"},
+                    {"versionId": "v2", "url": "/uploads/current.png", "thumbUrl": stale},
+                    {"versionId": "remote", "url": "https://example.com/v.png"},
+                ],
+            },
+        }
+
+        def isfile(path):
+            return path.endswith(("-thumb.jpg", ".png")) and "stale" not in path
+
+        def thumbnail(url):
+            return f"{url[:-4]}-thumb.jpg" if url.startswith("/uploads/") else ""
+
+        with mock.patch.object(server.os.path, "isfile", side_effect=isfile), \
+             mock.patch.object(server.os.path, "getsize", return_value=2048), \
+             mock.patch.object(server, "ensure_image_thumbnail", side_effect=thumbnail):
+            patch = server.rebuild_image_thumbnail_metadata(meta)
+
+        self.assertEqual(patch["thumbUrl"], "/uploads/current-thumb.jpg")
+        versions = patch["mediaVersions"]
+        self.assertEqual(versions[0]["thumbUrl"], "/uploads/v1-thumb.jpg")
+        self.assertEqual(versions[1]["thumbUrl"], "/uploads/current-thumb.jpg")
+        self.assertNotIn("thumbUrl", versions[2])
+
+
 if __name__ == "__main__":
     unittest.main()
