@@ -29,4 +29,15 @@
 
 - 后端：更新 `provider_client.py` 并重启 `drama-canvas-yj.service`。
 - 前端：更新 `web-vimax/dist` 静态资源，保留上一版用于回滚。
+- 代码提交：`2ea93ac fix: translate provider copyright policy failures`
+- 线上发布号：`2ea93ac`
+- 前端入口：`/assets/index-BaeGmEY0.js`
+- 线上备份：`/www/wwwroot/yj.pduoduo.vip/app/backups/provider-error-i18n-2ea93ac-20261113-170312`
+
+## 线上验收
+
+- 本地与线上 `provider_client.py` SHA-256 一致：`ab5d258829f216c747915ed77fca7e93ee27e826052f741892cb3ee039d45c5d`
+- 线上前端入口已切换到 `index-BaeGmEY0.js`，构建产物包含中文版权拦截说明。
+- 在线上直接调用 `provider_client.friendly_provider_error()`，输出中文错误并保留供应商请求编号。
+- `https://yjapi.pduoduo.vip/api/auth/session` 正常响应，`https://yj.pduoduo.vip/` 已引用新前端入口。
 - 本次发布不触发图片、音频或视频供应商生成，不产生生成费用。
