@@ -16,6 +16,20 @@ import provider_client
 
 
 class ProviderCatalogTests(unittest.TestCase):
+    def test_provider_policy_failure_is_translated_to_chinese(self):
+        raw = (
+            "视频生成失败: OutputVideoSensitiveContentDetected.PolicyViolation: "
+            "The request failed because the output video may be related to "
+            "copyright restrictions. Request id: 02179455903421200000000000000000000iffa"
+        )
+        translated = provider_client.friendly_provider_error(raw)
+
+        self.assertIn("供应商检测到生成结果可能涉及敏感内容或版权限制", translated)
+        self.assertIn("请求编号：02179455903421200000000000000000000iffa", translated)
+        self.assertNotIn("copyright restrictions", translated)
+        exc = provider_client.ProviderTaskFailed(raw)
+        self.assertNotIn("copyright restrictions", str(exc))
+
     def test_fourstoken_image_with_references_uses_edits_multipart(self):
         provider = {
             "id": "4stoken",

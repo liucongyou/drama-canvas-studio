@@ -154,6 +154,35 @@ class ProviderOutcomeUncertain(RuntimeError):
         self.response = response or {}
 
 
+def friendly_provider_error(message: str) -> str:
+    """Translate provider policy failures into an actionable Chinese message."""
+    text = str(message or "").strip()
+    if not text:
+        return text
+    lower = text.lower()
+    if (
+        "outputvideosensitivecontentdetected" in lower
+        or "copyright restrictions" in lower
+        or "policyviolation" in lower
+        or ("敏感内容" in text and "版权" in text)
+    ):
+        request_id = ""
+        match = re.search(
+            r"request\s*id\s*[:：]\s*([A-Za-z0-9._:-]+)",
+            text,
+            re.IGNORECASE,
+        )
+        if match:
+            request_id = match.group(1).rstrip(".")
+        suffix = f" 请求编号：{request_id}。" if request_id else ""
+        return (
+            "视频生成失败：供应商检测到生成结果可能涉及敏感内容或版权限制，"
+            "已按平台策略拦截。请更换参考图或调整提示词后重新生成。"
+            f"{suffix}"
+        )
+    return text
+
+
 class ProviderTaskFailed(RuntimeError):
     """The provider returned an explicit terminal failure for an accepted task."""
 
@@ -165,7 +194,8 @@ class ProviderTaskFailed(RuntimeError):
         status: str = "failed",
         error_code: str = "",
     ):
-        super().__init__(message)
+        self.raw_message = message
+        super().__init__(friendly_provider_error(message))
         self.provider_task_id = provider_task_id
         self.status = status
         self.error_code = error_code
@@ -4038,7 +4068,7 @@ def check_video_task(
         "rawStatus": raw_status,
         "progress": task.get("progress"),
         "url": url,
-        "error": detail or "",
+        "error": friendly_provider_error(str(detail or "")),
         "raw": task,
     }
 

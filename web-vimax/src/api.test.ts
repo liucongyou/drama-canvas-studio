@@ -27,6 +27,19 @@ describe('project event cursor', () => {
 });
 
 describe('friendlyMediaError', () => {
+  it('translates provider video policy violations into readable Chinese', () => {
+    const message = friendlyMediaError(
+      '视频生成失败: OutputVideoSensitiveContentDetected.PolicyViolation: '
+      + 'The request failed because the output video may be related to '
+      + 'copyright restrictions. Request id: 02179455903421200000000000000000000iffa',
+    );
+
+    expect(message).toContain('视频生成失败');
+    expect(message).toContain('供应商检测到生成结果可能涉及敏感内容或版权限制');
+    expect(message).toContain('请求编号：02179455903421200000000000000000000iffa');
+    expect(message).not.toContain('copyright restrictions');
+  });
+
   it('renders persisted provider errors without deriving a card outcome', () => {
     const message = friendlyMediaError(
       '供应商请求返回 HTTP 503，但没有返回任务号；'

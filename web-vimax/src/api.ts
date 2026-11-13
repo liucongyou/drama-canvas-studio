@@ -696,6 +696,16 @@ export function friendlyMediaError(raw?: string): string {
   if (lower.includes('model_not_found') || lower.includes('no available channel') || text.includes('无可用通道')) {
     return '供应商没有该模型的可用通道，请检查模型是否启用或分组路由是否正确。';
   }
+  if (
+    lower.includes('outputvideosensitivecontentdetected')
+    || lower.includes('copyright restrictions')
+    || lower.includes('policyviolation')
+    || (text.includes('敏感内容') && text.includes('版权'))
+  ) {
+    const requestId = text.match(/request\s*id\s*[:：]\s*([A-Za-z0-9._:-]+)/i)?.[1]?.replace(/\.$/, '');
+    const suffix = requestId ? ` 请求编号：${requestId}。` : '';
+    return `视频生成失败：供应商检测到生成结果可能涉及敏感内容或版权限制，已按平台策略拦截。请更换参考图或调整提示词后重新生成。${suffix}`;
+  }
   return text;
 }
 

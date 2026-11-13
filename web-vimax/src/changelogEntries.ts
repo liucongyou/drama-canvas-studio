@@ -3,6 +3,17 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.13.03',
+    date: '2026-11-13',
+    title: '供应商版权拦截错误中文化',
+    releasedAt: '2026-11-13 17:00:00 +08:00',
+    changes: [
+      '视频生成遇到 OutputVideoSensitiveContentDetected.PolicyViolation 时，显示“可能涉及敏感内容或版权限制，已被平台策略拦截”的中文说明。',
+      '保留供应商返回的 Request id，方便追溯具体请求；前端对历史已落库的英文错误也会做兼容翻译。',
+      '新增后端和前端回归测试，覆盖版权限制错误、请求编号提取和旧错误展示不回退。',
+    ],
+  },
+  {
     version: '2026.11.13.02',
     date: '2026-11-13',
     title: '提示词弹窗滚动细轨与玻璃透明度精修',
