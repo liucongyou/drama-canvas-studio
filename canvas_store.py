@@ -7960,7 +7960,13 @@ def maintain_storage(min_free_ratio: float = 0.35, min_free_bytes: int = 32 * 10
 
 def checkpoint_wal(*, mode: str = "PASSIVE") -> dict:
     """Move WAL pages back into the main database outside business commits."""
-    if pg_compat.postgres_enabled():
+    # PostgreSQL manages its own WAL and rejects SQLite checkpoint semantics.
+    # Use the backend selector directly: postgres_enabled() may itself call
+    # database_url() and shouldn't run inside tenant maintenance loops.
+    backend = os.getenv("CANVAS_DB_BACKEND", "").strip().lower()
+    if backend in {"postgres", "postgresql", "pg"}:
+        return {"ok": True, "busy": 0, "log": 0, "checkpointed": 0}
+    if backend not in {"sqlite", "sqlite3"} and pg_compat.postgres_enabled():
         return {"ok": True, "busy": 0, "log": 0, "checkpointed": 0}
     path = _db_path()
     if not os.path.exists(path):

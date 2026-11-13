@@ -33,6 +33,24 @@ class AccessLogPolicyTests(unittest.TestCase):
                 handler.log_message("GET /broken 500")
                 stderr.write.assert_called_once()
 
+    def test_postgres_skips_sqlite_wal_maintenance(self):
+        with mock.patch.dict(
+            server.os.environ,
+            {"CANVAS_DB_BACKEND": "postgres"},
+            clear=False,
+        ), mock.patch.object(server.threading, "Thread") as thread:
+            server.start_wal_maintenance()
+            thread.assert_not_called()
+
+    def test_sqlite_wal_maintenance_still_starts(self):
+        with mock.patch.dict(
+            server.os.environ,
+            {"CANVAS_DB_BACKEND": "sqlite"},
+            clear=False,
+        ), mock.patch.object(server.threading, "Thread") as thread:
+            server.start_wal_maintenance()
+            thread.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5612,6 +5612,13 @@ def start_wal_maintenance():
     0.2-2s stall. Keep automatic checkpoints disabled at connection level and
     converge the WAL from this low-frequency maintenance thread instead.
     """
+    backend = os.environ.get("CANVAS_DB_BACKEND", "").strip().lower()
+    if backend in {"postgres", "postgresql", "pg"}:
+        # PostgreSQL owns WAL checkpointing. Starting the SQLite maintenance
+        # loop here only produced a periodic "transaction already in progress"
+        # warning in PostgreSQL logs.
+        return
+
     def run():
         time.sleep(20)
         while True:
