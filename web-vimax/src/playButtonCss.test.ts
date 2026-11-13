@@ -56,4 +56,15 @@ describe('video overlay controls', () => {
       /\.canvas-video-shell:fullscreen \.canvas-video-controls\{[^}]*left:6px;[^}]*right:6px/s,
     );
   });
+
+  it('allows dragging from the video surface while keeping controls interactive', () => {
+    expect(source).toMatch(
+      /className=\{`canvas-video-stage\$\{videoFullscreen \? ' nodrag' : ''\}`\}/,
+    );
+    expect(source).toMatch(
+      /className=\{`canvas-media-preview is-video nowheel\$\{videoFullscreen \? ' nodrag' : ''\}`\}/,
+    );
+    expect(source).toMatch(/className="canvas-video-center-play nodrag"/);
+    expect(source).toMatch(/className="canvas-video-controls nodrag"/);
+  });
 });

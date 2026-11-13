@@ -3638,7 +3638,12 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                     toggleVideoFullscreen();
                   }}
                 >
-                  <div className="canvas-video-stage nodrag">
+                  <div
+                    className={`canvas-video-stage${videoFullscreen ? ' nodrag' : ''}`}
+                    onPointerDown={(event) => {
+                      if (videoFullscreen) event.stopPropagation();
+                    }}
+                  >
                   {videoCoverVisible && (
                     <VideoCoverImage
                       src={videoCoverUrl}
@@ -3664,7 +3669,7 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
                   )}
                   <video
                     ref={videoRef}
-                    className="canvas-media-preview is-video nodrag nowheel"
+                    className={`canvas-media-preview is-video nowheel${videoFullscreen ? ' nodrag' : ''}`}
                     src={mediaRetryUrl || node.mediaUrl}
                     playsInline
                     muted={videoMuted}
