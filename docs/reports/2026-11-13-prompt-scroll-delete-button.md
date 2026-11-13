@@ -20,6 +20,17 @@
 - `promptScrollAnchor.test.ts`：3 项通过。
 - `promptScrollbarCss.test.ts`：8 项通过。
 - `mediaCardInteraction.test.ts`：4 项通过。
+- 前端完整测试：80 个测试文件、747 项通过。
 - Canvas 类型检查：通过。
+- 生产构建：通过，入口为 `index-DBoarY-j.js`。
 
 本次不触发生成任务，不产生供应商费用。
+
+## 线上发布
+
+- 代码提交：`40ea918 fix: stabilize prompt scroll and soften delete action`
+- 线上发布号：`40ea918`
+- 线上入口：`/assets/index-DBoarY-j.js`
+- 线上备份：`/www/wwwroot/yj.pduoduo.vip/app/backups/frontend-prompt-scroll-delete-40ea918-20261113-222827`
+- `index.html`、入口 JS、CSS 本地与线上 SHA-256 一致。
+- 画布服务与 Agent 服务均为 `active`。
