@@ -41,5 +41,13 @@
 
 - 技能版本：`7.4.32`
 - 包修订：`20261113-r19`
+- 代码提交：`c38fe74 fix: derive canvas segment duration from timecodes`
+- 发布 ZIP：`deliverables/manju-laoli-skill-V7.4.32-20261113-r19.zip`
+- ZIP SHA-256：`43171e7e4883410f145bd408aa04ed6986f7433de502dc6af3d01999fdd77086`
+- 线上激活版本：`7.4.32`
+- 线上安装目录：`/www/wwwroot/yj.pduoduo.vip/app/agent/data/skills/manju-laoli-skill/7.4.32-43171e7e4883`
+- 回滚版本：`7.4.31`、`7.4.30` 仍保留且未激活。
+- 本地与线上 `VERSION.json`、`PACKAGE-MANIFEST.json`、导出器、共享契约和 Schema 的 SHA-256 一致。
+- 线上 `build_board_lite.py --self-test` 和 `check_package.py` 均通过。
 
 本次不调用图片、音频或视频供应商生成接口。
