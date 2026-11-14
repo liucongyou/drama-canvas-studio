@@ -10173,6 +10173,17 @@ function CanvasViewInner({
       generationIntentSignature({kind: node.kind, prompt: node.prompt, params}),
     )
   ), []);
+  const applyGenerationTaskSnapshot = useCallback((tasks: GenerationTask[]) => {
+    const projection = projectGenerationState(
+      tasks,
+      optimisticGenerationStartsRef.current,
+    );
+    optimisticGenerationStartsRef.current = projection.retainedOptimistic;
+    generationBusyIdsRef.current = projection.activeNodeIds;
+    setGenerationBusyIds(projection.activeNodeIds);
+    setGenerationTasks(tasks);
+    return projection.activeNodeIds;
+  }, []);
   useEffect(() => { mediaNodesRef.current = mediaNodes; }, [mediaNodes]);
   const refreshWorkspaceFacts = useCallback(() => {
     if (
@@ -10207,9 +10218,7 @@ function CanvasViewInner({
         mediaNodesRef.current.map((node) => [node.id, node]),
       );
       taskLoadGenerationRef.current += 1;
-      setGenerationTasks((prev) => (
-        taskCenterOpen ? workspace.tasks : prev
-      ));
+      const activeTaskNodeIds = applyGenerationTaskSnapshot(workspace.tasks);
       if (!('empty' in workspace.canvas)) setCanvas(workspace.canvas);
       setNotes(workspace.notes);
       setMediaNodes(workspace.mediaNodes.map((remote) => {
@@ -10233,7 +10242,7 @@ function CanvasViewInner({
         );
         const projectedRemote = preserveActiveGenerationStatus(
           remote,
-          generationBusyIdsRef.current,
+          activeTaskNodeIds,
         );
         return {
           ...local,
@@ -10307,7 +10316,7 @@ function CanvasViewInner({
       });
     workspaceRefreshInFlightRef.current = task;
     return task;
-  }, []);
+  }, [applyGenerationTaskSnapshot]);
   refreshWorkspaceFactsRef.current = refreshWorkspaceFacts;
   useEffect(() => {
     if (mediaNodes.length === 0) return;
@@ -10892,13 +10901,14 @@ function CanvasViewInner({
             alive
             && loadGeneration === taskLoadGenerationRef.current
           ) {
-            setGenerationTasks(tasks);
+            applyGenerationTaskSnapshot(tasks);
           }
         })
         .catch(() => {});
     };
-    // Task Center owns task-ledger reads. Card rendering uses workspace-nodes
-    // only; a closed Task Center never polls the task ledger.
+    // The Task Center renders the detailed ledger, while canvas busy
+    // projection also consumes activeNodeIds from the current episode.
+    // Keep both surfaces on the same snapshot whenever this poll runs.
     refreshTasks();
     const interval = activeGenerationTaskCount > 0 ? 1200 : 6000;
     const timer = window.setInterval(() => {
@@ -10908,7 +10918,13 @@ function CanvasViewInner({
       alive = false;
       window.clearInterval(timer);
     };
-  }, [activeGenerationTaskCount, currentEp, session, taskCenterOpen]);
+  }, [
+    activeGenerationTaskCount,
+    applyGenerationTaskSnapshot,
+    currentEp,
+    session,
+    taskCenterOpen,
+  ]);
 
   useEffect(() => {
     let alive = true;
@@ -11448,9 +11464,8 @@ function CanvasViewInner({
         startTransition(() => {
           setNotes(workspace.notes);
           setMediaNodes(workspace.mediaNodes);
-          setGenerationTasks(workspace.tasks);
+          applyGenerationTaskSnapshot(workspace.tasks);
         });
-        setGenerationBusyIds(new Set());
         if (loadedEpisode && loadedEpisode !== target) {
           setCurrentEp(loadedEpisode);
         }
@@ -12715,13 +12730,21 @@ function CanvasViewInner({
         projectConnectionsRef.current = workspace.connections;
         return workspace.eventCursor;
       }
+      const shouldReadTaskLedger = (
+        taskCenterOpenRef.current
+        || generationBusyIdsRef.current.size > 0
+        || optimisticGenerationStartsRef.current.size > 0
+      );
       const [snapshot, tasks] = await Promise.all([
         getWorkspaceMediaNodeSnapshot(session, currentEpRef.current),
-        taskCenterOpenRef.current
+        shouldReadTaskLedger
           ? getGenerationTasks(session, 80, currentEpRef.current).catch(() => null)
           : Promise.resolve(null),
       ]);
       if (disposed) return null;
+      const activeTaskNodeIds = tasks
+        ? applyGenerationTaskSnapshot(tasks)
+        : generationBusyIdsRef.current;
       const remoteNodes = snapshot.nodes;
       const localById = new Map(
         mediaNodesRef.current.map((node) => [node.id, node]),
@@ -12738,7 +12761,7 @@ function CanvasViewInner({
         );
         const projectedRemote = preserveActiveGenerationStatus(
           remote,
-          generationBusyIdsRef.current,
+          activeTaskNodeIds,
         );
         return {
           ...local,
@@ -12758,10 +12781,7 @@ function CanvasViewInner({
             : {}),
         };
       }));
-      if (tasks && !disposed) {
-        taskLoadGenerationRef.current += 1;
-        setGenerationTasks(tasks);
-      }
+      if (tasks && !disposed) taskLoadGenerationRef.current += 1;
       return snapshot.eventCursor;
     };
 
@@ -16673,7 +16693,7 @@ function CanvasViewInner({
         const refreshTasks = async () => {
           try {
             const tasks = await getGenerationTasks(session, 80, currentEp);
-            setGenerationTasks(tasks);
+            applyGenerationTaskSnapshot(tasks);
           } catch {
             // Polling/SSE remains the consistency path.
           }
@@ -16760,7 +16780,18 @@ function CanvasViewInner({
       }
     })();
     return true;
-  }, [session, currentEp, updateMediaNode, allEdges, mediaNodes, modelCatalog, setToast, claimOperationId, readOnly]);
+  }, [
+    session,
+    currentEp,
+    updateMediaNode,
+    allEdges,
+    mediaNodes,
+    modelCatalog,
+    setToast,
+    claimOperationId,
+    applyGenerationTaskSnapshot,
+    readOnly,
+  ]);
 
   // 段级绑定资产（段内镜头绑定的并集）——直接由 shots 索引构建，供段卡 chips
   const segBoundAssets = useMemo(() => {
