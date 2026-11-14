@@ -1,10 +1,10 @@
 {
   "package": "manju-laoli-skill",
-  "version": "7.4.32",
+  "version": "7.4.33",
   "canvasSchema": "drama-canvas-feed/v2",
   "schemaFile": "short-drama-director/references/canvas-feed.schema.json",
-  "releaseDate": "2026-11-13",
-  "packageRevision": "20261113-r19",
+  "releaseDate": "2026-11-14",
+  "packageRevision": "20261114-r20",
   "audioPromptFormat": "audio-prompt-v1",
   "agePhraseFormat": "A {gender} aged {age}",
   "genericWithoutLedger": true,
@@ -14,13 +14,8 @@
   "skillCount": 13,
   "entry": "short-drama-director/SKILL.md",
   "voiceCatalog": "voice_prompts",
-  "fileCount": 172,
+  "fileCount": 173,
   "files": [
-    {
-      "path": "短剧逐集流水线-通用执行提示词.md",
-      "size": 7763,
-      "sha256": "614a23a0640cb78b14de2c0e3250233f301a971cdc20161ef9564d06fd7deb38"
-    },
     {
       "path": "CANVAS-JSON-CONTRACT.md",
       "size": 8507,
@@ -28,8 +23,8 @@
     },
     {
       "path": "README.md",
-      "size": 3508,
-      "sha256": "3ee5481fb17dc7b0af306aa5dcc1a1004e574d27779d730e915cc52b6caf1ef3"
+      "size": 3828,
+      "sha256": "4f2c67a7cc2ce61fce4e6e0aa1828ee9dcccedd8832d79efdeaa0055d78f3b85"
     },
     {
       "path": "sd-asset-engine/references/character-portrait-templates.md",
@@ -58,8 +53,8 @@
     },
     {
       "path": "sd-asset-engine/SKILL.md",
-      "size": 29381,
-      "sha256": "4cedc042c9a0bd54f292149aeadab49d028120d0840de281d97c0f5d4aad4756"
+      "size": 29527,
+      "sha256": "cd496044f8830bbe63c165b3c40a5b5bb766cab0cfcb0d15ea3b5a03d7fb506e"
     },
     {
       "path": "sd-combat-engine/references/combat-cheatsheet.md",
@@ -138,8 +133,8 @@
     },
     {
       "path": "sd-combat-engine/SKILL.md",
-      "size": 13132,
-      "sha256": "5be14099d3b350d99a7045fe15a47e583ef52f32219d6d91743ab790a5311d91"
+      "size": 13210,
+      "sha256": "15ff5e145b7488400118fe482c936a2be6f6f5c6dca20035f1a90045f287501c"
     },
     {
       "path": "sd-decision-engine/references/context-mapping.md",
@@ -158,8 +153,8 @@
     },
     {
       "path": "sd-decision-engine/SKILL.md",
-      "size": 7813,
-      "sha256": "207a165d821ab9f5a2b143a34fffd8c4c6c8cf74dba5a29adfa576ee9d2e767d"
+      "size": 7939,
+      "sha256": "93c92a144db90c09c631f8536f5e0287e522d59ab12fb6029bb0f5dd2a10573b"
     },
     {
       "path": "sd-feed-engine/references/asset-mapping-and-rules.md",
@@ -193,8 +188,8 @@
     },
     {
       "path": "sd-feed-engine/SKILL.md",
-      "size": 21404,
-      "sha256": "f480fb64c4afd58f5e5c9601134a048236e4f551badb9c43ff75cb3c2624f6a2"
+      "size": 22562,
+      "sha256": "b82470ea84656dde8ecdc746c0d3b690c66d1e84511fdeab870788196e20e8d6"
     },
     {
       "path": "sd-jieshuo-engine/references/explainer-formulas.md",
@@ -213,8 +208,8 @@
     },
     {
       "path": "sd-jieshuo-engine/SKILL.md",
-      "size": 16088,
-      "sha256": "a3cdf94cfb5e5dafa2feda9eee3cbde430984e9a17fee51242266ae694675d60"
+      "size": 16234,
+      "sha256": "10d4027168695ac344007da752b4faae93bd2b5dd1f33cfa5e7f42706549be33"
     },
     {
       "path": "sd-overseas-engine/references/evidence-and-authority.md",
@@ -238,8 +233,8 @@
     },
     {
       "path": "sd-overseas-engine/SKILL.md",
-      "size": 12849,
-      "sha256": "621c94b8beafaf9fb4d9e21b72e3d567dbc8ee4af13cb234352af8cf84513ccc"
+      "size": 13035,
+      "sha256": "8a0c8a484e698bd938230ae6275f9c24876471480807dc87a8d009b013102ed6"
     },
     {
       "path": "sd-qc-engine/references/continuity-ledger.md",
@@ -283,8 +278,8 @@
     },
     {
       "path": "sd-qc-engine/SKILL.md",
-      "size": 10352,
-      "sha256": "cab0da1b759949b0d3208809890e540a7a4951d6caad223b77a2c971d319a86b"
+      "size": 10457,
+      "sha256": "05fccbc2f43b7993d54b67593873f5f491ec6f7e734eb3e4b55c7b1522ec5a1e"
     },
     {
       "path": "sd-real-engine/references/camera-action-specs.md",
@@ -343,8 +338,8 @@
     },
     {
       "path": "sd-real-engine/SKILL.md",
-      "size": 12473,
-      "sha256": "cf3b96fb422bb7470b8c21e7369375bf80f0cbb75c0e5d49ce968e8cbe878f35"
+      "size": 12556,
+      "sha256": "bddaed27a5038bf4524e187b5c4bfc1362f93d7546e91fb7340ce6f7aedb02c3"
     },
     {
       "path": "sd-recon-engine/references/intel-card.md",
@@ -363,8 +358,8 @@
     },
     {
       "path": "sd-recon-engine/SKILL.md",
-      "size": 12323,
-      "sha256": "72b264c8deecd4a13eea3e5f982d90ec9af17133caa579524cdfeca7966f069c"
+      "size": 12507,
+      "sha256": "8010627f51786ddbf970d86610d2f54f6fc50904bdde188f763f0f01c678a7b3"
     },
     {
       "path": "sd-script-engine/references/dialogue-naturalization.md",
@@ -403,8 +398,8 @@
     },
     {
       "path": "sd-script-engine/SKILL.md",
-      "size": 20100,
-      "sha256": "d8ab7b541b679c3f36fdf244844e7cff5800525cb16e2a69aedc161a57285632"
+      "size": 20321,
+      "sha256": "eec2f76c97d17854bfe5c892abdcb57d1b38f4ac3b633bb0739bab27e279e05d"
     },
     {
       "path": "sd-storyboard-engine/references/p45-previs-storyboard.md",
@@ -448,8 +443,8 @@
     },
     {
       "path": "sd-storyboard-engine/SKILL.md",
-      "size": 35788,
-      "sha256": "1534a17b20da163022728d2a9e42cceadba7811b2437690e34cee2bdcea5643f"
+      "size": 36063,
+      "sha256": "20e26c91fb6cd8a37b3beb132e2f18f88ec7073ebddf08598ac8f97ec5f4cf70"
     },
     {
       "path": "sd-xuanhuan-engine/references/arsenal-moves-library.md",
@@ -498,13 +493,13 @@
     },
     {
       "path": "sd-xuanhuan-engine/SKILL.md",
-      "size": 12917,
-      "sha256": "33ecf26052d8353ce5689d8d329a46f265c3da698151c4654784afefef564467"
+      "size": 12992,
+      "sha256": "ce80807d401d97d731dc2f67ba25c3cf0e998aa31a1ff50de5c4181ab4352217"
     },
     {
       "path": "short-drama-director/CHANGELOG.md",
-      "size": 120554,
-      "sha256": "1f7500bf55e501262ab798f58c970d0667705184c94e607e9cc0d00c23662f1a"
+      "size": 121274,
+      "sha256": "03adab123fb2240cc465975727defbae5677decb86c2c01ef7e2518acc055fc1"
     },
     {
       "path": "short-drama-director/examples/stability-project.json",
@@ -518,8 +513,8 @@
     },
     {
       "path": "short-drama-director/README.md",
-      "size": 29812,
-      "sha256": "04cb500d3f2360c7625a4d89e0b35222df9c9b71a754a46976f544bb2bce25eb"
+      "size": 29993,
+      "sha256": "3502df02fe4c0b120ec965e8cfbae25bee07a4d743e64bd3f68db4392c46a9f1"
     },
     {
       "path": "short-drama-director/references/acting-direction.md",
@@ -683,8 +678,8 @@
     },
     {
       "path": "short-drama-director/references/runtime-quality-contract.md",
-      "size": 7152,
-      "sha256": "c3cb09c5c71cbedf68216a5d718c7fa04ea5f4e63932be798463e21daac1bddd"
+      "size": 8424,
+      "sha256": "3bdeacbe09c9b68d1d1ff34e94fcafd7461b011ec351f4c87b79b9a3658c8b23"
     },
     {
       "path": "short-drama-director/references/screenplay-gate-engine.md",
@@ -700,6 +695,11 @@
       "path": "short-drama-director/references/segment-splicing.md",
       "size": 57412,
       "sha256": "fb8597dadba3493a043d068a71007d3995515402996bd3222f3b06ac37d8591b"
+    },
+    {
+      "path": "short-drama-director/references/short-video-platform-and-hook-playbook.md",
+      "size": 6668,
+      "sha256": "4de914eb9e31aa67ed51e6e590534b9a41764b5a426ed4029cb8205aedb60f57"
     },
     {
       "path": "short-drama-director/references/spatial-reference-system-V3.md",
@@ -783,18 +783,18 @@
     },
     {
       "path": "short-drama-director/scripts/audit_contract.py",
-      "size": 28487,
-      "sha256": "69649dded5512faf877e5d59dabc98cf3fb9a9e163956d460005fac087a1d15c"
+      "size": 28900,
+      "sha256": "2bd67889de8e25166817d344d7cf201cac50ef550710553f18530b567f88dcd1"
     },
     {
       "path": "short-drama-director/scripts/build_board_lite.py",
-      "size": 133554,
-      "sha256": "701885c64cf405c9e6f3821f1cd7033280044c9d4ff6e8f4ee9a9f9e51391333"
+      "size": 136526,
+      "sha256": "a5e4040447f4ac181c82f797504d49cb8c7b75228bf42cea7f70980f1d9ca2f9"
     },
     {
       "path": "short-drama-director/scripts/canvas_feed_contract.py",
-      "size": 79466,
-      "sha256": "0e7bf6374008265413577f13d42cc8036870268058864f71a726e367d338c7e7"
+      "size": 79753,
+      "sha256": "07d53fa961c147df001374d029fc6d2ea564fe513109040e88f4313a3b59435b"
     },
     {
       "path": "short-drama-director/scripts/check_asset_blocks.py",
@@ -803,13 +803,13 @@
     },
     {
       "path": "short-drama-director/scripts/check_package.py",
-      "size": 198437,
-      "sha256": "1e8441c8a4bbc1710d59820b41b692e6ed6d95320e94d76ebfff95c0a56af555"
+      "size": 201084,
+      "sha256": "f6ddbea090ecbef8c707e4fd5683715fc955eeec3aaf9b201c1076b287487f09"
     },
     {
       "path": "short-drama-director/scripts/compile_feed.py",
-      "size": 10770,
-      "sha256": "cfbf3cd21d2a9ef677583408116a4d6a575ef7eda843a621d810f511d02a1cf5"
+      "size": 11002,
+      "sha256": "0b347f1a5896df3529f219d74e9ab2bf6297ec3f916bce368f88927ee7bb43af"
     },
     {
       "path": "short-drama-director/scripts/generate_emotion_curve.py",
@@ -823,13 +823,13 @@
     },
     {
       "path": "short-drama-director/scripts/sd_core.py",
-      "size": 16720,
-      "sha256": "e947f6aade766eed723c2060905fe20ed0895b258950473bd15a1ca5b15ccdf5"
+      "size": 17053,
+      "sha256": "a705110f5a6bf74f1bc4780027ab8562046da0565124ee74438ca24d8bd9531d"
     },
     {
       "path": "short-drama-director/scripts/slice_context.py",
-      "size": 16920,
-      "sha256": "1cdc956f1799f628705d888de4e74190258f1d47b50b5b65255ac9caa90d2bcd"
+      "size": 17266,
+      "sha256": "c6cd54afe31f4d6443ffba522e2acb2eb750dc6ef03679b98ee6585378c9f840"
     },
     {
       "path": "short-drama-director/scripts/style-lock-ladder.py",
@@ -868,13 +868,18 @@
     },
     {
       "path": "short-drama-director/SKILL.md",
-      "size": 196488,
-      "sha256": "93ae01ec79835c61ed671191a4aa843e1ffd1ccd2e8263a6c4e7ac9df84b636f"
+      "size": 197482,
+      "sha256": "eed805fe2a7d47bd64eeb9b667ce37b96326efaa9083bc9215f8b7f38f50e004"
     },
     {
       "path": "VERSION.json",
-      "size": 738,
-      "sha256": "3f31e79233c4b572855ca7aeeb8b8a3aea8dffe2c0fa46f9d4a58f3f146de98d"
+      "size": 759,
+      "sha256": "683afbd281ae36a3a71c7910dbf801194324f08df025976cad919dd1bd18f9a1"
+    },
+    {
+      "path": "短剧逐集流水线-通用执行提示词.md",
+      "size": 7763,
+      "sha256": "614a23a0640cb78b14de2c0e3250233f301a971cdc20161ef9564d06fd7deb38"
     }
   ],
   "runtimeQualityContract": "short-drama-director/references/runtime-quality-contract.md",

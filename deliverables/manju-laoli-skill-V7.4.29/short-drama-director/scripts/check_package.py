@@ -119,8 +119,8 @@ import py_compile
 import subprocess
 import warnings
 
-VERSION = "7.4.32"
-EXPECTED_REFS = 51   # 递归计数（41 份顶层规则库 + style-bible 10 份）。2026-11-11 新增 runtime-quality-contract.md。
+VERSION = "7.4.33"
+EXPECTED_REFS = 52   # 递归计数（41 份顶层规则库 + style-bible 10 份）。2026-11-11 新增 runtime-quality-contract.md。
 SUB_SKILLS = [
     "sd-decision-engine", "sd-recon-engine", "sd-script-engine", "sd-overseas-engine",
     "sd-jieshuo-engine",
@@ -1144,7 +1144,7 @@ check("㊱ 去遗留后零断链（总控/子技能两侧入链点均已改指�
       "残留: " + "; ".join(_dangling))
 check("㊱ 计数口径同步（SKILL 声明 == EXPECTED_REFS · 元规则四）",
       "45 份" not in skill and "36 份" not in skill and "37 份" not in skill
-      and "38 份" not in skill and f"{EXPECTED_REFS} 份规则库" in skill and EXPECTED_REFS == 51)
+      and "38 份" not in skill and f"{EXPECTED_REFS} 份规则库" in skill and EXPECTED_REFS == 52)
 check("㊲ M1 出图提示词配套纪律（asset-delivery-modes §4.4 · 2026-10-09 用户实测退回）",
       "出图提示词配套纪律" in _ade and "全套 P2.5 出图提示词" in _ade
       and "character-portrait-templates.md" in _ade and "scene-grid-template.md" in _ade
@@ -1560,7 +1560,7 @@ check("ㆂ 互锁⑦：camera-transitions-6types.md 指认本库为「扩写 + �
 check("ㆂ 互锁⑧：README 文件清单登记 creative-transition-library 行 + D 锁口径四选一",
       "| 衔接 | `creative-transition-library` |" in read(os.path.join(BASE, "README.md")))
 check("ㆂ 互锁⑨：计数口径同步（SKILL 声明 == EXPECTED_REFS · 元规则四）——本库入包后 SKILL 声明须同步",
-      f"{EXPECTED_REFS} 份规则库" in skill and EXPECTED_REFS == 51
+      f"{EXPECTED_REFS} 份规则库" in skill and EXPECTED_REFS == 52
       and "45 份" not in skill and "37 份" not in skill and "38 份" not in skill)
 check("ㆂ 互锁⑩：必查清单登记第 33 项「技巧型转场（D 锁 ④）」（按需 · 非每段必用）",
       "| 33 | **技巧型转场（D 锁 ④）**" in read(os.path.join(refs_dir, "prompt-feeding-checklist.md")))

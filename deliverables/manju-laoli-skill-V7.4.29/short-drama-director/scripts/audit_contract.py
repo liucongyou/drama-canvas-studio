@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-audit_contract.py — 漫剧老李 Short-Drama Director Suite 全流程交付契约与权威源核销器 (V7.4.32)
+audit_contract.py — 漫剧老李 Short-Drama Director Suite 全流程交付契约与权威源核销器 (V7.4.33)
 
 专治外部 Agent 三大通病（2026-10-14 实测根因封堵）：
   1. 「拿 validate_prompt.py 机检全绿当任务完成」——只写 P4 投喂稿，漏掉 P0B 情绪锚点表、P1 表演档案/世界锚/人物锚、P3 场面调度/故事板图、P5 连续性台账/素材接线单；

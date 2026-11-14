@@ -169,7 +169,16 @@ BAD_AGE_RE = re.compile(
     r"A \d+(?:-\d+)?-year-old (?:male|female)|A (?:male|female) in his ",
     re.IGNORECASE,
 )
-SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "canvas_feed.schema.json"
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_SCHEMA_CANDIDATES = (
+    _SCRIPT_DIR.parent / "references" / "canvas-feed.schema.json",
+    _SCRIPT_DIR / "schemas" / "canvas_feed.schema.json",
+    _SCRIPT_DIR.parents[1] / "schemas" / "canvas_feed.schema.json",
+)
+SCHEMA_PATH = next(
+    (path for path in _SCHEMA_CANDIDATES if path.is_file()),
+    _SCHEMA_CANDIDATES[0],
+)
 
 
 def canonical_code(value: Any) -> str:

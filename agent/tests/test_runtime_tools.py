@@ -204,10 +204,15 @@ def test_main_generation_uses_single_context_and_single_model_call(monkeypatch) 
 
 def test_system_prompt_injects_runtime_quality_contract(tmp_path) -> None:
     root = tmp_path / "skill"
-    (root / "references").mkdir(parents=True)
-    (root / "SKILL.md").write_text("# skill", encoding="utf-8")
-    (root / "references" / "runtime-quality-contract.md").write_text(
+    entry_root = root / "short-drama-director"
+    (entry_root / "references").mkdir(parents=True)
+    (entry_root / "SKILL.md").write_text("# skill", encoding="utf-8")
+    (entry_root / "references" / "runtime-quality-contract.md").write_text(
         "逐镜 15 项 fail-closed 自检",
+        encoding="utf-8",
+    )
+    (entry_root / "references" / "short-video-platform-and-hook-playbook.md").write_text(
+        "前 3 秒必须给出观看理由",
         encoding="utf-8",
     )
     prompt = runtime._system_prompt(
@@ -215,8 +220,9 @@ def test_system_prompt_injects_runtime_quality_contract(tmp_path) -> None:
             "id": "skill",
             "version": "7.4.30",
             "rootPath": str(root),
-            "manifest": {"entry": "SKILL.md"},
+            "manifest": {"entry": "short-drama-director/SKILL.md"},
         }
     )
     assert "逐镜 15 项 fail-closed 自检" in prompt
+    assert "前 3 秒必须给出观看理由" in prompt
     assert "不要请求额外工具" in prompt

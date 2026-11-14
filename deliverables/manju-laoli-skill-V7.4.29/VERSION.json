@@ -1,12 +1,12 @@
 {
   "package": "manju-laoli-skill",
   "displayName": "漫剧老李 AIGC 创作全流程 Skill",
-  "version": "7.4.32",
+  "version": "7.4.33",
   "entry": "short-drama-director/SKILL.md",
   "skillCount": 13,
   "canvasSchema": "drama-canvas-feed/v2",
-  "releaseDate": "2026-11-13",
-  "packageRevision": "20261113-r19",
+  "releaseDate": "2026-11-14",
+  "packageRevision": "20261114-r20",
   "audioPromptFormat": "audio-prompt-v1",
   "jsonGenerator": "short-drama-director/scripts/build_board_lite.py",
   "jsonGeneratorSelfTest": "passed",
@@ -14,5 +14,6 @@
   "contextSlicerSelfTest": "passed",
   "materialContractPosition": "before-scene-assets",
   "runtimeQualityContract": "short-drama-director/references/runtime-quality-contract.md",
-  "runtimeFeedCompiler": "shared-canvas-feed-contract"
+  "runtimeFeedCompiler": "shared-canvas-feed-contract",
+  "fileCount": 173
 }

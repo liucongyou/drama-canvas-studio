@@ -368,8 +368,15 @@ def active_run_for_conversation(
 def _system_prompt(skill: dict[str, Any], route_entry: str = "") -> str:
     settings = get_settings()
     entry = route_entry or read_entry(skill, settings.max_entry_chars)
+    skill_root = Path(str(skill.get("rootPath") or ""))
+    entry_name = str(
+        route_entry
+        or (skill.get("manifest") or {}).get("entry")
+        or "SKILL.md"
+    )
+    entry_root = (skill_root / entry_name).parent
     quality_path = (
-        Path(str(skill.get("rootPath") or ""))
+        entry_root
         / "references"
         / "runtime-quality-contract.md"
     )
@@ -380,6 +387,24 @@ def _system_prompt(skill: dict[str, Any], route_entry: str = "") -> str:
         )[:16000]
     except OSError:
         quality_contract = ""
+    short_video_path = (
+        entry_root
+        / "references"
+        / "short-video-platform-and-hook-playbook.md"
+    )
+    try:
+        short_video_contract = short_video_path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        )[:14000]
+    except OSError:
+        short_video_contract = ""
+    short_video_section = (
+        "短视频钩子与平台语感合同（15~180 秒、广告、产品演示、口播分镜或指定平台时执行）：\n"
+        + short_video_contract
+        + "\n\n"
+        if short_video_contract else ""
+    )
     return (
         "你是戏剧画布（drama-canvas-studio）的投喂稿导演。"
         "你的唯一交付是一个可直接导入画布的 JSON 对象，格式固定为 drama-canvas-feed/v2。"
@@ -399,6 +424,8 @@ def _system_prompt(skill: dict[str, Any], route_entry: str = "") -> str:
         "{\"title\":\"第01集\",\"canvas_contract\":{\"schema\":\"drama-canvas-feed/v2\",\"video_model\":\"doubao-seedance-2-0\",\"video_aspect\":\"9:16\",\"generator\":{\"name\":\"<skill id>\",\"skillVersion\":\"<version>\",\"packageRevision\":\"<revision>\"}},\"asset_prompts\":[],\"voice_prompts\":[],\"segments\":[{\"no\":1,\"name\":\"段1\",\"raw\":\"...\"}]}\n\n"
         "技能信息：id=" + str(skill.get("id")) + " version=" + str(skill.get("version")) + "\n\n"
         "运行时质量合同（必须执行）：\n" + quality_contract + "\n\n"
+        + short_video_section
+        +
         "技能入口与运行时合同已内置；不要请求额外工具或额外章节，"
         "直接完成本次投喂稿输出：\n" + entry
     )
