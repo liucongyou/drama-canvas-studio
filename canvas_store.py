@@ -5596,7 +5596,12 @@ def commit_generation_terminal(
                 effective_task_updates["finished_at"] or node_written_at
             )
         row = con.execute(
-            "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?",
+            "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?"
+            + (
+                " FOR UPDATE"
+                if isinstance(con, pg_compat.PGConnection)
+                else ""
+            ),
             (project_id,),
         ).fetchone()
         if not row:
@@ -6973,12 +6978,20 @@ def list_delivery_pending_tasks(limit=100, now=None):
     current = str(now or _now_iso())
     rows = con.execute(
         "SELECT * FROM generation_tasks "
-        "WHERE status IN ('running','interrupted','succeeded') "
+        "WHERE ("
+        "("
+        "status IN ('running','interrupted','succeeded') "
         "AND delivery_status IN ('pending','materializing') "
         "AND ("
         "COALESCE(local_result_url,'')!='' "
         "OR COALESCE(delivery_next_attempt_at,'')='' "
         "OR delivery_next_attempt_at<=? "
+        ")"
+        ") OR ("
+        "status='failed' "
+        "AND delivery_status='failed' "
+        "AND COALESCE(local_result_url,'')!='' "
+        ")"
         ") "
         "ORDER BY updated_at DESC LIMIT ?",
         (current, max(1, min(int(limit or 100), 500))),
@@ -7039,7 +7052,7 @@ def claim_local_delivery(task_id, *, now=None):
             "UPDATE generation_tasks SET "
             "delivery_status='materializing',updated_at=? "
             "WHERE id=? "
-            "AND delivery_status='pending' "
+            "AND delivery_status IN ('pending','failed') "
             "AND COALESCE(local_result_url,'')!=''",
             (current, task_id),
         )
