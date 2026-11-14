@@ -12,6 +12,7 @@ import {
   mediaGenerationVisualState,
   preserveActiveGenerationStatus,
   projectGenerationState,
+  releaseOptimisticGenerationSubmission,
   retainOptimisticGenerationSubmissions,
 } from './generationPresentation';
 import type {GenerationTask} from './api';
@@ -282,6 +283,29 @@ describe('generation presentation', () => {
       Date.parse('2026-10-31T00:00:05.000Z'),
     );
     expect(retained.size).toBe(0);
+  });
+
+  it('releases only the exact synchronous operation after the request returns', () => {
+    const optimistic = new Map([
+      ['node-a', {
+        startedAt: '2026-10-31T00:00:00.000Z',
+        operationId: 'operation-current',
+      }],
+    ]);
+
+    expect(releaseOptimisticGenerationSubmission(
+      optimistic,
+      'node-a',
+      'operation-older',
+    )).toBe(false);
+    expect(optimistic.has('node-a')).toBe(true);
+
+    expect(releaseOptimisticGenerationSubmission(
+      optimistic,
+      'node-a',
+      'operation-current',
+    )).toBe(true);
+    expect(optimistic.has('node-a')).toBe(false);
   });
 
   it('projects submitted nodes as active until their task arrives', () => {

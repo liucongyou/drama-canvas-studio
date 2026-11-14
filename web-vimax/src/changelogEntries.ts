@@ -3,6 +3,17 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.14.03',
+    date: '2026-11-14',
+    title: '同步生成完成后的本地状态收口',
+    releasedAt: '2026-11-14 13:39:00 +08:00',
+    changes: [
+      '修复图片、音频或视频同步生成已经返回完成结果后，本地 optimistic 生成锁没有释放，底部仍显示“生成中 1 项”的问题。',
+      '只在本次提交的 operationId 精确匹配时释放本地锁；不会误清同一节点后来发起的新任务。',
+      '新增不同 operationId 不误释放、当前 operationId 正确释放的回归测试。',
+    ],
+  },
+  {
     version: '2026.11.14.02',
     date: '2026-11-14',
     title: '批量生成闭环、版本消歧与安全入口加固',

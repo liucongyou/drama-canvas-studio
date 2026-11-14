@@ -157,6 +157,7 @@ import {
   mediaGenerationVisualState,
   preserveActiveGenerationStatus,
   projectGenerationState,
+  releaseOptimisticGenerationSubmission,
   type OptimisticGenerationSubmission,
 } from './generationPresentation';
 import {
@@ -16699,6 +16700,21 @@ function CanvasViewInner({
           }
         };
         await Promise.all([refreshTasks(), refreshNode()]);
+        if (
+          !result.deferred
+          && releaseOptimisticGenerationSubmission(
+            optimisticGenerationStartsRef.current,
+            node.id,
+            clientOperationId,
+          )
+        ) {
+          setGenerationBusyIds((prev) => {
+            if (!prev.has(node.id)) return prev;
+            const next = new Set(prev);
+            next.delete(node.id);
+            return next;
+          });
+        }
         if (result.deferred) {
           setToast(result.accepted
             ? `${kindLabel[node.kind]}已提交，后台生成中，任务中心会实时更新`

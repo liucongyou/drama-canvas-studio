@@ -162,6 +162,17 @@ export function retainOptimisticGenerationSubmissions(
   return retained;
 }
 
+export function releaseOptimisticGenerationSubmission(
+  optimistic: Map<string, OptimisticGenerationSubmission>,
+  nodeId: string,
+  operationId: string,
+): boolean {
+  const current = optimistic.get(nodeId);
+  if (!current || current.operationId !== operationId) return false;
+  optimistic.delete(nodeId);
+  return true;
+}
+
 export function projectGenerationState(
   tasks: GenerationTask[],
   optimistic: ReadonlyMap<string, OptimisticGenerationSubmission>,
