@@ -4,7 +4,6 @@ from unittest.mock import patch
 import canvas_store
 import server
 import tenant_context
-from test_generation_media_stress import GenerationMediaStressTests
 
 
 class RequestReferenceCandidateTests(unittest.TestCase):
@@ -84,6 +83,8 @@ class RequestReferenceCandidateTests(unittest.TestCase):
 
 class ExplicitReferenceSubmissionTests(unittest.TestCase):
     def setUp(self):
+        from test_generation_media_stress import GenerationMediaStressTests
+
         self.fixture = GenerationMediaStressTests('test_import_asset_reference_pipeline_stress_without_provider_calls')
         self.fixture.setUp()
         self.context = self.fixture.context
