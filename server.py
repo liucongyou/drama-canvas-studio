@@ -9077,14 +9077,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(404, {"error": str(exc)})
         if path == "/api/metrics":
             tenant_key = tenant_context.current_tenant_id()
-            return self._send(200, {
+            metrics = {
                 **store.runtime_metrics(),
                 "databasePool": pg_compat.pool_stats(),
                 "generationQueue": generation_queue.queue_metrics(),
-                "generationAdmissions": generation_queue.admission_metrics(),
-                "workerHeartbeats": generation_queue.worker_heartbeats(
-                    active_within_seconds=60
-                ),
                 "releaseCommit": release_commit(),
                 "uptimeSeconds": round(time.monotonic() - SERVER_STARTED_AT, 3),
                 "queue": {
@@ -9096,7 +9092,17 @@ class Handler(BaseHTTPRequestHandler):
                         if key.startswith(f"{tenant_key}\x1f")
                     },
                 },
-            })
+            }
+            if pg_compat.postgres_enabled():
+                metrics["generationAdmissions"] = (
+                    generation_queue.admission_metrics()
+                )
+                metrics["workerHeartbeats"] = (
+                    generation_queue.worker_heartbeats(
+                        active_within_seconds=60
+                    )
+                )
+            return self._send(200, metrics)
         if path == "/api/budget":
             return self._send(200, generation_budget_status())
         if path == "/api/tenant/session":
