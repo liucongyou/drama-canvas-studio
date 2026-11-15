@@ -4392,52 +4392,64 @@ def create_generation_task(
     con.close()
 
     def insert(connection):
-        try:
-            connection.execute(
-                "INSERT INTO generation_tasks("
-                "id,project_id,node_id,episode_id,title,kind,status,phase,progress,provider,model,"
-                "provider_task_id,attempt,estimated_cost,cost_currency,error,"
-                "created_at,started_at,updated_at,finished_at,local_result_url,"
-                "provider_result_url,request_json,client_operation_id,delivery_status,"
-                "next_poll_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    task_id, project_id, node_id, str(episode_id or "").upper(),
-                    title, kind, "queued", "等待调度", 0,
-                    provider, model, "", attempt, float(estimated_cost or 0),
-                    str(cost_currency or ""), "", now, "", now, "", "", "",
-                    request_json, client_operation_id, "pending", now,
-                ),
-            )
-        except (sqlite3.IntegrityError, pg_compat.IntegrityError):
-            if client_operation_id:
-                row = connection.execute(
-                    "SELECT * FROM generation_tasks "
-                    "WHERE project_id=? AND node_id=? AND client_operation_id=? LIMIT 1",
-                    (project_id, node_id, client_operation_id),
-                ).fetchone()
-                if row:
-                    columns = [
-                        item[0] for item in connection.execute(
-                            "SELECT * FROM generation_tasks LIMIT 0"
-                        ).description
-                    ]
-                    return {
-                        **dict(zip(columns, row)),
-                        "created_new": False,
-                        "replayed": True,
-                    }
-            row = connection.execute(
-                "SELECT * FROM generation_tasks WHERE project_id=? AND node_id=? "
-                "AND status IN ('queued','submitting','running') ORDER BY created_at DESC LIMIT 1",
+        lock_project_row(connection, project_id, missing_ok=True)
+        task_columns = [
+            item[0]
+            for item in connection.execute(
+                "SELECT * FROM generation_tasks LIMIT 0"
+            ).description
+        ]
+        if client_operation_id:
+            replay = connection.execute(
+                "SELECT * FROM generation_tasks "
+                "WHERE project_id=? AND node_id=? "
+                "AND client_operation_id=? LIMIT 1",
+                (project_id, node_id, client_operation_id),
+            ).fetchone()
+            if replay:
+                return {
+                    **dict(zip(task_columns, replay)),
+                    "created_new": False,
+                    "replayed": True,
+                }
+        active = connection.execute(
+            "SELECT * FROM generation_tasks "
+            "WHERE project_id=? AND node_id=? "
+            "AND status IN ('queued','submitting','running') "
+            "ORDER BY created_at DESC,rowid DESC LIMIT 1",
+            (project_id, node_id),
+        ).fetchone()
+        if not active:
+            active = connection.execute(
+                "SELECT * FROM generation_tasks "
+                "WHERE project_id=? AND node_id=? "
+                "AND status='interrupted' "
+                "AND COALESCE(phase,'') IN ('结果待确认','等待恢复') "
+                "AND COALESCE(provider_task_id,'')!='' "
+                "ORDER BY created_at DESC,rowid DESC LIMIT 1",
                 (project_id, node_id),
             ).fetchone()
-            columns = [
-                item[0] for item in connection.execute(
-                    "SELECT * FROM generation_tasks LIMIT 0"
-                ).description
-            ]
-            return {**dict(zip(columns, row)), "created_new": False} if row else None
+        if active:
+            return {
+                **dict(zip(task_columns, active)),
+                "created_new": False,
+            }
+        connection.execute(
+            "INSERT INTO generation_tasks("
+            "id,project_id,node_id,episode_id,title,kind,status,phase,progress,provider,model,"
+            "provider_task_id,attempt,estimated_cost,cost_currency,error,"
+            "created_at,started_at,updated_at,finished_at,local_result_url,"
+            "provider_result_url,request_json,client_operation_id,delivery_status,"
+            "next_poll_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                task_id, project_id, node_id, str(episode_id or "").upper(),
+                title, kind, "queued", "等待调度", 0,
+                provider, model, "", attempt, float(estimated_cost or 0),
+                str(cost_currency or ""), "", now, "", now, "", "", "",
+                request_json, client_operation_id, "pending", now,
+            ),
+        )
         return {"created": True}
 
     result = _run_write_transaction(insert)
@@ -7481,6 +7493,36 @@ def list_delivery_pending_tasks(limit=100, now=None):
     return [dict(zip(columns, row)) for row in rows]
 
 
+def classify_unrecoverable_delivery_tasks(limit=500):
+    """Classify terminal deliveries with no local or provider receipt."""
+    updated = []
+    for task in list_delivery_pending_tasks(limit):
+        if (
+            str(task.get("local_result_url") or "").strip()
+            or str(task.get("provider_result_url") or "").strip()
+        ):
+            continue
+        if (
+            str(task.get("status") or "") != "succeeded"
+            and str(task.get("delivery_status") or "") != "materializing"
+        ):
+            continue
+        saved = update_generation_task(
+            task["id"],
+            phase="结果无法恢复",
+            error=(
+                "结果无法恢复：本地文件和供应商结果地址均不存在；"
+                "系统不会自动重提。"
+            ),
+            delivery_status="unrecoverable",
+            next_poll_at="",
+            finished_at=task.get("finished_at") or _now_iso(),
+        )
+        if saved:
+            updated.append(saved)
+    return updated
+
+
 def claim_delivery_retry(task_id, delay_seconds, *, now=None):
     """Atomically reserve one paid-result delivery attempt.
 
@@ -8579,16 +8621,53 @@ def backfill_video_version_history():
                     "model": str(meta.get("model") or production.get("model") or ""),
                 })
             versions = versions[-MAX_VIDEO_VERSIONS:]
+            active_id = str(params.get("activeVersionId") or "").strip()
+            active_index = next(
+                (
+                    index
+                    for index, item in enumerate(versions)
+                    if active_id
+                    and str(item.get("versionId") or "").strip() == active_id
+                ),
+                -1,
+            )
+            if active_index < 0:
+                content_matches = [
+                    index
+                    for index, item in enumerate(versions)
+                    if current_url
+                    and str(item.get("url") or "").strip() == current_url
+                ]
+                active_index = (
+                    content_matches[-1]
+                    if content_matches
+                    else len(versions) - 1
+                )
+            selected_version_id = (
+                str(versions[active_index].get("versionId") or "")
+                if active_index >= 0
+                else ""
+            )
             if versions and (
                 params.get("mediaVersions") != versions
-                or params.get("mediaVersionIndex") != len(versions) - 1
+                or params.get("mediaVersionIndex") != active_index
+                or (
+                    selected_version_id
+                    and params.get("activeVersionId") != selected_version_id
+                )
                 or (node_type == "video" and params.get("videoVersions") != versions)
+                or (
+                    node_type == "video"
+                    and params.get("videoVersionIndex") != active_index
+                )
             ):
                 params["mediaVersions"] = versions
-                params["mediaVersionIndex"] = len(versions) - 1
+                params["mediaVersionIndex"] = active_index
+                if selected_version_id:
+                    params["activeVersionId"] = selected_version_id
                 if node_type == "video":
                     params["videoVersions"] = [dict(item) for item in versions]
-                    params["videoVersionIndex"] = len(versions) - 1
+                    params["videoVersionIndex"] = active_index
                 changed = True
         if changed:
             update_project(pid, payload=payload)

@@ -517,6 +517,10 @@ SHUTDOWN_DRAIN_SECONDS = max(
     0.0,
     float(os.environ.get("CANVAS_SHUTDOWN_DRAIN_SECONDS", "30")),
 )
+SAFE_LOCAL_READONLY = os.environ.get(
+    "CANVAS_SAFE_LOCAL_READONLY",
+    "",
+).strip() == "1"
 SERVER_STOPPING = threading.Event()
 GENERATION_WORKERS_LOCK = threading.Lock()
 GENERATION_WORKERS: set[threading.Thread] = set()
@@ -575,6 +579,21 @@ CANVAS_ACCESS_LOG_MODE = os.environ.get(
     "CANVAS_ACCESS_LOG_MODE",
     "errors",
 ).strip().lower()
+
+
+def release_commit():
+    env_value = os.environ.get("CANVAS_RELEASE_COMMIT", "").strip()
+    if env_value:
+        return env_value
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "RELEASE_COMMIT",
+    )
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
 
 
 def access_log_enabled(status_code: int) -> bool:
@@ -6914,7 +6933,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             super().finish()
         finally:
-            scope = self._audit_request_scope
+            scope = getattr(self, "_audit_request_scope", None)
             self._audit_request_scope = None
             if scope is not None:
                 scope.__exit__(None, None, None)
@@ -8876,6 +8895,16 @@ class Handler(BaseHTTPRequestHandler):
                 if os.path.isfile(fp):
                     files.append({"name": n, "size": os.path.getsize(fp), "url": "/uploads/" + n})
             return self._send(200, {"dir": upload_dir, "exists": True, "files": files})
+        if path == "/healthz":
+            return self._send(200, {
+                "ok": True,
+                "service": "drama-canvas-studio",
+                "releaseCommit": release_commit(),
+                "uptimeSeconds": round(
+                    time.monotonic() - SERVER_STARTED_AT,
+                    3,
+                ),
+            })
         if path == "/api/config":
             return self._send(200, provider_catalog.config_status())
         if path == "/api/audit":
@@ -8959,6 +8988,7 @@ class Handler(BaseHTTPRequestHandler):
             tenant_key = tenant_context.current_tenant_id()
             return self._send(200, {
                 **store.runtime_metrics(),
+                "releaseCommit": release_commit(),
                 "uptimeSeconds": round(time.monotonic() - SERVER_STARTED_AT, 3),
                 "queue": {
                     "tenantActive": GENERATION_QUEUE_ACTIVE_TENANTS.get(tenant_key, 0),
@@ -13462,6 +13492,17 @@ def main():
     http_thread.start()
     print(f"戏剧画布工作流系统已启动： http://127.0.0.1:{PORT}", flush=True)
     print("关闭：Ctrl+C", flush=True)
+
+    if SAFE_LOCAL_READONLY:
+        print(
+            "[safe-local] provider I/O and startup backfills disabled",
+            flush=True,
+        )
+        while not received_signal["value"] and http_thread.is_alive():
+            http_thread.join(timeout=1)
+        SERVER_STOPPING.set()
+        server.shutdown()
+        return
 
     try:
         recovered = _run_for_active_tenants(store.backfill_video_version_history)
