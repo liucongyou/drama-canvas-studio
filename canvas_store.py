@@ -5668,6 +5668,87 @@ def update_project_node(
     return _run_write_transaction(write)
 
 
+def merge_projection_node_metadata(
+    project_id,
+    node_id,
+    updates,
+    *,
+    episode_id=None,
+):
+    """Merge metadata into one node without rewriting the full project payload."""
+    if not isinstance(updates, dict):
+        raise ValueError("node metadata updates must be an object")
+
+    def write(con):
+        project_row = lock_project_row(con, project_id, missing_ok=True)
+        if not project_row:
+            return None
+        row = con.execute(
+            "SELECT episode_id,node_json FROM canvas_projection_nodes "
+            "WHERE project_id=? AND node_id=?",
+            (project_id, node_id),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            node = json.loads(row[1] or "{}")
+        except (TypeError, ValueError):
+            node = {}
+        if not isinstance(node, dict):
+            return None
+        owner_episode = str(row[0] or "").strip().upper()
+        requested_episode = str(episode_id or "").strip().upper()
+        if (
+            owner_episode
+            and owner_episode != _UNASSIGNED_EPISODE_ID
+            and requested_episode
+            and owner_episode != requested_episode
+        ):
+            raise ValueError(
+                f"节点 {node_id} 属于 {owner_episode}，"
+                f"不能从 {requested_episode} 写入"
+            )
+        metadata = node.get("metadata")
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        pending = dict(updates)
+        params_patch = pending.pop("_paramsPatch", None)
+        for key, value in pending.items():
+            if value is None:
+                metadata.pop(key, None)
+            else:
+                metadata[key] = value
+        if isinstance(params_patch, dict) and params_patch:
+            metadata["params"] = {
+                **(metadata.get("params") or {}),
+                **params_patch,
+            }
+        stamp = _now_iso()
+        if owner_episode and owner_episode != _UNASSIGNED_EPISODE_ID:
+            metadata["episodeId"] = owner_episode
+            node["episodeId"] = owner_episode
+        node["metadata"] = metadata
+        node["updatedAt"] = stamp
+        sync_projection_node(
+            con,
+            project_id,
+            node,
+            episode_id=owner_episode,
+            updated_at=stamp,
+        )
+        revision = int(project_row[2] or 0) + 1
+        con.execute(
+            "UPDATE canvas_projects SET revision=?,updated_at=? WHERE id=?",
+            (revision, stamp, project_id),
+        )
+        return {
+            "node": node,
+            "revision": revision,
+            "updatedAt": stamp,
+        }
+
+    return _run_write_transaction(write)
+
+
 def _editable_node_value(node):
     if not isinstance(node, dict):
         return {}

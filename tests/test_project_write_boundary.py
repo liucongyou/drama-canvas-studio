@@ -111,3 +111,78 @@ def test_concurrent_node_patches_merge_without_lost_updates():
     assert node is not None
     assert node["metadata"]["left"] == "value-left"
     assert node["metadata"]["right"] == "value-right"
+
+
+def test_projection_metadata_merge_does_not_rewrite_project_payload():
+    project_id = canvas_store.create_project(
+        "生成状态投影写",
+        payload={
+            "nodes": [
+                {
+                    "id": "video-1",
+                    "type": "video",
+                    "title": "视频一",
+                    "position": {"x": 0, "y": 0},
+                    "metadata": {
+                        "episodeId": "EP001",
+                        "status": "idle",
+                        "params": {"model": "mock-video"},
+                    },
+                },
+                {
+                    "id": "text-1",
+                    "type": "text",
+                    "title": "文本一",
+                    "position": {"x": 200, "y": 0},
+                    "metadata": {
+                        "episodeId": "EP001",
+                        "prompt": "保持不变",
+                    },
+                },
+            ],
+            "connections": [],
+            "episodeImports": [
+                {
+                    "id": "EP001",
+                    "title": "EP001",
+                    "nodeIds": ["video-1", "text-1"],
+                    "videoNodeIds": ["video-1"],
+                    "connectionIds": [],
+                }
+            ],
+        },
+    )
+    connection = canvas_store._connect()
+    try:
+        before_payload = connection.execute(
+            "SELECT payload_json FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    saved = canvas_store.merge_projection_node_metadata(
+        project_id,
+        "video-1",
+        {
+            "status": "running",
+            "providerTaskStatus": "queued",
+            "_paramsPatch": {"progress": 10},
+        },
+        episode_id="EP001",
+    )
+
+    assert saved is not None
+    node = canvas_store.get_projection_node(project_id, "video-1")
+    assert node["metadata"]["status"] == "running"
+    assert node["metadata"]["params"]["model"] == "mock-video"
+    assert node["metadata"]["params"]["progress"] == 10
+    connection = canvas_store._connect()
+    try:
+        after_payload = connection.execute(
+            "SELECT payload_json FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert after_payload == before_payload

@@ -2438,62 +2438,14 @@ def _publish_node_metadata_event(project_id, node_id, updates):
 def commit_node_metadata(project_id, node_id, updates, episode_id=None):
     """Merge generated fields into the current node without overwriting peers."""
     with project_write_lock(project_id):
-        current = store.get_project(project_id)
-        if not current:
-            return False
-        current_node = next(
-            (item for item in current["payload"].get("nodes", []) if item.get("id") == node_id),
-            None,
+        saved = store.merge_projection_node_metadata(
+            project_id,
+            node_id,
+            updates,
+            episode_id=episode_id,
         )
-        if not current_node:
+        if not saved:
             return False
-        owner_row = None
-        connection = store._connect()
-        try:
-            owner_row = connection.execute(
-                "SELECT episode_id,node_json FROM canvas_projection_nodes "
-                "WHERE project_id=? AND node_id=?",
-                (project_id, node_id),
-            ).fetchone()
-        finally:
-            connection.close()
-        owner = {}
-        if owner_row:
-            try:
-                owner = json.loads(owner_row[1] or "{}")
-            except (TypeError, ValueError):
-                owner = {}
-            owner["episodeId"] = str(owner_row[0] or "")
-        owner_episode = str(
-            owner.get("episodeId")
-            or (owner.get("metadata") or {}).get("episodeId")
-            or ""
-        ).strip().upper()
-        requested_episode = str(episode_id or "").strip().upper()
-        if (
-            owner_episode
-            and owner_episode != store._UNASSIGNED_EPISODE_ID
-            and requested_episode
-            and owner_episode != requested_episode
-        ):
-            raise ValueError(
-                f"节点 {node_id} 属于 {owner_episode}，不能从 {requested_episode} 写入"
-            )
-        meta = current_node.setdefault("metadata", {})
-        pending = dict(updates)
-        params_patch = pending.pop("_paramsPatch", None)
-        for key, value in pending.items():
-            if value is None:
-                meta.pop(key, None)
-            else:
-                meta[key] = value
-        if isinstance(params_patch, dict) and params_patch:
-            meta["params"] = {**(meta.get("params") or {}), **params_patch}
-        if owner_episode and owner_episode != store._UNASSIGNED_EPISODE_ID:
-            meta["episodeId"] = owner_episode
-            current_node["episodeId"] = owner_episode
-        current_node["updatedAt"] = store._now_iso()
-        store.update_project(project_id, payload=current["payload"])
         _publish_node_metadata_event(project_id, node_id, updates)
         return True
 
