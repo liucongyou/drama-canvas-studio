@@ -333,10 +333,7 @@ def rename_project_asset_atomic(
         raise ValueError("资产名称不能使用占位名称")
 
     def write(con):
-        row = con.execute(
-            "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?",
-            (project_id,),
-        ).fetchone()
+        row = lock_project_row(con, project_id, missing_ok=True)
         if not row:
             return None
         current_revision = int(row[2] or 0)
@@ -1800,19 +1797,18 @@ def replace_episode_notes(
         normalized_notes.append(note)
 
     def write(con):
-        row = con.execute(
-            "SELECT 1 FROM canvas_projects WHERE id=?",
-            (project_id,),
-        ).fetchone()
-        if not row:
+        project_row = lock_project_row(con, project_id, missing_ok=True)
+        if not project_row:
             return None
-        current_revision = None
+        episode_row = con.execute(
+            "SELECT 1 FROM canvas_projection_episodes "
+            "WHERE project_id=? AND episode_id=?",
+            (project_id, normalized),
+        ).fetchone()
+        if not episode_row:
+            raise ValueError(f"集 {normalized} 不在当前项目中，请刷新项目后重试")
+        current_revision = int(project_row[2] or 0)
         if if_revision is not None:
-            revision_row = con.execute(
-                "SELECT revision FROM canvas_projects WHERE id=?",
-                (project_id,),
-            ).fetchone()
-            current_revision = int(revision_row[0] or 0) if revision_row else 0
             if current_revision != int(if_revision):
                 raise RevisionConflictError(
                     f"项目已更新：期望 revision={if_revision}，"
@@ -2079,10 +2075,7 @@ def sync_project_state(
     snapshot_mode="none",
 ):
     """Atomically update relational graph rows and revision metadata."""
-    row = con.execute(
-        "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?",
-        (project_id,),
-    ).fetchone()
+    row = lock_project_row(con, project_id, missing_ok=True)
     if not row:
         return None
     revision = int(current_revision)
@@ -3566,14 +3559,11 @@ def repair_episode_node_ownership(project_id):
 
     def write(con):
         nonlocal repaired, ambiguous
-        row = con.execute(
-            "SELECT payload_json FROM canvas_projects WHERE id=?",
-            (project_id,),
-        ).fetchone()
+        row = lock_project_row(con, project_id, missing_ok=True)
         if not row:
             return 0
         try:
-            payload = json.loads(row[0] or "{}")
+            payload = json.loads(row[1] or "{}")
         except (TypeError, ValueError):
             payload = {}
         nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
@@ -3809,6 +3799,25 @@ def _run_write_transaction(callback):
             raise
         finally:
             con.close()
+
+
+def lock_project_row(con, project_id, *, missing_ok=False):
+    """Lock one project row for the duration of the current transaction.
+
+    SQLite already serializes writers through ``BEGIN IMMEDIATE``. PostgreSQL
+    needs an explicit row lock so concurrent writers to the same project read
+    and advance one authoritative revision while unrelated projects remain
+    concurrent.
+    """
+    sql = "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?"
+    if isinstance(con, pg_compat.PGConnection):
+        sql += " FOR UPDATE"
+    row = con.execute(sql, (project_id,)).fetchone()
+    if not row:
+        if missing_ok:
+            return None
+        raise KeyError("项目不存在")
+    return row
 
 
 def list_projects():
@@ -4057,10 +4066,7 @@ def update_project(
     # 并发下偶发的 "attempt to write a readonly database" 会让用户看到"保存失败"，
     # 但再点一次又成功。乐观锁 WHERE revision=? 保证重跑不会重复写。
     def write(con):
-        row = con.execute(
-            "SELECT title, payload_json, revision FROM canvas_projects WHERE id=?",
-            (pid,),
-        ).fetchone()
+        row = lock_project_row(con, pid, missing_ok=True)
         if not row:
             return False
         current_revision = int(row[2])
@@ -4118,6 +4124,8 @@ def update_project(
 
 def delete_project(pid):
     def write(con):
+        if not lock_project_row(con, pid, missing_ok=True):
+            return None
         con.execute("DELETE FROM generation_tasks WHERE project_id=?", (pid,))
         con.execute("DELETE FROM canvas_snapshots WHERE canvas_id=?", (pid,))
         con.execute("DELETE FROM canvas_projection_nodes WHERE project_id=?", (pid,))
@@ -4417,14 +4425,11 @@ def insert_project_nodes(
         return {"created": 0, "revision": None}
 
     def write(con):
-        reconcile_project_projection_on_connection(con, project_id)
-        row = con.execute(
-            "SELECT revision FROM canvas_projects WHERE id=?",
-            (project_id,),
-        ).fetchone()
-        if not row:
+        project_row = lock_project_row(con, project_id, missing_ok=True)
+        if not project_row:
             return None
-        current_revision = int(row[0] or 0)
+        reconcile_project_projection_on_connection(con, project_id)
+        current_revision = int(project_row[2] or 0)
         if if_revision is not None and current_revision != int(if_revision):
             raise RevisionConflictError(
                 f"项目已更新：期望 revision={if_revision}，实际 revision={current_revision}"
@@ -4521,14 +4526,11 @@ def update_project_layout(
         return None
 
     def write(con):
-        reconcile_project_projection_on_connection(con, project_id)
-        row = con.execute(
-            "SELECT revision FROM canvas_projects WHERE id=?",
-            (project_id,),
-        ).fetchone()
-        if not row:
+        project_row = lock_project_row(con, project_id, missing_ok=True)
+        if not project_row:
             return None
-        current = int(row[0] or 0)
+        reconcile_project_projection_on_connection(con, project_id)
+        current = int(project_row[2] or 0)
         if if_revision is not None and current != int(if_revision):
             raise RevisionConflictError(
                 f"项目已更新：期望 revision={if_revision}，实际 revision={current}"
@@ -4666,14 +4668,11 @@ def update_project_nodes(
         return {"updated": 0, "revision": None}
 
     def write(con):
-        reconcile_project_projection_on_connection(con, project_id)
-        row = con.execute(
-            "SELECT revision FROM canvas_projects WHERE id=?",
-            (project_id,),
-        ).fetchone()
-        if not row:
+        project_row = lock_project_row(con, project_id, missing_ok=True)
+        if not project_row:
             return None
-        current_revision = int(row[0] or 0)
+        reconcile_project_projection_on_connection(con, project_id)
+        current_revision = int(project_row[2] or 0)
         if if_revision is not None and current_revision != int(if_revision):
             raise RevisionConflictError(
                 f"项目已更新：期望 revision={if_revision}，实际 revision={current_revision}"
@@ -4903,14 +4902,11 @@ def update_project_rows(
         _ensure_asset_identities({"nodes": nodes})
 
     def write(con):
-        reconcile_project_projection_on_connection(con, project_id)
-        row = con.execute(
-            "SELECT revision FROM canvas_projects WHERE id=?",
-            (project_id,),
-        ).fetchone()
-        if not row:
+        project_row = lock_project_row(con, project_id, missing_ok=True)
+        if not project_row:
             return None
-        current = int(row[0] or 0)
+        reconcile_project_projection_on_connection(con, project_id)
+        current = int(project_row[2] or 0)
         if if_revision is not None and current != int(if_revision):
             raise RevisionConflictError(
                 f"项目已更新：期望 revision={if_revision}，实际 revision={current}"
@@ -5113,10 +5109,7 @@ def update_project_node(
         raise ValueError("保存节点必须指定所属集")
 
     def write(con):
-        row = con.execute(
-            "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?",
-            (project_id,),
-        ).fetchone()
+        row = lock_project_row(con, project_id, missing_ok=True)
         if not row:
             return None
         current_revision = int(row[2] or 0)
@@ -5260,13 +5253,10 @@ def patch_project_node_atomic(
         raise ValueError("保存节点必须指定所属集")
 
     def write(con):
-        project_row = con.execute(
-            "SELECT revision FROM canvas_projects WHERE id=?",
-            (project_id,),
-        ).fetchone()
+        project_row = lock_project_row(con, project_id, missing_ok=True)
         if not project_row:
             return None
-        current_revision = int(project_row[0] or 0)
+        current_revision = int(project_row[2] or 0)
         row = con.execute(
             "SELECT node_json,episode_id FROM canvas_projection_nodes "
             "WHERE project_id=? AND node_id=?",
@@ -5449,13 +5439,15 @@ def update_project_viewport(
     with node, edge, and generation writes for the full payload JSON.
     """
     def write(con):
-        project_row = con.execute(
-            "SELECT title,revision,updated_at FROM canvas_projects WHERE id=?",
-            (project_id,),
-        ).fetchone()
+        project_row = lock_project_row(con, project_id, missing_ok=True)
         if not project_row:
             return None
-        current_revision = int(project_row[1] or 0)
+        current_revision = int(project_row[2] or 0)
+        updated_at_row = con.execute(
+            "SELECT updated_at FROM canvas_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        project_updated_at = str(updated_at_row[0] or "") if updated_at_row else ""
         if (
             if_revision is not None
             and current_revision != int(if_revision)
@@ -5488,7 +5480,7 @@ def update_project_viewport(
                 return {
                     "viewport": normalized,
                     "revision": current_revision,
-                    "updated_at": str(project_row[2] or ""),
+                    "updated_at": project_updated_at,
                     "unchanged": True,
                 }
             stamp = _now_iso()
@@ -5526,7 +5518,7 @@ def update_project_viewport(
                 return {
                     "viewport": normalized,
                     "revision": current_revision,
-                    "updated_at": str(project_row[2] or ""),
+                    "updated_at": project_updated_at,
                     "unchanged": True,
                 }
             stamp = _now_iso()
@@ -5595,16 +5587,9 @@ def commit_generation_terminal(
             effective_task_updates["finished_at"] = (
                 effective_task_updates["finished_at"] or node_written_at
             )
-        row = con.execute(
-            "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?"
-            + (
-                " FOR UPDATE"
-                if isinstance(con, pg_compat.PGConnection)
-                else ""
-            ),
-            (project_id,),
-        ).fetchone()
-        if not row:
+        try:
+            row = lock_project_row(con, project_id)
+        except KeyError:
             result["reason"] = "project_not_found"
             return
         task = None
@@ -5998,6 +5983,10 @@ def _resolve_generation_task_failed_atomic(
 
         project_id = str(current.get("project_id") or "")
         node_id = str(current.get("node_id") or "")
+        project_row = lock_project_row(con, project_id, missing_ok=True)
+        if not project_row:
+            result["reason"] = "project_not_found"
+            return
         payload = get_projection_payload(con, project_id)
         if not isinstance(payload, dict):
             result["reason"] = "project_not_found"
@@ -6047,13 +6036,7 @@ def _resolve_generation_task_failed_atomic(
             node["updatedAt"] = stamp
             sync_projection_node(con, project_id, node, updated_at=stamp)
 
-        project_row = con.execute(
-            "SELECT revision FROM canvas_projects WHERE id=?",
-            (project_id,),
-        ).fetchone()
-        if not project_row:
-            raise RuntimeError("人工确认失败时项目不存在")
-        current_revision = int(project_row[0] or 0)
+        current_revision = int(project_row[2] or 0)
         new_revision = current_revision + 1
         payload["revision"] = new_revision
         payload["updatedAt"] = stamp
@@ -7619,31 +7602,29 @@ def get_snapshot(project_id, snapshot_id):
 
 
 def create_snapshot(project_id, title=None, kind="manual"):
-    con = _connect()
-    row = con.execute(
-        "SELECT title,payload_json,revision FROM canvas_projects WHERE id=?",
-        (project_id,),
-    ).fetchone()
-    if not row:
-        con.close()
-        return None
-    snapshot_title = title or row[0] or "项目版本"
-    payload = json.loads(row[1])
-    _snapshot(
-        con,
-        project_id,
-        snapshot_title,
-        payload,
-        int(row[2]),
-        kind=kind,
-    )
-    snapshot = con.execute(
-        "SELECT id FROM canvas_snapshots WHERE canvas_id=? ORDER BY rowid DESC LIMIT 1",
-        (project_id,),
-    ).fetchone()
-    con.commit()
-    con.close()
-    return get_snapshot(project_id, snapshot[0]) if snapshot else None
+    def write(con):
+        row = lock_project_row(con, project_id, missing_ok=True)
+        if not row:
+            return None
+        snapshot_title = title or row[0] or "项目版本"
+        payload = json.loads(row[1] or "{}")
+        _snapshot(
+            con,
+            project_id,
+            snapshot_title,
+            payload,
+            int(row[2]),
+            kind=kind,
+        )
+        snapshot = con.execute(
+            "SELECT id FROM canvas_snapshots "
+            "WHERE canvas_id=? ORDER BY rowid DESC LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        return snapshot[0] if snapshot else None
+
+    snapshot_id = _run_write_transaction(write)
+    return get_snapshot(project_id, snapshot_id) if snapshot_id else None
 
 
 def interrupt_orphan_generation_tasks():

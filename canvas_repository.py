@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """Transactional canvas repository boundary.
 
-The first industrial release still uses per-tenant SQLite. This module keeps
-payload mutation rules and revision checks out of HTTP handlers while preserving
-that storage implementation as an internal detail.
+This module keeps payload mutation rules and revision checks out of HTTP
+handlers. The process-local lock below reduces avoidable retries inside one
+worker, but it is not the correctness boundary: ``canvas_store`` locks the
+project row for PostgreSQL and uses an immediate writer transaction for the
+SQLite test backend.
 """
 from __future__ import annotations
 
