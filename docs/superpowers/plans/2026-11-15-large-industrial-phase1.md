@@ -358,7 +358,7 @@ feat: add operational readiness and metrics
 
 ## Task 7: Add Multi-Process Failure and Soak Harness
 
-**Status:** Complete
+**Status:** Smoke complete; 24-hour soak pending
 
 **Files**
 
@@ -399,7 +399,7 @@ test: add multiprocess and soak generation harness
 
 ## Task 8: Update Deployment and Release
 
-**Status:** Implementation complete; production verification pending
+**Status:** Complete (production `1367e8e`)
 
 **Files**
 
@@ -428,3 +428,18 @@ test: add multiprocess and soak generation harness
 - Worker stop does not break API reads or task submission.
 - Worker restart recovers queued work.
 - Rollback restores the previous API/Worker release and release commit.
+
+## Remaining Acceptance
+
+- Run the full 24-hour mock-provider soak with 100 tenants and 30 concurrent
+  tasks:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\soak_generation.py `
+  --url <isolated-postgresql-url> `
+  --hours 24 `
+  --output artifacts\soak-100t-24h
+```
+
+- No paid image, audio or video provider may be used by this soak.
+- Phase one is not fully accepted until the 24-hour report passes.
