@@ -36,8 +36,10 @@ def test_smoke_report_requires_all_tasks_and_ready_apis():
     valid = {
         "ok": True,
         "tasks": 4,
+        "killCount": 1,
+        "workerConcurrency": 2,
         "maxSubmitsPerTask": 1,
-        "statusCounts": {"succeeded": 4},
+        "statusCounts": {"succeeded": 4, "interrupted": 0},
         "readiness": {
             "api1": {"ok": True},
             "api2": {"ok": True},
@@ -56,3 +58,23 @@ def test_smoke_report_requires_all_tasks_and_ready_apis():
         },
     }
     assert MODULE.validate_smoke_report(not_ready) is False
+
+    explicit_uncertainty = {
+        **valid,
+        "tasks": 5,
+        "statusCounts": {"succeeded": 3, "interrupted": 2},
+    }
+    assert MODULE.validate_smoke_report(explicit_uncertainty) is True
+
+    excessive_uncertainty = {
+        **valid,
+        "tasks": 7,
+        "statusCounts": {"succeeded": 2, "interrupted": 5},
+    }
+    assert MODULE.validate_smoke_report(excessive_uncertainty) is False
+
+    active_leftover = {
+        **valid,
+        "statusCounts": {"succeeded": 3, "queued": 1},
+    }
+    assert MODULE.validate_smoke_report(active_leftover) is False

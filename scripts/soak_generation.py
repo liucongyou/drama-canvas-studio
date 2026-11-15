@@ -37,6 +37,8 @@ def main() -> int:
         str(timeout),
         "--duration-seconds",
         str(duration_seconds),
+        "--kill-interval-seconds",
+        "3600",
         "--output",
         args.output,
     ]

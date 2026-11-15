@@ -217,7 +217,9 @@ def _prepare_environment(args):
                     connection.close()
             for task_index in range(args.tasks_per_tenant):
                 tasks.append(_create_task(canvas_store, context, task_index))
-        return suffix, data_root, contexts, tasks
+        # The owner tenant exists only to exercise control-path initialization.
+        # Load accounting must cover exactly the requested synthetic tenants.
+        return suffix, data_root, contexts, contexts[1:], tasks
     except Exception:
         _drop_schemas(args.url, suffix, contexts)
         data_root.cleanup()
@@ -242,21 +244,24 @@ def _child_env(base_env, suffix, data_root):
 
 def _status_counts(contexts):
     import canvas_store
+    import pg_compat
     import tenant_context
 
     counts = Counter()
-    for context in contexts:
-        with tenant_context.use_context(context):
-            connection = canvas_store._connect()
-            try:
-                rows = connection.execute(
-                    "SELECT status,COUNT(*) FROM generation_tasks "
-                    "GROUP BY status"
-                ).fetchall()
-            finally:
-                connection.close()
-        for status, count in rows:
-            counts[str(status)] += int(count or 0)
+    connection = canvas_store._connect()
+    try:
+        for context in contexts:
+            schema = pg_compat.schema_for_path(context.db_path, "canvas")
+            if not schema.replace("_", "").isalnum():
+                raise ValueError(f"unsafe tenant schema: {schema}")
+            rows = connection.execute(
+                f'SELECT status,COUNT(*) FROM "{schema}".generation_tasks '
+                "GROUP BY status"
+            ).fetchall()
+            for status, count in rows:
+                counts[str(status)] += int(count or 0)
+    finally:
+        connection.close()
     return counts
 
 
@@ -288,6 +293,18 @@ def _latest_submit_worker_pid(path: Path) -> int | None:
 
 
 def validate_smoke_report(report: dict) -> bool:
+    status_counts = report.get("statusCounts") or {}
+    task_count = int(report.get("tasks") or -1)
+    succeeded = int(status_counts.get("succeeded") or 0)
+    interrupted = int(status_counts.get("interrupted") or 0)
+    failed = int(status_counts.get("failed") or 0)
+    active = sum(
+        int(status_counts.get(status) or 0)
+        for status in ("queued", "submitting", "running")
+    )
+    kill_count = int(report.get("killCount") or 0)
+    worker_concurrency = max(1, int(report.get("workerConcurrency") or 1))
+    allowed_interrupted = kill_count * worker_concurrency if kill_count else 0
     return bool(
         report.get("ok")
         and int(report.get("maxSubmitsPerTask") or 0) <= 1
@@ -295,8 +312,10 @@ def validate_smoke_report(report: dict) -> bool:
             item.get("ok")
             for item in (report.get("readiness") or {}).values()
         )
-        and int((report.get("statusCounts") or {}).get("succeeded") or 0)
-        == int(report.get("tasks") or -1)
+        and failed == 0
+        and active == 0
+        and succeeded + interrupted == task_count
+        and interrupted <= allowed_interrupted
     )
 
 
@@ -327,7 +346,9 @@ def _drop_schemas(url, suffix, contexts):
 
 
 def run_smoke(args) -> dict:
-    suffix, data_root, contexts, initial_tasks = _prepare_environment(args)
+    suffix, data_root, contexts, load_contexts, initial_tasks = (
+        _prepare_environment(args)
+    )
     base_env = os.environ.copy()
     child_env = _child_env(base_env, suffix, data_root.name)
     output = Path(args.output) if args.output else (
@@ -384,20 +405,46 @@ def run_smoke(args) -> dict:
             if args.duration_seconds > 0
             else deadline
         )
-        killed = False
+        kill_count = 0
         replacement = None
+        next_kill_at = (
+            started + args.kill_interval_seconds
+            if args.kill_interval_seconds > 0
+            else started
+        )
+        last_kill_submit_count = -1
         expected = args.tenants * args.tasks_per_tenant
         batch_index = 0
         while time.monotonic() < deadline:
-            counts = _status_counts(contexts)
+            counts = _status_counts(load_contexts)
             call_counts = _call_counts(call_log)
             submits = sum(
                 count
                 for (event, _task), count in call_counts.items()
                 if event == "submit"
             )
-            if not killed and submits >= 1:
-                submit_pid = _latest_submit_worker_pid(call_log)
+            kill_due = (
+                kill_count == 0
+                or (
+                    args.kill_interval_seconds > 0
+                    and time.monotonic() >= next_kill_at
+                )
+            )
+            submit_pid = (
+                _latest_submit_worker_pid(call_log)
+                if kill_due
+                else None
+            )
+            submission_owner_available = any(
+                process.pid == submit_pid
+                for process in worker_processes
+            )
+            if (
+                kill_due
+                and submission_owner_available
+                and submits >= 1
+                and submits > last_kill_submit_count
+            ):
                 victim_index = next(
                     (
                         index
@@ -408,7 +455,8 @@ def run_smoke(args) -> dict:
                 )
                 victim = worker_processes.pop(victim_index)
                 _kill_process(victim)
-                killed = True
+                kill_count += 1
+                last_kill_submit_count = submits
                 replacement = _spawn_worker(
                     args,
                     child_env,
@@ -417,6 +465,11 @@ def run_smoke(args) -> dict:
                     "worker-replacement",
                 )
                 worker_processes.append(replacement)
+                next_kill_at = (
+                    time.monotonic() + args.kill_interval_seconds
+                    if args.kill_interval_seconds > 0
+                    else float("inf")
+                )
             terminal = (
                 counts["succeeded"]
                 + counts["failed"]
@@ -432,7 +485,7 @@ def run_smoke(args) -> dict:
                 batch_index += 1
                 _create_task_batch(
                     canvas_store,
-                    contexts,
+                    load_contexts,
                     batch_index,
                     args.tasks_per_tenant,
                 )
@@ -441,17 +494,20 @@ def run_smoke(args) -> dict:
                 if time.monotonic() >= run_deadline and terminal >= expected:
                     break
             elif (
-                killed
-                and counts["succeeded"] >= expected
+                kill_count > 0
+                and terminal >= expected
             ):
                 break
-            time.sleep(0.25)
+            # One hundred tenant schemas are sampled every two seconds. Polling
+            # faster creates enough metadata load on a 2-vCPU host to starve the
+            # Workers that the soak is supposed to measure.
+            time.sleep(2.0)
         readiness = {}
         for index, port in enumerate(api_ports):
             readiness[f"api{index + 1}"] = _read_json(
                 f"http://127.0.0.1:{port}/readyz"
             )
-        counts = _status_counts(contexts)
+        counts = _status_counts(load_contexts)
         call_counts = _call_counts(call_log)
         submit_by_task = {
             task_id: count
@@ -459,8 +515,17 @@ def run_smoke(args) -> dict:
             if event == "submit"
         }
         max_submits = max(submit_by_task.values(), default=0)
+        active_count = sum(
+            int(counts.get(status) or 0)
+            for status in ("queued", "submitting", "running")
+        )
         ok = (
-            counts["succeeded"] == expected
+            counts["failed"] == 0
+            and active_count == 0
+            and counts["succeeded"] + counts["interrupted"] == expected
+            and counts["interrupted"] <= (
+                kill_count * max(1, args.worker_concurrency)
+            )
             and all(item.get("ok") for item in readiness.values())
             and max_submits <= 1
         )
@@ -471,8 +536,10 @@ def run_smoke(args) -> dict:
             "batches": batch_index + 1,
             "durationTargetSeconds": args.duration_seconds,
             "workers": args.workers,
+            "workerConcurrency": args.worker_concurrency,
             "apis": len(api_ports),
-            "killedWorker": killed,
+            "killedWorker": kill_count > 0,
+            "killCount": kill_count,
             "replacementStarted": replacement is not None,
             "statusCounts": dict(counts),
             "readiness": readiness,
@@ -579,6 +646,7 @@ def main() -> int:
     parser.add_argument("--provider-delay", type=float, default=2.0)
     parser.add_argument("--timeout-seconds", type=int, default=90)
     parser.add_argument("--duration-seconds", type=float, default=0.0)
+    parser.add_argument("--kill-interval-seconds", type=float, default=0.0)
     parser.add_argument("--output")
     parser.add_argument("--worker-id", default="")
     parser.add_argument("--call-log", default="")
