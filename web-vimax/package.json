@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:canvas": "tsc -p tsconfig.canvas.json",
     "check:canvas": "npm run typecheck:canvas && npm test && npm run build",
+    "check:industrial": "npm run typecheck:canvas && npm test && npm run build && node scripts/verify-industrial-canvas.mjs",
     "check": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {

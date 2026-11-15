@@ -7,11 +7,10 @@ describe('generation authority boundary', () => {
   const api = readFileSync(resolve(__dirname, 'api.ts'), 'utf8');
 
   it('does not derive terminal card state from a task snapshot', () => {
+    expect(source).toContain('useGenerationTaskProjection');
+    expect(source).not.toContain('projectGenerationState(');
     expect(source).toContain(
-      'Keep both the local optimistic submission and active server tasks',
-    );
-    expect(source).toContain(
-      '// active task is the authority until it reaches a terminal state.',
+      'The task projection releases the card as soon as the exact',
     );
   });
 
