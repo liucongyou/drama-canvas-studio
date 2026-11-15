@@ -94,8 +94,38 @@ try {
   if (-not $Stress.passed) { throw 'Stress report did not pass' }
   $Report.stress = 'pass'
 
+  if (-not $env:CANVAS_PASSWORD) {
+    throw 'CANVAS_PASSWORD is required for the industrial browser gate'
+  }
+  $env:CANVAS_TENANT_DATA_ROOT = Join-Path $Workspace 'data\tenants'
+  Invoke-Step 'browserFixture' {
+    & $Python -X utf8 scripts\seed-browser-fixture.py `
+      --url $DatabaseUrl `
+      --count 60 `
+      --tenant owner | Out-Null
+  }
+  $env:CANVAS_BASE = $CanvasBase
+  $env:CANVAS_USERNAME = if ($env:CANVAS_USERNAME) {
+    $env:CANVAS_USERNAME
+  } else {
+    'admin'
+  }
+  $env:PROJECT_ID = if ($env:PROJECT_ID) {
+    $env:PROJECT_ID
+  } else {
+    'JWDLEgTbbaF2t7glAVUbqY'
+  }
+  $env:EPISODE_ID = if ($env:EPISODE_ID) {
+    $env:EPISODE_ID
+  } else {
+    'EP001'
+  }
+  $env:MIN_MEDIA_NODES = if ($env:MIN_MEDIA_NODES) {
+    $env:MIN_MEDIA_NODES
+  } else {
+    '50'
+  }
   Invoke-Step 'browser' {
-    $env:CANVAS_BASE = $CanvasBase
     node web-vimax\scripts\verify-industrial-canvas.mjs
   }
   $Report.browser = 'pass'
