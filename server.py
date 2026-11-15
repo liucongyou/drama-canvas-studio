@@ -4575,12 +4575,21 @@ def _recover_persisted_result_to_canvas(project_id, node_id, task):
             "本地生成文件已不存在，无法补写画布。"
             "系统不会重新下载或自动重新生成；请确认后由用户主动重新生成。"
         )
+        current_status = str(task.get("status") or "")
+        terminal_status = (
+            current_status
+            if current_status in {"succeeded", "failed", "interrupted"}
+            else "interrupted"
+        )
+        stamp = store._now_iso()
         store.update_generation_task(
             task.get("id"),
-            status="interrupted",
+            status=terminal_status,
             phase="本地文件缺失",
             error=detail,
-            finished_at=store._now_iso(),
+            delivery_status="unrecoverable",
+            next_poll_at="",
+            finished_at=task.get("finished_at") or stamp,
         )
         commit_node_metadata(project_id, node_id, {
             "status": "failed",
@@ -4588,7 +4597,7 @@ def _recover_persisted_result_to_canvas(project_id, node_id, task):
             "taskId": str(task.get("provider_task_id") or ""),
             "providerTaskStatus": "interrupted",
             "providerTaskPhase": "本地文件缺失",
-            "generationFinishedAt": store._now_iso(),
+            "generationFinishedAt": stamp,
         })
         return True
     project = store.get_project(project_id)
@@ -4856,6 +4865,47 @@ def _recover_existing_local_task_result(project_id, node_id, task):
     return True
 
 
+def _mark_delivery_unrecoverable(task, detail):
+    """Classify a paid result that has no durable receipt or local file."""
+    task_id = str((task or {}).get("id") or "").strip()
+    if not task_id:
+        return None
+    current_status = str(task.get("status") or "")
+    terminal_status = (
+        current_status
+        if current_status in {"succeeded", "failed", "interrupted"}
+        else "interrupted"
+    )
+    stamp = store._now_iso()
+    saved = store.update_generation_task(
+        task_id,
+        status=terminal_status,
+        phase="结果无法恢复",
+        error=detail,
+        delivery_status="unrecoverable",
+        next_poll_at="",
+        finished_at=task.get("finished_at") or stamp,
+    )
+    project_id = str((task or {}).get("project_id") or "").strip()
+    node_id = str((task or {}).get("node_id") or "").strip()
+    if project_id and node_id:
+        try:
+            commit_node_metadata(project_id, node_id, {
+                "status": "failed",
+                "lastError": detail,
+                "providerTaskStatus": "unrecoverable",
+                "providerTaskPhase": "结果无法恢复",
+                "generationFinishedAt": stamp,
+            })
+        except Exception as exc:
+            print(
+                f"[generation-delivery] node classification deferred: "
+                f"task={task_id} error={exc}",
+                file=sys.stderr,
+            )
+    return saved
+
+
 def reconcile_pending_generation_deliveries():
     """Finish provider-successful results not yet projected onto their nodes.
 
@@ -4877,6 +4927,15 @@ def reconcile_pending_generation_deliveries():
         else:
             provider_url = str(task.get("provider_result_url") or "").strip()
             if not provider_url:
+                if (
+                    str(task.get("status") or "") == "succeeded"
+                    or str(task.get("delivery_status") or "") == "materializing"
+                ):
+                    _mark_delivery_unrecoverable(
+                        task,
+                        "结果无法恢复：供应商任务已结束，但本地文件和供应商结果地址均不存在；"
+                        "系统不会自动重提，请查询原任务后由用户确认重新生成。",
+                    )
                 continue
             attempts = max(0, int(task.get("delivery_attempts") or 0))
             delay_seconds = min(30 * 60, 30 * (4 ** attempts))

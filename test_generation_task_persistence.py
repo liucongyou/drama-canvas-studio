@@ -4776,8 +4776,9 @@ class GenerationTaskPersistenceTests(unittest.TestCase):
             saved = canvas_store.get_generation_task(task["id"])
         self.assertEqual(result, 0)
         download.assert_not_called()
-        self.assertEqual(saved["delivery_status"], "materializing")
+        self.assertEqual(saved["delivery_status"], "unrecoverable")
         self.assertEqual(saved["phase"], "本地文件缺失")
+
     def test_failure_chain_queries_same_task_and_recovers_after_restart(self):
         with tenant_context.use_context(self.context):
             project_id = canvas_store.create_project("failure-chain")
