@@ -8262,6 +8262,7 @@ def runtime_metrics():
         "WHERE status IN ('queued','submitting','running')"
     ).fetchone()[0]
     con.close()
+    database_bytes = int(storage_stats().get("file_bytes") or 0)
     tasks = {str(row[0] or ""): int(row[1] or 0) for row in task_rows}
     return {
         "projects": project_count,
@@ -8272,7 +8273,7 @@ def runtime_metrics():
         "tasks": tasks,
         "activeTasks": sum(tasks.get(status, 0) for status in ("queued", "submitting", "running")),
         "oldestActiveTaskAt": oldest_active or "",
-        "databaseBytes": os.path.getsize(_db_path()) if os.path.exists(_db_path()) else 0,
+        "databaseBytes": database_bytes,
     }
 
 

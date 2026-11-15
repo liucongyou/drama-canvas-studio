@@ -5,6 +5,7 @@ import os
 import queue
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -28,8 +29,32 @@ AUTO_ID_TABLES = {
 _POOL_LOCK = threading.Lock()
 _POOLS: dict[str, queue.LifoQueue[Any]] = {}
 _POOL_IN_USE: dict[str, int] = {}
-_POOL_SIZE = max(2, int(os.getenv("CANVAS_PG_POOL_SIZE", "24")))
-_POOL_SCHEMA_SIZE = max(2, min(8, _POOL_SIZE))
+_POOL_SIZE = max(
+    1,
+    int(
+        os.getenv(
+            "CANVAS_PG_POOL_MAX",
+            os.getenv("CANVAS_PG_POOL_SIZE", "24"),
+        )
+    ),
+)
+_POOL_SCHEMA_SIZE = max(
+    1,
+    min(
+        int(os.getenv("CANVAS_PG_POOL_IDLE_MAX", "8")),
+        _POOL_SIZE,
+    ),
+)
+_POOL_WAIT_TIMEOUT_SECONDS = max(
+    0.0,
+    float(os.getenv("CANVAS_PG_POOL_WAIT_TIMEOUT_MS", "10000")) / 1000.0,
+)
+_POOL_SEMAPHORE = threading.BoundedSemaphore(_POOL_SIZE)
+_POOL_ACTIVE_TOTAL = 0
+_POOL_WAITING = 0
+_POOL_PHYSICAL = 0
+_POOL_ACQUIRED_TOTAL = 0
+_POOL_TIMEOUT_TOTAL = 0
 _SERIAL_ID_CACHE: dict[tuple[str, str], bool] = {}
 
 CANVAS_ROWID_INDEXES = (
@@ -459,6 +484,7 @@ class PGConnection:
         schema: str,
         *,
         raw: Any | None = None,
+        pool_reserved: bool = False,
     ):
         if not database_url():
             raise OperationalError("缺少 DATABASE_URL 或 CANVAS_DATABASE_URL")
@@ -469,6 +495,7 @@ class PGConnection:
             f"{hashlib.sha256(database_url().encode('utf-8')).hexdigest()[:12]}:"
             f"{kind}:{schema}"
         )
+        self._pool_reserved = bool(pool_reserved)
         self._returned_to_pool = False
         self.raw = raw or self._new_raw()
         self.row_factory = None
@@ -518,6 +545,17 @@ class PGConnection:
         if self._returned_to_pool:
             return
         self._returned_to_pool = True
+        if not self._pool_reserved:
+            try:
+                if self.in_transaction:
+                    self.raw.rollback()
+            except psycopg.Error:
+                pass
+            try:
+                self.raw.close()
+            except psycopg.Error:
+                pass
+            return
         try:
             # A pooled PostgreSQL connection must be transaction-clean before
             # another caller can reuse it. Read-only call sites historically
@@ -531,28 +569,37 @@ class PGConnection:
                 self.raw.close()
             except psycopg.Error:
                 pass
-            self._release_pool_slot()
-            return
-        self._release_pool_slot()
+        else:
+            with _POOL_LOCK:
+                pool = _POOLS.setdefault(self._pool_key, queue.LifoQueue())
+                keep_raw = bool(
+                    not self.raw.closed
+                    and pool.qsize() < _POOL_SCHEMA_SIZE
+                )
+                if keep_raw:
+                    pool.put(self.raw)
+                self._release_pool_slot_locked()
+            if keep_raw:
+                _POOL_SEMAPHORE.release()
+                return
+        try:
+            self.raw.close()
+        except psycopg.Error:
+            pass
         with _POOL_LOCK:
-            pool = _POOLS.setdefault(self._pool_key, queue.LifoQueue())
-            total_idle = sum(item.qsize() for item in _POOLS.values())
-            can_return = (
-                pool.qsize() < _POOL_SCHEMA_SIZE
-                and total_idle < _POOL_SIZE
-            )
-        if can_return:
-            pool.put(self.raw)
-            return
-        self.raw.close()
+            global _POOL_PHYSICAL
+            _POOL_PHYSICAL = max(0, _POOL_PHYSICAL - 1)
+            self._release_pool_slot_locked()
+        _POOL_SEMAPHORE.release()
 
-    def _release_pool_slot(self) -> None:
-        with _POOL_LOCK:
-            current = int(_POOL_IN_USE.get(self._pool_key, 0))
-            if current <= 1:
-                _POOL_IN_USE.pop(self._pool_key, None)
-            else:
-                _POOL_IN_USE[self._pool_key] = current - 1
+    def _release_pool_slot_locked(self) -> None:
+        global _POOL_ACTIVE_TOTAL
+        current = int(_POOL_IN_USE.get(self._pool_key, 0))
+        if current <= 1:
+            _POOL_IN_USE.pop(self._pool_key, None)
+        else:
+            _POOL_IN_USE[self._pool_key] = current - 1
+        _POOL_ACTIVE_TOTAL = max(0, _POOL_ACTIVE_TOTAL - 1)
 
     def __enter__(self):
         return self
@@ -566,22 +613,141 @@ class PGConnection:
 
 
 def connect_path(path: str | os.PathLike[str], kind: str = "canvas") -> PGConnection:
+    global _POOL_ACTIVE_TOTAL
+    global _POOL_ACQUIRED_TOTAL
+    global _POOL_PHYSICAL
+    global _POOL_TIMEOUT_TOTAL
+    global _POOL_WAITING
+
     schema = schema_for_path(path, kind)
     pool_key = (
         f"{hashlib.sha256(database_url().encode('utf-8')).hexdigest()[:12]}:"
         f"{kind}:{schema}"
     )
     with _POOL_LOCK:
+        _POOL_WAITING += 1
+    acquired = _POOL_SEMAPHORE.acquire(timeout=_POOL_WAIT_TIMEOUT_SECONDS)
+    with _POOL_LOCK:
+        _POOL_WAITING = max(0, _POOL_WAITING - 1)
+        if not acquired:
+            _POOL_TIMEOUT_TOTAL += 1
+    if not acquired:
+        raise OperationalError(
+            "DATABASE_POOL_EXHAUSTED: PostgreSQL 连接池已耗尽，"
+            f"等待超过 {int(_POOL_WAIT_TIMEOUT_SECONDS * 1000)}ms"
+        )
+    with _POOL_LOCK:
+        _POOL_ACTIVE_TOTAL += 1
+        _POOL_ACQUIRED_TOTAL += 1
         pool = _POOLS.setdefault(pool_key, queue.LifoQueue())
         in_use = int(_POOL_IN_USE.get(pool_key, 0))
         _POOL_IN_USE[pool_key] = in_use + 1
     try:
-        raw = pool.get_nowait()
-        if raw.closed:
+        while True:
             raw = None
-    except queue.Empty:
-        raw = None
-    return PGConnection(str(path), kind, schema, raw=raw)
+            with _POOL_LOCK:
+                try:
+                    candidate = pool.get_nowait()
+                except queue.Empty:
+                    candidate = None
+                if candidate is not None and candidate.closed:
+                    _POOL_PHYSICAL = max(0, _POOL_PHYSICAL - 1)
+                    candidate = None
+                else:
+                    raw = candidate
+            if raw is not None:
+                return PGConnection(
+                    str(path),
+                    kind,
+                    schema,
+                    raw=raw,
+                    pool_reserved=True,
+                )
+            connection = PGConnection(
+                str(path),
+                kind,
+                schema,
+                pool_reserved=True,
+            )
+            with _POOL_LOCK:
+                _POOL_PHYSICAL += 1
+            return connection
+    except Exception:
+        with _POOL_LOCK:
+            current = int(_POOL_IN_USE.get(pool_key, 0))
+            if current <= 1:
+                _POOL_IN_USE.pop(pool_key, None)
+            else:
+                _POOL_IN_USE[pool_key] = current - 1
+            _POOL_ACTIVE_TOTAL = max(0, _POOL_ACTIVE_TOTAL - 1)
+        _POOL_SEMAPHORE.release()
+        raise
+
+
+def pool_stats() -> dict[str, int]:
+    with _POOL_LOCK:
+        idle = sum(pool.qsize() for pool in _POOLS.values())
+        return {
+            "max": int(_POOL_SIZE),
+            "active": int(_POOL_ACTIVE_TOTAL),
+            "idle": int(idle),
+            "physical": int(_POOL_PHYSICAL),
+            "waiting": int(_POOL_WAITING),
+            "schemaIdleMax": int(_POOL_SCHEMA_SIZE),
+            "waitTimeoutMs": int(_POOL_WAIT_TIMEOUT_SECONDS * 1000),
+            "acquiredTotal": int(_POOL_ACQUIRED_TOTAL),
+            "timeoutTotal": int(_POOL_TIMEOUT_TOTAL),
+        }
+
+
+def configure_pool(
+    *,
+    max_connections: int | None = None,
+    wait_timeout_ms: int | None = None,
+    schema_idle_max: int | None = None,
+) -> dict[str, int]:
+    global _POOL_ACTIVE_TOTAL
+    global _POOL_PHYSICAL
+    global _POOL_SCHEMA_SIZE
+    global _POOL_SEMAPHORE
+    global _POOL_SIZE
+    global _POOL_TIMEOUT_TOTAL
+    global _POOL_WAIT_TIMEOUT_SECONDS
+    global _POOL_WAITING
+    with _POOL_LOCK:
+        if _POOL_ACTIVE_TOTAL:
+            raise RuntimeError("连接池仍有活动连接，不能重新配置")
+        for pool in _POOLS.values():
+            while True:
+                try:
+                    raw = pool.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    raw.close()
+                except Exception:
+                    pass
+        _POOLS.clear()
+        _POOL_IN_USE.clear()
+        _POOL_SIZE = max(1, int(max_connections or _POOL_SIZE))
+        _POOL_SCHEMA_SIZE = max(
+            1,
+            min(
+                int(schema_idle_max or _POOL_SCHEMA_SIZE),
+                _POOL_SIZE,
+            ),
+        )
+        if wait_timeout_ms is not None:
+            _POOL_WAIT_TIMEOUT_SECONDS = max(
+                0.0,
+                float(wait_timeout_ms) / 1000.0,
+            )
+        _POOL_ACTIVE_TOTAL = 0
+        _POOL_PHYSICAL = 0
+        _POOL_WAITING = 0
+        _POOL_TIMEOUT_TOTAL = 0
+        _POOL_SEMAPHORE = threading.BoundedSemaphore(_POOL_SIZE)
+    return pool_stats()
 
 
 def ensure_canvas_indexes(connection: PGConnection) -> None:

@@ -60,6 +60,7 @@ import explicit_references
 import media_storage
 import provider_catalog
 import provider_client
+import pg_compat
 import tos_storage
 import tenant_bootstrap
 import tenant_context
@@ -8940,6 +8941,7 @@ class Handler(BaseHTTPRequestHandler):
             tenant_key = tenant_context.current_tenant_id()
             return self._send(200, {
                 **store.runtime_metrics(),
+                "databasePool": pg_compat.pool_stats(),
                 "releaseCommit": release_commit(),
                 "uptimeSeconds": round(time.monotonic() - SERVER_STARTED_AT, 3),
                 "queue": {
