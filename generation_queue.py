@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -7,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 
 import canvas_store as store
 import pg_compat
+import tenant_context
+import tenant_registry
 
 
 def _now() -> datetime:
@@ -381,3 +384,451 @@ def _safe_json(raw) -> dict:
     except (TypeError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _advisory_key(scope: str) -> int:
+    digest = hashlib.sha256(
+        f"generation-admission:{scope}".encode("utf-8")
+    ).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+def _admission_limits(
+    provider: str,
+    model: str,
+    kind: str,
+    overrides: dict | None = None,
+) -> dict[str, int]:
+    overrides = overrides or {}
+    kind_defaults = {
+        "image": 16,
+        "video": 10,
+        "audio": 8,
+        "text": 8,
+    }
+    return {
+        "global": max(
+            1,
+            int(
+                overrides.get("global")
+                or os.getenv("CANVAS_GENERATION_GLOBAL_CONCURRENCY", "80")
+            ),
+        ),
+        "tenant": max(
+            1,
+            int(
+                overrides.get("tenant")
+                or os.getenv("CANVAS_GENERATION_TENANT_CONCURRENCY", "32")
+            ),
+        ),
+        "provider": max(
+            1,
+            int(
+                overrides.get("provider")
+                or os.getenv("CANVAS_GENERATION_PROVIDER_CONCURRENCY", "20")
+            ),
+        ),
+        "model": max(
+            1,
+            int(
+                overrides.get("model")
+                or kind_defaults.get(str(kind or "").lower(), 8)
+            ),
+        ),
+    }
+
+
+def _tenant_canvas_schema() -> str:
+    return pg_compat.schema_for_path(
+        tenant_context.current_db_path(),
+        "canvas",
+    )
+
+
+def _mark_task_admitted(
+    connection,
+    task_id: str,
+    claim_token: str,
+    now_text: str,
+    lease_expires_at: str,
+) -> bool:
+    schema = _tenant_canvas_schema()
+    result = connection.execute(
+        f'UPDATE "{schema}".generation_tasks SET '
+        "status='submitting',queue_state='admitted',phase='已获得执行槽位',"
+        "lease_expires_at=?,heartbeat_at=?,updated_at=?,error='',"
+        "finished_at='' WHERE id=? AND status='running' AND lease_owner=?",
+        (
+            lease_expires_at,
+            now_text,
+            now_text,
+            task_id,
+            claim_token,
+        ),
+    )
+    return int(result.rowcount or 0) == 1
+
+
+def acquire_generation_admission(
+    task_id: str,
+    claim_token: str,
+    *,
+    provider: str,
+    model: str,
+    kind: str,
+    lease_seconds: int = 60,
+    limits: dict | None = None,
+) -> dict:
+    task_id = str(task_id or "").strip()
+    claim_token = str(claim_token or "").strip()
+    provider = str(provider or "").strip()
+    model = str(model or "").strip()
+    kind = str(kind or "").strip().lower()
+    if not task_id or not claim_token:
+        raise ValueError("task_id 和 claim_token 不能为空")
+    task = store.get_generation_task(task_id) or {}
+    if (
+        str(task.get("status") or "") != "running"
+        or str(task.get("lease_owner") or "") != claim_token
+    ):
+        return {"acquired": False, "reason": "lease_lost", "taskId": task_id}
+    tenant_id = tenant_context.current_tenant_id()
+    now = _now()
+    now_text = _iso(now)
+    expires_at = _iso(
+        now + timedelta(seconds=max(5, int(lease_seconds)))
+    )
+    configured = _admission_limits(provider, model, kind, limits)
+    keys = [
+        _advisory_key("global"),
+        _advisory_key(f"tenant:{tenant_id}"),
+        _advisory_key(f"provider:{tenant_id}:{provider}"),
+        _advisory_key(f"model:{tenant_id}:{provider}:{model}:{kind}"),
+    ]
+
+    def write(connection):
+        for key in keys:
+            connection.execute("SELECT pg_advisory_xact_lock(%s)", (key,))
+        existing = connection.execute(
+            "SELECT * FROM generation_admissions WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        if existing:
+            columns = [
+                item[0]
+                for item in connection.execute(
+                    "SELECT * FROM generation_admissions LIMIT 0"
+                ).description
+            ]
+            admission = dict(zip(columns, existing))
+            if (
+                str(admission.get("lease_owner") or "") == claim_token
+                and str(admission.get("expires_at") or "") > now_text
+            ):
+                connection.execute(
+                    "UPDATE generation_admissions SET expires_at=? "
+                    "WHERE task_id=? AND lease_owner=?",
+                    (expires_at, task_id, claim_token),
+                )
+                if not _mark_task_admitted(
+                    connection,
+                    task_id,
+                    claim_token,
+                    now_text,
+                    expires_at,
+                ):
+                    return {
+                        "acquired": False,
+                        "reason": "lease_lost",
+                        "taskId": task_id,
+                    }
+                return {
+                    **admission,
+                    "expires_at": expires_at,
+                    "acquired": True,
+                    "reused": True,
+                }
+            connection.execute(
+                "DELETE FROM generation_admissions WHERE task_id=?",
+                (task_id,),
+            )
+        connection.execute(
+            "DELETE FROM generation_admissions WHERE expires_at<=?",
+            (now_text,),
+        )
+        cooldown_key = f"{tenant_id}\x1f{provider}"
+        cooldown = connection.execute(
+            "SELECT until_at FROM generation_provider_cooldowns "
+            "WHERE scope_key=?",
+            (cooldown_key,),
+        ).fetchone()
+        until_at = str(cooldown[0] or "") if cooldown else ""
+        if until_at and until_at > now_text:
+            try:
+                retry_after = max(
+                    1,
+                    int(
+                        (
+                            datetime.fromisoformat(
+                                until_at.replace("Z", "+00:00")
+                            )
+                            - now
+                        ).total_seconds()
+                    ),
+                )
+            except ValueError:
+                retry_after = 1
+            connection.execute(
+                f'UPDATE "{_tenant_canvas_schema()}".generation_tasks SET '
+                "status='queued',queue_state='cooldown',"
+                "phase=?,lease_owner='',worker_id='',lease_expires_at='',"
+                "heartbeat_at='',available_at=?,updated_at=? "
+                "WHERE id=? AND lease_owner=?",
+                (
+                    f"供应商限流冷却 {retry_after}s",
+                    until_at,
+                    now_text,
+                    task_id,
+                    claim_token,
+                ),
+            )
+            return {
+                "acquired": False,
+                "reason": "provider_cooldown",
+                "retryAfterSeconds": retry_after,
+                "taskId": task_id,
+            }
+        active_global = int(connection.execute(
+            "SELECT COUNT(*) FROM generation_admissions WHERE expires_at>?",
+            (now_text,),
+        ).fetchone()[0] or 0)
+        active_tenant = int(connection.execute(
+            "SELECT COUNT(*) FROM generation_admissions "
+            "WHERE tenant_id=? AND expires_at>?",
+            (tenant_id, now_text),
+        ).fetchone()[0] or 0)
+        active_provider = int(connection.execute(
+            "SELECT COUNT(*) FROM generation_admissions "
+            "WHERE tenant_id=? AND provider=? AND expires_at>?",
+            (tenant_id, provider, now_text),
+        ).fetchone()[0] or 0)
+        active_model = int(connection.execute(
+            "SELECT COUNT(*) FROM generation_admissions "
+            "WHERE tenant_id=? AND provider=? AND model=? AND kind=? "
+            "AND expires_at>?",
+            (tenant_id, provider, model, kind, now_text),
+        ).fetchone()[0] or 0)
+        blocked_by = ""
+        if active_global >= configured["global"]:
+            blocked_by = "global"
+        elif active_tenant >= configured["tenant"]:
+            blocked_by = "tenant"
+        elif active_provider >= configured["provider"]:
+            blocked_by = "provider"
+        elif active_model >= configured["model"]:
+            blocked_by = "model"
+        if blocked_by:
+            connection.execute(
+                f'UPDATE "{_tenant_canvas_schema()}".generation_tasks SET '
+                "status='queued',queue_state='waiting_capacity',"
+                "phase=?,lease_owner='',worker_id='',lease_expires_at='',"
+                "heartbeat_at='',available_at=?,updated_at=? "
+                "WHERE id=? AND lease_owner=?",
+                (
+                    f"等待生成槽位（{blocked_by}）",
+                    _iso(now + timedelta(seconds=2)),
+                    now_text,
+                    task_id,
+                    claim_token,
+                ),
+            )
+            return {
+                "acquired": False,
+                "reason": "capacity",
+                "blockedBy": blocked_by,
+                "retryAfterSeconds": 2,
+                "taskId": task_id,
+                "active": {
+                    "global": active_global,
+                    "tenant": active_tenant,
+                    "provider": active_provider,
+                    "model": active_model,
+                },
+                "limits": configured,
+            }
+        admission_id = store._rid(22)
+        worker_id = str(task.get("worker_id") or "")
+        connection.execute(
+            "INSERT INTO generation_admissions("
+            "id,tenant_id,task_id,worker_id,lease_owner,provider,model,kind,"
+            "acquired_at,expires_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                admission_id,
+                tenant_id,
+                task_id,
+                worker_id,
+                claim_token,
+                provider,
+                model,
+                kind,
+                now_text,
+                expires_at,
+            ),
+        )
+        if not _mark_task_admitted(
+            connection,
+            task_id,
+            claim_token,
+            now_text,
+            expires_at,
+        ):
+            return {
+                "acquired": False,
+                "reason": "lease_lost",
+                "taskId": task_id,
+            }
+        return {
+            "acquired": True,
+            "admissionId": admission_id,
+            "tenantId": tenant_id,
+            "taskId": task_id,
+            "leaseOwner": claim_token,
+            "provider": provider,
+            "model": model,
+            "kind": kind,
+            "expiresAt": expires_at,
+            "limits": configured,
+            "active": {
+                "global": active_global + 1,
+                "tenant": active_tenant + 1,
+                "provider": active_provider + 1,
+                "model": active_model + 1,
+            },
+        }
+
+    return _with_control_transaction(write)
+
+
+def renew_generation_admission(
+    task_id: str,
+    claim_token: str,
+    *,
+    lease_seconds: int = 60,
+) -> bool:
+    expires_at = _iso(
+        _now() + timedelta(seconds=max(5, int(lease_seconds)))
+    )
+
+    def write(connection):
+        result = connection.execute(
+            "UPDATE generation_admissions SET expires_at=? "
+            "WHERE task_id=? AND lease_owner=?",
+            (
+                expires_at,
+                str(task_id or ""),
+                str(claim_token or ""),
+            ),
+        )
+        return int(result.rowcount or 0) == 1
+
+    return bool(_with_control_transaction(write))
+
+
+def release_generation_admission(
+    task_id: str,
+    claim_token: str = "",
+) -> bool:
+    def write(connection):
+        if claim_token:
+            result = connection.execute(
+                "DELETE FROM generation_admissions "
+                "WHERE task_id=? AND lease_owner=?",
+                (str(task_id or ""), str(claim_token or "")),
+            )
+        else:
+            result = connection.execute(
+                "DELETE FROM generation_admissions WHERE task_id=?",
+                (str(task_id or ""),),
+            )
+        return int(result.rowcount or 0) > 0
+
+    return bool(_with_control_transaction(write))
+
+
+def mark_provider_cooldown(
+    provider: str,
+    retry_after_seconds: float,
+) -> dict:
+    tenant_id = tenant_context.current_tenant_id()
+    provider = str(provider or "").strip()
+    now = _now()
+    until_at = _iso(
+        now + timedelta(seconds=max(1.0, float(retry_after_seconds)))
+    )
+    scope_key = f"{tenant_id}\x1f{provider}"
+    now_text = _iso(now)
+
+    def write(connection):
+        connection.execute(
+            "INSERT INTO generation_provider_cooldowns("
+            "scope_key,tenant_id,provider,until_at,updated_at"
+            ") VALUES(?,?,?,?,?) "
+            "ON CONFLICT(scope_key) DO UPDATE SET "
+            "until_at=GREATEST(generation_provider_cooldowns.until_at,"
+            "EXCLUDED.until_at),updated_at=EXCLUDED.updated_at",
+            (
+                scope_key,
+                tenant_id,
+                provider,
+                until_at,
+                now_text,
+            ),
+        )
+        return {
+            "scopeKey": scope_key,
+            "provider": provider,
+            "untilAt": until_at,
+        }
+
+    return _with_control_transaction(write)
+
+
+def admission_metrics() -> dict:
+    now_text = _iso()
+
+    def read(connection):
+        active = int(connection.execute(
+            "SELECT COUNT(*) FROM generation_admissions WHERE expires_at>?",
+            (now_text,),
+        ).fetchone()[0] or 0)
+        cooldowns = int(connection.execute(
+            "SELECT COUNT(*) FROM generation_provider_cooldowns "
+            "WHERE until_at>?",
+            (now_text,),
+        ).fetchone()[0] or 0)
+        return {
+            "activeAdmissions": active,
+            "activeCooldowns": cooldowns,
+        }
+
+    connection = tenant_registry._connect()
+    try:
+        return read(connection)
+    finally:
+        connection.close()
+
+
+def _with_control_transaction(callback):
+    connection = tenant_registry._connect()
+
+    try:
+        connection.execute("BEGIN")
+        result = callback(connection)
+        connection.commit()
+        return result
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()

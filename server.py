@@ -1232,13 +1232,26 @@ def mark_generation_provider_rate_limited(provider_id, retry_after=None):
     provider_key = str(provider_id or "__default__").strip() or "__default__"
     tenant_key = tenant_context.current_tenant_id()
     composite_key = f"{tenant_key}\x1f{provider_key}"
-    until = time.monotonic() + provider_retry_after_seconds(None, retry_after)
+    retry_seconds = provider_retry_after_seconds(None, retry_after)
+    until = time.monotonic() + retry_seconds
     with GENERATION_QUEUE_CONDITION:
         GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL[composite_key] = max(
             GENERATION_QUEUE_PROVIDER_COOLDOWN_UNTIL.get(composite_key, 0),
             until,
         )
         GENERATION_QUEUE_CONDITION.notify_all()
+    if pg_compat.postgres_enabled():
+        try:
+            generation_queue.mark_provider_cooldown(
+                provider_key,
+                retry_seconds,
+            )
+        except Exception as exc:
+            print(
+                "[generation] persist provider cooldown failed: "
+                f"provider={provider_key} error={exc}",
+                file=sys.stderr,
+            )
 
 
 def acquire_generation_slot(task_id, provider_id, model_id=None, kind=None):

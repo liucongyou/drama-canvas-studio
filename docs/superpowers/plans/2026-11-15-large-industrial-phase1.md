@@ -205,6 +205,8 @@ feat: add durable postgres generation queue
 
 ## Task 4: Add Distributed Generation Concurrency Admission
 
+**Status:** Complete
+
 **Files**
 
 - Modify: `generation_queue.py`
