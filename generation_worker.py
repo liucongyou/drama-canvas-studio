@@ -11,6 +11,7 @@ import uuid
 import canvas_store
 import generation_queue
 import observability
+import pg_compat
 import schema_migrations
 import server
 import tenant_context
@@ -86,36 +87,24 @@ class GenerationWorker:
         ]
 
     def verify_schema(self):
-        failures = []
-        for context in self._contexts():
-            with tenant_context.use_context(context):
-                connection = canvas_store._connect()
-                try:
-                    report = schema_migrations.verify_schema(
-                        connection,
-                        "canvas",
-                    )
-                finally:
-                    connection.close()
-            if not report["ok"]:
-                failures.append({
-                    **report,
-                    "tenant": context.slug,
-                })
+        schemas = {
+            pg_compat.schema_for_path(context.db_path, "canvas"): "canvas"
+            for context in self._contexts()
+        }
+        schemas[
+            pg_compat.schema_for_path("control.db", "control")
+        ] = "control"
         control = tenant_registry._connect()
         try:
-            control_report = schema_migrations.verify_schema(
-                control,
-                "control",
-            )
+            report = schema_migrations.verify_schema_set(control, schemas)
         finally:
             control.close()
-        if not control_report["ok"]:
-            failures.append({
-                **control_report,
-                "tenant": "control",
-            })
-        if failures:
+        if not report["ok"]:
+            failures = [
+                {"tenant": schema, **item}
+                for schema, item in report["schemas"].items()
+                if not item["ok"]
+            ]
             raise RuntimeError(
                 "Worker 数据库迁移未就绪：" + repr(failures)
             )

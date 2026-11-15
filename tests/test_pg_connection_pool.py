@@ -160,3 +160,18 @@ def test_waiter_acquires_the_slot_released_by_active_connection(bounded_pool):
     assert not waiter.is_alive()
     assert len(acquired) == 1
     acquired[0].close()
+
+
+def test_cross_schema_idle_connections_share_physical_budget(bounded_pool):
+    first = pg_compat.connect_path(Path("pool-schema-a") / "canvas.db")
+    first.close()
+    second = pg_compat.connect_path(Path("pool-schema-b") / "canvas.db")
+    second.close()
+    assert pg_compat.pool_stats()["physical"] == 2
+
+    third = pg_compat.connect_path(Path("pool-schema-c") / "canvas.db")
+    stats = pg_compat.pool_stats()
+    assert stats["physical"] == 2
+    assert stats["active"] == 1
+    assert len(bounded_pool) == 3
+    third.close()

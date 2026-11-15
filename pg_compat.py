@@ -27,6 +27,7 @@ AUTO_ID_TABLES = {
 }
 
 _POOL_LOCK = threading.Lock()
+_POOL_CONDITION = threading.Condition(_POOL_LOCK)
 _POOLS: dict[str, queue.LifoQueue[Any]] = {}
 _POOL_IN_USE: dict[str, int] = {}
 _POOL_SIZE = max(
@@ -49,7 +50,6 @@ _POOL_WAIT_TIMEOUT_SECONDS = max(
     0.0,
     float(os.getenv("CANVAS_PG_POOL_WAIT_TIMEOUT_MS", "10000")) / 1000.0,
 )
-_POOL_SEMAPHORE = threading.BoundedSemaphore(_POOL_SIZE)
 _POOL_ACTIVE_TOTAL = 0
 _POOL_WAITING = 0
 _POOL_PHYSICAL = 0
@@ -556,6 +556,7 @@ class PGConnection:
             except psycopg.Error:
                 pass
             return
+        reusable = False
         try:
             # A pooled PostgreSQL connection must be transaction-clean before
             # another caller can reuse it. Read-only call sites historically
@@ -570,7 +571,7 @@ class PGConnection:
             except psycopg.Error:
                 pass
         else:
-            with _POOL_LOCK:
+            with _POOL_CONDITION:
                 pool = _POOLS.setdefault(self._pool_key, queue.LifoQueue())
                 keep_raw = bool(
                     not self.raw.closed
@@ -578,19 +579,22 @@ class PGConnection:
                 )
                 if keep_raw:
                     pool.put(self.raw)
+                    reusable = True
                 self._release_pool_slot_locked()
-            if keep_raw:
-                _POOL_SEMAPHORE.release()
+                if not keep_raw:
+                    global _POOL_PHYSICAL
+                    _POOL_PHYSICAL = max(0, _POOL_PHYSICAL - 1)
+                _POOL_CONDITION.notify_all()
+            if reusable:
                 return
         try:
             self.raw.close()
         except psycopg.Error:
             pass
         with _POOL_LOCK:
-            global _POOL_PHYSICAL
-            _POOL_PHYSICAL = max(0, _POOL_PHYSICAL - 1)
             self._release_pool_slot_locked()
-        _POOL_SEMAPHORE.release()
+            _POOL_PHYSICAL = max(0, _POOL_PHYSICAL - 1)
+            _POOL_CONDITION.notify_all()
 
     def _release_pool_slot_locked(self) -> None:
         global _POOL_ACTIVE_TOTAL
@@ -624,63 +628,91 @@ def connect_path(path: str | os.PathLike[str], kind: str = "canvas") -> PGConnec
         f"{hashlib.sha256(database_url().encode('utf-8')).hexdigest()[:12]}:"
         f"{kind}:{schema}"
     )
-    with _POOL_LOCK:
+    deadline = time.monotonic() + _POOL_WAIT_TIMEOUT_SECONDS
+    evicted_raw = None
+    with _POOL_CONDITION:
         _POOL_WAITING += 1
-    acquired = _POOL_SEMAPHORE.acquire(timeout=_POOL_WAIT_TIMEOUT_SECONDS)
-    with _POOL_LOCK:
-        _POOL_WAITING = max(0, _POOL_WAITING - 1)
-        if not acquired:
-            _POOL_TIMEOUT_TOTAL += 1
-    if not acquired:
-        raise OperationalError(
-            "DATABASE_POOL_EXHAUSTED: PostgreSQL 连接池已耗尽，"
-            f"等待超过 {int(_POOL_WAIT_TIMEOUT_SECONDS * 1000)}ms"
-        )
-    with _POOL_LOCK:
-        _POOL_ACTIVE_TOTAL += 1
-        _POOL_ACQUIRED_TOTAL += 1
-        pool = _POOLS.setdefault(pool_key, queue.LifoQueue())
-        in_use = int(_POOL_IN_USE.get(pool_key, 0))
-        _POOL_IN_USE[pool_key] = in_use + 1
     try:
         while True:
-            raw = None
-            with _POOL_LOCK:
+            with _POOL_CONDITION:
+                pool = _POOLS.setdefault(pool_key, queue.LifoQueue())
                 try:
-                    candidate = pool.get_nowait()
+                    raw = pool.get_nowait()
                 except queue.Empty:
-                    candidate = None
-                if candidate is not None and candidate.closed:
+                    raw = None
+                if raw is not None and raw.closed:
                     _POOL_PHYSICAL = max(0, _POOL_PHYSICAL - 1)
-                    candidate = None
-                else:
-                    raw = candidate
-            if raw is not None:
-                return PGConnection(
-                    str(path),
-                    kind,
-                    schema,
-                    raw=raw,
-                    pool_reserved=True,
-                )
-            connection = PGConnection(
-                str(path),
-                kind,
-                schema,
-                pool_reserved=True,
-            )
-            with _POOL_LOCK:
-                _POOL_PHYSICAL += 1
-            return connection
+                    raw = None
+                if raw is not None:
+                    _POOL_WAITING = max(0, _POOL_WAITING - 1)
+                    _POOL_ACTIVE_TOTAL += 1
+                    _POOL_ACQUIRED_TOTAL += 1
+                    _POOL_IN_USE[pool_key] = (
+                        int(_POOL_IN_USE.get(pool_key, 0)) + 1
+                    )
+                    return PGConnection(
+                        str(path),
+                        kind,
+                        schema,
+                        raw=raw,
+                        pool_reserved=True,
+                    )
+                if _POOL_PHYSICAL < _POOL_SIZE:
+                    _POOL_PHYSICAL += 1
+                    _POOL_WAITING = max(0, _POOL_WAITING - 1)
+                    _POOL_ACTIVE_TOTAL += 1
+                    _POOL_ACQUIRED_TOTAL += 1
+                    _POOL_IN_USE[pool_key] = (
+                        int(_POOL_IN_USE.get(pool_key, 0)) + 1
+                    )
+                    break
+                evicted_raw = _evict_idle_except(pool_key)
+                if evicted_raw is not None:
+                    _POOL_WAITING = max(0, _POOL_WAITING - 1)
+                    _POOL_ACTIVE_TOTAL += 1
+                    _POOL_ACQUIRED_TOTAL += 1
+                    _POOL_IN_USE[pool_key] = (
+                        int(_POOL_IN_USE.get(pool_key, 0)) + 1
+                    )
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _POOL_WAITING = max(0, _POOL_WAITING - 1)
+                    _POOL_TIMEOUT_TOTAL += 1
+                    raise OperationalError(
+                        "DATABASE_POOL_EXHAUSTED: PostgreSQL 连接池已耗尽，"
+                        f"等待超过 {int(_POOL_WAIT_TIMEOUT_SECONDS * 1000)}ms"
+                    )
+                _POOL_CONDITION.wait(timeout=remaining)
     except Exception:
-        with _POOL_LOCK:
+        if evicted_raw is not None:
+            try:
+                evicted_raw.close()
+            except psycopg.Error:
+                pass
+        raise
+    if evicted_raw is not None:
+        try:
+            evicted_raw.close()
+        except psycopg.Error:
+            pass
+    try:
+        return PGConnection(
+            str(path),
+            kind,
+            schema,
+            pool_reserved=True,
+        )
+    except Exception:
+        with _POOL_CONDITION:
             current = int(_POOL_IN_USE.get(pool_key, 0))
             if current <= 1:
                 _POOL_IN_USE.pop(pool_key, None)
             else:
                 _POOL_IN_USE[pool_key] = current - 1
             _POOL_ACTIVE_TOTAL = max(0, _POOL_ACTIVE_TOTAL - 1)
-        _POOL_SEMAPHORE.release()
+            _POOL_PHYSICAL = max(0, _POOL_PHYSICAL - 1)
+            _POOL_CONDITION.notify_all()
         raise
 
 
@@ -700,6 +732,18 @@ def pool_stats() -> dict[str, int]:
         }
 
 
+def _evict_idle_except(pool_key: str):
+    """Pop one idle connection from another schema while holding the lock."""
+    for candidate_key, pool in _POOLS.items():
+        if candidate_key == pool_key:
+            continue
+        try:
+            return pool.get_nowait()
+        except queue.Empty:
+            continue
+    return None
+
+
 def configure_pool(
     *,
     max_connections: int | None = None,
@@ -709,7 +753,6 @@ def configure_pool(
     global _POOL_ACTIVE_TOTAL
     global _POOL_PHYSICAL
     global _POOL_SCHEMA_SIZE
-    global _POOL_SEMAPHORE
     global _POOL_SIZE
     global _POOL_TIMEOUT_TOTAL
     global _POOL_WAIT_TIMEOUT_SECONDS
@@ -746,7 +789,7 @@ def configure_pool(
         _POOL_PHYSICAL = 0
         _POOL_WAITING = 0
         _POOL_TIMEOUT_TOTAL = 0
-        _POOL_SEMAPHORE = threading.BoundedSemaphore(_POOL_SIZE)
+        _POOL_CONDITION.notify_all()
     return pool_stats()
 
 

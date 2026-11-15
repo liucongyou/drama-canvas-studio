@@ -46,37 +46,32 @@ def _migration_check() -> dict:
         cached = _MIGRATION_CACHE["value"]
         if cached is not None and time.monotonic() - _MIGRATION_CACHE["at"] < 5:
             return dict(cached)
-    failures = []
     contexts = _contexts()
-    if not contexts:
-        connection = canvas_store._connect()
-        try:
-            report = schema_migrations.verify_schema(connection, "canvas")
-        finally:
-            connection.close()
-        if not report["ok"]:
-            failures.append({"tenant": "legacy", **report})
-    for context in contexts:
-        with tenant_context.use_context(context):
-            connection = canvas_store._connect()
-            try:
-                report = schema_migrations.verify_schema(
-                    connection,
-                    "canvas",
-                )
-            finally:
-                connection.close()
-        if not report["ok"]:
-            failures.append({"tenant": context.slug, **report})
+    schemas = {
+        pg_compat.schema_for_path(context.db_path, "canvas"): "canvas"
+        for context in contexts
+    }
+    if not schemas:
+        schemas[
+            pg_compat.schema_for_path(
+                tenant_context.current_db_path(),
+                "canvas",
+            )
+        ] = "canvas"
+    control_schema = pg_compat.schema_for_path("control.db", "control")
+    schemas[control_schema] = "control"
     control = tenant_registry._connect()
     try:
-        control_report = schema_migrations.verify_schema(control, "control")
+        check = schema_migrations.verify_schema_set(control, schemas)
     finally:
         control.close()
-    if not control_report["ok"]:
-        failures.append({"tenant": "control", **control_report})
+    failures = [
+        {"tenant": schema, **item}
+        for schema, item in check.get("schemas", {}).items()
+        if not item.get("ok")
+    ]
     value = {
-        "ok": not failures,
+        "ok": bool(check.get("ok")) and not failures,
         "failures": failures,
     }
     with _CACHE_LOCK:

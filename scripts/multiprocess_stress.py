@@ -168,55 +168,60 @@ def _prepare_environment(args):
     import tenant_context
     import tenant_registry
 
-    control = tenant_registry._connect()
-    try:
-        schema_migrations.apply_migrations(control, "control")
-    finally:
-        control.close()
     contexts = []
     tasks = []
-    owner = tenant_registry.create_tenant(
-        "owner",
-        name="Owner",
-        tenant_id="owner",
-    )
-    owner_context = tenant_context.make_context(
-        owner["id"],
-        owner["slug"],
-    )
-    tenant_context.ensure_context_dirs(owner_context)
-    (owner_context.data_root / ".legacy-migrated").write_text(
-        "isolated harness owner\n",
-        encoding="utf-8",
-    )
-    with tenant_context.use_context(owner_context):
-        connection = canvas_store._connect()
+    try:
+        control = tenant_registry._connect()
         try:
-            schema_migrations.apply_migrations(connection, "canvas")
+            schema_migrations.apply_migrations(control, "control")
         finally:
-            connection.close()
-    contexts.append(owner_context)
-    for tenant_index in range(args.tenants):
-        slug = f"mp-{tenant_index}-{uuid.uuid4().hex[:6]}"
-        tenant = tenant_registry.create_tenant(
-            slug,
-            tenant_id=slug,
+            control.close()
+        owner = tenant_registry.create_tenant(
+            "owner",
+            name="Owner",
+            tenant_id="owner",
         )
-        context = tenant_context.make_context(
-            tenant["id"],
-            tenant["slug"],
+        owner_context = tenant_context.make_context(
+            owner["id"],
+            owner["slug"],
         )
-        tenant_context.ensure_context_dirs(context)
-        contexts.append(context)
-        with tenant_context.use_context(context):
+        tenant_context.ensure_context_dirs(owner_context)
+        (owner_context.data_root / ".legacy-migrated").write_text(
+            "isolated harness owner\n",
+            encoding="utf-8",
+        )
+        with tenant_context.use_context(owner_context):
             connection = canvas_store._connect()
             try:
                 schema_migrations.apply_migrations(connection, "canvas")
             finally:
                 connection.close()
-        for task_index in range(args.tasks_per_tenant):
-            tasks.append(_create_task(canvas_store, context, task_index))
-    return suffix, data_root, contexts, tasks
+        contexts.append(owner_context)
+        for tenant_index in range(args.tenants):
+            slug = f"mp-{tenant_index}-{uuid.uuid4().hex[:6]}"
+            tenant = tenant_registry.create_tenant(
+                slug,
+                tenant_id=slug,
+            )
+            context = tenant_context.make_context(
+                tenant["id"],
+                tenant["slug"],
+            )
+            tenant_context.ensure_context_dirs(context)
+            contexts.append(context)
+            with tenant_context.use_context(context):
+                connection = canvas_store._connect()
+                try:
+                    schema_migrations.apply_migrations(connection, "canvas")
+                finally:
+                    connection.close()
+            for task_index in range(args.tasks_per_tenant):
+                tasks.append(_create_task(canvas_store, context, task_index))
+        return suffix, data_root, contexts, tasks
+    except Exception:
+        _drop_schemas(args.url, suffix, contexts)
+        data_root.cleanup()
+        raise
 
 
 def _child_env(base_env, suffix, data_root):
@@ -230,6 +235,8 @@ def _child_env(base_env, suffix, data_root):
         "CANVAS_PG_SCHEMA_SUFFIX": suffix,
         "CANVAS_SCHEMA_MIGRATIONS_REQUIRED": "1",
         "CANVAS_GENERATION_EXECUTION_MODE": "worker",
+        "CANVAS_PG_POOL_MAX": "8",
+        "CANVAS_PG_POOL_IDLE_MAX": "4",
     }
 
 
@@ -306,16 +313,19 @@ def _drop_schemas(url, suffix, contexts):
     )
     schemas = {
         pg_compat.schema_for_path("control.db", "control"),
+        pg_compat.schema_for_path(Path("data") / "canvas.db", "canvas"),
     }
     for context in contexts:
         schemas.add(pg_compat.schema_for_path(context.db_path, "canvas"))
-    with psycopg.connect(url) as connection:
+    with psycopg.connect(url, autocommit=True) as connection:
         for schema_name in schemas:
             connection.execute(
                 sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
                     sql.Identifier(schema_name)
                 )
             )
+
+
 def run_smoke(args) -> dict:
     suffix, data_root, contexts, initial_tasks = _prepare_environment(args)
     base_env = os.environ.copy()
@@ -346,10 +356,7 @@ def run_smoke(args) -> dict:
                 stderr=subprocess.STDOUT,
             )
             processes.append((process, log))
-        api_start_deadline = time.monotonic() + min(
-            args.timeout_seconds,
-            60,
-        )
+        api_start_deadline = time.monotonic() + args.timeout_seconds
         while time.monotonic() < api_start_deadline:
             health = [
                 _read_json(f"http://127.0.0.1:{port}/healthz")

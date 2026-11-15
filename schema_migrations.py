@@ -195,6 +195,66 @@ def verify_schema(
     }
 
 
+def verify_schema_set(
+    connection: pg_compat.PGConnection,
+    schemas: dict[str, str],
+    *,
+    root: Path | None = None,
+) -> dict:
+    """Verify many schemas over one connection without invoking schema bootstrap."""
+    reports = {}
+    for schema_name, schema_kind in schemas.items():
+        safe_name = str(schema_name or "").strip()
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*", safe_name):
+            raise MigrationError(f"非法 schema：{safe_name}")
+        migrations = _load_migrations(schema_kind, root)
+        required = {item.version: item.checksum for item in migrations}
+        try:
+            table = connection.execute(
+                "SELECT to_regclass(%s)",
+                (f"{safe_name}.schema_migrations",),
+            ).fetchone()
+        except Exception:
+            table = None
+        if not table or not table[0]:
+            reports[safe_name] = {
+                "schemaKind": schema_kind,
+                "requiredVersion": migrations[-1].version if migrations else "",
+                "appliedVersion": "",
+                "missing": sorted(required),
+                "unknown": [],
+                "mismatched": [],
+                "ok": not required,
+            }
+            continue
+        rows = connection.execute(
+            f'SELECT version,checksum FROM "{safe_name}".schema_migrations '
+            "ORDER BY version"
+        ).fetchall()
+        applied = {str(row[0]): str(row[1]) for row in rows}
+        missing = sorted(set(required) - set(applied))
+        unknown = sorted(set(applied) - set(required))
+        mismatched = sorted(
+            version
+            for version in set(required) & set(applied)
+            if required[version] != applied[version]
+        )
+        reports[safe_name] = {
+            "schemaKind": schema_kind,
+            "requiredVersion": migrations[-1].version if migrations else "",
+            "appliedVersion": max(applied) if applied else "",
+            "missing": missing,
+            "unknown": unknown,
+            "mismatched": mismatched,
+            "ok": not missing and not unknown and not mismatched,
+        }
+    connection.rollback()
+    return {
+        "ok": all(item["ok"] for item in reports.values()),
+        "schemas": reports,
+    }
+
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
 

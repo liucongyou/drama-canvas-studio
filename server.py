@@ -620,40 +620,33 @@ def release_commit():
 def verify_required_schema_migrations():
     if not SCHEMA_MIGRATIONS_REQUIRED:
         return
-    failures = []
+    schemas = {}
     for tenant in _active_tenants():
-        scope = (
-            tenant_context.use_tenant(tenant["id"], tenant["slug"])
+        context = (
+            tenant_context.make_context(tenant["id"], tenant["slug"])
             if tenant is not None
-            else nullcontext()
+            else None
         )
-        with scope:
-            connection = store._connect()
-            try:
-                report = schema_migrations.verify_schema(
-                    connection,
-                    "canvas",
-                )
-            finally:
-                connection.close()
-            if not report.get("ok"):
-                report["tenant"] = (
-                    tenant.get("slug") if tenant is not None else "legacy"
-                )
-                failures.append(report)
+        path = context.db_path if context is not None else tenant_context.current_db_path()
+        schemas[pg_compat.schema_for_path(path, "canvas")] = "canvas"
+    control_schema = pg_compat.schema_for_path("control.db", "control")
+    schemas[control_schema] = "control"
     control = tenant_registry._connect()
     try:
-        control_report = schema_migrations.verify_schema(control, "control")
+        report = schema_migrations.verify_schema_set(control, schemas)
     finally:
         control.close()
-    if not control_report.get("ok"):
-        control_report["tenant"] = "control"
-        failures.append(control_report)
-    if failures:
+    if not report.get("ok"):
+        failures = [
+            {"tenant": schema, **item}
+            for schema, item in report.get("schemas", {}).items()
+            if not item.get("ok")
+        ]
         raise RuntimeError(
             "数据库迁移版本未就绪，拒绝启动："
             + ", ".join(
-                f"{item.get('tenant')}:{item.get('missing') or item.get('mismatched')}"
+                f"{item.get('tenant')}:"
+                f"{item.get('missing') or item.get('mismatched')}"
                 for item in failures
             )
         )
@@ -13618,13 +13611,14 @@ def main():
     os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"), exist_ok=True)
     try:
         tenant_bootstrap.bootstrap()
-        backfilled_task_episodes = _run_for_active_tenants(
-            store.backfill_generation_task_episode_ids
-        )
-        if backfilled_task_episodes:
-            print(
-                f"已补齐 {backfilled_task_episodes} 条生成任务的集数归属"
+        if not SKIP_STARTUP_BACKFILLS:
+            backfilled_task_episodes = _run_for_active_tenants(
+                store.backfill_generation_task_episode_ids
             )
+            if backfilled_task_episodes:
+                print(
+                    f"已补齐 {backfilled_task_episodes} 条生成任务的集数归属"
+                )
         if tenant_context.multi_tenant_enabled():
             print(
                 f"多租户模式已启用，基础域名："
@@ -13634,12 +13628,13 @@ def main():
         print(f"[tenant] 初始化失败：{exc}", file=sys.stderr)
         raise
     try:
-        migrated_tenants = store.migrate_active_tenant_schemas()
-        if migrated_tenants:
-            print(
-                f"[schema] migrated {len(migrated_tenants)} tenant databases",
-                file=sys.stderr,
-            )
+        if not SKIP_STARTUP_BACKFILLS:
+            migrated_tenants = store.migrate_active_tenant_schemas()
+            if migrated_tenants:
+                print(
+                    f"[schema] migrated {len(migrated_tenants)} tenant databases",
+                    file=sys.stderr,
+                )
         if not SKIP_STARTUP_BACKFILLS:
             delivery_backfilled = _run_for_active_tenants(
                 store.backfill_generation_delivery_status

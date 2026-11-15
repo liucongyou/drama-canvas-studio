@@ -60,6 +60,10 @@ def test_migrations_apply_once_and_second_run_is_noop(migration_schema):
     try:
         second = schema_migrations.apply_migrations(connection, "canvas")
         verification = schema_migrations.verify_schema(connection, "canvas")
+        bulk = schema_migrations.verify_schema_set(
+            connection,
+            {schema: "canvas"},
+        )
     finally:
         connection.close()
 
@@ -68,6 +72,8 @@ def test_migrations_apply_once_and_second_run_is_noop(migration_schema):
     assert second["skipped"] == ["0001", "0002"]
     assert verification["ok"] is True
     assert verification["appliedVersion"] == "0002"
+    assert bulk["ok"] is True
+    assert bulk["schemas"][schema]["appliedVersion"] == "0002"
 
 
 def test_checksum_mismatch_fails_closed(migration_schema):
