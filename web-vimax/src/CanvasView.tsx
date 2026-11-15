@@ -156,10 +156,12 @@ import {
   liveGenerationCount,
   mediaGenerationVisualState,
   preserveActiveGenerationStatus,
-  projectGenerationState,
-  releaseOptimisticGenerationSubmission,
-  type OptimisticGenerationSubmission,
 } from './generationPresentation';
+import {useGenerationTaskProjection} from './canvas/useGenerationTaskProjection';
+import {
+  shouldReadTaskLedger,
+  useCanvasWorkspaceSync,
+} from './canvas/useCanvasWorkspaceSync';
 import {
   inheritedGenerationParams,
   inheritModelParams,
@@ -9132,7 +9134,16 @@ function CanvasViewInner({
   const [taskCenterOpen, setTaskCenterOpen] = useState(false);
   const taskCenterOpenRef = useRef(taskCenterOpen);
   taskCenterOpenRef.current = taskCenterOpen;
-  const [generationTasks, setGenerationTasks] = useState<GenerationTask[]>([]);
+  const {
+    tasks: generationTasks,
+    setTasks: setGenerationTasks,
+    busyNodeIds: generationBusyIds,
+    busyNodeIdsRef: generationBusyIdsRef,
+    optimisticSubmissionsRef: optimisticGenerationStartsRef,
+    applySnapshot: applyGenerationTaskSnapshot,
+    beginOptimistic: beginOptimisticGeneration,
+    releaseSynchronous: releaseSynchronousGeneration,
+  } = useGenerationTaskProjection();
   const taskLoadGenerationRef = useRef(0);
   const activeGenerationTaskCount = taskCenterOpen
     ? liveGenerationCount(generationTasks)
@@ -9251,6 +9262,16 @@ function CanvasViewInner({
     } catch {
       return null;
     }
+  });
+  useCanvasWorkspaceSync({
+    session,
+    currentEpisode: currentEp,
+    taskCenterOpen,
+    busyNodeIds: generationBusyIds,
+    optimisticCount: optimisticGenerationStartsRef.current.size,
+    activeTaskCount: liveGenerationCount(generationTasks),
+    taskLoadGenerationRef,
+    applyTaskSnapshot: applyGenerationTaskSnapshot,
   });
   // The initial workspace request owns the first rendered episode. Without an
   // explicit user selection, currentEp changing from null to a default value
@@ -10122,9 +10143,6 @@ function CanvasViewInner({
     [mediaNodes],
   );
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
-  const [generationBusyIds, setGenerationBusyIds] = useState<Set<string>>(() => new Set());
-  const generationBusyIdsRef = useRef(generationBusyIds);
-  generationBusyIdsRef.current = generationBusyIds;
   // 事件流是否在线：在线时轮询降级成兜底对账，离线时恢复 1.5s 的密集轮询。
   const [eventsConnected, setEventsConnected] = useState(false);
   const mediaNodesRef = useRef<CanvasMediaNode[]>([]);
@@ -10146,7 +10164,6 @@ function CanvasViewInner({
   const workspaceEventWakeRef = useRef<(() => void) | null>(null);
   const workspaceLoadEpochRef = useRef(0);
   const episodeRequestRef = useRef<EpisodeRequestActivity | null>(null);
-  const optimisticGenerationStartsRef = useRef<Map<string, OptimisticGenerationSubmission>>(new Map());
   /**
    * 提交中的节点（同步锁）。
    *
@@ -10173,17 +10190,6 @@ function CanvasViewInner({
       generationIntentSignature({kind: node.kind, prompt: node.prompt, params}),
     )
   ), []);
-  const applyGenerationTaskSnapshot = useCallback((tasks: GenerationTask[]) => {
-    const projection = projectGenerationState(
-      tasks,
-      optimisticGenerationStartsRef.current,
-    );
-    optimisticGenerationStartsRef.current = projection.retainedOptimistic;
-    generationBusyIdsRef.current = projection.activeNodeIds;
-    setGenerationBusyIds(projection.activeNodeIds);
-    setGenerationTasks(tasks);
-    return projection.activeNodeIds;
-  }, []);
   useEffect(() => { mediaNodesRef.current = mediaNodes; }, [mediaNodes]);
   const refreshWorkspaceFacts = useCallback(() => {
     if (
@@ -10206,7 +10212,17 @@ function CanvasViewInner({
       if (!scope.episode) {
         throw new Error('画布尚未绑定集数，无法同步');
       }
-      const workspace = await getWorkspaceFacts(scope.session, scope.episode);
+      const includeTasks = shouldReadTaskLedger({
+        taskCenterOpen: taskCenterOpenRef.current,
+        busyNodeIds: generationBusyIdsRef.current,
+        optimisticCount: optimisticGenerationStartsRef.current.size,
+      });
+      const workspace = await getWorkspaceFacts(
+        scope.session,
+        scope.episode,
+        undefined,
+        {includeTasks},
+      );
       if (loadEpoch !== workspaceLoadEpochRef.current) return;
       const activeScope = workspaceScopeRef.current;
       if (!workspaceScopeMatches(scope, activeScope)) return;
@@ -10218,7 +10234,9 @@ function CanvasViewInner({
         mediaNodesRef.current.map((node) => [node.id, node]),
       );
       taskLoadGenerationRef.current += 1;
-      const activeTaskNodeIds = applyGenerationTaskSnapshot(workspace.tasks);
+      const activeTaskNodeIds = workspace.tasksLoaded
+        ? applyGenerationTaskSnapshot(workspace.tasks)
+        : generationBusyIdsRef.current;
       if (!('empty' in workspace.canvas)) setCanvas(workspace.canvas);
       setNotes(workspace.notes);
       setMediaNodes(workspace.mediaNodes.map((remote) => {
@@ -10325,31 +10343,6 @@ function CanvasViewInner({
     overviewKeyRef.current = key;
     setLargeCanvasOverview(mediaNodes.length > 400);
   }, [currentEp, mediaNodes.length]);
-  useEffect(() => {
-    const projection = projectGenerationState(
-      generationTasks,
-      optimisticGenerationStartsRef.current,
-    );
-    const {retainedOptimistic: retainedOptimisticStarts} = projection;
-    optimisticGenerationStartsRef.current = retainedOptimisticStarts;
-    // Keep both the local optimistic submission and active server tasks in
-    // this set. Workspace refreshes can briefly return a pre-submit row; the
-    // active task is the authority until it reaches a terminal state.
-    const optimisticBusyIds = new Set(retainedOptimisticStarts.keys());
-    for (const nodeId of projection.activeNodeIds) {
-      optimisticBusyIds.add(nodeId);
-    }
-    setGenerationBusyIds((prev) => {
-      // This set must be projected from the current task snapshot. Mutating a
-      // previous set by only adding active tasks leaves stale node ids forever
-      // after a task dies without a completion event.
-      return optimisticBusyIds.size === prev.size
-        && [...optimisticBusyIds].every((id) => prev.has(id))
-        ? prev
-        : optimisticBusyIds;
-    });
-  }, [generationTasks]);
-
   const terminalRefreshRef = useRef('');
   const terminalSnapshotPrimedRef = useRef(false);
   useEffect(() => {
@@ -10889,42 +10882,6 @@ function CanvasViewInner({
       if (syncChannelRef.current === channel) syncChannelRef.current = null;
     };
   }, [currentEp, readOnly, session, setToast]);
-
-  useEffect(() => {
-    let alive = true;
-    const loadGeneration = taskLoadGenerationRef.current;
-    const refreshTasks = () => {
-      if (!taskCenterOpen) return;
-      void getGenerationTasks(session, 80, currentEp)
-        .then((tasks) => {
-          if (
-            alive
-            && loadGeneration === taskLoadGenerationRef.current
-          ) {
-            applyGenerationTaskSnapshot(tasks);
-          }
-        })
-        .catch(() => {});
-    };
-    // The Task Center renders the detailed ledger, while canvas busy
-    // projection also consumes activeNodeIds from the current episode.
-    // Keep both surfaces on the same snapshot whenever this poll runs.
-    refreshTasks();
-    const interval = activeGenerationTaskCount > 0 ? 1200 : 6000;
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') refreshTasks();
-    }, interval);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
-  }, [
-    activeGenerationTaskCount,
-    applyGenerationTaskSnapshot,
-    currentEp,
-    session,
-    taskCenterOpen,
-  ]);
 
   useEffect(() => {
     let alive = true;
@@ -16644,7 +16601,7 @@ function CanvasViewInner({
     const generationStartedAt = new Date().toISOString();
     // 复用上一次未成功的幂等键：重试不能变成「再扣一次费」。
     const clientOperationId = claimOperationId(node, params);
-    optimisticGenerationStartsRef.current.set(node.id, {
+    beginOptimisticGeneration(node.id, {
       startedAt: generationStartedAt,
       operationId: clientOperationId,
     });
@@ -16661,12 +16618,6 @@ function CanvasViewInner({
       clearTimeout(mediaBatchSaveTimer.current);
       mediaBatchSaveTimer.current = null;
     }
-    setGenerationBusyIds((prev) => {
-      if (prev.has(node.id)) return prev;
-      const next = new Set(prev);
-      next.add(node.id);
-      return next;
-    });
     // Persist only the explicit request parameters. The generating card state
     // arrives from the backend task/node projection after POST acceptance.
     updateMediaNode(node.id, {params}, {persist: false});
@@ -16720,20 +16671,10 @@ function CanvasViewInner({
           }
         };
         await Promise.all([refreshTasks(), refreshNode()]);
-        if (
-          !result.deferred
-          && releaseOptimisticGenerationSubmission(
-            optimisticGenerationStartsRef.current,
-            node.id,
-            clientOperationId,
-          )
-        ) {
-          setGenerationBusyIds((prev) => {
-            if (!prev.has(node.id)) return prev;
-            const next = new Set(prev);
-            next.delete(node.id);
-            return next;
-          });
+        if (!result.deferred) {
+          // The task projection releases the card as soon as the exact
+          // persisted task appears; no separate UI terminal state is invented.
+          releaseSynchronousGeneration(clientOperationId, node.id);
         }
         if (result.deferred) {
           setToast(result.accepted
@@ -16762,13 +16703,7 @@ function CanvasViewInner({
         if (definitiveFailure) {
           releaseGenerationOperationId(pendingOperationIdRef.current, node.id);
         }
-        setGenerationBusyIds((prev) => {
-          if (!prev.has(node.id)) return prev;
-          const next = new Set(prev);
-          next.delete(node.id);
-          return next;
-        });
-        optimisticGenerationStartsRef.current.delete(node.id);
+        releaseSynchronousGeneration(clientOperationId, node.id);
         // The task row is the only outcome authority. A POST/response failure
         // may still have persisted a task, so the browser must not manufacture
         // a terminal or uncertain node state here. Stop local waiting and let
@@ -16790,6 +16725,8 @@ function CanvasViewInner({
     setToast,
     claimOperationId,
     applyGenerationTaskSnapshot,
+    beginOptimisticGeneration,
+    releaseSynchronousGeneration,
     readOnly,
   ]);
 
@@ -19829,12 +19766,6 @@ function CanvasViewInner({
                                         updated_at: finishedAt,
                                       }
                                     : item));
-                                  setGenerationBusyIds((prev) => {
-                                    if (!prev.has(task.node_id)) return prev;
-                                    const next = new Set(prev);
-                                    next.delete(task.node_id);
-                                    return next;
-                                  });
                                   void refreshWorkspaceFactsRef.current().catch(() => {});
                                   setToast('已取消排队任务');
                                 })
@@ -19856,12 +19787,6 @@ function CanvasViewInner({
                                   setGenerationTasks((prev) => prev.map((item) => (
                                     item.id === task.id ? result.task : item
                                   )));
-                                  setGenerationBusyIds((prev) => {
-                                    if (!prev.has(task.node_id)) return prev;
-                                    const next = new Set(prev);
-                                    next.delete(task.node_id);
-                                    return next;
-                                  });
                                   void refreshWorkspaceFactsRef.current().catch(() => {});
                                   setToast('任务已人工确认失败，现在可以重新生成');
                                 })

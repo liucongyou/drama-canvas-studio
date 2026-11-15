@@ -1688,6 +1688,7 @@ export type WorkspaceFacts = {
     source?: string;
   }>;
   tasks: GenerationTask[];
+  tasksLoaded: boolean;
 };
 
 export type WorkspaceNodes = {
@@ -1818,11 +1819,14 @@ export async function getWorkspaceFacts(
   sessionId: string,
   episodeId: string,
   signal?: AbortSignal,
+  options: {includeTasks?: boolean} = {},
 ): Promise<WorkspaceFacts> {
   return getProjectionCanvasWorkspace(
     sessionId,
     episodeId,
     signal,
+    undefined,
+    options,
   );
 }
 
@@ -2884,7 +2888,9 @@ async function getProjectionCanvasWorkspace(
   epId?: string | null,
   signal?: AbortSignal,
   workspaceIndexPromise?: Promise<WorkspaceProjectMeta>,
+  options: {includeTasks?: boolean} = {},
 ): Promise<WorkspaceFacts> {
+  const includeTasks = options.includeTasks !== false;
   const requestedEpisode = String(epId || '').trim().toUpperCase();
   const index = await (
     workspaceIndexPromise || getWorkspaceIndex(sessionId, signal)
@@ -2981,7 +2987,7 @@ async function getProjectionCanvasWorkspace(
   // These independent reads share one round-trip window. Previously notes and
   // media were awaited sequentially, then task history added another blocking
   // request after the graph was already ready.
-  const tasksPromise = sessionId.startsWith('share:')
+  const tasksPromise = sessionId.startsWith('share:') || !includeTasks
     ? Promise.resolve([] as GenerationTask[])
     : getGenerationTasks(sessionId, 80, currentEpisode).catch(() => []);
   const [notes, mediaNodes, tasks] = await Promise.all([
@@ -2997,6 +3003,7 @@ async function getProjectionCanvasWorkspace(
     episodeViewports: index.episodeViewports || {},
     activeEpisodeId: currentEpisode,
     tasks,
+    tasksLoaded: includeTasks && !sessionId.startsWith('share:'),
     connections: nodesPayload.connections,
   };
 }
