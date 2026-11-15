@@ -55,14 +55,12 @@ EXPECTED_INDEX_SHA=$(sha256sum "$STAGE/dist/index.html" | awk '{print $1}')
 
 active_tasks=0
 for schema in $("$PSQL" "$DATABASE_URL" -Atc \
-  "SELECT schema_name FROM information_schema.schemata "
-  "WHERE schema_name LIKE 'tenant_%' ORDER BY schema_name"); do
+  "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'tenant_%' ORDER BY schema_name"); do
   task_table=$("$PSQL" "$DATABASE_URL" -Atc \
     "SELECT to_regclass('$schema.generation_tasks') IS NOT NULL")
   if [ "$task_table" = "t" ]; then
     count=$("$PSQL" "$DATABASE_URL" -Atc \
-      "SELECT count(*) FROM $schema.generation_tasks "
-      "WHERE status IN ('queued','submitting','running')")
+      "SELECT count(*) FROM $schema.generation_tasks WHERE status IN ('queued','submitting','running')")
     active_tasks=$((active_tasks + count))
   fi
 done
