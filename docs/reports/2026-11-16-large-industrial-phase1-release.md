@@ -78,8 +78,20 @@ Artifact:
 
 ## Verification Limit
 
-The full 24-hour mock-provider soak has not yet run. A 100-tenant smoke and
-failure-injection test are not equivalent to the 24-hour acceptance run.
+The full 24-hour mock-provider soak is running but has not yet finished. A
+100-tenant smoke and failure-injection test are not equivalent to the 24-hour
+acceptance run.
+
+Soak run:
+
+- Started: `2026-11-16 03:35:14 +08:00`
+- Launcher PID at start: `24508`
+- Isolated database: `drama_canvas_soak_20261116`
+- Isolated server: `127.0.0.1:55432`
+- Output directory: `artifacts/soak-100t-24h-v1`
+- Provider mode: deterministic mock only
+- Worker rotation: one hard kill and replacement every hour
+- Expected duration: 24 hours
 
 Run only against an isolated PostgreSQL database with deterministic mock
 providers:
@@ -99,6 +111,36 @@ Phase one acceptance remains open until that report passes with:
 - zero pool-limit violations;
 - bounded log and table growth;
 - terminal or explicit uncertain state for every accepted task.
+
+The soak wrapper must produce `artifacts/soak-100t-24h-v1/report.json` with
+`ok=true`. Until that file exists and validates, the full phase-one acceptance
+remains pending.
+
+## Soak Harness Correction
+
+The first short soak preflights exposed three test-harness defects rather than
+generation defects:
+
+- the control `owner` tenant was incorrectly included in batch accounting;
+- 100 per-tenant status queries every 250 ms saturated the 2-vCPU test host;
+- the validator required every Worker-kill-adjacent task to succeed, even
+  though the production contract correctly requires tasks without a provider
+  identity to become explicit `interrupted` uncertainty.
+
+The harness now:
+
+- excludes `owner` from synthetic load accounting;
+- samples all tenant schemas through one connection every two seconds;
+- permits only bounded, explicit interrupted uncertainty after hard kills;
+- rejects any active leftover task, failed task or duplicate submission;
+- rotates Worker kills hourly during the 24-hour run.
+
+The corrected six-minute preflight passed with 200/200 succeeded, 0 active
+leftovers and at most one submit per task:
+
+```text
+artifacts/soak-preflight-6m-v4/report.json
+```
 
 ## Rollback
 
