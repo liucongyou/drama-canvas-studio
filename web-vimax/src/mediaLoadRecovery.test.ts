@@ -44,6 +44,19 @@ describe('media load recovery', () => {
       .toBe(false);
   });
 
+  it('uses fallback waveform bars instead of CORS fetch for cross-origin audio', () => {
+    expect(shouldAnalyzeAudioWaveform(
+      'https://bucket.example.com/a.mp3?X-Tos-Signature=secret',
+      'available',
+      'https://yj.pduoduo.vip',
+    )).toBe(false);
+    expect(shouldAnalyzeAudioWaveform(
+      '/uploads/a.mp3',
+      'available',
+      'https://yj.pduoduo.vip',
+    )).toBe(true);
+  });
+
   it('adds a retry token without destroying signed query parameters', () => {
     expect(cacheBustedMediaUrl('/uploads/a.mp4?token=abc', 1))
       .toBe('/uploads/a.mp4?token=abc&__media_retry=1');

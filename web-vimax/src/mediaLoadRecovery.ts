@@ -21,9 +21,23 @@ export function mediaMissingFromBackend(serverAvailability: unknown): boolean {
 export function shouldAnalyzeAudioWaveform(
   mediaUrl: string,
   serverAvailability: unknown,
+  pageOrigin?: string,
 ): boolean {
-  return Boolean(mediaUrl) && !mediaUrl.startsWith('data:')
-    && !mediaMissingFromBackend(serverAvailability);
+  if (!mediaUrl || mediaUrl.startsWith('data:')
+    || mediaMissingFromBackend(serverAvailability)) {
+    return false;
+  }
+  if (!pageOrigin) return true;
+  try {
+    const media = new URL(mediaUrl, pageOrigin);
+    const page = new URL(pageOrigin);
+    if (/^https?:$/.test(media.protocol) && media.origin !== page.origin) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 export function isTransientMediaError(error?: unknown): boolean {

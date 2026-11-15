@@ -2879,7 +2879,11 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     if (
       node.kind !== 'audio'
       || !audioUrl
-      || !shouldAnalyzeAudioWaveform(audioUrl, node.mediaAvailability)
+      || !shouldAnalyzeAudioWaveform(
+        audioUrl,
+        node.mediaAvailability,
+        window.location.origin,
+      )
     ) return;
     if (node.source?.type === 'local' && Number(node.source.size || 0) > 16 * 1024 * 1024) {
       setAudioWaveBars(AUDIO_WAVE_BARS);
