@@ -1319,6 +1319,63 @@ def persist_generated_media(url, fallback_ext, *, provider=None, model=None):
 
 _EVENT_SUBSCRIBERS: dict[str, list[queue.Queue]] = {}
 _EVENT_SUBSCRIBERS_LOCK = threading.Lock()
+_EVENT_TENANT_CONNECTIONS: dict[str, int] = {}
+_EVENT_SUBSCRIBER_TENANTS: dict[queue.Queue, str] = {}
+SSE_TENANT_LIMIT = max(
+    1,
+    int(os.environ.get("CANVAS_SSE_TENANT_LIMIT", "16")),
+)
+SSE_PROJECT_LIMIT = max(
+    1,
+    int(os.environ.get("CANVAS_SSE_PROJECT_LIMIT", "4")),
+)
+
+
+def _event_tenant_key():
+    context = tenant_context.current()
+    if context is None:
+        return "legacy"
+    return str(context.tenant_id or context.slug or "legacy")
+
+
+def _acquire_event_subscriber(project_id):
+    project_key = str(project_id or "").strip()
+    if not project_key:
+        return None, "SSE_PROJECT_REQUIRED"
+    tenant_key = _event_tenant_key()
+    with _EVENT_SUBSCRIBERS_LOCK:
+        subscribers = _EVENT_SUBSCRIBERS.get(project_key) or []
+        tenant_count = int(_EVENT_TENANT_CONNECTIONS.get(tenant_key) or 0)
+        if (
+            len(subscribers) >= SSE_PROJECT_LIMIT
+            or tenant_count >= SSE_TENANT_LIMIT
+        ):
+            return None, "SSE_CONNECTION_LIMIT"
+        subscriber: queue.Queue = queue.Queue(maxsize=256)
+        _EVENT_SUBSCRIBERS.setdefault(project_key, []).append(subscriber)
+        _EVENT_SUBSCRIBER_TENANTS[subscriber] = tenant_key
+        _EVENT_TENANT_CONNECTIONS[tenant_key] = tenant_count + 1
+        return subscriber, ""
+
+
+def _release_event_subscriber(project_id, subscriber):
+    project_key = str(project_id or "").strip()
+    if not project_key or subscriber is None:
+        return
+    with _EVENT_SUBSCRIBERS_LOCK:
+        tenant_key = _EVENT_SUBSCRIBER_TENANTS.pop(subscriber, None)
+        subscribers = _EVENT_SUBSCRIBERS.get(project_key) or []
+        if subscriber in subscribers:
+            subscribers.remove(subscriber)
+        if not subscribers:
+            _EVENT_SUBSCRIBERS.pop(project_key, None)
+        if not tenant_key:
+            return
+        tenant_count = int(_EVENT_TENANT_CONNECTIONS.get(tenant_key) or 0)
+        if tenant_count <= 1:
+            _EVENT_TENANT_CONNECTIONS.pop(tenant_key, None)
+        else:
+            _EVENT_TENANT_CONNECTIONS[tenant_key] = tenant_count - 1
 
 
 def _project_event_episode_id(project_id, node_id):
@@ -8010,6 +8067,17 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             since = 0
 
+        subscriber, limit_code = _acquire_event_subscriber(project_id)
+        if subscriber is None:
+            return self._send(
+                429,
+                {
+                    "error": "实时连接数已达上限，请关闭多余页面后重试。",
+                    "code": limit_code,
+                },
+                headers={"Retry-After": "5"},
+            )
+
         self.close_connection = True
         try:
             self.send_response(200)
@@ -8021,11 +8089,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"retry: 3000\n: connected\n\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
+            _release_event_subscriber(project_id, subscriber)
             return
 
-        subscriber: queue.Queue = queue.Queue(maxsize=256)
-        with _EVENT_SUBSCRIBERS_LOCK:
-            _EVENT_SUBSCRIBERS.setdefault(project_id, []).append(subscriber)
         try:
             while True:
                 events = store.list_events(project_id, since, 200)
@@ -8058,12 +8124,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             print(f"[events] 推送中断：{exc}", file=sys.stderr)
         finally:
-            with _EVENT_SUBSCRIBERS_LOCK:
-                subscribers = _EVENT_SUBSCRIBERS.get(project_id) or []
-                if subscriber in subscribers:
-                    subscribers.remove(subscriber)
-                if not subscribers:
-                    _EVENT_SUBSCRIBERS.pop(project_id, None)
+            _release_event_subscriber(project_id, subscriber)
 
     def _handle_auth_session(self):
         if _auth_mode() != "accounts":

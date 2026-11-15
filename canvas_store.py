@@ -21,6 +21,7 @@ import pg_compat
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "canvas.db")
 
 _B62 = string.digits + string.ascii_letters
+EVENT_RETENTION_PER_PROJECT = 2000
 
 
 def _rid(n=22):
@@ -29,6 +30,18 @@ def _rid(n=22):
 
 def _now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _trim_project_events(con, project_id):
+    limit = max(1, int(EVENT_RETENTION_PER_PROJECT))
+    con.execute(
+        "DELETE FROM canvas_events "
+        "WHERE project_id=? AND id NOT IN ("
+        "SELECT id FROM canvas_events WHERE project_id=? "
+        f"ORDER BY id DESC LIMIT {limit}"
+        ")",
+        (project_id, project_id),
+    )
 
 
 def _asset_node_identity(metadata, node_type="", title=""):
@@ -4222,11 +4235,9 @@ def append_event(project_id, kind, node_id="", payload=None):
         )
         event_id = int(cur.lastrowid or 0)
         if event_id > 0:
-            # 只保留最近 2000 条：够补发一次断线，也不会让表无限增长
-            con.execute(
-                "DELETE FROM canvas_events WHERE project_id=? AND id<=?",
-                (project_id, event_id - 2000),
-            )
+            # Keep a per-project replay window even when other projects create
+            # a large number of events between two writes for this project.
+            _trim_project_events(con, project_id)
         return event_id
 
     # 每次生成进度/完成都会打一行，是全库最热的写路径之一，必须走统一重试。
@@ -6174,10 +6185,7 @@ def commit_generation_terminal(
         )
         event_id = int(event_cursor.lastrowid or 0)
         if event_id > 0:
-            con.execute(
-                "DELETE FROM canvas_events WHERE project_id=? AND id<=?",
-                (project_id, event_id - 2000),
-            )
+            _trim_project_events(con, project_id)
         result.update({
             "committed": True,
             "reason": "",
@@ -6473,10 +6481,7 @@ def _resolve_generation_task_failed_atomic(
             )
             event_id = int(event_cursor.lastrowid or 0)
             if event_id > 0:
-                con.execute(
-                    "DELETE FROM canvas_events WHERE project_id=? AND id<=?",
-                    (project_id, event_id - 2000),
-                )
+                _trim_project_events(con, project_id)
 
         audit_event_id = ""
         if audit_action:
