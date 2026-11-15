@@ -5,6 +5,7 @@ import json
 import urllib.request
 
 import psycopg
+from psycopg import sql
 
 
 def get_json(url):
@@ -26,21 +27,42 @@ def main():
     }
     try:
         health = get_json(args.base.rstrip("/") + "/healthz")
-        metrics = get_json(args.base.rstrip("/") + "/api/metrics")
-        report["checks"]["health"] = bool(health)
-        report["checks"]["metrics"] = isinstance(metrics, dict)
-        report["checks"]["activeTasksStable"] = int(
-            metrics.get("activeTasks") or 0
-        ) >= 0
+        report["checks"]["health"] = bool(
+            isinstance(health, dict) and health.get("ok")
+        )
+        active_tasks = 0
         with psycopg.connect(args.database_url) as connection:
-            row = connection.execute(
-                "SELECT EXISTS ("
-                "SELECT 1 FROM information_schema.schemata "
-                "WHERE schema_name LIKE 'tenant_%'"
-                ")"
-            ).fetchone()
-            report["checks"]["tenantSchemasPresent"] = bool(row[0])
-        commit = str(metrics.get("releaseCommit") or "").strip()
+            schemas = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT schema_name "
+                    "FROM information_schema.schemata "
+                    "WHERE schema_name LIKE 'tenant_%' "
+                    "ORDER BY schema_name"
+                ).fetchall()
+            ]
+            for schema in schemas:
+                table = connection.execute(
+                    "SELECT to_regclass(%s)",
+                    (f"{schema}.generation_tasks",),
+                ).fetchone()
+                if not table or not table[0]:
+                    continue
+                active_tasks += int(
+                    connection.execute(
+                        sql.SQL(
+                            "SELECT COUNT(*) FROM {}.generation_tasks "
+                            "WHERE status IN "
+                            "('queued','submitting','running')"
+                        ).format(sql.Identifier(schema))
+                    ).fetchone()[0]
+                    or 0
+                )
+        report["tenantSchemas"] = schemas
+        report["checks"]["tenantSchemasPresent"] = bool(schemas)
+        report["activeTasks"] = active_tasks
+        report["checks"]["noActiveTasksAtCutover"] = active_tasks == 0
+        commit = str(health.get("releaseCommit") or "").strip()
         report["deployedCommitReadback"] = commit
         report["checks"]["commitMatches"] = (
             commit == args.expected_commit
