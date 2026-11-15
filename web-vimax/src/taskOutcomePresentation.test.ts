@@ -1,5 +1,8 @@
 import {describe, expect, it} from 'vitest';
-import {taskOutcomePresentation} from './taskOutcomePresentation';
+import {
+  primaryRecoveryAction,
+  taskOutcomePresentation,
+} from './taskOutcomePresentation';
 
 describe('task outcome presentation', () => {
   it('keeps a disconnected historical paid submission pending', () => {
@@ -176,5 +179,25 @@ describe('task outcome presentation', () => {
     expect(result.outcomePending).toBe(true);
     expect(result.statusLabel).toBe('结果无法确认');
     expect(result.canRegenerate).toBe(true);
+  });
+
+  it.each([
+    ['provider account overdue', '供应商账户欠费，余额不足', 'check-provider'],
+    ['local validation', '参考素材未就绪：角色图缺失', 'retry'],
+    ['missing local media', '本地生成文件已不存在，无法补写画布', 'recover-local-result'],
+    ['uncertain interrupted', '结果待确认', 'mark-failed'],
+  ] as const)('maps %s to one recovery action', (_label, error, action) => {
+    expect(primaryRecoveryAction({
+      status: error === '结果待确认' ? 'interrupted' : 'failed',
+      phase: error === '结果待确认' ? '结果待确认' : '生成失败',
+      error,
+      outcome: error === '结果待确认'
+        ? {
+            phase: 'unknown',
+            regenerate: 'confirm',
+            reason: 'provider_outcome_unknown',
+          }
+        : undefined,
+    })).toBe(action);
   });
 });

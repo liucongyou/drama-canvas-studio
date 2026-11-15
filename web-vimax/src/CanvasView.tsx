@@ -145,7 +145,6 @@ import {
 import {useDialogFocusTrap} from './useDialogFocusTrap';
 import {dialog} from './GDialog';
 import {taskOutcomePresentation} from './taskOutcomePresentation';
-import {manualTaskResolutionAvailable} from './manualTaskResolution';
 import {qualityFailureDetails, qualityFailureSummary} from './qualityReportPresentation';
 import {
   generationDurationLabel,
@@ -166,6 +165,7 @@ import {
   createPromptCommitController,
   PROMPT_COMMIT_DELAY_MS,
 } from './canvas/PromptEditor';
+import {TaskRecoveryActions} from './canvas/TaskRecoveryActions';
 import {
   inheritedGenerationParams,
   inheritModelParams,
@@ -19693,19 +19693,12 @@ function CanvasViewInner({
                   {generationTasks.map((task) => {
                     const node = mediaNodes.find((item) => item.id === task.node_id);
                     const taskOutcome = taskOutcomePresentation(task);
+                    const statusLabel = taskOutcome.statusLabel;
                     const taskError = ['queued', 'submitting', 'running'].includes(task.status)
                       ? ''
                       : taskOutcome.outcomePending
                         ? ''
                         : friendlyTaskError(task.error);
-                    const {
-                      localBlocked,
-                      outcomeUncertain,
-                      outcomePending,
-                      statusLabel,
-                      canRegenerate,
-                    } = taskOutcomePresentation(task);
-                    const canResolveManually = manualTaskResolutionAvailable(task);
                     return (
                       <article
                         key={task.id}
@@ -19749,6 +19742,46 @@ function CanvasViewInner({
                               setTaskCenterOpen(false);
                             }}>定位节点</button>
                           )}
+                          <TaskRecoveryActions
+                            task={task}
+                            nodeAvailable={Boolean(node)}
+                            onRetry={() => {
+                              if (!node) return;
+                              setTaskCenterOpen(false);
+                              onGenerateMediaNode(node);
+                            }}
+                            onSwitchModel={() => {
+                              setToast('请在节点弹窗中切换兼容模型后再生成');
+                            }}
+                            onCheckProvider={() => {
+                              setToast('请检查供应商余额、额度与 API Key 配置');
+                            }}
+                            onRecoverLocalResult={() => {
+                              if (node) recoverMissingMedia(node.id);
+                            }}
+                            onMarkFailed={() => {
+                              void dialog.confirm({
+                                title: '确认原任务失败？',
+                                message: '仅在确认原任务不会再有结果时继续。标记失败后会允许重新生成，系统不会自动重提。',
+                                confirmText: '确认失败',
+                                cancelText: '返回查看',
+                                tone: 'danger',
+                              }).then((confirmed) => {
+                                if (!confirmed) return;
+                                return resolveGenerationTask(task.id)
+                                  .then((result) => {
+                                    setGenerationTasks((prev) => prev.map((item) => (
+                                      item.id === task.id ? result.task : item
+                                    )));
+                                    void refreshWorkspaceFactsRef.current().catch(() => {});
+                                    setToast('任务已人工确认失败，现在可以重新生成');
+                                  })
+                                  .catch((error) => setToast(
+                                    error instanceof Error ? error.message : '任务确认失败',
+                                  ));
+                              });
+                            }}
+                          />
                           {task.status === 'queued' && (
                             <button type="button" onClick={() => {
                               void cancelGenerationTask(task.id)
@@ -19769,35 +19802,6 @@ function CanvasViewInner({
                                 })
                                 .catch((error) => setToast(error instanceof Error ? error.message : '取消任务失败'));
                             }}>取消排队</button>
-                          )}
-                          {canResolveManually && (
-                            <button type="button" onClick={async () => {
-                              const confirmed = await dialog.confirm({
-                                title: '确认原任务失败？',
-                                message: '仅在确认原任务不会再有结果时继续。标记失败后会允许重新生成，系统不会自动重提。',
-                                confirmText: '确认失败',
-                                cancelText: '返回查看',
-                                tone: 'danger',
-                              });
-                              if (!confirmed) return;
-                              void resolveGenerationTask(task.id)
-                                .then((result) => {
-                                  setGenerationTasks((prev) => prev.map((item) => (
-                                    item.id === task.id ? result.task : item
-                                  )));
-                                  void refreshWorkspaceFactsRef.current().catch(() => {});
-                                  setToast('任务已人工确认失败，现在可以重新生成');
-                                })
-                                .catch((error) => setToast(
-                                  error instanceof Error ? error.message : '任务确认失败',
-                                ));
-                            }}>确认失败</button>
-                          )}
-                          {node && canRegenerate && (
-                            <button type="button" className="is-retry" onClick={() => {
-                              setTaskCenterOpen(false);
-                              onGenerateMediaNode(node);
-                            }}>重新生成</button>
                           )}
                         </div>
                       </article>

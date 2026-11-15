@@ -9646,6 +9646,15 @@ body,
 }
 .canvas-task-item-actions button:hover{background:#303035;color:#fff}
 .canvas-task-item-actions button.is-retry{background:#343438;color:#f1f1f3}
+.canvas-task-item-actions button.canvas-task-recovery-action{
+  display:inline-flex;align-items:center;gap:5px;background:#343438;color:#f1f1f3;
+}
+.canvas-task-item-actions button.canvas-task-recovery-action.is-check-provider{
+  border-color:#66503a;color:#e6c49b;
+}
+.canvas-task-item-actions button.canvas-task-recovery-action.is-recover-local-result{
+  border-color:#3f5c55;color:#b9ddd3;
+}
 @media (max-width:560px){
   .canvas-task-center{top:52px;right:8px;width:calc(100vw - 16px)}
 }

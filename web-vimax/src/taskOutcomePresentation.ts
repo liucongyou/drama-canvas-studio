@@ -21,6 +21,13 @@ export type TaskOutcomePresentation = {
   canRegenerate: boolean;
 };
 
+export type RecoveryAction =
+  | 'retry'
+  | 'switch-model'
+  | 'check-provider'
+  | 'recover-local-result'
+  | 'mark-failed';
+
 const LOCAL_VALIDATION_RE =
   /参考素材未就绪|参考素材缺失|引用节点不存在|提示词为空|当前模型最多/;
 const UNCERTAIN_RE =
@@ -118,4 +125,48 @@ export function taskOutcomePresentation(
       ? backendRegenerate !== 'blocked'
       : terminal,
   };
+}
+
+export function primaryRecoveryAction(
+  task: TaskOutcomeLike,
+): RecoveryAction | null {
+  const errorText = String(task.error || '');
+  const deliveryStatus = String(task.delivery_status || '').toLowerCase();
+  const backendOutcome = task.outcome;
+  if (backendOutcome?.regenerate === 'blocked') return null;
+  if (task.status === 'succeeded') {
+    if (deliveryStatus === 'unrecoverable' || deliveryStatus === 'failed') {
+      return 'recover-local-result';
+    }
+    return null;
+  }
+  if (['queued', 'submitting', 'running'].includes(task.status)) return null;
+  if (
+    task.error_kind === 'local_validation'
+    || LOCAL_VALIDATION_RE.test(errorText)
+  ) {
+    return 'retry';
+  }
+  if (/欠费|余额不足|额度不足|AccountOverdue|API Key 无效/i.test(errorText)) {
+    return 'check-provider';
+  }
+  if (
+    deliveryStatus === 'unrecoverable'
+    || /媒体源缺失|本地文件.*不存在|本地生成文件.*不存在/.test(errorText)
+  ) {
+    return 'recover-local-result';
+  }
+  if (
+    task.status === 'interrupted'
+    && (
+      task.phase === '结果待确认'
+      || backendOutcome?.reason === 'provider_outcome_unknown'
+    )
+  ) {
+    return 'mark-failed';
+  }
+  if (/当前模型|模型不支持|切换模型/.test(errorText)) {
+    return 'switch-model';
+  }
+  return 'retry';
 }
