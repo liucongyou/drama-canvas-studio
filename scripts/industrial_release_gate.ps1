@@ -42,12 +42,15 @@ try {
   }
   Invoke-Step 'agentTests' {
     Push-Location (Join-Path $Workspace 'agent')
+    $PreviousTestPostgresUrl = $env:TEST_POSTGRES_URL
     try {
+      $env:TEST_POSTGRES_URL = $DatabaseUrl
       & $AgentPython -m pytest tests -q
       if ($LASTEXITCODE -ne 0) {
         throw "agentTests failed with exit code $LASTEXITCODE"
       }
     } finally {
+      $env:TEST_POSTGRES_URL = $PreviousTestPostgresUrl
       Pop-Location
     }
   }
