@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 import tenant_context
 import generation_outcome
 import pg_compat
+import telemetry
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "canvas.db")
 
@@ -1156,6 +1157,32 @@ def _connect():
             con.execute(
             "CREATE INDEX IF NOT EXISTS idx_audit_events_created "
             "ON audit_events(created_at DESC)"
+            )
+            con.execute(
+            """CREATE TABLE IF NOT EXISTS frontend_error_events(
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT,
+                account_id TEXT,
+                message TEXT,
+                stack TEXT,
+                code TEXT,
+                project_id TEXT,
+                episode_id TEXT,
+                node_id TEXT,
+                task_id TEXT,
+                route TEXT,
+                user_agent TEXT,
+                release_version TEXT,
+                created_at TEXT
+            )"""
+            )
+            con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_frontend_errors_created "
+            "ON frontend_error_events(created_at DESC)"
+            )
+            con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_frontend_errors_scope "
+            "ON frontend_error_events(project_id,node_id,task_id,created_at DESC)"
             )
             # 画布事件的持久化日志：SSE 断线重连靠它补发，轮询降级后靠它对账。
             # 只保留 id 自增，客户端用 Last-Event-ID 续传，不需要按时间排序。
@@ -7586,6 +7613,123 @@ def _redact_audit_value(value):
     return value
 
 
+def record_frontend_error(payload, *, account_id=""):
+    """Persist a sanitized browser error for the current tenant."""
+    clean = telemetry.sanitize_frontend_telemetry(payload)
+    if not clean:
+        return None
+    tenant_id = tenant_context.current_tenant_id()
+    event_id = _rid(22)
+    created_at = clean.get("createdAt") or _now_iso()
+
+    def write(con):
+        con.execute(
+            "INSERT INTO frontend_error_events("
+            "id,tenant_id,account_id,message,stack,code,project_id,"
+            "episode_id,node_id,task_id,route,user_agent,release_version,"
+            "created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                event_id,
+                tenant_id,
+                str(account_id or ""),
+                clean.get("message") or "",
+                clean.get("stack") or "",
+                clean.get("code") or "",
+                clean.get("projectId") or "",
+                clean.get("episodeId") or "",
+                clean.get("nodeId") or "",
+                clean.get("taskId") or "",
+                clean.get("route") or "",
+                clean.get("userAgent") or "",
+                clean.get("releaseVersion") or "",
+                created_at,
+            ),
+        )
+        return event_id
+
+    return _run_write_transaction(write)
+
+
+def list_frontend_errors(limit=100, project_id="", node_id="", task_id=""):
+    con = _connect()
+    clauses = ["tenant_id=?"]
+    values = [tenant_context.current_tenant_id()]
+    if project_id:
+        clauses.append("project_id=?")
+        values.append(str(project_id))
+    if node_id:
+        clauses.append("node_id=?")
+        values.append(str(node_id))
+    if task_id:
+        clauses.append("task_id=?")
+        values.append(str(task_id))
+    rows = con.execute(
+        "SELECT id,tenant_id,account_id,message,stack,code,project_id,"
+        "episode_id,node_id,task_id,route,user_agent,release_version,"
+        "created_at FROM frontend_error_events WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY created_at DESC,rowid DESC LIMIT ?",
+        (*values, max(1, min(int(limit or 100), 500))),
+    ).fetchall()
+    con.close()
+    columns = [
+        "id",
+        "tenantId",
+        "accountId",
+        "message",
+        "stack",
+        "code",
+        "projectId",
+        "episodeId",
+        "nodeId",
+        "taskId",
+        "route",
+        "userAgent",
+        "releaseVersion",
+        "createdAt",
+    ]
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def rotate_frontend_errors(*, max_rows=10_000, ttl_days=30):
+    tenant_id = tenant_context.current_tenant_id()
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=max(1, int(ttl_days)))
+    ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    deleted = 0
+
+    def write(con):
+        nonlocal deleted
+        deleted += int(
+            con.execute(
+                "DELETE FROM frontend_error_events "
+                "WHERE tenant_id=? AND created_at<?",
+                (tenant_id, cutoff),
+            ).rowcount or 0
+        )
+        overflow_ids = [
+            row[0]
+            for row in con.execute(
+                "SELECT id FROM frontend_error_events WHERE tenant_id=? "
+                "ORDER BY created_at DESC,rowid DESC LIMIT -1 OFFSET ?",
+                (tenant_id, max(1, int(max_rows))),
+            ).fetchall()
+        ]
+        for offset in range(0, len(overflow_ids), 500):
+            batch = overflow_ids[offset:offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            deleted += int(
+                con.execute(
+                    f"DELETE FROM frontend_error_events WHERE id IN ({placeholders})",
+                    tuple(batch),
+                ).rowcount or 0
+            )
+        return deleted
+
+    _run_write_transaction(write)
+    return deleted
+
+
 def _audit_event_values(
     action,
     *,
@@ -7981,6 +8125,11 @@ def runtime_metrics():
         "SELECT COALESCE(SUM(LENGTH(payload_json)),0) FROM canvas_snapshots"
     ).fetchone()[0] or 0)
     audit_count = int(con.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] or 0)
+    frontend_error_count = int(
+        con.execute(
+            "SELECT COUNT(*) FROM frontend_error_events"
+        ).fetchone()[0] or 0
+    )
     task_rows = con.execute(
         "SELECT status,COUNT(*) FROM generation_tasks GROUP BY status"
     ).fetchall()
@@ -7995,6 +8144,7 @@ def runtime_metrics():
         "snapshots": snapshot_count,
         "snapshotBytes": snapshot_bytes,
         "auditEvents": audit_count,
+        "frontendErrors": frontend_error_count,
         "tasks": tasks,
         "activeTasks": sum(tasks.get(status, 0) for status in ("queued", "submitting", "running")),
         "oldestActiveTaskAt": oldest_active or "",

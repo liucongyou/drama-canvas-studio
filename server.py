@@ -5908,6 +5908,9 @@ def start_audit_maintenance():
         while True:
             try:
                 deleted = _run_for_active_tenants(store.rotate_audit_events)
+                deleted += _run_for_active_tenants(
+                    store.rotate_frontend_errors
+                )
                 if deleted:
                     print(
                         f"[audit] 轮转清理 {deleted} 条过期审计记录",
@@ -8902,6 +8905,24 @@ class Handler(BaseHTTPRequestHandler):
             if self._admin_session() is None:
                 return
             return self._send(200, store.audit_storage_health())
+        if path == "/api/admin/frontend-errors":
+            if self._admin_session() is None:
+                return
+            params = urllib.parse.parse_qs(parsed.query)
+            current = tenant_context.current()
+            target = current.tenant_id if current else "legacy"
+            try:
+                with _admin_tenant_audit_context(target):
+                    return self._send(200, {
+                        "events": store.list_frontend_errors(
+                            limit=(params.get("limit") or ["100"])[0],
+                            project_id=(params.get("projectId") or [""])[0],
+                            node_id=(params.get("nodeId") or [""])[0],
+                            task_id=(params.get("taskId") or [""])[0],
+                        ),
+                    })
+            except ValueError as exc:
+                return self._send(404, {"error": str(exc)})
         m = re.match(r"^/api/admin/tenants/([^/]+)/audit$", path)
         if m:
             if self._admin_session() is None:
@@ -8914,6 +8935,24 @@ class Handler(BaseHTTPRequestHandler):
                         200,
                         store.list_audit_events(**filters),
                     )
+            except ValueError as exc:
+                return self._send(404, {"error": str(exc)})
+        m = re.match(r"^/api/admin/tenants/([^/]+)/frontend-errors$", path)
+        if m:
+            if self._admin_session() is None:
+                return
+            tenant_id = unquote(m.group(1))
+            params = urllib.parse.parse_qs(parsed.query)
+            try:
+                with _admin_tenant_audit_context(tenant_id):
+                    return self._send(200, {
+                        "events": store.list_frontend_errors(
+                            limit=(params.get("limit") or ["100"])[0],
+                            project_id=(params.get("projectId") or [""])[0],
+                            node_id=(params.get("nodeId") or [""])[0],
+                            task_id=(params.get("taskId") or [""])[0],
+                        ),
+                    })
             except ValueError as exc:
                 return self._send(404, {"error": str(exc)})
         if path == "/api/metrics":
@@ -9151,6 +9190,41 @@ class Handler(BaseHTTPRequestHandler):
     def _do_post(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        if path == "/api/telemetry/frontend-errors":
+            session = self._current_session()
+            if _auth_mode() == "accounts" and not session:
+                return self._send(
+                    401,
+                    {
+                        "error": "请先登录",
+                        "code": "ACCOUNT_AUTH_REQUIRED",
+                    },
+                )
+            try:
+                body = self._read_json()
+            except RequestBoundaryError:
+                raise
+            except Exception as exc:
+                return self._send(
+                    400,
+                    {
+                        "error": f"前端错误遥测格式无效：{exc}",
+                        "code": "FRONTEND_TELEMETRY_INVALID",
+                    },
+                )
+            event_id = store.record_frontend_error(
+                body,
+                account_id=str((session or {}).get("account_id") or ""),
+            )
+            if not event_id:
+                return self._send(
+                    400,
+                    {
+                        "error": "前端错误遥测缺少可记录的 message",
+                        "code": "FRONTEND_TELEMETRY_INVALID",
+                    },
+                )
+            return self._send(202, {"ok": True, "id": event_id})
         if agent_gateway.is_agent_browser_path(path):
             return agent_gateway.proxy_agent(self)
         internal_feed = re.match(

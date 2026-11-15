@@ -15,6 +15,7 @@ import {Component, useEffect, useState, type ErrorInfo, type ReactNode} from 're
 import {dialog} from './GDialog';
 import {AlertCircle, AlertTriangle, CheckCircle2, Copy, Info, RefreshCw, RotateCcw, X} from 'lucide-react';
 import {notify, subscribeToToasts, type ToastMessage} from './toast';
+import {reportFrontendTelemetry} from './telemetry';
 
 /** 各作用域最近一次错误，供"复制错误详情"使用（刷新后仍在 sessionStorage 里） */
 const LAST_ERROR_KEY = 'vimax.lastError';
@@ -83,6 +84,11 @@ export class ErrorBoundary extends Component<BoundaryProps, BoundaryState> {
     const stack = `${detail}\n\n--- componentStack ---${info.componentStack || ''}`;
     this.setState({stack});
     saveLastError(this.props.scope || 'root', message, stack);
+    void reportFrontendTelemetry({
+      message: `${this.props.scope || 'root'}: ${message}`,
+      stack,
+      code: 'REACT_RENDER_ERROR',
+    });
     // 控制台保留完整信息，方便贴给我排查
     console.error(`[ErrorBoundary:${this.props.scope || 'root'}]`, error, info);
     notify(`界面异常：${message}`, 'error', 'runtime-error');
@@ -248,6 +254,11 @@ export function installGlobalErrorHandlers() {
     if ((lastAt.get(message) || 0) > now - 1500) return;
     lastAt.set(message, now);
     saveLastError('root', message, raw);
+    void reportFrontendTelemetry({
+      message: `${prefix}: ${message}`,
+      stack: raw,
+      code: 'GLOBAL_RUNTIME_ERROR',
+    });
     notify(`${prefix}：${message}`, 'error', 'runtime-error');
   };
 
