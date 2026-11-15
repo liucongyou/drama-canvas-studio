@@ -261,7 +261,16 @@ systemctl is-active --quiet drama-canvas-agent.service
 systemctl is-active --quiet drama-canvas-worker.service
 systemctl is-active --quiet drama-canvas-yj.service
 test "$(sha256sum "$APP/web-vimax/dist/index.html" | awk '{print $1}')" = "$EXPECTED_INDEX_SHA"
-curl -fsS --max-time 20 https://yjapi.pduoduo.vip/api/auth/session >/dev/null
+public_ready=0
+for attempt in $(seq 1 30); do
+  if curl -fsS --max-time 20 \
+    https://yjapi.pduoduo.vip/api/auth/session >/dev/null; then
+    public_ready=1
+    break
+  fi
+  sleep 2
+done
+test "$public_ready" -eq 1
 
 CANVAS_DB_BACKEND=postgres \
 CANVAS_MULTI_TENANT=1 \
