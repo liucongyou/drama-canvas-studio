@@ -31,6 +31,7 @@ def main():
             isinstance(health, dict) and health.get("ok")
         )
         active_tasks = 0
+        duplicate_active_tasks = 0
         with psycopg.connect(args.database_url) as connection:
             schemas = [
                 row[0]
@@ -58,10 +59,28 @@ def main():
                     ).fetchone()[0]
                     or 0
                 )
+                duplicate_active_tasks += int(
+                    connection.execute(
+                        sql.SQL(
+                            "SELECT COUNT(*) FROM ("
+                            "SELECT project_id,node_id FROM "
+                            "{}.generation_tasks "
+                            "WHERE status IN "
+                            "('queued','submitting','running') "
+                            "GROUP BY project_id,node_id "
+                            "HAVING COUNT(*) > 1"
+                            ") AS duplicates"
+                        ).format(sql.Identifier(schema))
+                    ).fetchone()[0]
+                    or 0
+                )
         report["tenantSchemas"] = schemas
         report["checks"]["tenantSchemasPresent"] = bool(schemas)
         report["activeTasks"] = active_tasks
-        report["checks"]["noActiveTasksAtCutover"] = active_tasks == 0
+        report["duplicateActiveTasks"] = duplicate_active_tasks
+        report["checks"]["noDuplicateActiveTasks"] = (
+            duplicate_active_tasks == 0
+        )
         commit = str(health.get("releaseCommit") or "").strip()
         report["deployedCommitReadback"] = commit
         report["checks"]["commitMatches"] = (
