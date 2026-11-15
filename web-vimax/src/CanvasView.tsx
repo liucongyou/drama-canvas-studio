@@ -8859,6 +8859,13 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
   const knownCost = selected.reduce((sum, item) => sum + Number(item.cost || 0), 0);
   const unknownCostCount = selected.filter((item) => item.cost === null).length;
   const currency = pricingCurrencySymbol(selected.find((item) => item.model)?.model?.pricing?.currency);
+  const requestClose = () => {
+    if (batchRunning) {
+      setBatchError('批量任务正在提交，请等待完成或点击“停止剩余”');
+      return;
+    }
+    onClose();
+  };
 
   const toggleNode = (candidate: BatchGenerationCandidate) => {
     if (candidate.state !== 'ready') return;
@@ -8871,7 +8878,7 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
   };
 
   return (
-    <div className="canvas-batch-gen-backdrop" onClick={onClose}>
+    <div className="canvas-batch-gen-backdrop" onClick={requestClose}>
       <article
         ref={dialogRef}
         tabIndex={-1}
@@ -8880,6 +8887,11 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
         aria-modal="true"
         aria-label="批量生成"
         onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          requestClose();
+        }}
       >
         <header>
           <span className="canvas-batch-gen-title">
@@ -8889,7 +8901,15 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
               <small>只会提交勾选且依赖就绪的节点</small>
             </span>
           </span>
-          <button type="button" onClick={onClose} aria-label="关闭批量生成"><X size={15} strokeWidth={2} aria-hidden="true" /></button>
+          <button
+            type="button"
+            onClick={requestClose}
+            aria-label="关闭批量生成"
+            aria-disabled={batchRunning}
+            title={batchRunning ? '批量提交中，请先等待或停止剩余' : '关闭'}
+          >
+            <X size={15} strokeWidth={2} aria-hidden="true" />
+          </button>
         </header>
 
         <div className="canvas-batch-gen-summary">
@@ -8956,7 +8976,7 @@ function BatchGenerateDialog({targets, pool, edges, catalog, tasks, busyNodeIds,
         <footer>
           <span className="canvas-batch-gen-cost">
             <span className="canvas-batch-gen-selection">已选 <b>{selected.length}</b> 项</span>
-            <em>
+            <em role="status" aria-live="polite">
               {batchRunning
                 ? `正在提交 ${batchProgress.completed}/${batchProgress.total}，已受理 ${batchProgress.started}`
                 : batchError
