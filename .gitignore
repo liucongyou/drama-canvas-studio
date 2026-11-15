@@ -11,6 +11,7 @@ logs/
 .tmp-pg-shadow/
 recovered/
 .screens/
+.pytest-runtime/
 .workbuddy/
 __pycache__/
 *.py[cod]

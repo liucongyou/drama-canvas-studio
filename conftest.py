@@ -9,7 +9,11 @@ from pathlib import Path
 import pytest
 
 
-TEST_ROOT = Path(tempfile.mkdtemp(prefix="drama-canvas-pytest-"))
+TEST_BASE = Path(__file__).resolve().parent / ".pytest-runtime"
+TEST_BASE.mkdir(parents=True, exist_ok=True)
+TEST_ROOT = Path(
+    tempfile.mkdtemp(prefix="drama-canvas-pytest-", dir=TEST_BASE)
+)
 TEST_MASTER_KEY = "base64:" + base64.urlsafe_b64encode(
     b"drama-canvas-test-master-key-001"
 ).decode("ascii")
@@ -86,4 +90,5 @@ def reset_isolated_test_state():
 
 @atexit.register
 def _cleanup_test_root():
-    shutil.rmtree(TEST_ROOT, ignore_errors=True)
+    if TEST_ROOT.parent == TEST_BASE:
+        shutil.rmtree(TEST_ROOT, ignore_errors=True)
