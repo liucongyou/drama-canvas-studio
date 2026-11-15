@@ -354,19 +354,15 @@ try {
     (buttons) => buttons.length,
   );
   for (const index of [0, 1].slice(0, historyButtonCount)) {
-    const point = await page.evaluate((buttonIndex) => {
+    const clicked = await page.evaluate((buttonIndex) => {
       const button = document.querySelectorAll(
         '.canvas-media-version-count',
       )[buttonIndex];
-      if (!button) return null;
-      const rect = button.getBoundingClientRect();
-      return {
-        x: rect.left + rect.width / 2,
-        y: rect.top + rect.height / 2,
-      };
+      if (!(button instanceof HTMLButtonElement)) return false;
+      button.click();
+      return true;
     }, index);
-    if (!point) break;
-    await page.mouse.click(point.x, point.y);
+    if (!clicked) break;
     await page.waitForSelector('.canvas-media-version-pop', {timeout: 5_000});
     historyMenus += 1;
     await page.keyboard.press('Escape');
