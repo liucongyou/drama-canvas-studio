@@ -358,6 +358,8 @@ feat: add operational readiness and metrics
 
 ## Task 7: Add Multi-Process Failure and Soak Harness
 
+**Status:** Complete
+
 **Files**
 
 - Create: `scripts/multiprocess_stress.py`

@@ -17,6 +17,7 @@ $Report = [ordered]@{
   build = 'pending'
   migrationIdempotent = $false
   stress = 'pending'
+  multiprocessStress = 'pending'
   browser = 'pending'
   gatePassed = $false
 }
@@ -93,6 +94,23 @@ try {
   ) | ConvertFrom-Json
   if (-not $Stress.passed) { throw 'Stress report did not pass' }
   $Report.stress = 'pass'
+
+  $MultiProcessOutput = Join-Path $Workspace (
+    "artifacts\multiprocess-gate-" + (Get-Date -Format 'yyyyMMdd-HHmmss')
+  )
+  Invoke-Step 'multiprocessSmoke' {
+    & $Python -X utf8 scripts\multiprocess_stress.py `
+      --url $DatabaseUrl `
+      --tenants 1 `
+      --tasks-per-tenant 1 `
+      --workers 2 `
+      --worker-concurrency 1 `
+      --lease-seconds 15 `
+      --provider-delay 0.5 `
+      --timeout-seconds 60 `
+      --output $MultiProcessOutput
+  }
+  $Report.multiprocessStress = 'pass'
 
   if (-not $env:CANVAS_PASSWORD) {
     throw 'CANVAS_PASSWORD is required for the industrial browser gate'

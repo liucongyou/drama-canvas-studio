@@ -596,6 +596,10 @@ if GENERATION_EXECUTION_MODE not in {"inline", "worker"}:
     raise RuntimeError(
         "CANVAS_GENERATION_EXECUTION_MODE 必须是 inline 或 worker"
     )
+SKIP_STARTUP_BACKFILLS = os.environ.get(
+    "CANVAS_SKIP_STARTUP_BACKFILLS",
+    "",
+).strip() == "1"
 
 
 def release_commit():
@@ -7827,6 +7831,19 @@ class Handler(BaseHTTPRequestHandler):
             return None
         parsed = urlparse(self.path)
         path = parsed.path
+        if (
+            path in {"/healthz", "/readyz", "/metrics"}
+            and self.command in {"GET", "HEAD"}
+        ):
+            client_ip = (
+                str(self.client_address[0])
+                if self.client_address
+                else ""
+            )
+            if client_ip in {"127.0.0.1", "::1"}:
+                return nullcontext()
+            self._send(404, {"error": "资源不存在"})
+            return None
         if agent_gateway.is_agent_internal_path(path):
             if agent_gateway.allow_unsigned_local_agent():
                 if not agent_gateway.loopback_client(self):
@@ -13617,38 +13634,39 @@ def main():
                 f"[schema] migrated {len(migrated_tenants)} tenant databases",
                 file=sys.stderr,
             )
-        delivery_backfilled = _run_for_active_tenants(
-            store.backfill_generation_delivery_status
-        )
-        if delivery_backfilled:
-            print(
-                f"[schema] backfilled {delivery_backfilled} task delivery receipts",
-                file=sys.stderr,
+        if not SKIP_STARTUP_BACKFILLS:
+            delivery_backfilled = _run_for_active_tenants(
+                store.backfill_generation_delivery_status
             )
-        ignored_duplicates = _run_for_active_tenants(
-            store.backfill_ignored_duplicate_generation_tasks
-        )
-        if ignored_duplicates:
-            print(
-                f"[schema] normalized {ignored_duplicates} ignored duplicate tasks",
-                file=sys.stderr,
+            if delivery_backfilled:
+                print(
+                    f"[schema] backfilled {delivery_backfilled} task delivery receipts",
+                    file=sys.stderr,
+                )
+            ignored_duplicates = _run_for_active_tenants(
+                store.backfill_ignored_duplicate_generation_tasks
             )
-        evidenced_delivery = _run_for_active_tenants(
-            store.backfill_succeeded_delivery_evidence
-        )
-        if evidenced_delivery:
-            print(
-                f"[schema] closed {evidenced_delivery} evidenced delivery receipts",
-                file=sys.stderr,
+            if ignored_duplicates:
+                print(
+                    f"[schema] normalized {ignored_duplicates} ignored duplicate tasks",
+                    file=sys.stderr,
+                )
+            evidenced_delivery = _run_for_active_tenants(
+                store.backfill_succeeded_delivery_evidence
             )
-        pruned_snapshots = _run_for_active_tenants(
-            store.prune_auto_snapshots
-        )
-        if pruned_snapshots:
-            print(
-                f"[schema] pruned {pruned_snapshots} excess auto snapshots",
-                file=sys.stderr,
+            if evidenced_delivery:
+                print(
+                    f"[schema] closed {evidenced_delivery} evidenced delivery receipts",
+                    file=sys.stderr,
+                )
+            pruned_snapshots = _run_for_active_tenants(
+                store.prune_auto_snapshots
             )
+            if pruned_snapshots:
+                print(
+                    f"[schema] pruned {pruned_snapshots} excess auto snapshots",
+                    file=sys.stderr,
+                )
     except Exception as exc:
         print(f"[schema] tenant migration failed: {exc}", file=sys.stderr)
     verify_required_schema_migrations()
