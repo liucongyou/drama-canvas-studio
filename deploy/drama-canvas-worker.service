@@ -10,6 +10,7 @@ Group=www
 WorkingDirectory=/www/wwwroot/yj.pduoduo.vip/app
 EnvironmentFile=/etc/drama-canvas-agent.env
 EnvironmentFile=/etc/drama-canvas-pg.env
+EnvironmentFile=/etc/drama-canvas-worker-plane.env
 Environment=CANVAS_GENERATION_EXECUTION_MODE=worker
 Environment=CANVAS_SCHEMA_MIGRATIONS_REQUIRED=1
 ExecStart=/www/wwwroot/yj.pduoduo.vip/app/.venv/bin/python -u generation_worker.py
@@ -22,6 +23,8 @@ PrivateTmp=true
 ProtectSystem=full
 ReadWritePaths=/www/wwwroot/yj.pduoduo.vip/app/data
 LimitNOFILE=65536
+TasksMax=256
+MemoryMax=1G
 
 [Install]
 WantedBy=multi-user.target

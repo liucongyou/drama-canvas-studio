@@ -27,8 +27,12 @@ def main():
     }
     try:
         health = get_json(args.base.rstrip("/") + "/healthz")
+        ready = get_json(args.base.rstrip("/") + "/readyz")
         report["checks"]["health"] = bool(
             isinstance(health, dict) and health.get("ok")
+        )
+        report["checks"]["ready"] = bool(
+            isinstance(ready, dict) and ready.get("ok")
         )
         active_tasks = 0
         duplicate_active_tasks = 0
@@ -82,9 +86,11 @@ def main():
             duplicate_active_tasks == 0
         )
         commit = str(health.get("releaseCommit") or "").strip()
+        ready_commit = str(ready.get("releaseCommit") or "").strip()
         report["deployedCommitReadback"] = commit
         report["checks"]["commitMatches"] = (
             commit == args.expected_commit
+            and ready_commit == args.expected_commit
         )
         report["ok"] = all(report["checks"].values())
     except Exception as exc:

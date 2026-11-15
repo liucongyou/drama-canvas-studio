@@ -1,107 +1,227 @@
-# Multi-tenant deployment
+# Large Industrial Deployment
 
-The public entrypoint is the Python service in `server.py`. It owns tenant
-routing, account/session validation, project data, provider configuration,
-uploads and generation queue state. The Node/ViMax helper service is not a
-public gateway; it stays on loopback or is omitted from the deployment.
+## Topology
 
-## Required infrastructure
-
-- A base domain, for example `example.com`.
-- Wildcard DNS such as `*.example.com` -> the reverse proxy.
-- A wildcard TLS certificate, or a reverse proxy that obtains certificates for
-  the concrete tenant hosts.
-- A reverse proxy that preserves the original `Host` header.
-- A persistent master key for `CANVAS_MASTER_KEY`. Losing it makes every
-  encrypted provider and TOS credential unreadable.
-
-The recommended account-mode topology is one frontend host and one API host:
+Phase one uses three roles:
 
 ```text
-yj.example.com       -> static frontend, login page and canvas
-yjapi.example.com    -> session/auth and all API endpoints
+reverse proxy
+  -> drama-canvas-yj.service       API and static frontend
+  -> drama-canvas-worker.service   durable generation queue workers
+  -> drama-canvas-agent.service    Agent sidecar
+          |
+          v
+      PostgreSQL 16
 ```
 
-Set `CANVAS_AUTH_MODE=accounts`, `CANVAS_API_HOST=yjapi.example.com`,
-`CANVAS_FRONTEND_ORIGIN=https://yj.example.com`, and
-`CANVAS_ALLOWED_ORIGINS=https://yj.example.com`. The API returns CORS headers
-only for the configured frontend origin.
+API and Worker are independent processes. They may run on one host initially,
+but production supports placing them on different hosts without changing code
+or HTTP contracts.
 
-## Process setup
+Production is PostgreSQL-only. SQLite is allowed only in isolated tests.
 
-Install Python 3.11+ and install `requirements.txt`. Set the variables from
-`tenant.env.example`, then start:
+## Required Infrastructure
 
-```powershell
-py -m pip install -r requirements.txt
-py server.py
-```
+- PostgreSQL 16 with a dedicated application role.
+- A reverse proxy preserving `Host`, `X-Forwarded-Proto` and response headers.
+- A persistent `CANVAS_MASTER_KEY`.
+- The same release commit on API and Worker hosts.
+- Shared tenant media storage when API and Worker are on different hosts.
+- Loopback-only scraping access to `/metrics`.
 
-`server.py` binds to `127.0.0.1:8890`. Do not expose that port directly. Put
-Caddy, Nginx, or another TLS reverse proxy in front of it. The main domain must
-remain a `404`; only tenant subdomains should reach the application.
+The API and Worker use the same `DATABASE_URL`, tenant registry, control schema
+and release migration version.
 
-## Tenant lifecycle
+## Environment Files
 
-Run the local administration command on the server:
-
-```powershell
-py tenant_admin.py create alpha --name "Alpha Studio"
-py tenant_admin.py account-create alpha alice
-py tenant_admin.py invite alpha --ttl-hours 24
-```
-
-The account command prompts for a password. If the password is lost:
-
-```powershell
-py tenant_admin.py account-password acc_xxx
-py tenant_admin.py account-disable acc_xxx
-py tenant_admin.py account-enable acc_xxx
-```
-
-The invite URL is an alternative one-time onboarding path. It is printed once
-and is single-use. If it expires or is lost:
-
-```powershell
-py tenant_admin.py rotate-invite alpha --ttl-hours 24
-```
-
-Other commands:
-
-```powershell
-py tenant_admin.py list
-py tenant_admin.py disable alpha
-py tenant_admin.py enable alpha
-py tenant_admin.py cleanup
-```
-
-## First start and legacy migration
-
-When `CANVAS_MULTI_TENANT=1`, the first start creates the owner tenant and
-copies the existing legacy data into:
+Production systemd services use:
 
 ```text
-<CANVAS_TENANT_DATA_ROOT>/tenants/owner/canvas.db
-<CANVAS_TENANT_DATA_ROOT>/tenants/owner/uploads/
-<CANVAS_TENANT_DATA_ROOT>/tenants/owner/config.local.json
+/etc/drama-canvas-agent.env
+/etc/drama-canvas-pg.env
+/etc/drama-canvas-worker-plane.env
 ```
 
-The legacy files are left in place as a recovery copy. New tenants receive an
-empty project database and their own empty provider/TOS configuration.
+`drama-canvas-worker-plane.env`:
 
-## Isolation guarantees
+```text
+CANVAS_GENERATION_EXECUTION_MODE=worker
+CANVAS_SCHEMA_MIGRATIONS_REQUIRED=1
+CANVAS_PG_POOL_MAX=24
+CANVAS_PG_POOL_IDLE_MAX=8
+CANVAS_PG_POOL_WAIT_TIMEOUT_MS=10000
+CANVAS_GENERATION_GLOBAL_CONCURRENCY=30
+CANVAS_GENERATION_TENANT_CONCURRENCY=30
+CANVAS_GENERATION_PROVIDER_CONCURRENCY=20
+CANVAS_WORKER_CONCURRENCY=4
+CANVAS_WORKER_POLL_SECONDS=0.5
+CANVAS_WORKER_LEASE_SECONDS=90
+CANVAS_WORKER_ADMISSION_TTL_SECONDS=300
+CANVAS_WORKER_DRAIN_SECONDS=30
+CANVAS_QUEUE_AGE_PROMOTION_SECONDS=300
+```
 
-- Tenant identity comes from the subdomain plus a server-side session cookie.
-- In account mode, tenant identity comes only from the server-side account
-  session; the browser never supplies `tenant_id`.
-- The main domain and invalid hosts return `404`.
-- Each tenant has a separate SQLite database, upload directory, config file,
-  logs directory and generation queue counters.
-- Provider and TOS keys are encrypted at rest and API responses only expose
-  masked hints.
-- A TOS bucket or access key already bound to one tenant cannot be claimed by
-  another tenant.
+The sum of API, Worker, migration and administrative PostgreSQL connections must
+remain below `max_connections`, with emergency headroom reserved.
 
-The reverse proxy, DNS records, TLS certificate and master-key backup are
-infrastructure responsibilities and are not created by the application.
+## Schema Migrations
 
+Apply migrations before switching service code:
+
+```bash
+cd /www/wwwroot/yj.pduoduo.vip/app
+set -a
+. /etc/drama-canvas-worker-plane.env
+. /etc/drama-canvas-pg.env
+set +a
+.venv/bin/python scripts/run-schema-migrations.py \
+  --url "$DATABASE_URL" \
+  --apply \
+  --report backups/schema-migrations.json
+```
+
+Verify:
+
+```bash
+.venv/bin/python scripts/run-schema-migrations.py \
+  --url "$DATABASE_URL" \
+  --check
+```
+
+Production API and Worker readiness fail closed when migrations are missing,
+unknown or checksum-mismatched.
+
+## Services
+
+```bash
+systemctl restart drama-canvas-worker.service
+systemctl restart drama-canvas-yj.service
+systemctl restart drama-canvas-agent.service
+```
+
+Required state:
+
+```bash
+systemctl is-active drama-canvas-yj.service
+systemctl is-active drama-canvas-worker.service
+systemctl is-active drama-canvas-agent.service
+```
+
+The Worker service must run as `www`, use the same app release, and have write
+access only to the tenant data path and uploads.
+
+## Shared Media
+
+Worker result materialization may write local `/uploads` files before a terminal
+node commit. For split-host deployment, use one of:
+
+- a shared persistent volume mounted at the tenant data root on API and Worker;
+- durable object storage with local staging;
+- an authenticated media service reachable from every API instance.
+
+A URL that exists only on one Worker host is invalid.
+
+## Readiness
+
+Loopback endpoints:
+
+```text
+http://127.0.0.1:8890/healthz
+http://127.0.0.1:8890/readyz
+http://127.0.0.1:8890/metrics
+```
+
+`/healthz` is process liveness.
+
+`/readyz` checks:
+
+- database connectivity;
+- required schema migrations;
+- an active Worker heartbeat when API execution mode is `worker`.
+
+`/metrics` is Prometheus text format and must not be exposed publicly by Nginx.
+
+## Alert Thresholds
+
+Recommended initial alerts:
+
+| Condition | Warning | Critical |
+|---|---:|---:|
+| No active Worker heartbeat | 30 s | 90 s |
+| Oldest queued task | 10 min | 30 min |
+| PostgreSQL pool waiters | >0 for 30 s | >0 for 2 min |
+| PostgreSQL connections | 70% of max | 85% of max |
+| Expired task leases | >5 | >20 |
+| Provider uncertainty rate | >2% | >5% |
+| Disk free | <15% | <8% |
+| Audit/front-end error growth | 2x weekly baseline | 4x weekly baseline |
+
+## Rolling Restart
+
+API restart:
+
+1. Remove the instance from the reverse-proxy pool.
+2. Wait for in-flight HTTP drain.
+3. Stop the API service.
+4. Start the new release.
+5. Wait for `/readyz`.
+6. Return the instance to the proxy pool.
+
+Worker restart:
+
+1. Stop claiming new tasks.
+2. Continue active tasks for the drain window.
+3. Leave unfinished leases recoverable.
+4. Start the new Worker.
+5. Wait for a current release heartbeat.
+
+## Tenant Lifecycle
+
+Use the server-side administration command:
+
+```bash
+.venv/bin/python tenant_admin.py list
+.venv/bin/python tenant_admin.py create alpha --name "Alpha Studio"
+.venv/bin/python tenant_admin.py account-create alpha alice
+.venv/bin/python tenant_admin.py invite alpha --ttl-hours 24
+```
+
+Additional commands:
+
+```bash
+.venv/bin/python tenant_admin.py account-password <account-id>
+.venv/bin/python tenant_admin.py account-disable <account-id>
+.venv/bin/python tenant_admin.py account-enable <account-id>
+.venv/bin/python tenant_admin.py disable alpha
+.venv/bin/python tenant_admin.py enable alpha
+```
+
+## Reverse Proxy
+
+The public entrypoint serves the frontend and proxies API calls. The application
+binds only to loopback. Nginx/Caddy must:
+
+- preserve the original Host;
+- provide HTTPS and the security headers in `nginx-yj-security-headers.conf`;
+- reject public access to `/metrics`;
+- allow SSE responses without proxy buffering;
+- forward Range headers and preserve `206` responses.
+
+## Rollback
+
+Keep:
+
+- previous API runtime files;
+- previous Worker runtime files;
+- previous frontend dist;
+- previous worker-plane environment;
+- database snapshot taken before migrations;
+- migration reports and release commit.
+
+If readiness or Worker recovery fails:
+
+1. stop new Worker and API services;
+2. restore the previous runtime and environment;
+3. restore the database only when a migration rollback is required;
+4. restart the previous API and Worker;
+5. verify health, queue state and task ownership.
