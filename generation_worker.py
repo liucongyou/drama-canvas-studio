@@ -4,13 +4,13 @@ import concurrent.futures
 import os
 import signal
 import socket
-import sys
 import threading
 import time
 import uuid
 
 import canvas_store
 import generation_queue
+import observability
 import schema_migrations
 import server
 import tenant_context
@@ -231,15 +231,23 @@ class GenerationWorker:
                         error=str(exc),
                     )
             except Exception as cleanup_error:
-                print(
-                    "[generation-worker] execution cleanup failed: "
-                    f"task={task['id']} error={cleanup_error}",
-                    file=sys.stderr,
+                observability.log_event(
+                    "generation-worker",
+                    "execution.cleanup_failed",
+                    severity="error",
+                    workerId=self.worker_id,
+                    tenantId=context.tenant_id,
+                    taskId=task["id"],
+                    error=str(cleanup_error),
                 )
-            print(
-                "[generation-worker] execution failed: "
-                f"task={task['id']} error={exc}",
-                file=sys.stderr,
+            observability.log_event(
+                "generation-worker",
+                "execution.failed",
+                severity="error",
+                workerId=self.worker_id,
+                tenantId=context.tenant_id,
+                taskId=task["id"],
+                error=str(exc),
             )
         finally:
             generation_queue.release_generation_admission(
@@ -268,18 +276,23 @@ class GenerationWorker:
 
     def run_forever(self):
         self.verify_schema()
-        print(
-            f"[generation-worker] started worker={self.worker_id} "
-            f"concurrency={self.concurrency}",
-            flush=True,
+        observability.log_event(
+            "generation-worker",
+            "worker.started",
+            workerId=self.worker_id,
+            concurrency=self.concurrency,
+            releaseCommit=server.release_commit(),
         )
         while not self.stop_event.is_set():
             try:
                 processed = self.run_once()
             except Exception as exc:
-                print(
-                    f"[generation-worker] loop error: {exc}",
-                    file=sys.stderr,
+                observability.log_event(
+                    "generation-worker",
+                    "worker.loop_error",
+                    severity="error",
+                    workerId=self.worker_id,
+                    error=str(exc),
                 )
                 processed = False
             if not processed:
@@ -299,10 +312,11 @@ class GenerationWorker:
             self.heartbeat()
         except Exception:
             pass
-        print(
-            f"[generation-worker] stopped worker={self.worker_id} "
-            f"active={self._active_count()}",
-            flush=True,
+        observability.log_event(
+            "generation-worker",
+            "worker.stopped",
+            workerId=self.worker_id,
+            activeTasks=self._active_count(),
         )
 
 

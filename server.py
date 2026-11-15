@@ -59,6 +59,8 @@ import generation_outcome
 import generation_acceptance
 import explicit_references
 import media_storage
+import observability
+import operational_metrics
 import provider_catalog
 import provider_client
 import pg_compat
@@ -7014,6 +7016,17 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(204, {}, raw=b"")
 
     def _send(self, code, obj=None, raw=None, content_type="application/json", headers=None):
+        if int(code or 0) >= 500:
+            observability.log_event(
+                "api",
+                "http.error",
+                severity="error",
+                requestId=getattr(self, "_request_id", ""),
+                method=self.command,
+                path=urllib.parse.urlparse(self.path).path,
+                status=int(code or 0),
+                tenantId=tenant_context.current_tenant_id(),
+            )
         if raw is not None:
             body = raw.encode("utf-8") if isinstance(raw, str) else raw
         else:
@@ -8944,6 +8957,28 @@ class Handler(BaseHTTPRequestHandler):
                     3,
                 ),
             })
+        if path == "/readyz":
+            report = operational_metrics.readiness(
+                "api",
+                release_commit=release_commit(),
+                execution_mode=GENERATION_EXECUTION_MODE,
+            )
+            return self._send(200 if report["ok"] else 503, report)
+        if path == "/metrics":
+            client_ip = (
+                str(self.client_address[0])
+                if self.client_address
+                else ""
+            )
+            if client_ip not in {"127.0.0.1", "::1"}:
+                return self._send(404, {"error": "资源不存在"})
+            return self._send(
+                200,
+                raw=operational_metrics.render_prometheus(
+                    release_commit()
+                ),
+                content_type="text/plain; version=0.0.4; charset=utf-8",
+            )
         if path == "/api/config":
             return self._send(200, provider_catalog.config_status())
         if path == "/api/audit":
@@ -9029,6 +9064,10 @@ class Handler(BaseHTTPRequestHandler):
                 **store.runtime_metrics(),
                 "databasePool": pg_compat.pool_stats(),
                 "generationQueue": generation_queue.queue_metrics(),
+                "generationAdmissions": generation_queue.admission_metrics(),
+                "workerHeartbeats": generation_queue.worker_heartbeats(
+                    active_within_seconds=60
+                ),
                 "releaseCommit": release_commit(),
                 "uptimeSeconds": round(time.monotonic() - SERVER_STARTED_AT, 3),
                 "queue": {

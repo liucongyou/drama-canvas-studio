@@ -308,6 +308,8 @@ feat: separate generation api and worker execution
 
 ## Task 6: Add Readiness, Metrics and Structured Correlation
 
+**Status:** Complete
+
 **Files**
 
 - Create: `operational_metrics.py`
