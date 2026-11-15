@@ -163,6 +163,10 @@ import {
   useCanvasWorkspaceSync,
 } from './canvas/useCanvasWorkspaceSync';
 import {
+  createPromptCommitController,
+  PROMPT_COMMIT_DELAY_MS,
+} from './canvas/PromptEditor';
+import {
   inheritedGenerationParams,
   inheritModelParams,
   migrateUnavailableModelParams,
@@ -4467,7 +4471,9 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   });
   const promptNodeRef = useRef<string | null>(node?.id ?? null);
   const promptOpenTokenRef = useRef(openToken);
-  const promptCommitTimerRef = useRef<number | null>(null);
+  const promptCommitControllerRef = useRef<ReturnType<
+    typeof createPromptCommitController
+  > | null>(null);
   const promptComposingRef = useRef(false);
   const promptFlushRef = useRef<() => void>(() => {});
   const growRafRef = useRef<number | null>(null);
@@ -4849,10 +4855,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     });
   }, [favoriteModelIds, favoriteModelOptions, modelProviderId, recentModelIds, selectedModelGroup]);
   const flushPromptDraft = useCallback(() => {
-    if (promptCommitTimerRef.current !== null) {
-      window.clearTimeout(promptCommitTimerRef.current);
-      promptCommitTimerRef.current = null;
-    }
+    promptCommitControllerRef.current?.cancel();
     if (!node) return;
     const value = promptDraftRef.current;
     promptDirtyRef.current = false;
@@ -4862,14 +4865,14 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   promptFlushRef.current = flushPromptDraft;
 
   const schedulePromptCommit = useCallback(() => {
-    if (promptCommitTimerRef.current !== null) {
-      window.clearTimeout(promptCommitTimerRef.current);
+    if (!promptCommitControllerRef.current) {
+      promptCommitControllerRef.current = createPromptCommitController(
+        () => promptFlushRef.current(),
+        PROMPT_COMMIT_DELAY_MS,
+      );
     }
-    promptCommitTimerRef.current = window.setTimeout(() => {
-      promptCommitTimerRef.current = null;
-      flushPromptDraft();
-    }, 180);
-  }, [flushPromptDraft]);
+    promptCommitControllerRef.current.schedule();
+  }, []);
 
   // External updates (workspace reconciliation, node switch) sync the draft only
   // when the local draft is clean. A dirty draft must never be overwritten by a
@@ -4896,9 +4899,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   }, [node?.id, node?.prompt, openToken]);
 
   useEffect(() => () => {
-    if (promptCommitTimerRef.current !== null) {
-      window.clearTimeout(promptCommitTimerRef.current);
-    }
+    promptCommitControllerRef.current?.cancel();
     if (growRafRef.current !== null) {
       window.cancelAnimationFrame(growRafRef.current);
     }
@@ -5236,10 +5237,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     for (const ref of unique) nextPrompt = removePromptMention(nextPrompt, refLabel(ref));
     promptDraftRef.current = nextPrompt;
     promptDirtyRef.current = false;
-    if (promptCommitTimerRef.current !== null) {
-      window.clearTimeout(promptCommitTimerRef.current);
-      promptCommitTimerRef.current = null;
-    }
+    promptCommitControllerRef.current?.cancel();
     setPromptDraft(nextPrompt);
     // One atomic prompt+params patch for every removed mention. Looping removeRef
     // here was the multi-mention version of the 409 save-conflict bug.
