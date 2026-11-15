@@ -148,6 +148,8 @@ feat: add versioned schema migrations
 
 ## Task 3: Implement the Durable PostgreSQL Task Queue
 
+**Status:** Complete
+
 **Files**
 
 - Create: `generation_queue.py`

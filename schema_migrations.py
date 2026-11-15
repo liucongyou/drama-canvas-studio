@@ -96,6 +96,8 @@ def apply_migrations(
     applied = []
     skipped = []
     try:
+        if connection.in_transaction:
+            connection.rollback()
         connection.execute("BEGIN")
         connection.execute(
             "SELECT pg_advisory_xact_lock(%s)",

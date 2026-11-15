@@ -1109,7 +1109,13 @@ def _connect():
                 delivery_next_attempt_at TEXT DEFAULT '',
                 result_ready_at TEXT,
                 progress_updated_at TEXT DEFAULT '',
-                next_poll_at TEXT DEFAULT ''
+                next_poll_at TEXT DEFAULT '',
+                queue_state TEXT DEFAULT '',
+                available_at TEXT DEFAULT '',
+                priority INTEGER DEFAULT 0,
+                worker_id TEXT DEFAULT '',
+                attempt_count INTEGER DEFAULT 0,
+                last_worker_error TEXT DEFAULT ''
             )"""
             )
             con.execute(
@@ -1142,6 +1148,21 @@ def _connect():
                     "ALTER TABLE generation_tasks ADD COLUMN provider_task_id TEXT"
                 )
                 task_columns.add("provider_task_id")
+            for column, ddl in {
+                "queue_state": "TEXT DEFAULT ''",
+                "available_at": "TEXT DEFAULT ''",
+                "priority": "INTEGER DEFAULT 0",
+                "worker_id": "TEXT DEFAULT ''",
+                "attempt_count": "INTEGER DEFAULT 0",
+                "last_worker_error": "TEXT DEFAULT ''",
+            }.items():
+                if column in task_columns:
+                    continue
+                con.execute(
+                    f"ALTER TABLE generation_tasks "
+                    f"ADD COLUMN {column} {ddl}"
+                )
+                task_columns.add(column)
             con.execute(
             """CREATE TABLE IF NOT EXISTS audit_events(
                 id TEXT PRIMARY KEY,
@@ -4441,14 +4462,17 @@ def create_generation_task(
             "provider_task_id,attempt,estimated_cost,cost_currency,error,"
             "created_at,started_at,updated_at,finished_at,local_result_url,"
             "provider_result_url,request_json,client_operation_id,delivery_status,"
-            "next_poll_at"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "next_poll_at,queue_state,available_at,priority,worker_id,"
+            "attempt_count,last_worker_error"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+            "?,?,?,?,?,?)",
             (
                 task_id, project_id, node_id, str(episode_id or "").upper(),
                 title, kind, "queued", "等待调度", 0,
                 provider, model, "", attempt, float(estimated_cost or 0),
                 str(cost_currency or ""), "", now, "", now, "", "", "",
                 request_json, client_operation_id, "pending", now,
+                "queued", now, 0, "", 0, "",
             ),
         )
         return {"created": True}

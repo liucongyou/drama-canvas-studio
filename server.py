@@ -54,6 +54,7 @@ import canvas_repository
 import import_feed
 import gate_check
 import generation_budget
+import generation_queue
 import generation_outcome
 import generation_acceptance
 import explicit_references
@@ -8989,6 +8990,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {
                 **store.runtime_metrics(),
                 "databasePool": pg_compat.pool_stats(),
+                "generationQueue": generation_queue.queue_metrics(),
                 "releaseCommit": release_commit(),
                 "uptimeSeconds": round(time.monotonic() - SERVER_STARTED_AT, 3),
                 "queue": {
