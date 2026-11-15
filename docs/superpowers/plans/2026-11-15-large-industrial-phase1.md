@@ -26,6 +26,8 @@ operational readiness/metrics for a 100-tenant, 30-concurrent-task platform.
 
 ## Task 1: Enforce a Bounded PostgreSQL Connection Budget
 
+**Status:** Complete (`bb8e715`)
+
 **Files**
 
 - Modify: `pg_compat.py`
@@ -86,6 +88,8 @@ perf: enforce a hard postgres connection budget
 ---
 
 ## Task 2: Add a Versioned Migration Registry
+
+**Status:** Complete
 
 **Files**
 

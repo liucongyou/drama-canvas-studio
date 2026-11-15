@@ -61,6 +61,7 @@ import media_storage
 import provider_catalog
 import provider_client
 import pg_compat
+import schema_migrations
 import tos_storage
 import tenant_bootstrap
 import tenant_context
@@ -580,6 +581,10 @@ CANVAS_ACCESS_LOG_MODE = os.environ.get(
     "CANVAS_ACCESS_LOG_MODE",
     "errors",
 ).strip().lower()
+SCHEMA_MIGRATIONS_REQUIRED = os.environ.get(
+    "CANVAS_SCHEMA_MIGRATIONS_REQUIRED",
+    "",
+).strip() == "1"
 
 
 def release_commit():
@@ -595,6 +600,48 @@ def release_commit():
             return handle.read().strip()
     except OSError:
         return ""
+
+
+def verify_required_schema_migrations():
+    if not SCHEMA_MIGRATIONS_REQUIRED:
+        return
+    failures = []
+    for tenant in _active_tenants():
+        scope = (
+            tenant_context.use_tenant(tenant["id"], tenant["slug"])
+            if tenant is not None
+            else nullcontext()
+        )
+        with scope:
+            connection = store._connect()
+            try:
+                report = schema_migrations.verify_schema(
+                    connection,
+                    "canvas",
+                )
+            finally:
+                connection.close()
+            if not report.get("ok"):
+                report["tenant"] = (
+                    tenant.get("slug") if tenant is not None else "legacy"
+                )
+                failures.append(report)
+    control = tenant_registry._connect()
+    try:
+        control_report = schema_migrations.verify_schema(control, "control")
+    finally:
+        control.close()
+    if not control_report.get("ok"):
+        control_report["tenant"] = "control"
+        failures.append(control_report)
+    if failures:
+        raise RuntimeError(
+            "数据库迁移版本未就绪，拒绝启动："
+            + ", ".join(
+                f"{item.get('tenant')}:{item.get('missing') or item.get('mismatched')}"
+                for item in failures
+            )
+        )
 
 
 def access_log_enabled(status_code: int) -> bool:
@@ -13433,6 +13480,7 @@ def main():
             )
     except Exception as exc:
         print(f"[schema] tenant migration failed: {exc}", file=sys.stderr)
+    verify_required_schema_migrations()
 
     # Bind the API before historical backfills. Those jobs can touch every
     # project in a large tenant and previously kept port 8890 closed for
