@@ -9,6 +9,7 @@ import secrets
 import sqlite3
 import string
 import time
+import urllib.parse
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
@@ -5065,6 +5066,407 @@ def backfill_asset_identities():
         }
 
     return _run_write_transaction(write) or {"projects": 0, "nodes": 0}
+
+
+def stable_duplicate_version_id(version_id, url, ordinal):
+    digest = hashlib.sha256(
+        f"{version_id}|{url}|{int(ordinal)}".encode("utf-8")
+    ).hexdigest()[:12]
+    return f"{version_id}:variant:{int(ordinal)}:{digest}"
+
+
+def _media_version_url_key(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urllib.parse.urlsplit(text)
+    path = urllib.parse.unquote(parsed.path or text)
+    if path.startswith("/uploads/"):
+        return "upload:" + path[len("/uploads/"):]
+    marker = "/api/share/"
+    if marker in path and "/media/" in path:
+        return "upload:" + path.rsplit("/media/", 1)[1]
+    return path or text
+
+
+def _repair_media_version_metadata(metadata, node_type):
+    """Repair one node's media-version identities without changing URLs."""
+    if not isinstance(metadata, dict):
+        return None
+    params = metadata.get("params")
+    if not isinstance(params, dict):
+        return None
+    source = params.get("mediaVersions")
+    if not isinstance(source, list) or not source:
+        if str(node_type or "") != "video":
+            return None
+        source = params.get("videoVersions")
+    if not isinstance(source, list) or not source:
+        return None
+
+    versions = [
+        dict(item)
+        for item in source
+        if isinstance(item, dict) and str(item.get("url") or "").strip()
+    ]
+    if not versions:
+        return None
+    urls_before = [str(item.get("url") or "") for item in versions]
+    explicit_ids = [
+        str(item.get("versionId") or "").strip()
+        for item in versions
+    ]
+    id_counts = {
+        version_id: explicit_ids.count(version_id)
+        for version_id in set(explicit_ids)
+        if version_id
+    }
+    duplicate_ids_before = sum(
+        max(0, count - 1) for count in id_counts.values()
+    )
+    missing_ids_before = sum(not version_id for version_id in explicit_ids)
+    active_before = str(params.get("activeVersionId") or "").strip()
+    content_key = _media_version_url_key(metadata.get("content"))
+    kind = str(node_type or "media").strip().lower() or "media"
+
+    seen_ids = {
+        version_id
+        for version_id in explicit_ids
+        if version_id
+    }
+    for index, version in enumerate(versions):
+        if str(version.get("versionId") or "").strip():
+            continue
+        item_kind = str(version.get("kind") or kind).strip() or kind
+        task_id = str(version.get("taskId") or "").strip()
+        generated_at = str(
+            version.get("generatedAt")
+            or version.get("generated_at")
+            or ""
+        ).strip()
+        if task_id:
+            candidate = f"{item_kind}:{task_id}"
+        elif generated_at:
+            candidate = f"{item_kind}:{generated_at}:{index}"
+        else:
+            digest = hashlib.sha256(
+                f"{version.get('url') or ''}|{index}".encode("utf-8")
+            ).hexdigest()[:24]
+            candidate = f"{item_kind}:legacy:{digest}"
+        suffix = 1
+        base = candidate
+        while candidate in seen_ids:
+            suffix += 1
+            candidate = f"{base}:{suffix}"
+        version["versionId"] = candidate
+        seen_ids.add(candidate)
+
+    def active_candidate_indices(version_id):
+        return [
+            index
+            for index, version in enumerate(versions)
+            if version_id
+            and str(version.get("versionId") or "").strip() == version_id
+        ]
+
+    def preferred_active_index(version_id):
+        candidates = active_candidate_indices(version_id)
+        if not candidates:
+            return -1
+        content_matches = [
+            index
+            for index in candidates
+            if content_key
+            and _media_version_url_key(versions[index].get("url")) == content_key
+        ]
+        if content_matches:
+            return content_matches[-1]
+        explicitly_active = [
+            index for index in candidates if versions[index].get("active") is True
+        ]
+        return explicitly_active[0] if explicitly_active else candidates[0]
+
+    active_index_before = preferred_active_index(active_before)
+    index_key = "videoVersionIndex" if kind == "video" else "mediaVersionIndex"
+    try:
+        current_index_before = int(params.get(index_key))
+    except (TypeError, ValueError):
+        current_index_before = -1
+    active_mismatch_before = (
+        active_index_before < 0
+        or current_index_before != active_index_before
+    )
+
+    for version_id, count in id_counts.items():
+        if count <= 1:
+            continue
+        keep_index = preferred_active_index(version_id)
+        indices = active_candidate_indices(version_id)
+        if keep_index < 0:
+            keep_index = indices[0]
+        ordinal = 0
+        for index in indices:
+            if index == keep_index:
+                continue
+            ordinal += 1
+            candidate = stable_duplicate_version_id(
+                version_id,
+                versions[index].get("url") or "",
+                ordinal,
+            )
+            while candidate in seen_ids:
+                ordinal += 1
+                candidate = stable_duplicate_version_id(
+                    version_id,
+                    versions[index].get("url") or "",
+                    ordinal,
+                )
+            versions[index]["versionId"] = candidate
+            seen_ids.add(candidate)
+
+    active_id = str(params.get("activeVersionId") or "").strip()
+    active_index = preferred_active_index(active_id)
+    if active_index < 0:
+        content_matches = [
+            index
+            for index, version in enumerate(versions)
+            if content_key
+            and _media_version_url_key(version.get("url")) == content_key
+        ]
+        if content_matches:
+            active_index = content_matches[-1]
+        else:
+            local_matches = [
+                index
+                for index, version in enumerate(versions)
+                if str(version.get("url") or "").strip().startswith("/uploads/")
+                or (
+                    isinstance(version.get("storage"), dict)
+                    and str(version["storage"].get("status") or "") == "stored"
+                )
+            ]
+            if local_matches:
+                active_index = local_matches[-1]
+
+    unresolved = active_index < 0
+    if unresolved:
+        metadata["mediaIdentityUnresolved"] = True
+        params["activeVersionId"] = ""
+    else:
+        metadata.pop("mediaIdentityUnresolved", None)
+        selected = versions[active_index]
+        params["activeVersionId"] = str(selected.get("versionId") or "")
+        params["mediaVersionIndex"] = active_index
+        if kind == "video":
+            params["videoVersionIndex"] = active_index
+        if content_key != _media_version_url_key(selected.get("url")):
+            metadata["content"] = str(selected.get("url") or "")
+
+    params["mediaVersions"] = versions
+    if kind == "video":
+        params["videoVersions"] = [dict(item) for item in versions]
+    metadata["params"] = params
+
+    final_ids = [
+        str(item.get("versionId") or "").strip()
+        for item in versions
+    ]
+    duplicate_ids_after = len(final_ids) - len(set(final_ids))
+    final_active_index = preferred_active_index(
+        str(params.get("activeVersionId") or "")
+    )
+    active_mismatch_after = (
+        False
+        if unresolved
+        else final_active_index < 0
+        or int(params.get(index_key)) != final_active_index
+    )
+    urls_after = [str(item.get("url") or "") for item in versions]
+    return {
+        "changed": (
+            versions != source
+            or duplicate_ids_before > 0
+            or missing_ids_before > 0
+            or active_mismatch_before
+            or unresolved
+        ),
+        "duplicateIdsBefore": duplicate_ids_before,
+        "duplicateIdsAfter": duplicate_ids_after,
+        "missingIdsBefore": missing_ids_before,
+        "activeMismatchBefore": int(active_mismatch_before),
+        "activeMismatchAfter": int(active_mismatch_after),
+        "unresolved": int(unresolved),
+        "urlsLost": int(urls_before != urls_after),
+        "activeVersionId": str(params.get("activeVersionId") or ""),
+    }
+
+
+def repair_media_version_identities(apply=False):
+    """Repair missing, duplicate and mismatched media-version identities."""
+    report = {
+        "apply": bool(apply),
+        "scanned": 0,
+        "projectsChanged": 0,
+        "nodesChanged": 0,
+        "duplicateIdsBefore": 0,
+        "duplicateIdsAfter": 0,
+        "missingIdsBefore": 0,
+        "activeMismatchBefore": 0,
+        "activeMismatchAfter": 0,
+        "unresolved": 0,
+        "urlsLost": 0,
+        "nodes": [],
+    }
+
+    con = _connect()
+    project_ids = [
+        str(row[0])
+        for row in con.execute(
+            "SELECT DISTINCT project_id FROM canvas_projection_nodes "
+            "WHERE node_type IN ('image','audio','video') "
+            "ORDER BY project_id"
+        )
+    ]
+    con.close()
+    changed_projects = set()
+
+    def consume(project_id, node_id, node_type, node, repair):
+        report["scanned"] += 1
+        if not repair or not repair.get("changed"):
+            return
+        report["nodesChanged"] += 1
+        changed_projects.add(project_id)
+        report["duplicateIdsBefore"] += int(repair["duplicateIdsBefore"])
+        report["duplicateIdsAfter"] += int(repair["duplicateIdsAfter"])
+        report["missingIdsBefore"] += int(repair["missingIdsBefore"])
+        report["activeMismatchBefore"] += int(repair["activeMismatchBefore"])
+        report["activeMismatchAfter"] += int(repair["activeMismatchAfter"])
+        report["unresolved"] += int(repair["unresolved"])
+        report["urlsLost"] += int(repair["urlsLost"])
+        report["nodes"].append({
+            "projectId": project_id,
+            "nodeId": node_id,
+            "nodeType": node_type,
+            "title": node.get("title") or "",
+            "activeVersionId": repair["activeVersionId"],
+            "unresolved": bool(repair["unresolved"]),
+        })
+
+    if not apply:
+        con = _connect()
+        try:
+            rows = con.execute(
+                "SELECT project_id,node_id,node_type,node_json "
+                "FROM canvas_projection_nodes "
+                "WHERE node_type IN ('image','audio','video') "
+                "ORDER BY project_id,rowid"
+            ).fetchall()
+            for project_id, node_id, node_type, encoded in rows:
+                try:
+                    node = json.loads(encoded or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(node, dict):
+                    continue
+                metadata = node.get("metadata")
+                if not isinstance(metadata, dict):
+                    report["scanned"] += 1
+                    continue
+                probe = dict(metadata)
+                repair = _repair_media_version_metadata(probe, node_type)
+                consume(
+                    str(project_id),
+                    str(node_id),
+                    str(node_type),
+                    node,
+                    repair,
+                )
+        finally:
+            con.close()
+    else:
+        for project_id in project_ids:
+            def write(conn, project_id=project_id):
+                project_row = lock_project_row(
+                    conn,
+                    project_id,
+                    missing_ok=True,
+                )
+                if not project_row:
+                    return
+                payload = get_projection_payload(conn, project_id)
+                if not isinstance(payload, dict):
+                    return
+                changed_here = False
+                stamp = _now_iso()
+                for node in payload.get("nodes") or []:
+                    if not isinstance(node, dict):
+                        continue
+                    node_type = str(node.get("type") or "")
+                    if node_type not in {"image", "audio", "video"}:
+                        continue
+                    metadata = node.get("metadata")
+                    if not isinstance(metadata, dict):
+                        report["scanned"] += 1
+                        continue
+                    repair = _repair_media_version_metadata(metadata, node_type)
+                    consume(
+                        project_id,
+                        str(node.get("id") or ""),
+                        node_type,
+                        node,
+                        repair,
+                    )
+                    if not repair or not repair.get("changed"):
+                        continue
+                    changed_here = True
+                    node["metadata"] = metadata
+                    node["updatedAt"] = stamp
+                    episode_row = conn.execute(
+                        "SELECT episode_id FROM canvas_projection_nodes "
+                        "WHERE project_id=? AND node_id=?",
+                        (project_id, str(node.get("id") or "")),
+                    ).fetchone()
+                    episode_id = (
+                        str(episode_row[0] or "")
+                        if episode_row
+                        else ""
+                    )
+                    sync_projection_node(
+                        conn,
+                        project_id,
+                        node,
+                        episode_id=episode_id,
+                        updated_at=stamp,
+                    )
+                if not changed_here:
+                    return
+                next_revision = int(project_row[2] or 0) + 1
+                payload["revision"] = next_revision
+                payload["updatedAt"] = stamp
+                stats = payload_stats(payload)
+                cursor = conn.execute(
+                    "UPDATE canvas_projects SET payload_json=?,revision=?,"
+                    "updated_at=?,node_count=?,connection_count=?,episode_count=? "
+                    "WHERE id=? AND revision=?",
+                    (
+                        json.dumps(payload, ensure_ascii=False),
+                        next_revision,
+                        stamp,
+                        stats[0],
+                        stats[1],
+                        stats[2],
+                        project_id,
+                        int(project_row[2] or 0),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RevisionConflictError("媒体版本修复写冲突")
+                sync_projection_meta(conn, project_id, payload, updated_at=stamp)
+
+            _run_write_transaction(write)
+
+    report["projectsChanged"] = len(changed_projects)
+    return report
 
 
 def sync_projection_meta(con, project_id, payload, *, updated_at=""):
