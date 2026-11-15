@@ -6,7 +6,9 @@ config.local.json
 
 # Runtime data and private artifacts
 data/
+data/tenants/
 logs/
+.tmp-pg-shadow/
 recovered/
 .screens/
 .workbuddy/
