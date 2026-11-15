@@ -399,6 +399,8 @@ test: add multiprocess and soak generation harness
 
 ## Task 8: Update Deployment and Release
 
+**Status:** Implementation complete; production verification pending
+
 **Files**
 
 - Modify: `deploy/README.md`
