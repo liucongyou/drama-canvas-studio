@@ -6492,6 +6492,70 @@ def expire_stale_generation_tasks(now=None):
     return expired
 
 
+def expire_unconfirmed_generation_tasks(now=None):
+    """Close only old uncertain rows that never obtained a provider task id.
+
+    The transition is a compare-and-set on both status and provider evidence.
+    A late provider id or a late successful result therefore wins the race and
+    prevents this maintenance path from closing a recoverable paid task.
+    """
+    if isinstance(now, datetime):
+        current_dt = now
+    elif now:
+        current_dt = datetime.fromisoformat(str(now).replace("Z", "+00:00"))
+    else:
+        current_dt = datetime.now(timezone.utc)
+    if current_dt.tzinfo is None:
+        current_dt = current_dt.replace(tzinfo=timezone.utc)
+    current_dt = current_dt.astimezone(timezone.utc)
+    cutoff = (
+        current_dt - timedelta(hours=24)
+    ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    candidates = []
+    for task in list_runtime_reconcile_tasks(500):
+        if str(task.get("status") or "") != "interrupted":
+            continue
+        if str(task.get("provider_task_id") or "").strip():
+            continue
+        if str(task.get("created_at") or "") >= cutoff:
+            continue
+        outcome = generation_outcome.task_outcome(task)
+        if str(outcome.get("reason") or "") != "provider_outcome_unknown":
+            continue
+        candidates.append(task)
+
+    expired = []
+    stamp = current_dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    detail = (
+        "供应商结果无法确认，任务已超过 24 小时且没有供应商任务号；"
+        "系统不会自动重提，请核对供应商记录后再决定是否重新生成。"
+    )
+
+    def write(con):
+        for task in candidates:
+            cursor = con.execute(
+                "UPDATE generation_tasks SET status='failed',"
+                "phase='无法确认且已过期',error=?,delivery_status='failed',"
+                "lease_owner='',lease_expires_at=NULL,finished_at=?,updated_at=? "
+                "WHERE id=? AND status='interrupted' "
+                "AND COALESCE(provider_task_id,'')='' "
+                "AND created_at<?",
+                (
+                    detail,
+                    stamp,
+                    stamp,
+                    str(task.get("id") or ""),
+                    cutoff,
+                ),
+            )
+            if cursor.rowcount == 1:
+                expired.append(task)
+        return len(expired)
+
+    _run_write_transaction(write)
+    return expired
+
+
 def remember_provider_task(
     task_id,
     provider_task_id,

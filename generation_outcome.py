@@ -269,6 +269,16 @@ def task_outcome(task: dict[str, Any] | None) -> dict[str, Any]:
             "providerAccepted": True,
             "retentionExpiresAt": retention_expires_at,
         }
+    if phase == "无法确认且已过期":
+        return {
+            "phase": "failed",
+            "regenerate": "confirm",
+            "reason": "provider_unconfirmed_expired",
+            "requiresConfirmation": True,
+            "providerTaskId": provider_task_id,
+            "providerAccepted": accepted,
+            "retentionExpiresAt": retention_expires_at,
+        }
     if _provider_reported_live(task):
         return {
             "phase": "running",

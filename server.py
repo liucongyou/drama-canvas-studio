@@ -5662,6 +5662,9 @@ def reconcile_generation_runtime_once():
     expired = _collect_for_active_tenants(
         store.expire_stale_generation_tasks
     )
+    unconfirmed_expired = _collect_for_active_tenants(
+        store.expire_unconfirmed_generation_tasks
+    )
     delivered = _run_for_active_tenants(
         reconcile_pending_generation_deliveries
     )
@@ -5671,6 +5674,7 @@ def reconcile_generation_runtime_once():
     resumed += _dispatch_due_provider_tasks()
     return {
         "expired": expired,
+        "unconfirmedExpired": len(unconfirmed_expired),
         "delivered": int(delivered or 0),
         "reconciled": int(reconciled or 0),
         "resumed": int(resumed or 0),

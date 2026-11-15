@@ -158,4 +158,23 @@ describe('task outcome presentation', () => {
     expect(result.statusLabel).toBe('结果保存失败');
     expect(result.canRegenerate).toBe(true);
   });
+
+  it('shows an expired unconfirmed task as needing provider review', () => {
+    const result = taskOutcomePresentation({
+      status: 'failed',
+      phase: '无法确认且已过期',
+      error: '供应商结果无法确认，任务已超过 24 小时',
+      delivery_status: 'failed',
+      outcome: {
+        phase: 'failed',
+        regenerate: 'confirm',
+        reason: 'provider_unconfirmed_expired',
+        requiresConfirmation: true,
+      },
+    });
+    expect(result.outcomeUncertain).toBe(true);
+    expect(result.outcomePending).toBe(true);
+    expect(result.statusLabel).toBe('结果无法确认');
+    expect(result.canRegenerate).toBe(true);
+  });
 });

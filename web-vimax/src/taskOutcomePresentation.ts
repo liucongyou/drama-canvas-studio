@@ -34,6 +34,9 @@ export function taskOutcomePresentation(
   const backendRegenerate = backendOutcome?.regenerate;
   const backendPhase = backendOutcome?.phase;
   const deliveryStatus = String(task.delivery_status || '').toLowerCase();
+  const unconfirmedExpired =
+    task.phase === '无法确认且已过期'
+    || backendOutcome?.reason === 'provider_unconfirmed_expired';
   const localBlocked =
     backendOutcome?.reason === 'local_validation'
     || task.error_kind === 'local_validation'
@@ -63,12 +66,14 @@ export function taskOutcomePresentation(
     && backendRegenerate === 'blocked'
     && !localBlocked;
   const outcomeUncertain = !liveProviderTask && (
-    backendPhase === 'unknown'
+    unconfirmedExpired
+    || backendPhase === 'unknown'
     || interruptedUncertain
     || failedUncertain
   );
   const outcomePending =
-    liveProviderTask
+    unconfirmedExpired
+    || liveProviderTask
     || fetchingProviderResult
     || interruptedUncertain
     || deliveryStatus === 'pending'
@@ -91,6 +96,8 @@ export function taskOutcomePresentation(
         ? '生成中'
         : task.status === 'submitting'
           ? '提交中'
+        : unconfirmedExpired
+          ? '结果无法确认'
         : liveProviderTask
           ? '生成中'
           : fetchingProviderResult
