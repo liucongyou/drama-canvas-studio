@@ -97,7 +97,9 @@ def test_postgres_canvas_crud_projection_events_and_snapshot(pg_canvas) -> None:
     )
     assert snapshot["revision"] >= project["revision"]
     assert canvas_store.list_snapshots(project_id)[0]["id"] == snapshot["id"]
-    assert canvas_store.storage_stats()["file_bytes"] > 0
+    storage = canvas_store.storage_stats()
+    assert storage["file_bytes"] > 0
+    assert storage["free_bytes"] > 0
     with pg_compat.connect_path(
         os.environ.get("PG_TEST_PATH", "") or canvas_store._db_path(),
         "canvas",

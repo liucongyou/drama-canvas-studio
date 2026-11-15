@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import string
 import time
@@ -8776,13 +8777,23 @@ def storage_stats() -> dict:
             file_bytes = 0
         finally:
             con.close()
+        probe = os.path.dirname(path) or "."
+        while probe and not os.path.exists(probe):
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                break
+            probe = parent
+        try:
+            free_bytes = int(shutil.disk_usage(probe).free)
+        except OSError:
+            free_bytes = 0
         return {
             "path": path,
             "page_count": 0,
             "free_pages": 0,
             "page_size": 0,
             "file_bytes": file_bytes,
-            "free_bytes": 0,
+            "free_bytes": free_bytes,
             "free_ratio": 0.0,
         }
     if not os.path.exists(path):
