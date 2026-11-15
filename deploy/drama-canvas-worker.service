@@ -1,0 +1,27 @@
+[Unit]
+Description=Drama Canvas Generation Worker
+After=network-online.target postgresql-16.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www
+Group=www
+WorkingDirectory=/www/wwwroot/yj.pduoduo.vip/app
+EnvironmentFile=/etc/drama-canvas-agent.env
+EnvironmentFile=/etc/drama-canvas-pg.env
+Environment=CANVAS_GENERATION_EXECUTION_MODE=worker
+Environment=CANVAS_SCHEMA_MIGRATIONS_REQUIRED=1
+ExecStart=/www/wwwroot/yj.pduoduo.vip/app/.venv/bin/python -u generation_worker.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=45
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/www/wwwroot/yj.pduoduo.vip/app/data
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

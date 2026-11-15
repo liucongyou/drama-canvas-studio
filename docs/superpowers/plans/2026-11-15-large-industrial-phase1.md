@@ -251,6 +251,8 @@ feat: coordinate generation admission in postgres
 
 ## Task 5: Separate API and Worker Execution
 
+**Status:** Complete
+
 **Files**
 
 - Create: `generation_worker.py`

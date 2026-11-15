@@ -319,12 +319,12 @@ def heartbeat_worker(
             "activeTasks": max(0, int(active_tasks or 0)),
         }
 
-    return store._run_write_transaction(write)
+    return _with_control_transaction(write)
 
 
 def worker_heartbeats(*, active_within_seconds: int = 30) -> list[dict]:
     cutoff = _iso(_now() - timedelta(seconds=max(1, active_within_seconds)))
-    connection = store._connect()
+    connection = tenant_registry._connect()
     try:
         rows = connection.execute(
             "SELECT worker_id,started_at,heartbeat_at,active_tasks,"

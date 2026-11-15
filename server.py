@@ -586,6 +586,14 @@ SCHEMA_MIGRATIONS_REQUIRED = os.environ.get(
     "CANVAS_SCHEMA_MIGRATIONS_REQUIRED",
     "",
 ).strip() == "1"
+GENERATION_EXECUTION_MODE = os.environ.get(
+    "CANVAS_GENERATION_EXECUTION_MODE",
+    "inline",
+).strip().lower()
+if GENERATION_EXECUTION_MODE not in {"inline", "worker"}:
+    raise RuntimeError(
+        "CANVAS_GENERATION_EXECUTION_MODE 必须是 inline 或 worker"
+    )
 
 
 def release_commit():
@@ -3005,6 +3013,23 @@ def _start_generation_task_heartbeat(task_id, lease_owner):
                             file=sys.stderr,
                         )
                         return
+                    latest = store.get_generation_task(task_id) or {}
+                    if latest.get("queue_state") in {
+                        "admitted",
+                        "provider_running",
+                        "polling",
+                        "delivering",
+                    }:
+                        if not generation_queue.renew_generation_admission(
+                            task_id,
+                            lease_owner,
+                            lease_seconds=max(60, TASK_LEASE_SECONDS * 4),
+                        ):
+                            print(
+                                "[generation] admission lease lost: "
+                                f"task={task_id} lease_owner={lease_owner}",
+                                file=sys.stderr,
+                            )
                 except Exception as exc:
                     print(
                         "[generation] heartbeat failed: "
@@ -10425,7 +10450,7 @@ class Handler(BaseHTTPRequestHandler):
                 context = tenant_context.current()
                 tenant_id = context.tenant_id if context else None
                 tenant_slug = context.slug if context else "local"
-                start_generation_task_worker(
+                dispatch_generation_task(
                     task["id"],
                     tenant_id,
                     tenant_slug,
@@ -13202,8 +13227,188 @@ class CanvasHTTPServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+def _execute_claimed_generation_task(task_id, lease_owner, claimed_task=None):
+    """Run one task whose lease is owned by the current process."""
+    task = dict(claimed_task) if isinstance(claimed_task, dict) else (
+        store.get_generation_task(task_id)
+    )
+    if not task or task.get("status") not in {
+        "queued",
+        "submitting",
+        "running",
+    }:
+        return
+    if claimed_task:
+        task["status"] = "running"
+        task["lease_owner"] = lease_owner
+    current_owner = str(task.get("lease_owner") or "").strip()
+    if lease_owner and current_owner and current_owner != lease_owner:
+        return
+    project = store.get_project(task["project_id"])
+    if not project:
+        store.finish_generation_task(
+            task_id,
+            status="failed",
+            phase="节点已不存在",
+            error="对应画布项目已删除，任务已结束",
+            delivery_status="failed",
+        )
+        return
+    node = next(
+        (
+            item
+            for item in project["payload"].get("nodes", [])
+            if item.get("id") == task.get("node_id")
+        ),
+        None,
+    )
+    if not node:
+        store.finish_generation_task(
+            task_id,
+            status="failed",
+            phase="节点已不存在",
+            error="对应画布节点已删除，任务已结束",
+            delivery_status="failed",
+        )
+        return
+    heartbeat = _start_generation_task_heartbeat(task_id, lease_owner)
+    try:
+        store.renew_generation_task_lease(
+            task_id,
+            lease_owner,
+            TASK_LEASE_SECONDS,
+        )
+        meta = node.setdefault("metadata", {})
+        params = meta.get("params") or {}
+        generation_started_at = store._now_iso()
+        commit_node_metadata(
+            task["project_id"],
+            task["node_id"],
+            {
+                "status": "generating",
+                "lastError": None,
+                "taskId": None,
+                "generationStartedAt": generation_started_at,
+                "generationFinishedAt": None,
+                "providerTaskStatus": "queued",
+                "providerTaskPhase": "正在连接供应商",
+                "providerTaskProgress": 0,
+                "_paramsPatch": params,
+            },
+        )
+        worker = Handler.__new__(Handler)
+        worker._send = lambda *_args, **_kwargs: None
+        worker._generate(
+            task["project_id"],
+            project,
+            node,
+            task_id=task_id,
+            lease_owner=lease_owner,
+        )
+        latest = store.get_generation_task(task_id) or {}
+        if latest.get("status") in {"queued", "submitting", "running"}:
+            store.finish_generation_task(
+                task_id,
+                status="failed",
+                phase="任务异常结束",
+                error="生成执行结束但未形成终态，本次未更新画布",
+                delivery_status="failed",
+            )
+    except GenerationQueueCancelled as exc:
+        store.finish_generation_task(
+            task_id,
+            status="failed",
+            phase="排队已取消",
+            error=str(exc),
+            delivery_status="failed",
+        )
+    except Exception as exc:
+        latest = store.get_generation_task(task_id) or {}
+        if latest.get("status") in {"queued", "submitting", "running"}:
+            stored_provider_id = str(
+                latest.get("provider_task_id") or ""
+            ).strip()
+            store.finish_generation_task(
+                task_id,
+                status=(
+                    "interrupted"
+                    if stored_provider_id
+                    else "failed"
+                ),
+                phase=(
+                    "结果待确认"
+                    if stored_provider_id
+                    else "任务异常"
+                ),
+                error=str(exc),
+                delivery_status=(
+                    "pending" if stored_provider_id else "failed"
+                ),
+            )
+        print(
+            f"[generation-worker] task={task_id} error={exc}",
+            file=sys.stderr,
+        )
+    finally:
+        _finish_generation_task_lease(
+            task_id,
+            lease_owner,
+            heartbeat,
+        )
+
+
+def _mark_generation_worker_start_failure(task_id, tenant_id, tenant_slug, exc):
+    latest = _run_in_tenant(
+        tenant_id,
+        tenant_slug,
+        store.get_generation_task,
+        task_id,
+    ) or {}
+    if latest.get("status") in {"queued", "submitting", "running"}:
+        _run_in_tenant(
+            tenant_id,
+            tenant_slug,
+            store.finish_generation_task,
+            task_id,
+            status="failed",
+            phase="任务启动失败",
+            error=str(exc),
+            delivery_status="failed",
+        )
+    print(
+        f"[generation-worker] start failed task={task_id} error={exc}",
+        file=sys.stderr,
+    )
+
+
+def execute_admitted_generation_task(
+    task_id,
+    tenant_id,
+    tenant_slug,
+    claim_token,
+    task=None,
+):
+    """Execute a task already claimed and admitted by generation_worker."""
+    try:
+        _run_in_tenant(
+            tenant_id,
+            tenant_slug,
+            _execute_claimed_generation_task,
+            task_id,
+            claim_token,
+            task,
+        )
+    except Exception as exc:
+        _mark_generation_worker_start_failure(
+            task_id,
+            tenant_id,
+            tenant_slug,
+            exc,
+        )
+
+
 def _run_generation_task_worker(task_id, tenant_id, tenant_slug):
-    """Execute one persisted generation task independently of its HTTP request."""
+    """Execute one persisted task with the legacy inline admission path."""
     try:
         def run():
             task = store.get_generation_task(task_id)
@@ -13216,6 +13421,7 @@ def _run_generation_task_worker(task_id, tenant_id, tenant_slug):
                     status="failed",
                     phase="节点已不存在",
                     error="对应画布项目已删除，任务已结束",
+                    delivery_status="failed",
                 )
                 return
             node = next(
@@ -13232,6 +13438,7 @@ def _run_generation_task_worker(task_id, tenant_id, tenant_slug):
                     status="failed",
                     phase="节点已不存在",
                     error="对应画布节点已删除，任务已结束",
+                    delivery_status="failed",
                 )
                 return
             provider_key = str(
@@ -13240,8 +13447,6 @@ def _run_generation_task_worker(task_id, tenant_id, tenant_slug):
                 or "__default__"
             )
             slot = None
-            lease_owner = ""
-            heartbeat = None
             try:
                 slot = acquire_generation_slot(
                     task_id,
@@ -13256,121 +13461,22 @@ def _run_generation_task_worker(task_id, tenant_id, tenant_slug):
                     TASK_LEASE_SECONDS,
                 ):
                     return
-                heartbeat = _start_generation_task_heartbeat(
+                _execute_claimed_generation_task(
                     task_id,
                     lease_owner,
-                )
-                # The worker thread already owns this row. Refresh the lease
-                # explicitly at the submit boundary; a queued row may have
-                # been pre-marked running before claim_generation_task.
-                store.renew_generation_task_lease(
-                    task_id,
-                    lease_owner,
-                    TASK_LEASE_SECONDS,
-                )
-                meta = node.setdefault("metadata", {})
-                params = meta.get("params") or {}
-                generation_started_at = store._now_iso()
-                commit_node_metadata(
-                    task["project_id"],
-                    task["node_id"],
-                    {
-                        "status": "generating",
-                        "lastError": None,
-                        "taskId": None,
-                        "generationStartedAt": generation_started_at,
-                        "generationFinishedAt": None,
-                        "providerTaskStatus": "queued",
-                        "providerTaskPhase": "正在连接供应商",
-                        "providerTaskProgress": 0,
-                        "_paramsPatch": params,
-                    },
-                )
-                worker = Handler.__new__(Handler)
-                worker._send = lambda *_args, **_kwargs: None
-                worker._generate(
-                    task["project_id"],
-                    project,
-                    node,
-                    task_id=task_id,
-                    lease_owner=lease_owner,
-                )
-                latest = store.get_generation_task(task_id) or {}
-                if latest.get("status") in {"queued", "submitting", "running"}:
-                    store.finish_generation_task(
-                        task_id,
-                        status="failed",
-                        phase="任务异常结束",
-                        error="生成执行结束但未形成终态，本次未更新画布",
-                        delivery_status="failed",
-                    )
-            except GenerationQueueCancelled as exc:
-                store.finish_generation_task(
-                    task_id,
-                    status="failed",
-                    phase="排队已取消",
-                    error=str(exc),
-                    delivery_status="failed",
-                )
-            except Exception as exc:
-                latest = store.get_generation_task(task_id) or {}
-                if latest.get("status") in {"queued", "submitting", "running"}:
-                    stored_provider_id = str(
-                        latest.get("provider_task_id") or ""
-                    ).strip()
-                    store.finish_generation_task(
-                        task_id,
-                        status=(
-                            "interrupted"
-                            if stored_provider_id
-                            else "failed"
-                        ),
-                        phase=(
-                            "结果待确认"
-                            if stored_provider_id
-                            else "任务异常"
-                        ),
-                        error=str(exc),
-                        delivery_status=(
-                            "pending" if stored_provider_id else "failed"
-                        ),
-                    )
-                print(
-                    f"[generation-worker] task={task_id} error={exc}",
-                    file=sys.stderr,
+                    task,
                 )
             finally:
-                if lease_owner:
-                    _finish_generation_task_lease(
-                        task_id,
-                        lease_owner,
-                        heartbeat,
-                    )
                 if slot:
                     release_generation_slot(slot)
 
         _run_in_tenant(tenant_id, tenant_slug, run)
     except Exception as exc:
-        latest = _run_in_tenant(
+        _mark_generation_worker_start_failure(
+            task_id,
             tenant_id,
             tenant_slug,
-            store.get_generation_task,
-            task_id,
-        ) or {}
-        if latest.get("status") in {"queued", "submitting", "running"}:
-            _run_in_tenant(
-                tenant_id,
-                tenant_slug,
-                store.finish_generation_task,
-                task_id,
-                status="failed",
-                phase="任务启动失败",
-                error=str(exc),
-                delivery_status="failed",
-            )
-        print(
-            f"[generation-worker] start failed task={task_id} error={exc}",
-            file=sys.stderr,
+            exc,
         )
 
 
@@ -13401,6 +13507,17 @@ def start_generation_task_worker(task_id, tenant_id, tenant_slug):
     thread.run = run_and_discard  # type: ignore[method-assign]
     thread.start()
     return thread
+
+
+def dispatch_generation_task(task_id, tenant_id, tenant_slug):
+    if GENERATION_EXECUTION_MODE == "worker":
+        return False
+    start_generation_task_worker(
+        task_id,
+        tenant_id,
+        tenant_slug,
+    )
+    return True
 
 
 def stop_generation_workers_for_shutdown():
