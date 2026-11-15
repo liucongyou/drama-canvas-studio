@@ -26,6 +26,7 @@
 **Files:**
 - Create: `conftest.py`
 - Create: `pytest.ini`
+- Create: `scripts/run_backend_tests.py`
 - Create: `tests/test_test_environment_contract.py`
 - Modify: `tests/test_postgres_fail_closed.py`
 
@@ -86,15 +87,16 @@ python -m pytest tests/test_test_environment_contract.py tests/test_postgres_fai
 
 Expected: all passed.
 
-- [ ] **Step 5: Run the full root suite**
+- [ ] **Step 5: Run the full isolated module suite**
 
-Run: `python -m pytest -q`
-Expected: `0 failed`; if failures remain, record their actual product cause and continue with the task that owns that class.
+Run: `python -X utf8 scripts/run_backend_tests.py`
+Expected: every module subprocess passes. Legacy modules that share process globals
+must not contaminate later modules.
 
 - [ ] **Step 6: Commit**
 
 ```powershell
-git add conftest.py pytest.ini tests/test_test_environment_contract.py tests/test_postgres_fail_closed.py
+git add conftest.py pytest.ini scripts/run_backend_tests.py tests/test_test_environment_contract.py tests/test_postgres_fail_closed.py
 git commit -m "test: make backend gate deterministic"
 ```
 
