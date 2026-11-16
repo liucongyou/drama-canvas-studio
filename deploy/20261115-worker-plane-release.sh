@@ -16,6 +16,9 @@ RUNTIME_FILES=(
   server.py
   canvas_store.py
   canvas_repository.py
+  explicit_references.py
+  generation_budget.py
+  generation_budget_guard.py
   generation_outcome.py
   telemetry.py
   generation_queue.py
@@ -55,6 +58,8 @@ test "$(cat "$STAGE/RELEASE_COMMIT")" = "$COMMIT"
 "$APP/.venv/bin/python" -m py_compile \
   "$STAGE/runtime/server.py" \
   "$STAGE/runtime/canvas_store.py" \
+  "$STAGE/runtime/generation_budget.py" \
+  "$STAGE/runtime/generation_budget_guard.py" \
   "$STAGE/runtime/generation_queue.py" \
   "$STAGE/runtime/generation_worker.py" \
   "$STAGE/runtime/schema_migrations.py" \

@@ -16,6 +16,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 
 import tenant_context
+import generation_budget
 import generation_outcome
 import pg_compat
 import telemetry
@@ -1129,6 +1130,10 @@ def _connect():
             con.execute(
             "CREATE INDEX IF NOT EXISTS idx_generation_tasks_receipt "
             "ON generation_tasks(project_id, node_id, status, created_at DESC)"
+            )
+            con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_generation_tasks_created_at "
+            "ON generation_tasks(created_at DESC)"
             )
             con.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_tasks_active_node "
@@ -7782,23 +7787,50 @@ def list_runtime_reconcile_tasks(limit=200):
 
 def generation_cost_total(since_iso):
     con = _connect()
-    row = con.execute(
-        "SELECT COALESCE(SUM(estimated_cost),0), "
-        "COALESCE(MAX(cost_currency),''), "
-        "COALESCE(GROUP_CONCAT(DISTINCT NULLIF(cost_currency,'')),'') "
-        "FROM generation_tasks "
-        "WHERE created_at>=? "
-        "AND NOT (status='interrupted' AND "
-        "(provider_task_id IS NULL OR provider_task_id=''))",
-        (since_iso,),
-    ).fetchone()
-    con.close()
+    try:
+        rows = con.execute(
+            "SELECT status,provider_task_id,estimated_cost,cost_currency,error "
+            "FROM generation_tasks WHERE created_at>=?",
+            (since_iso,),
+        ).fetchall()
+    finally:
+        con.close()
+    amount = 0.0
+    reserved = 0.0
+    committed = 0.0
+    released = 0
+    currencies = set()
+    for status, provider_task_id, estimated_cost, cost_currency, error in rows:
+        task = {
+            "status": status,
+            "provider_task_id": provider_task_id,
+            "estimated_cost": estimated_cost,
+            "cost_currency": cost_currency,
+            "error": error,
+        }
+        if not generation_budget.task_consumes_budget(task):
+            released += 1
+            continue
+        value = max(0.0, float(estimated_cost or 0))
+        amount += value
+        if (
+            str(status or "") in {"succeeded"}
+            or str(provider_task_id or "").strip()
+        ):
+            committed += value
+        else:
+            reserved += value
+        currency = str(cost_currency or "").strip()
+        if currency:
+            currencies.add(currency)
+    ordered_currencies = sorted(currencies)
     return {
-        "amount": float(row[0] or 0),
-        "currency": str(row[1] or ""),
-        "currencies": [
-            item for item in str(row[2] or "").split(",") if item
-        ],
+        "amount": round(amount, 6),
+        "currency": ordered_currencies[0] if ordered_currencies else "",
+        "currencies": ordered_currencies,
+        "reserved": round(reserved, 6),
+        "committed": round(committed, 6),
+        "releasedTasks": released,
     }
 
 

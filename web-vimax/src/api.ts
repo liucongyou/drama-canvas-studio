@@ -507,6 +507,12 @@ export type BudgetStatus = {
   monthStart: string;
   daySpend: number;
   monthSpend: number;
+  dayReserved?: number;
+  dayCommitted?: number;
+  monthReserved?: number;
+  monthCommitted?: number;
+  dayReleasedTasks?: number;
+  monthReleasedTasks?: number;
   spendCurrency: string;
 };
 

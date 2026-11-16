@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 import unittest
 
-from generation_budget import check_budget, estimate_generation_cost
+from generation_budget import (
+    check_budget,
+    estimate_generation_cost,
+    task_consumes_budget,
+)
 
 
 class GenerationBudgetTests(unittest.TestCase):
@@ -85,6 +89,31 @@ class GenerationBudgetTests(unittest.TestCase):
             monthly_spend=8,
         )
         self.assertEqual(monthly_issue["code"], "BUDGET_MONTHLY_LIMIT")
+
+    def test_only_billable_or_uncertain_tasks_consume_reserved_budget(self):
+        self.assertTrue(task_consumes_budget({
+            "status": "queued",
+            "provider_task_id": "",
+        }))
+        self.assertTrue(task_consumes_budget({
+            "status": "succeeded",
+            "provider_task_id": "provider-1",
+        }))
+        self.assertTrue(task_consumes_budget({
+            "status": "interrupted",
+            "provider_task_id": "",
+            "error": "供应商请求可能已经发出，但未取得回执",
+        }))
+        self.assertFalse(task_consumes_budget({
+            "status": "failed",
+            "provider_task_id": "",
+            "error": "参考素材缺失 1 项：角色图尚未生成",
+        }))
+        self.assertFalse(task_consumes_budget({
+            "status": "failed",
+            "provider_task_id": "",
+            "error": "已取消生成排队",
+        }))
 
 
 if __name__ == "__main__":

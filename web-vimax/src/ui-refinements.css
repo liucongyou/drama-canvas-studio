@@ -12082,6 +12082,12 @@ button.jim-dependency-prepare-item:disabled{
   font-weight: 650;
 }
 
+.canvas-budget-usage small {
+  color: var(--v-text-4);
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
 .canvas-budget-usage i {
   height: 3px;
   overflow: hidden;

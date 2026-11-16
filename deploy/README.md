@@ -53,6 +53,8 @@ CANVAS_PG_POOL_WAIT_TIMEOUT_MS=10000
 CANVAS_GENERATION_GLOBAL_CONCURRENCY=30
 CANVAS_GENERATION_TENANT_CONCURRENCY=30
 CANVAS_GENERATION_PROVIDER_CONCURRENCY=20
+CANVAS_BUDGET_GUARD_TIMEOUT_SECONDS=10
+CANVAS_BUDGET_GUARD_MAX_WAITERS=4
 CANVAS_WORKER_CONCURRENCY=4
 CANVAS_WORKER_POLL_SECONDS=0.5
 CANVAS_WORKER_LEASE_SECONDS=90
@@ -63,6 +65,11 @@ CANVAS_QUEUE_AGE_PROMOTION_SECONDS=300
 
 The sum of API, Worker, migration and administrative PostgreSQL connections must
 remain below `max_connections`, with emergency headroom reserved.
+
+Generation budget checks use tenant-scoped PostgreSQL advisory locks so multiple
+API processes cannot reserve the same remaining budget concurrently. Guard
+connections come from a separate bounded direct-connection budget so waiting
+submitters cannot exhaust the main application pool.
 
 ## Schema Migrations
 

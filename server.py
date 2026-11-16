@@ -54,6 +54,7 @@ import canvas_repository
 import import_feed
 import gate_check
 import generation_budget
+import generation_budget_guard
 import generation_queue
 import generation_outcome
 import generation_acceptance
@@ -515,7 +516,7 @@ SERVER_STARTED_AT = time.monotonic()
 PROJECT_WRITE_LOCK = threading.RLock()
 PROJECT_LOCKS = canvas_repository.PROJECT_LOCKS
 PROJECT_LOCKS_GUARD = canvas_repository.PROJECT_LOCKS_GUARD
-GENERATION_BUDGET_LOCK = threading.RLock()
+GENERATION_BUDGET_LOCK = generation_budget_guard.Guard()
 TASK_LEASE_SECONDS = 45
 TASK_HEARTBEAT_SECONDS = 15
 SHUTDOWN_DRAIN_SECONDS = max(
@@ -686,6 +687,12 @@ def generation_budget_status():
         "daySpend": day["amount"],
         "monthSpend": month["amount"],
         "spendCurrency": day["currency"] or month["currency"] or budget["currency"],
+        "dayReserved": day["reserved"],
+        "dayCommitted": day["committed"],
+        "monthReserved": month["reserved"],
+        "monthCommitted": month["committed"],
+        "dayReleasedTasks": day["releasedTasks"],
+        "monthReleasedTasks": month["releasedTasks"],
     }
 
 
@@ -9369,6 +9376,11 @@ class Handler(BaseHTTPRequestHandler):
                 "error": str(exc),
                 "code": exc.code,
             })
+        except generation_budget_guard.BudgetGuardTimeout as exc:
+            return self._send(503, {
+                "error": str(exc),
+                "code": exc.code,
+            })
 
     def _do_post(self):
         parsed = urlparse(self.path)
@@ -10395,9 +10407,13 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "REFERENCE_NOT_READY",
                     "missing": blockers,
                 })
-            # Reserve budget and create the task atomically within this process.
-            # Otherwise two simultaneous submissions can both pass the same
-            # remaining-budget check before either task is persisted.
+            requested_operation_id = str(
+                body.get("clientOperationId") or ""
+            ).strip()
+            request_entry = str(body.get("entry") or "single").strip()[:80]
+            request_batch_id = str(body.get("batchId") or "").strip()[:120]
+            # Reserve budget and create the task under one tenant-wide
+            # PostgreSQL advisory lock. The lock is shared by every API process.
             with GENERATION_BUDGET_LOCK:
                 budget_issue, budget_estimate = check_generation_budget(
                     node.get("type") or "",
@@ -10405,14 +10421,41 @@ class Handler(BaseHTTPRequestHandler):
                     proj["payload"],
                 )
                 if budget_issue:
+                    store.record_audit_event(
+                        "generation.budget_blocked",
+                        actor=(
+                            self._current_session() or {}
+                        ).get("account_username", ""),
+                        target_type="project_node",
+                        target_id=f"{pid}:{node['id']}",
+                        status="blocked",
+                        details={
+                            "projectId": pid,
+                            "nodeId": node["id"],
+                            "kind": node.get("type"),
+                            "code": budget_issue.get("code"),
+                            "estimate": budget_estimate,
+                            "entry": request_entry,
+                            "batchId": request_batch_id,
+                            "operationId": requested_operation_id,
+                            "sessionId": str(
+                                (self._current_session() or {}).get("id") or ""
+                            ),
+                            "userAgent": str(
+                                self.headers.get("User-Agent", "")
+                            )[:500],
+                            "ip": str(
+                                self.client_address[0]
+                                if self.client_address
+                                else ""
+                            )[:128],
+                        },
+                    )
                     return self._send(402, {
                         **budget_issue,
                         "estimate": budget_estimate,
                     })
                 reconcile_active_generation_task_for_node(pid, node["id"], node)
-                requested_operation_id = str(body.get("clientOperationId") or "").strip()
-                request_entry = str(body.get("entry") or "single").strip()[:80]
-                request_batch_id = str(body.get("batchId") or "").strip()[:120]
                 if requested_operation_id:
                     existing_operation = next(
                         (

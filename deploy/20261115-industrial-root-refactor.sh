@@ -13,6 +13,9 @@ RUNTIME_FILES=(
   server.py
   canvas_store.py
   canvas_repository.py
+  explicit_references.py
+  generation_budget.py
+  generation_budget_guard.py
   generation_outcome.py
   telemetry.py
 )
@@ -42,6 +45,8 @@ test "$(cat "$STAGE/RELEASE_COMMIT")" = "$COMMIT"
   "$STAGE/runtime/server.py" \
   "$STAGE/runtime/canvas_store.py" \
   "$STAGE/runtime/canvas_repository.py" \
+  "$STAGE/runtime/generation_budget.py" \
+  "$STAGE/runtime/generation_budget_guard.py" \
   "$STAGE/runtime/generation_outcome.py" \
   "$STAGE/runtime/telemetry.py" \
   "$STAGE/runtime/scripts/run-local-migrations.py" \

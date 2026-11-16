@@ -8506,11 +8506,19 @@ function GenerationBudgetDialog({
               <div>
                 <span>今日已占用</span>
                 <strong>{symbol}{Number(status?.daySpend || 0).toFixed(2)}</strong>
+                <small>
+                  已结算 {symbol}{Number(status?.dayCommitted || 0).toFixed(2)}
+                  {' · '}预留 {symbol}{Number(status?.dayReserved || 0).toFixed(2)}
+                </small>
                 <i><b style={{width: `${dailyPercent}%`}} /></i>
               </div>
               <div>
                 <span>本月已占用</span>
                 <strong>{symbol}{Number(status?.monthSpend || 0).toFixed(2)}</strong>
+                <small>
+                  已结算 {symbol}{Number(status?.monthCommitted || 0).toFixed(2)}
+                  {' · '}预留 {symbol}{Number(status?.monthReserved || 0).toFixed(2)}
+                </small>
                 <i><b style={{width: `${monthlyPercent}%`}} /></i>
               </div>
             </div>

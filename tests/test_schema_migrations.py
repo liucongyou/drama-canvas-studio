@@ -67,13 +67,17 @@ def test_migrations_apply_once_and_second_run_is_noop(migration_schema):
     finally:
         connection.close()
 
-    assert first["applied"] == ["0001", "0002"]
+    expected_versions = schema_migrations.required_versions("canvas")
+    assert first["applied"] == expected_versions
     assert second["applied"] == []
-    assert second["skipped"] == ["0001", "0002"]
+    assert second["skipped"] == expected_versions
     assert verification["ok"] is True
-    assert verification["appliedVersion"] == "0002"
+    assert verification["appliedVersion"] == expected_versions[-1]
     assert bulk["ok"] is True
-    assert bulk["schemas"][schema]["appliedVersion"] == "0002"
+    assert (
+        bulk["schemas"][schema]["appliedVersion"]
+        == expected_versions[-1]
+    )
 
 
 def test_checksum_mismatch_fails_closed(migration_schema):
@@ -133,7 +137,7 @@ def test_concurrent_migration_callers_do_not_duplicate_versions(
         for report in reports
         for version in report["applied"]
     ]
-    assert sorted(applied) == ["0001", "0002"]
+    assert sorted(applied) == schema_migrations.required_versions("canvas")
 
     connection = _connect(path, schema)
     try:
@@ -144,6 +148,6 @@ def test_concurrent_migration_callers_do_not_duplicate_versions(
     finally:
         connection.close()
     assert [(str(row[0]), int(row[1])) for row in rows] == [
-        ("0001", 1),
-        ("0002", 1),
+        (version, 1)
+        for version in schema_migrations.required_versions("canvas")
     ]

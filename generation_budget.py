@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import generation_outcome
+
 
 def estimate_generation_cost(
     kind: str,
@@ -117,6 +119,36 @@ def check_budget(
             "message": f"本次预计 {currency} {amount:.2f}；本月已占用 {currency} {monthly_spend:.2f}，将超过月预算 {currency} {monthly_limit:.2f}。",
         }
     return None
+
+
+def task_consumes_budget(task: dict[str, Any] | None) -> bool:
+    """Classify a persisted task as committed or conservatively reserved.
+
+    Tasks rejected before any provider submission must not consume budget:
+    local-reference validation failures and explicit queue cancellations never
+    reached a paid boundary. Provider task IDs always count, and unknown
+    post-submit outcomes remain conservative reservations because the provider
+    may have accepted billable work.
+    """
+    if not isinstance(task, dict):
+        return False
+    status = str(task.get("status") or "").strip().lower()
+    provider_task_id = str(task.get("provider_task_id") or "").strip()
+    error = str(task.get("last_error") or task.get("error") or "").strip()
+    if error.startswith("已取消"):
+        return False
+    if (
+        not provider_task_id
+        and generation_outcome.is_local_validation_error(error)
+    ):
+        return False
+    if provider_task_id:
+        return True
+    if status in {"queued", "submitting", "running", "succeeded"}:
+        return True
+    if status in {"failed", "interrupted"}:
+        return True
+    return False
 
 
 def _number(value: Any) -> float | None:
