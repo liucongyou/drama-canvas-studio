@@ -9381,6 +9381,11 @@ class Handler(BaseHTTPRequestHandler):
                 "error": str(exc),
                 "code": exc.code,
             })
+        except generation_budget_guard.BudgetGuardUnavailable as exc:
+            return self._send(503, {
+                "error": str(exc),
+                "code": exc.code,
+            })
 
     def _do_post(self):
         parsed = urlparse(self.path)

@@ -17,6 +17,10 @@ class BudgetGuardTimeout(TimeoutError):
     code = "BUDGET_GUARD_TIMEOUT"
 
 
+class BudgetGuardUnavailable(RuntimeError):
+    code = "BUDGET_GUARD_UNAVAILABLE"
+
+
 _LOCAL_GUARDS: dict[str, threading.Lock] = {}
 _LOCAL_GUARDS_GUARD = threading.Lock()
 _GUARD_STACKS = threading.local()
@@ -111,6 +115,12 @@ def acquire(timeout_seconds: float | None = None):
                     except Exception:
                         # Closing the session also releases all session locks.
                         pass
+    except (BudgetGuardTimeout, BudgetGuardUnavailable):
+        raise
+    except (psycopg.Error, OSError) as exc:
+        raise BudgetGuardUnavailable(
+            "生成预算保护暂时不可用，请稍后重试"
+        ) from exc
     finally:
         _PG_GUARD_SLOTS.release()
 

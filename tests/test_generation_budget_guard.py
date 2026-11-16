@@ -92,3 +92,25 @@ def test_postgres_budget_guard_times_out_without_overlap(
             with pytest.raises(generation_budget_guard.BudgetGuardTimeout):
                 with generation_budget_guard.acquire(timeout_seconds=0.2):
                     pass
+
+
+def test_postgres_budget_guard_maps_database_connect_failure(
+    budget_guard_tenant,
+    monkeypatch,
+):
+    def fail_connect(*args, **kwargs):
+        raise psycopg.OperationalError("database unavailable")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            generation_budget_guard.psycopg,
+            "connect",
+            fail_connect,
+        )
+        with tenant_context.use_context(budget_guard_tenant):
+            with pytest.raises(
+                generation_budget_guard.BudgetGuardUnavailable,
+                match="预算保护暂时不可用",
+            ):
+                with generation_budget_guard.acquire(timeout_seconds=0.5):
+                    pass
