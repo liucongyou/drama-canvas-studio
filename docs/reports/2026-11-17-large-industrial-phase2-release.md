@@ -7,6 +7,7 @@ Status: Deployed and production-verified
 
 - Branch: `codex/agent-overhaul`
 - Release commit: `5bd90c07f1d60f907eb7c55a8bf26c1c234ba3f3`
+- Follow-up runtime commit: `73816300984864b029d473a4cc3b8bba9dfbcc5e`
 - Previous production release: `757dad2d4c3e3909ef0d6ed41d56d2b8e7546570`
 - Production host: `121.196.230.104`
 - Application root: `/www/wwwroot/yj.pduoduo.vip/app`
@@ -24,6 +25,8 @@ Status: Deployed and production-verified
   consume budget.
 - Budget blocking records operation ID, entry, batch, session, IP, UA, node and
   estimate without prompt text or credentials.
+- A budget-guard database connection failure now maps to an explicit
+  `503 BUDGET_GUARD_UNAVAILABLE` instead of escaping as an unhandled exception.
 - The budget dialog displays backend-provided committed and reserved amounts.
 - Added migration `0003` with a creation-time index for generation cost reads.
 
@@ -61,7 +64,7 @@ Artifacts:
 - `drama-canvas-yj.service`: active
 - `drama-canvas-worker.service`: active
 - `drama-canvas-agent.service`: active
-- `RELEASE_COMMIT`: `5bd90c07f1d60f907eb7c55a8bf26c1c234ba3f3`
+- `RELEASE_COMMIT`: `73816300984864b029d473a4cc3b8bba9dfbcc5e`
 - `/healthz`: OK with matching commit
 - `/readyz`: OK, database, migrations and Worker fleet healthy
 - PostgreSQL pool: waiting `0`, timeout total `0`
