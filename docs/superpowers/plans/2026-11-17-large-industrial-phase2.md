@@ -56,7 +56,7 @@ Acceptance:
 
 ## Task 5: Release
 
-**Status:** Pending
+**Status:** Complete (production `5bd90c0`)
 
 - Run backend, Agent, frontend, typecheck, build and multiprocess gates.
 - Commit only Phase 2 files.
