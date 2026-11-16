@@ -3,6 +3,18 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.16.03',
+    date: '2026-11-16',
+    title: '已扣费视频任务恢复闭环',
+    releasedAt: '2026-11-16 13:05:00 +08:00',
+    changes: [
+      '修复供应商已受理并扣费后，任务在 submitting 状态下无法保存供应商任务号的问题；任务号、心跳、终态和租约释放现在统一兼容 running/submitting。',
+      '修复成功终态写入仍只接受 running 的问题；供应商已完成的视频不会再因为状态是 submitting 而被覆盖为“未形成终态”。',
+      '启动对账之外新增每 30 秒 durable journal 回填：只要本地有供应商任务号，即使数据库任务曾被错误标失败，也会重新接入原任务且不会再次提交。',
+      '已恢复线上 11:35 提交、11:53 入账的 ¥1.85 视频：供应商任务 cgt-20261116113458-hqemg 成功，原 MP4 已落盘并写回节点，鉴权 Range 返回 HTTP 206。',
+    ],
+  },
+  {
     version: '2026.11.16.02',
     date: '2026-11-16',
     title: '视频提交租约丢失修复',

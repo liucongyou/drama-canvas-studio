@@ -4948,7 +4948,8 @@ def update_generation_task(task_id, **fields):
             con.execute(
                 "UPDATE generation_tasks SET "
                 + set_clause
-                + " WHERE id=? AND lease_owner=? AND status='running'",
+                + " WHERE id=? AND lease_owner=? "
+                "AND status IN ('running','submitting')",
                 (*update_values, task_id, str(lease_owner or "")),
             )
             return
@@ -6175,7 +6176,10 @@ def commit_generation_terminal(
                 owner = str(effective_lease_owner or "")
                 if (
                     str(task.get("lease_owner") or "") != owner
-                    or str(task.get("status") or "") != "running"
+                    or str(task.get("status") or "") not in {
+                        "running",
+                        "submitting",
+                    }
                 ):
                     durable_local = str(
                         effective_task_updates.get("local_result_url")
@@ -6208,13 +6212,36 @@ def commit_generation_terminal(
                 if key in _TASK_FIELDS
             }
             merged = _merge_generation_task_update(task, fields)
+            if (
+                effective_lease_owner is not None
+                and str(merged.get("status") or "") in {
+                    "succeeded",
+                    "failed",
+                    "interrupted",
+                    "cancelled",
+                }
+            ):
+                merged["lease_owner"] = ""
+                merged["lease_expires_at"] = None
             if merged:
+                # A terminal task must not retain a lease even when a caller
+                # omits an explicit release, otherwise the card can look busy
+                # after the terminal transaction commits.
+                if str(merged.get("status") or "") in {
+                    "succeeded",
+                    "failed",
+                    "interrupted",
+                    "cancelled",
+                }:
+                    merged.setdefault("lease_owner", "")
+                    merged.setdefault("lease_expires_at", None)
                 merged["updated_at"] = _now_iso()
                 cursor = con.execute(
                     "UPDATE generation_tasks SET "
                     + ",".join(f"{key}=?" for key in merged)
                     + (
-                        " WHERE id=? AND lease_owner=? AND status='running'"
+                        " WHERE id=? AND lease_owner=? "
+                        "AND status IN ('running','submitting')"
                         if effective_lease_owner is not None
                         else " WHERE id=?"
                     ),
@@ -6746,10 +6773,10 @@ def claim_generation_task(task_id, owner, lease_seconds=45, allow_recover=False)
             current_lease_expires_at,
             current_provider_task_id,
         ) = row
-        if current_status == "running" and current_owner == owner:
+        if current_status in {"running", "submitting"} and current_owner == owner:
             con.execute(
                 "UPDATE generation_tasks SET lease_expires_at=?,heartbeat_at=?,updated_at=? "
-                "WHERE id=? AND status='running' AND lease_owner=?",
+                "WHERE id=? AND status IN ('running','submitting') AND lease_owner=?",
                 (lease_expires_at, now.isoformat(), now.isoformat(), task_id, owner),
             )
             claimed["value"] = True
@@ -6931,7 +6958,7 @@ def release_generation_task_lease(task_id, owner):
         # Do not release a terminal row's historical (already-empty) lease.
         con.execute(
             "UPDATE generation_tasks SET lease_owner='',lease_expires_at=NULL,updated_at=? "
-            "WHERE id=? AND status='running' AND lease_owner=?",
+            "WHERE id=? AND status IN ('running','submitting') AND lease_owner=?",
             (_now_iso(), task_id, owner),
         )
 

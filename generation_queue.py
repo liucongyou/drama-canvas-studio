@@ -140,7 +140,8 @@ def renew_generation_task_claim(
     def write(connection):
         result = connection.execute(
             "UPDATE generation_tasks SET lease_expires_at=?,heartbeat_at=?,"
-            "updated_at=? WHERE id=? AND status='running' AND lease_owner=?",
+            "updated_at=? WHERE id=? "
+            "AND status IN ('running','submitting') AND lease_owner=?",
             (
                 lease_expires_at,
                 now_text,
@@ -187,7 +188,8 @@ def release_generation_task_claim(
                 "phase='等待调度',lease_owner='',worker_id='',"
                 "lease_expires_at='',heartbeat_at='',available_at=?,"
                 "last_worker_error=?,updated_at=? "
-                "WHERE id=? AND lease_owner=? AND status='running'",
+                "WHERE id=? AND lease_owner=? "
+                "AND status IN ('running','submitting')",
                 (
                     now_text,
                     str(error or "")[:1000],
@@ -202,7 +204,8 @@ def release_generation_task_claim(
             "queue_state='blocked',phase='结果待确认',"
             "lease_owner='',worker_id='',lease_expires_at='',heartbeat_at='',"
             "last_worker_error=?,delivery_status='pending',updated_at=? "
-            "WHERE id=? AND lease_owner=? AND status='running'",
+            "WHERE id=? AND lease_owner=? "
+            "AND status IN ('running','submitting')",
             (
                 str(error or "执行租约已释放，结果需要确认")[:1000],
                 now_text,

@@ -1,7 +1,7 @@
 # Video Submitting Lease Recovery
 
 Date: 2026-11-16
-Status: Fix verified locally; production deployment after the release gate
+Status: Fix verified locally; billed result recovered in production
 
 ## Symptom
 
@@ -41,6 +41,15 @@ status IN ('running', 'submitting')
 The lease owner remains mandatory. External task identity, provider task ID,
 and terminal status protections remain unchanged.
 
+The same status assumption also existed in:
+
+- the task-scoped update path used to persist provider task IDs;
+- the terminal transaction pre-check and UPDATE;
+- queue-claim renewal and release.
+
+All of those paths now accept `running` and `submitting`. Terminal updates also
+clear the lease in the same transaction.
+
 ## Regression Coverage
 
 - Added a real admission-path test covering:
@@ -53,6 +62,7 @@ and terminal status protections remain unchanged.
   `tests/test_generation_delivery_recovery.py`,
   `test_generation_queue.py`, and `test_account_auth.py`.
 - Related backend chain result: `100 passed`.
+- Focused queue/lease regression after the final fix: `9 passed`.
 
 ## Release Gate
 
@@ -67,6 +77,8 @@ and terminal status protections remain unchanged.
 - Browser desktop/mobile regression: passed.
 - Browser page errors: `0`.
 - Browser console errors: `0`.
+- Production recovered-video Range check: HTTP `206`, `video/mp4`,
+  `Content-Range: bytes 0-1023/2741736`.
 
 ## Submission-Path Stress
 
@@ -88,6 +100,41 @@ Artifact:
 ```text
 artifacts/submission-flow-stress-20t-90s/report.json
 ```
+
+## Billed Result Recovery
+
+Production task:
+
+```text
+6IrCTfcok2AS9su35p0Q7r
+```
+
+Provider task:
+
+```text
+cgt-20261116113458-hqemg
+```
+
+The durable journal retained the provider task ID after the database callback
+failed to persist it. A read-only provider query returned `succeeded`, and the
+existing paid MP4 was downloaded without another provider submission.
+
+Recovered node result:
+
+```text
+/uploads/generated-1794802989-0fd7b05e4b.mp4
+/uploads/generated-1794802989-0fd7b05e4b-cover.jpg
+```
+
+The task is now `succeeded / ready`; the node is `done`; the original provider
+task ID and both result receipts are stored.
+
+## Automatic Journal Reconcile
+
+Journal restore previously ran only once during startup. The runtime reconciler
+now also runs the durable journal restore every 30 seconds, so a task that was
+incorrectly closed after provider acceptance can be reattached to the same paid
+provider task without a service restart.
 
 ## Deployment Rule
 

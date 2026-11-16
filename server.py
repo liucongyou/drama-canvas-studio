@@ -5773,6 +5773,9 @@ def reconcile_failed_generation_task_nodes():
 
 def reconcile_generation_runtime_once():
     """Repair persisted task state without starting provider I/O."""
+    journal_recovered = _run_for_active_tenants(
+        reconcile_provider_task_journal
+    )
     expired = _collect_for_active_tenants(
         store.expire_stale_generation_tasks
     )
@@ -5789,6 +5792,7 @@ def reconcile_generation_runtime_once():
     return {
         "expired": expired,
         "unconfirmedExpired": len(unconfirmed_expired),
+        "journalRecovered": int(journal_recovered or 0),
         "delivered": int(delivered or 0),
         "reconciled": int(reconciled or 0),
         "resumed": int(resumed or 0),
@@ -6023,6 +6027,12 @@ def start_generation_task_reconciler():
                 if result["delivered"]:
                     print(
                         f"[generation-delivery] projected {result['delivered']} persisted results",
+                        file=sys.stderr,
+                    )
+                if result.get("journalRecovered"):
+                    print(
+                        f"[generation-journal] recovered "
+                        f"{result['journalRecovered']} provider task receipts",
                         file=sys.stderr,
                     )
             except Exception as exc:

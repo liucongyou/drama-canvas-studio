@@ -14,6 +14,7 @@ import canvas_store
 import generation_queue
 import pg_compat
 import schema_migrations
+import server
 import tenant_context
 
 
@@ -231,6 +232,87 @@ def test_claim_lease_can_be_renewed_while_admitted_for_submission(
     assert current["lease_expires_at"] > "2000-01-01T00:00:00.000Z"
 
 
+def test_terminal_commit_succeeds_while_submitting(queue_tenant):
+    task = _task(queue_tenant)
+    with tenant_context.use_context(queue_tenant):
+        claim = generation_queue.claim_next_generation_task(
+            "worker-terminal-submitting",
+            lease_seconds=30,
+        )
+        admission = generation_queue.acquire_generation_admission(
+            task["id"],
+            claim["claimToken"],
+            provider="mock",
+            model="mock-video",
+            kind="video",
+            lease_seconds=30,
+        )
+        before = canvas_store.get_generation_task(task["id"])
+        result = canvas_store.commit_generation_terminal(
+            task["project_id"],
+            task["node_id"],
+            {
+                "status": "done",
+                "content": "/uploads/mock-submitting.mp4",
+                "generationFinishedAt": canvas_store._now_iso(),
+            },
+            task_id=task["id"],
+            task_updates={
+                "status": "succeeded",
+                "phase": "已完成",
+                "delivery_status": "ready",
+                "provider_task_id": "mock-provider-task",
+            },
+            lease_owner=claim["claimToken"],
+        )
+        current = canvas_store.get_generation_task(task["id"])
+
+    assert admission["acquired"] is True
+    assert result["committed"] is True, {
+        "result": result,
+        "admission": admission,
+        "claimToken": claim["claimToken"],
+        "beforeStatus": before["status"],
+        "beforeOwner": before["lease_owner"],
+        "beforeExpires": before["lease_expires_at"],
+    }
+    assert result["reason"] == ""
+    assert current["status"] == "succeeded"
+    assert current["provider_task_id"] == "mock-provider-task"
+    assert current["lease_owner"] == ""
+
+
+def test_provider_identity_and_lease_release_succeed_while_submitting(
+    queue_tenant,
+):
+    task = _task(queue_tenant)
+    with tenant_context.use_context(queue_tenant):
+        claim = generation_queue.claim_next_generation_task(
+            "worker-provider-submitting",
+            lease_seconds=30,
+        )
+        admission = generation_queue.acquire_generation_admission(
+            task["id"],
+            claim["claimToken"],
+            provider="mock",
+            model="mock-video",
+            kind="video",
+            lease_seconds=30,
+        )
+        accepted = canvas_store.update_generation_task(
+            task["id"],
+            status="running",
+            phase="排队中",
+            provider_task_id="mock-provider-task",
+            _lease_owner=claim["claimToken"],
+        )
+
+    assert admission["acquired"] is True
+    assert accepted["provider_task_id"] == "mock-provider-task"
+    assert accepted["status"] == "running"
+    assert accepted["lease_owner"] == claim["claimToken"]
+
+
 def test_worker_heartbeat_is_visible_to_other_processes(queue_tenant):
     with tenant_context.use_context(queue_tenant):
         generation_queue.heartbeat_worker(
@@ -244,3 +326,47 @@ def test_worker_heartbeat_is_visible_to_other_processes(queue_tenant):
     assert workers[0]["workerId"] == "worker-heartbeat"
     assert workers[0]["activeTasks"] == 2
     assert workers[0]["metadata"]["release"] == "test"
+
+
+def test_runtime_reconcile_restores_journal_provider_identity(
+    queue_tenant,
+    monkeypatch,
+):
+    task = _task(queue_tenant)
+    with tenant_context.use_context(queue_tenant):
+        canonical = canvas_store.update_generation_task(
+            task["id"],
+            provider_task_id="mock-provider-task",
+            status="running",
+            phase="等待恢复",
+        )
+        assert canonical["provider_task_id"] == "mock-provider-task"
+        canvas_store.update_generation_task(
+            task["id"],
+            status="failed",
+            phase="服务中断",
+            error="旧任务未取得可恢复的供应商任务 ID",
+            provider_task_id="",
+            delivery_status="pending",
+        )
+        journal_entry = canvas_store.remember_provider_task(
+            task["id"],
+            "mock-provider-task",
+            project_id=task["project_id"],
+            node_id=task["node_id"],
+            provider="mock",
+            model="mock-video",
+        )
+        monkeypatch.setattr(
+            server,
+            "_active_tenants",
+            lambda: [None],
+        )
+        recovered = server.reconcile_generation_runtime_once()
+        current = canvas_store.get_generation_task(task["id"])
+
+    assert journal_entry["providerTaskId"] == "mock-provider-task"
+    assert recovered["journalRecovered"] >= 1
+    assert current["provider_task_id"] == "mock-provider-task"
+    assert current["status"] == "interrupted"
+    assert current["phase"] == "结果待确认"
