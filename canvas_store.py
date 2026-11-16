@@ -6907,7 +6907,7 @@ def renew_generation_task_lease(task_id, owner, lease_seconds=45):
     def write(con):
         result = con.execute(
             "UPDATE generation_tasks SET lease_expires_at=?,heartbeat_at=?,updated_at=? "
-            "WHERE id=? AND status='running' AND lease_owner=?",
+            "WHERE id=? AND status IN ('running','submitting') AND lease_owner=?",
             (
                 lease_expires_at,
                 now.isoformat(),

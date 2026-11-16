@@ -196,6 +196,41 @@ def test_expired_uncertain_claim_is_blocked(queue_tenant):
     assert next_claim is None
 
 
+def test_claim_lease_can_be_renewed_while_admitted_for_submission(
+    queue_tenant,
+):
+    task = _task(queue_tenant)
+    with tenant_context.use_context(queue_tenant):
+        claim = generation_queue.claim_next_generation_task(
+            "worker-submitting",
+            lease_seconds=30,
+        )
+        admission = generation_queue.acquire_generation_admission(
+            task["id"],
+            claim["claimToken"],
+            provider="mock",
+            model="mock-video",
+            kind="video",
+            lease_seconds=30,
+        )
+        canvas_store.update_generation_task(
+            task["id"],
+            lease_expires_at="2000-01-01T00:00:00.000Z",
+        )
+        renewed = canvas_store.renew_generation_task_lease(
+            task["id"],
+            claim["claimToken"],
+            lease_seconds=30,
+        )
+        current = canvas_store.get_generation_task(task["id"])
+
+    assert admission["acquired"] is True
+    assert renewed is True
+    assert current["status"] == "submitting"
+    assert current["lease_owner"] == claim["claimToken"]
+    assert current["lease_expires_at"] > "2000-01-01T00:00:00.000Z"
+
+
 def test_worker_heartbeat_is_visible_to_other_processes(queue_tenant):
     with tenant_context.use_context(queue_tenant):
         generation_queue.heartbeat_worker(

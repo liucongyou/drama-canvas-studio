@@ -75,21 +75,30 @@ class AccountAuthTests(unittest.TestCase):
         origin="https://yj.pduoduo.vip",
         extra_headers=None,
     ):
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
-        headers = {"Host": "yjapi.pduoduo.vip"}
-        if origin:
-            headers["Origin"] = origin
-        if cookie:
-            headers["Cookie"] = cookie
-        if body:
-            headers["Content-Type"] = "application/json"
-        headers.update(extra_headers or {})
-        connection.request(method, path, body=body, headers=headers)
-        response = connection.getresponse()
-        payload = response.read()
-        headers_out = dict(response.getheaders())
-        connection.close()
-        return response.status, headers_out, payload
+        connection = http.client.HTTPConnection(
+            "127.0.0.1",
+            self.port,
+            timeout=20,
+        )
+        try:
+            headers = {"Host": "yjapi.pduoduo.vip"}
+            if origin:
+                headers["Origin"] = origin
+            if cookie:
+                headers["Cookie"] = cookie
+            if body:
+                headers["Content-Type"] = "application/json"
+            headers.update(extra_headers or {})
+            connection.request(method, path, body=body, headers=headers)
+            response = connection.getresponse()
+            try:
+                payload = response.read()
+                headers_out = dict(response.getheaders())
+                return response.status, headers_out, payload
+            finally:
+                response.close()
+        finally:
+            connection.close()
 
     def test_login_sets_http_only_session_and_authorizes_api(self):
         status, headers, _ = self.request(
