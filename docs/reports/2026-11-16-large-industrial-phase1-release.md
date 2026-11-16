@@ -196,8 +196,21 @@ Old entries are pruned only after the age window; recent paid-task receipts are
 never removed. This prevents the 24-hour run from creating an unbounded number
 of tiny journal files.
 
-The restarted 24-hour run starts at `2026-11-16 13:41:36 +08:00` with
-launcher PID `33008`.
+The `2026-11-16` run was interrupted by the local PostgreSQL maintenance
+shutdown and did not produce a passing report.
+
+The current acceptance run was restarted after the Phase 2 release:
+
+- Started: `2026-11-17 02:08:13 +08:00`
+- Launcher PID: `21132`
+- Isolated database: `drama_canvas_soak_20261117`
+- Output directory: `artifacts/soak-100t-24h-v3`
+- Mock provider only; no paid provider call
+- Status: running, not yet accepted
+
+The run may only be marked passed after
+`artifacts/soak-100t-24h-v3/report.json` exists with `ok=true` and validates
+the completion criteria above.
 
 ## Rollback
 
