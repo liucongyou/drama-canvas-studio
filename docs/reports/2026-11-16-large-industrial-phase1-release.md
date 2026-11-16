@@ -1,7 +1,7 @@
 # Large Industrial Phase 1 Release
 
 Date: 2026-11-16
-Status: Deployed and production-verified; 24-hour soak pending
+Status: Deployed and production-verified; restarted 24-hour soak in progress
 
 ## Release
 
@@ -78,17 +78,18 @@ Artifact:
 
 ## Verification Limit
 
-The full 24-hour mock-provider soak is running but has not yet finished. A
+The full 24-hour mock-provider soak has been restarted and has not yet finished. A
 100-tenant smoke and failure-injection test are not equivalent to the 24-hour
 acceptance run.
 
 Soak run:
 
 - Started: `2026-11-16 03:35:14 +08:00`
-- Launcher PID at start: `24508`
+- First-run launcher PID: `24508` (interrupted, no report)
+- Restart launcher PID: `33008`
 - Isolated database: `drama_canvas_soak_20261116`
 - Isolated server: `127.0.0.1:55432`
-- Output directory: `artifacts/soak-100t-24h-v1`
+- Active output directory: `artifacts/soak-100t-24h-v2`
 - Provider mode: deterministic mock only
 - Worker rotation: one hard kill and replacement every hour
 - Expected duration: 24 hours
@@ -112,7 +113,7 @@ Phase one acceptance remains open until that report passes with:
 - bounded log and table growth;
 - terminal or explicit uncertain state for every accepted task.
 
-The soak wrapper must produce `artifacts/soak-100t-24h-v1/report.json` with
+The soak wrapper must produce `artifacts/soak-100t-24h-v2/report.json` with
 `ok=true`. Until that file exists and validates, the full phase-one acceptance
 remains pending.
 
@@ -141,6 +142,62 @@ leftovers and at most one submit per task:
 ```text
 artifacts/soak-preflight-6m-v4/report.json
 ```
+
+## Soak Connection-Budget Correction
+
+The first 24-hour run did not complete. At approximately `2026-11-16 11:25`
+the isolated local PostgreSQL test cluster rejected a project insert with:
+
+```text
+FATAL: sorry, too many clients already
+```
+
+The cause was the test topology, not the production service:
+
+- two API child processes;
+- four Worker child processes;
+- prior short-run child processes and parent sampling;
+- each child configured with a process pool maximum of eight;
+- a local test cluster limit of 100 connections;
+- full release gates running concurrently against the same local server.
+
+The soak child budget is now:
+
+```text
+CANVAS_PG_POOL_MAX=4
+CANVAS_PG_POOL_IDLE_MAX=2
+CANVAS_PG_POOL_WAIT_TIMEOUT_MS=15000
+```
+
+The corrected preflight completed with 100/100 tasks succeeded and each API
+reporting:
+
+```text
+pool max=4
+physical=2
+waiting=0
+timeoutTotal=0
+```
+
+Artifact:
+
+```text
+artifacts/soak-preflight-6m-v5/report.json
+```
+
+The durable recovery journal is also bounded by recent-entry count and age:
+
+```text
+CANVAS_GENERATION_JOURNAL_MAX_ENTRIES=10000
+CANVAS_GENERATION_JOURNAL_RETENTION_SECONDS=604800
+```
+
+Old entries are pruned only after the age window; recent paid-task receipts are
+never removed. This prevents the 24-hour run from creating an unbounded number
+of tiny journal files.
+
+The restarted 24-hour run starts at `2026-11-16 13:41:36 +08:00` with
+launcher PID `33008`.
 
 ## Rollback
 
