@@ -7174,7 +7174,45 @@ def remember_provider_task(
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temp_path, path)
+    _prune_provider_task_journal(journal_dir)
     return payload
+
+
+def _prune_provider_task_journal(journal_dir):
+    """Bound recovery receipts without touching recent paid work."""
+    try:
+        entries = [
+            os.path.join(journal_dir, name)
+            for name in os.listdir(journal_dir)
+            if name.endswith(".json")
+        ]
+    except OSError:
+        return
+    max_entries = max(
+        1,
+        int(os.getenv("CANVAS_GENERATION_JOURNAL_MAX_ENTRIES", "10000")),
+    )
+    if len(entries) <= max_entries:
+        return
+    min_age_seconds = max(
+        3600,
+        int(os.getenv("CANVAS_GENERATION_JOURNAL_RETENTION_SECONDS", "604800")),
+    )
+    cutoff = time.time() - min_age_seconds
+    victims = []
+    for path in entries:
+        try:
+            if os.path.getmtime(path) >= cutoff:
+                continue
+            victims.append((os.path.getmtime(path), path))
+        except OSError:
+            continue
+    victims.sort()
+    for _mtime, path in victims[:max(0, len(entries) - max_entries)]:
+        try:
+            os.remove(path)
+        except OSError:
+            continue
 
 
 def list_provider_task_journal():

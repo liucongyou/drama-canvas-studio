@@ -370,3 +370,39 @@ def test_runtime_reconcile_restores_journal_provider_identity(
     assert current["provider_task_id"] == "mock-provider-task"
     assert current["status"] == "interrupted"
     assert current["phase"] == "结果待确认"
+
+
+def test_provider_journal_is_bounded_to_recent_recovery_window(
+    queue_tenant,
+    monkeypatch,
+):
+    monkeypatch.setenv("CANVAS_GENERATION_JOURNAL_MAX_ENTRIES", "2")
+    monkeypatch.setenv(
+        "CANVAS_GENERATION_JOURNAL_RETENTION_SECONDS",
+        "3600",
+    )
+    with tenant_context.use_context(queue_tenant):
+        first = canvas_store.remember_provider_task("task-1", "provider-1")
+        second = canvas_store.remember_provider_task("task-2", "provider-2")
+        third = canvas_store.remember_provider_task("task-3", "provider-3")
+        journal_dir = (
+            queue_tenant.data_root
+            / "generation-journal"
+        )
+        old = journal_dir / "provider-1.json"
+        stale = old.stat().st_mtime - 7200
+        old.touch()
+        timestamp = stale
+        for candidate in (old, journal_dir / "provider-2.json"):
+            os.utime(candidate, (timestamp, timestamp))
+        canvas_store._prune_provider_task_journal(str(journal_dir))
+        entries = canvas_store.list_provider_task_journal()
+
+    assert journal_dir.is_dir()
+    assert first["providerTaskId"] == "provider-1"
+    assert second["providerTaskId"] == "provider-2"
+    assert third["providerTaskId"] == "provider-3"
+    assert len(entries) <= 2
+    assert "provider-1" not in {
+        item.get("providerTaskId") for item in entries
+    }

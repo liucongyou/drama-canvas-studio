@@ -237,8 +237,12 @@ def _child_env(base_env, suffix, data_root):
         "CANVAS_PG_SCHEMA_SUFFIX": suffix,
         "CANVAS_SCHEMA_MIGRATIONS_REQUIRED": "1",
         "CANVAS_GENERATION_EXECUTION_MODE": "worker",
-        "CANVAS_PG_POOL_MAX": "8",
-        "CANVAS_PG_POOL_IDLE_MAX": "4",
+        # Six child processes plus the parent share a local PostgreSQL test
+        # cluster capped at max_connections=100. Keep each process bounded so a
+        # long soak cannot exhaust the server even after repeated worker kills.
+        "CANVAS_PG_POOL_MAX": "4",
+        "CANVAS_PG_POOL_IDLE_MAX": "2",
+        "CANVAS_PG_POOL_WAIT_TIMEOUT_MS": "15000",
     }
 
 
