@@ -126,5 +126,17 @@ class ExplicitReferenceTests(unittest.TestCase):
             },
         )
 
+    def test_known_mention_followed_by_prose_is_not_reported_invalid(self):
+        result = resolve_explicit_references(
+            prompt='【场景资产】@道具｜军绿色自行车（图40），支在画左院墙边，本段不移动。',
+            nodes=[image('bike', '道具｜军绿色自行车（图40）')],
+            candidate_refs=[{'nodeId': 'bike'}],
+            candidate_voices=[],
+        )
+
+        self.assertEqual(result.issues, [])
+        self.assertEqual([ref['nodeId'] for ref in result.refs], ['bike'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -16,6 +16,7 @@ import pg_compat
 import schema_migrations
 import server
 import tenant_context
+import tenant_registry
 
 
 pytestmark = pytest.mark.skipif(
@@ -32,6 +33,11 @@ def queue_tenant(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", os.environ["TEST_POSTGRES_URL"])
     monkeypatch.setenv("CANVAS_MULTI_TENANT", "1")
     monkeypatch.setenv("CANVAS_TENANT_DATA_ROOT", root.name)
+    control = tenant_registry._connect()
+    try:
+        schema_migrations.apply_migrations(control, "control")
+    finally:
+        control.close()
     context = tenant_context.make_context(tenant_id, tenant_id)
     tenant_context.ensure_context_dirs(context)
     with tenant_context.use_context(context):

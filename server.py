@@ -2570,6 +2570,48 @@ LOCAL_MEDIA_PARAM_FIELDS = {
 }
 
 
+def clear_superseded_validation_error(meta, incoming, *, generation_active=False):
+    """Clear stale request-validation errors after editable inputs change.
+
+    Missing references, empty prompts and model limits describe the current
+    request. If one of those errors is kept in generation-owned metadata, a
+    corrected prompt continues to show an error that no longer exists.
+    Provider failures, uncertain outcomes and provider task receipts remain
+    generation-owned and are never cleared by this helper.
+    """
+    if generation_active or not isinstance(meta, dict) or not isinstance(incoming, dict):
+        return
+    if str(meta.get("status") or "").strip().lower() not in {"failed", "error"}:
+        return
+    if str(meta.get("taskId") or "").strip():
+        return
+    if not generation_outcome.is_local_validation_error(meta.get("lastError")):
+        return
+    changed = any(
+        key in incoming
+        for key in ("prompt", "refs", "voiceRef", "voiceRefs")
+    )
+    incoming_params = incoming.get("params")
+    if isinstance(incoming_params, dict):
+        changed = changed or bool({
+            "prompt",
+            "refs",
+            "voiceRef",
+            "voiceRefs",
+            "removedRefNodeIds",
+            "model",
+            "provider",
+        }.intersection(incoming_params))
+    if not changed:
+        return
+    meta["status"] = "done" if str(meta.get("content") or "").strip() else "idle"
+    meta["lastError"] = ""
+    meta["providerTaskStatus"] = ""
+    meta["providerTaskPhase"] = ""
+    meta["providerTaskProgress"] = 0
+    meta["generationFinishedAt"] = ""
+
+
 def _editable_param_view(meta):
     params = meta.get("params") if isinstance(meta, dict) else {}
     if not isinstance(params, dict):
@@ -2746,6 +2788,11 @@ def merge_node_metadata(meta, incoming, generation_active=False, node_type=""):
             )
             or (requested_version_id and requested_signed_url)
         )
+    )
+    clear_superseded_validation_error(
+        meta,
+        incoming,
+        generation_active=generation_active,
     )
     for key, value in (incoming or {}).items():
         if key in {"_mediaImport", "_mediaVersionSelection"}:

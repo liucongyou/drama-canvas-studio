@@ -57,6 +57,7 @@ switch ($Action) {
     & "$PgBin\pg_ctl.exe" `
       -D $Data `
       -l $Log `
+      -t 180 `
       -o "-p $Port -h 127.0.0.1" `
       start
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

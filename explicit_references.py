@@ -48,10 +48,11 @@ def _unresolved_tokens(prompt: str, labels: list[str]) -> list[str]:
     matches = sorted(
         {
             (index, index + len(f"@{label}"))
-            for label in labels
+            for label in sorted(labels, key=len, reverse=True)
             for index in _find_all(prompt, f"@{label}")
             if index == 0 or prompt[index - 1] != "<"
-        }
+        },
+        key=lambda item: (item[0], -(item[1] - item[0])),
     )
     accepted: list[tuple[int, int]] = []
     consumed = -1
