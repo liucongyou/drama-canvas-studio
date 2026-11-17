@@ -317,10 +317,27 @@ try {
     return {
       x: rect.x + Math.min(36, rect.width / 3),
       y: rect.y + Math.min(28, rect.height / 3),
+      centerX: rect.x + rect.width / 2,
+      centerY: rect.y + rect.height / 2,
     };
   });
-  await page.mouse.click(cardPoint.x, cardPoint.y);
-  await page.waitForSelector('.jim-prompt', {timeout: 10_000});
+  let promptOpened = false;
+  for (const point of [
+    [cardPoint.centerX, cardPoint.centerY],
+    [cardPoint.x, cardPoint.y],
+  ]) {
+    await page.mouse.click(point[0], point[1]);
+    try {
+      await page.waitForSelector('.jim-prompt', {timeout: 5_000});
+      promptOpened = true;
+      break;
+    } catch {
+      await page.keyboard.press('Escape');
+    }
+  }
+  if (!promptOpened) {
+    throw new Error('media card did not open prompt editor');
+  }
   const composition = await page.$eval('.jim-prompt', (editor) => {
     const original = (
       editor.dataset.promptValue

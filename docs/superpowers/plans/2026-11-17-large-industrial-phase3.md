@@ -40,15 +40,16 @@ multi-host storage gate without changing existing media playback semantics.
 
 ## Task 5: Verification and Release
 
-**Status:** Local verification complete; release pending
+**Status:** Complete
 
 - Run media delivery, storage, readiness, backend, frontend and build gates.
 - The corrected 100-tenant, 200-task preflight passed with 200/200 succeeded,
   one submit per task, readiness green, and a peak of 46/100 PostgreSQL
   connections.
-- Commit and deploy in one release window.
-- Verify production remains in `auto` mode unless storage is explicitly
-  validated for object-only operation.
+- Commit `b49f74b8942c5636c0c8169fa03fb27a33558ccb` and deploy in one release
+  window.
+- Production remains in `auto` mode unless storage is explicitly validated for
+  object-only operation.
 
 ## Remaining Phase 1 Acceptance
 
