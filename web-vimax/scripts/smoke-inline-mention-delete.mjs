@@ -1,12 +1,25 @@
 import puppeteer from 'puppeteer-core';
 
 const apiBase = 'http://127.0.0.1:8890';
+const password = process.env.CANVAS_PASSWORD || 'TmpCanvas2026!';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const loginResponse = await fetch(`${apiBase}/api/auth/login`, {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({username: 'admin', password, tenant: 'owner'}),
+});
+if (!loginResponse.ok) throw new Error(`login failed: ${loginResponse.status}`);
+const sessionCookie = (loginResponse.headers.get('set-cookie') || '').split(';', 1)[0];
+if (!sessionCookie) throw new Error('missing canvas session cookie');
 
 async function api(pathname, options = {}) {
   const response = await fetch(apiBase + pathname, {
     ...options,
-    headers: {'Content-Type': 'application/json', ...(options.headers || {})},
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: sessionCookie,
+      ...(options.headers || {}),
+    },
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(`${response.status} ${payload.error || JSON.stringify(payload)}`);
@@ -24,6 +37,7 @@ try {
   await api(`/api/projects/${projectId}/nodes`, {
     method: 'PUT',
     body: JSON.stringify({
+      episodeId: 'EP001',
       nodes: [
         {
           id: source.nodeId,
@@ -64,7 +78,16 @@ try {
   try {
     const page = await browser.newPage();
     await page.setViewport({width: 1280, height: 820, deviceScaleFactor: 1});
-    await page.goto('http://127.0.0.1:8891', {waitUntil: 'networkidle0', timeout: 60000});
+    const [cookieName, ...cookieValueParts] = sessionCookie.split('=');
+    await page.setCookie({
+      name: cookieName,
+      value: cookieValueParts.join('='),
+      domain: '127.0.0.1',
+      path: '/',
+      httpOnly: true,
+      sameSite: 'Lax',
+    });
+    await page.goto('http://127.0.0.1:8891', {waitUntil: 'domcontentloaded', timeout: 60000});
     await page.waitForSelector('.canvas-project-btn', {timeout: 30000});
     await page.click('.canvas-project-btn');
     await page.waitForSelector('.canvas-project-menu', {timeout: 10000});

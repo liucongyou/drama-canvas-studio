@@ -6,11 +6,24 @@ import puppeteer from 'puppeteer-core';
 const apiBase = 'http://127.0.0.1:8890';
 const webBase = 'http://127.0.0.1:8891';
 const root = path.resolve(import.meta.dirname, '..', '..');
+const password = process.env.CANVAS_PASSWORD || 'TmpCanvas2026!';
+const loginResponse = await fetch(`${apiBase}/api/auth/login`, {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({username: 'admin', password, tenant: 'owner'}),
+});
+if (!loginResponse.ok) throw new Error(`login failed: ${loginResponse.status}`);
+const sessionCookie = (loginResponse.headers.get('set-cookie') || '').split(';', 1)[0];
+if (!sessionCookie) throw new Error('missing canvas session');
 
 async function api(pathname, options = {}) {
   const response = await fetch(apiBase + pathname, {
     ...options,
-    headers: {'Content-Type': 'application/json', ...(options.headers || {})},
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: sessionCookie,
+      ...(options.headers || {}),
+    },
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -33,26 +46,27 @@ const browser = await puppeteer.launch({
   args: ['--no-sandbox', '--disable-gpu'],
 });
 
-async function selectProject(page) {
-  await page.waitForSelector('.canvas-project-btn', {timeout: 30000});
-  await page.click('.canvas-project-btn');
-  await page.waitForSelector('.canvas-project-menu', {timeout: 10000});
-  const selected = await page.evaluate((title) => {
-    const button = [...document.querySelectorAll('.canvas-project-menu-list button')]
-      .find((item) => (item.textContent || '').includes(title));
-    if (!(button instanceof HTMLElement)) return false;
-    button.click();
-    return true;
-  }, projectTitle);
-  if (!selected) throw new Error('测试项目未出现在项目菜单');
+async function openProject(page) {
+  await page.goto(
+    `${webBase}/?ep=EP001#${encodeURIComponent(projectId)}`,
+    {waitUntil: 'domcontentloaded', timeout: 60000},
+  );
   await page.waitForSelector('.canvas-stage', {timeout: 60000});
 }
 
 try {
   const page = await browser.newPage();
   await page.setViewport({width: 1440, height: 900, deviceScaleFactor: 1});
-  await page.goto(webBase, {waitUntil: 'domcontentloaded', timeout: 60000});
-  await selectProject(page);
+  const [cookieName, ...cookieValueParts] = sessionCookie.split('=');
+  await page.setCookie({
+    name: cookieName,
+    value: cookieValueParts.join('='),
+    domain: '127.0.0.1',
+    path: '/',
+    httpOnly: true,
+    sameSite: 'Lax',
+  });
+  await openProject(page);
 
   const pngBase64 = (
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk'
@@ -173,6 +187,13 @@ try {
   await browser.close();
   await api(`/api/projects/${projectId}`, {method: 'DELETE'}).catch(() => {});
   if (uploadedUrl.startsWith('/uploads/')) {
-    await fs.unlink(path.join(root, 'data', 'uploads', path.basename(uploadedUrl))).catch(() => {});
+    await fs.unlink(path.join(
+      root,
+      'data',
+      'tenants',
+      'owner',
+      'uploads',
+      path.basename(uploadedUrl),
+    )).catch(() => {});
   }
 }

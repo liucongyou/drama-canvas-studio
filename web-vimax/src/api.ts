@@ -3652,7 +3652,54 @@ export type UploadFileResult = {
     storedAt?: string;
   };
   remoteUrl?: string;
+  storageWarning?: string;
 };
+
+type UploadResponsePayload = UploadFileResult & {
+  error?: string;
+  code?: string;
+  localUrl?: string;
+};
+
+export function parseUploadFileResponse(
+  status: number,
+  responseText: string,
+  file: {name: string; size: number; type: string},
+): {result?: UploadFileResult; error?: string} {
+  let payload: UploadResponsePayload = {
+    url: '',
+    name: file.name,
+    size: file.size,
+    mime: file.type,
+  };
+  try {
+    payload = JSON.parse(responseText || '{}');
+  } catch {
+    return {error: `上传失败（HTTP ${status}）`};
+  }
+  if (status >= 200 && status < 300 && payload.url) {
+    return {
+      result: {
+        ...payload,
+        url: mediaSourceUrl(payload.url),
+      },
+    };
+  }
+  if (
+    status === 502
+    && payload.code === 'STORAGE_UPLOAD_FAILED'
+    && payload.localUrl
+  ) {
+    return {
+      result: {
+        ...payload,
+        url: mediaSourceUrl(payload.localUrl),
+        storageWarning: payload.error || '对象存储暂不可用，素材已保存到本地',
+      },
+    };
+  }
+  return {error: payload.error || `上传失败（HTTP ${status}）`};
+}
 
 export function uploadWorkspaceFileWithProgress(
   sessionId: string,
@@ -3718,25 +3765,12 @@ export function uploadWorkspaceFileWithProgress(
     };
     xhr.onload = () => {
       cleanup();
-      let payload: UploadFileResult & {error?: string} = {
-        url: '',
-        name: file.name,
-        size: file.size,
-        mime: file.type,
-      };
-      try {
-        payload = JSON.parse(xhr.responseText || '{}');
-      } catch {
-        // Keep the generic error below.
-      }
-      if (xhr.status < 200 || xhr.status >= 300 || !payload.url) {
-        reject(new Error(payload.error || `上传失败（HTTP ${xhr.status}）`));
+      const parsed = parseUploadFileResponse(xhr.status, xhr.responseText, file);
+      if (!parsed.result) {
+        reject(new Error(parsed.error || `上传失败（HTTP ${xhr.status}）`));
         return;
       }
-      resolve({
-        ...payload,
-        url: mediaSourceUrl(payload.url),
-      });
+      resolve(parsed.result);
     };
     armIdleTimer();
     xhr.send(file);

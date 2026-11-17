@@ -2235,6 +2235,7 @@ function RichPromptEditor({
   const mentionSignature = mentions.map((item) => `${item.kind}:${item.role || ''}:${item.label}:${item.url || ''}`).join('|');
   const lastEditorValueRef = useRef('');
   const composingRef = useRef(false);
+  const ownsDraftRef = useRef(false);
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -2248,6 +2249,11 @@ function RichPromptEditor({
       .map((item) => `@${item.label}`)
       .join('|');
     const mentionsChanged = currentMentions !== wantedMentions;
+    // While the user is editing, the contenteditable DOM is the source of
+    // truth. Parent state intentionally publishes on a small throttle, so
+    // rebuilding from a value that is one frame behind would reset the caret
+    // or reorder IME text. Mention changes and node switches still rebuild.
+    if (active && ownsDraftRef.current && !mentionsChanged) return;
     if (active && !mentionsChanged && value === lastEditorValueRef.current) return;
     if (!active && current === value && !mentionsChanged) return;
     buildPromptEditorContent(editor, value, mentions);
@@ -2279,9 +2285,13 @@ function RichPromptEditor({
             clientHeight: editor.clientHeight,
           });
         }}
-      onCompositionStart={() => { composingRef.current = true; }}
+      onCompositionStart={() => {
+        composingRef.current = true;
+        ownsDraftRef.current = true;
+      }}
       onCompositionEnd={(event) => {
         composingRef.current = false;
+        ownsDraftRef.current = true;
         const next = promptTextFromEditor(event.currentTarget);
         event.currentTarget.dataset.promptValue = next;
         lastEditorValueRef.current = next;
@@ -2289,6 +2299,7 @@ function RichPromptEditor({
       }}
       onInput={(event) => {
         if (!editable || composingRef.current) return;
+        ownsDraftRef.current = true;
         const next = promptTextFromEditor(event.currentTarget);
         const previous = lastEditorValueRef.current;
         const removed = next.trim() && next.length < previous.length && onMentionRemoved
@@ -2309,6 +2320,7 @@ function RichPromptEditor({
         event.currentTarget.dataset.promptValue = next;
         lastEditorValueRef.current = next;
         onChange(next);
+        ownsDraftRef.current = false;
         onBlur?.();
       }}
       onKeyDown={(event) => {
@@ -2316,6 +2328,7 @@ function RichPromptEditor({
         if (event.defaultPrevented) return;
         if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
           event.preventDefault();
+          ownsDraftRef.current = true;
           const selection = window.getSelection();
           if (!selection || selection.rangeCount === 0) return;
           const range = selection.getRangeAt(0);
@@ -2334,6 +2347,7 @@ function RichPromptEditor({
       }}
       onPaste={(event) => {
         event.preventDefault();
+        ownsDraftRef.current = true;
         const text = event.clipboardData.getData('text/plain');
         document.execCommand('insertText', false, text);
         const next = promptTextFromEditor(event.currentTarget);
@@ -3190,12 +3204,13 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
     };
   }
   useEffect(() => {
-    if (
-      versionIntentRef.current.nodeId !== node.id
-      || !node._mediaVersionSelection
-    ) {
+    if (versionIntentRef.current.nodeId !== node.id) {
       return;
     }
+    // While a local selection is in flight, a late server snapshot may still
+    // carry the previous index. Preserve the user's click cursor until the
+    // selection lock is cleared by a matching server confirmation.
+    if (node._mediaVersionSelection) return;
     versionIntentRef.current = {
       nodeId: node.id,
       index: currentMediaVersionIndex,
@@ -4466,8 +4481,24 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   // Local prompt draft: typing must not write the canvas node on every keystroke.
   // The parent only receives a committed value after a short idle / blur / close.
   const [promptDraft, setPromptDraft] = useState(node?.prompt ?? '');
+  const [promptHasContent, setPromptHasContent] = useState(Boolean(node?.prompt.trim()));
+  const [promptOverLimit, setPromptOverLimit] = useState(false);
+  const promptHasContentRef = useRef(Boolean(node?.prompt.trim()));
+  const promptOverLimitRef = useRef(false);
+  const promptCountRef = useRef<HTMLSpanElement>(null);
   const promptDraftRef = useRef(node?.prompt ?? '');
   const promptDirtyRef = useRef(false);
+  const promptViewSyncRef = useRef<{
+    timer: number | null;
+    lastPublishedAt: number;
+    pending: string;
+    published: string;
+  }>({
+    timer: null,
+    lastPublishedAt: 0,
+    pending: node?.prompt ?? '',
+    published: node?.prompt ?? '',
+  });
   const [promptScrollbar, setPromptScrollbar] = useState({
     scrollTop: 0,
     scrollHeight: 0,
@@ -4543,6 +4574,34 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   const taExpandedRef = useRef(taExpanded); taExpandedRef.current = taExpanded;
   const addMenuOpenRef = useRef(addMenuOpen); addMenuOpenRef.current = addMenuOpen;
   const canvasPickRef = useRef(canvasPickOpen); canvasPickRef.current = canvasPickOpen;
+  const publishPromptView = useCallback((value: string, force = false) => {
+    const state = promptViewSyncRef.current;
+    state.pending = value;
+    const publish = () => {
+      if (state.pending === state.published) return;
+      state.published = state.pending;
+      state.lastPublishedAt = performance.now();
+      setPromptDraft(state.pending);
+    };
+    if (force) {
+      if (state.timer !== null) {
+        window.clearTimeout(state.timer);
+        state.timer = null;
+      }
+      publish();
+      return;
+    }
+    if (state.timer !== null) return;
+    const remaining = 48 - (performance.now() - state.lastPublishedAt);
+    if (remaining <= 0) {
+      publish();
+      return;
+    }
+    state.timer = window.setTimeout(() => {
+      state.timer = null;
+      publish();
+    }, remaining);
+  }, []);
   const requestClose = useCallback((reason: 'preserve' | 'clear' = 'preserve') => {
     if (closing) return;
     promptFlushRef.current();
@@ -4863,9 +4922,10 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     if (!node) return;
     const value = promptDraftRef.current;
     promptDirtyRef.current = false;
+    publishPromptView(value, true);
     if (value === node.prompt) return;
     onChange(node.id, {prompt: value});
-  }, [node, onChange]);
+  }, [node, onChange, publishPromptView]);
   promptFlushRef.current = flushPromptDraft;
 
   const schedulePromptCommit = useCallback(() => {
@@ -4890,7 +4950,11 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       promptOpenTokenRef.current = openToken;
       promptDirtyRef.current = false;
       promptDraftRef.current = node.prompt;
-      setPromptDraft(node.prompt);
+      publishPromptView(node.prompt, true);
+      promptHasContentRef.current = Boolean(node.prompt.trim());
+      promptOverLimitRef.current = false;
+      setPromptHasContent(promptHasContentRef.current);
+      setPromptOverLimit(false);
       setPromptScrollbar({scrollTop: 0, scrollHeight: 0, clientHeight: 0});
       const editor = taRef.current;
       if (editor) editor.scrollTop = 0;
@@ -4898,12 +4962,20 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     }
     if (!promptDirtyRef.current && promptDraftRef.current !== node.prompt) {
       promptDraftRef.current = node.prompt;
-      setPromptDraft(node.prompt);
+      publishPromptView(node.prompt, true);
+      promptHasContentRef.current = Boolean(node.prompt.trim());
+      promptOverLimitRef.current = false;
+      setPromptHasContent(promptHasContentRef.current);
+      setPromptOverLimit(false);
     }
-  }, [node?.id, node?.prompt, openToken]);
+  }, [node?.id, node?.prompt, openToken, publishPromptView]);
 
   useEffect(() => () => {
     promptCommitControllerRef.current?.cancel();
+    if (promptViewSyncRef.current.timer !== null) {
+      window.clearTimeout(promptViewSyncRef.current.timer);
+      promptViewSyncRef.current.timer = null;
+    }
     if (growRafRef.current !== null) {
       window.cancelAnimationFrame(growRafRef.current);
     }
@@ -4970,7 +5042,22 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
       || catalog?.providers.find((item) => item.id === curModelSpec?.providerId)?.icon
       || '';
   const promptLimit = Math.max(1, Number(curModelSpec?.limits?.maxPromptChars || 4000));
-  const overPromptLimit = promptDraft.length > promptLimit;
+  const overPromptLimit = promptOverLimit || promptDraftRef.current.length > promptLimit;
+  const syncPromptUiState = (value: string) => {
+    const hasContent = Boolean(value.trim());
+    const exceedsLimit = value.length > promptLimit;
+    if (hasContent !== promptHasContentRef.current) {
+      promptHasContentRef.current = hasContent;
+      setPromptHasContent(hasContent);
+    }
+    if (exceedsLimit !== promptOverLimitRef.current) {
+      promptOverLimitRef.current = exceedsLimit;
+      setPromptOverLimit(exceedsLimit);
+    }
+    if (isTxt && promptCountRef.current) {
+      promptCountRef.current.textContent = `${value.trim().length} / ${promptLimit} 字`;
+    }
+  };
   const activeProvider = catalog?.providers.find((item) => item.id === curModelSpec?.providerId);
   const missingProviderKey = Boolean(catalog && activeProvider && !activeProvider.has_api_key);
   const referenceEvaluation = evaluateReferenceLimits(
@@ -5013,7 +5100,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
   const nodeNotices: string[] = [];
   if (catalog && modelOptions.length === 0) nodeNotices.push('当前类型没有可用模型，请到「模型接口」中启用或添加模型');
   if (missingProviderKey) nodeNotices.push(`供应商「${activeProvider?.name || curModelSpec?.providerId}」尚未配置 API Key`);
-  if (overPromptLimit) nodeNotices.push(`提示词 ${promptDraft.length} / ${promptLimit} 字，已超过当前模型上限`);
+  if (overPromptLimit) nodeNotices.push(`提示词 ${promptDraftRef.current.length} / ${promptLimit} 字，已超过当前模型上限`);
   if (referenceEvaluation.issue) nodeNotices.push(referenceEvaluation.message);
   if (dependenciesBlocked) {
     const names = dependencyBlockers.slice(0, 4).map((item) => `${item.title}（${item.reason}）`).join('、');
@@ -5242,7 +5329,8 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     promptDraftRef.current = nextPrompt;
     promptDirtyRef.current = false;
     promptCommitControllerRef.current?.cancel();
-    setPromptDraft(nextPrompt);
+    publishPromptView(nextPrompt, true);
+    syncPromptUiState(nextPrompt);
     // One atomic prompt+params patch for every removed mention. Looping removeRef
     // here was the multi-mention version of the 409 save-conflict bug.
     onChange(node.id, {prompt: nextPrompt, params: next});
@@ -5368,7 +5456,8 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     const nextPrompt = base ? `${base}${text}` : text.replace(/^，/, '');
     promptDraftRef.current = nextPrompt;
     promptDirtyRef.current = true;
-    setPromptDraft(nextPrompt);
+    publishPromptView(nextPrompt, true);
+    syncPromptUiState(nextPrompt);
     schedulePromptCommit();
     setOpenMenu(null);
     growTa();
@@ -5427,7 +5516,8 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
     suppressBackdropClickUntilRef.current = Date.now() + 600;
     promptDraftRef.current = prompt;
     promptDirtyRef.current = true;
-    setPromptDraft(prompt);
+    publishPromptView(prompt, true);
+    syncPromptUiState(prompt);
     schedulePromptCommit();
     if (onPickRef) {
       onPickRef(node, a.id);
@@ -5642,9 +5732,9 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
               )}
             </>
           )}
-          <span className={`jim-head-badge${overPromptLimit ? ' is-over-limit' : ''}`}>{isTxt ? `${(promptDraft || '').trim().length} / ${promptLimit} 字` : isAud ? (p.ttsMode === 'speech' ? `音色 ${p.voiceId || p.ttsVoice || '未设置'}` : '音色设计') : isVid ? `${ratioLabel} · ${resLabel}` : `${ratioLabel} · ${clarityLabel}`}</span>
+          <span ref={isTxt ? promptCountRef : undefined} className={`jim-head-badge${overPromptLimit ? ' is-over-limit' : ''}`}>{isTxt ? `${promptDraftRef.current.trim().length} / ${promptLimit} 字` : isAud ? (p.ttsMode === 'speech' ? `音色 ${p.voiceId || p.ttsVoice || '未设置'}` : '音色设计') : isVid ? `${ratioLabel} · ${resLabel}` : `${ratioLabel} · ${clarityLabel}`}</span>
           <div className="jim-head-tools">
-            {!readOnly && <button type="button" className="is-clear" title="清空提示词" aria-label="清空提示词" onClick={() => { promptDraftRef.current = ''; promptDirtyRef.current = true; setPromptDraft(''); schedulePromptCommit(); }}><Eraser size={14} strokeWidth={1.7} aria-hidden="true" /></button>}
+            {!readOnly && <button type="button" className="is-clear" title="清空提示词" aria-label="清空提示词" onClick={() => { promptDraftRef.current = ''; promptDirtyRef.current = true; publishPromptView('', true); syncPromptUiState(''); schedulePromptCommit(); }}><Eraser size={14} strokeWidth={1.7} aria-hidden="true" /></button>}
             {!readOnly && templates.length > 0 && <button type="button" title="随机灵感" aria-label="随机灵感" onClick={() => { const list = PROMPT_TEMPLATES[node.kind]; if (list?.length) insertTemplate(list[Math.floor(Math.random() * list.length)].text); }}><Sparkles size={14} strokeWidth={1.9} aria-hidden="true" /></button>}
             {!readOnly && isVid && <button type="button" className={`is-style ${openMenu === 'style' ? 'is-active' : ''}`} data-pop-owner="style" title="推理强度" aria-label="推理强度" onClick={() => toggle('style')}><Brain size={14} strokeWidth={1.9} aria-hidden="true" /></button>}
             {!readOnly && extraParamSpecs.length > 0 && <button type="button" className={`is-extra-params ${openMenu === 'advanced' ? 'is-active' : ''}`} data-pop-owner="advanced" title={`高级参数（${extraParamSpecs.length}）`} aria-label="高级参数" onClick={() => toggle('advanced')}><SlidersHorizontal size={14} strokeWidth={1.9} aria-hidden="true" /><i className="jim-side-count">{extraParamSpecs.length}</i></button>}
@@ -5883,6 +5973,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
               </span>
             )}
             <RichPromptEditor
+              key={`${node.id}:${openToken}`}
               editorRef={taRef}
               value={promptDraft}
               editable={!readOnly}
@@ -5897,7 +5988,11 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                 const limited = next.slice(0, promptLimit);
                 promptDraftRef.current = limited;
                 promptDirtyRef.current = true;
-                setPromptDraft(limited);
+                // The contenteditable DOM is the immediate typing surface.
+                // Only threshold changes enqueue a React render; normal
+                // characters update the counter directly without rebuilding
+                // the 100+ node modal around the editor.
+                syncPromptUiState(limited);
                 schedulePromptCommit();
                 const editor = taRef.current;
                 const followsAt = Boolean(editor && promptCaretFollowsAt(editor, limited));
@@ -6234,7 +6329,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
           <button
             type="button"
             className="jim-gen"
-            disabled={busy || !promptDraft.trim() || overPromptLimit || !curModelSpec || missingProviderKey || modelParamIssues.length > 0}
+            disabled={busy || !promptHasContent || overPromptLimit || !curModelSpec || missingProviderKey || modelParamIssues.length > 0}
             onClick={() => void generateAndClose()}
             title={busy ? '当前节点正在生成，请到任务中心查看进度' : !curModelSpec ? '当前类型没有可用模型' : missingProviderKey ? '当前供应商尚未配置 API Key' : overPromptLimit ? `提示词超过当前模型上限（${promptLimit} 字符）` : modelParamIssues.length ? modelParamIssues[0].message : isTxt ? '按当前内容生成/改写文本 · Ctrl+⏎' : '按当前供应商与参数生成 · Ctrl+⏎'}
           ><ArrowUp size={16} strokeWidth={2.6} aria-hidden="true" /></button>
@@ -11904,7 +11999,10 @@ function CanvasViewInner({
         }
       : item));
     broadcastMediaChange([target.id]);
-    setToast(`${target.mediaUrl ? '已添加本地版本' : '已导入本地素材'}：${file.name}`);
+    setToast(
+      `${target.mediaUrl ? '已添加本地版本' : '已导入本地素材'}：${file.name}`
+      + (uploaded.storageWarning ? `；${uploaded.storageWarning}` : ''),
+    );
   }, [currentEp, session, setMediaNodes, setToast]);
 
   const selectMediaVersionFromCard = useCallback(async (
@@ -12230,7 +12328,7 @@ function CanvasViewInner({
           height: inspected.height,
         },
         storage: uploaded.storage,
-        storageError: '',
+        storageError: uploaded.storageWarning || '',
         x: pos.x,
         y: pos.y,
         updatedAt: new Date().toISOString(),
@@ -12260,7 +12358,10 @@ function CanvasViewInner({
         setMediaNodes(previous);
         throw error;
       }
-      setToast(`已添加参考${kind === 'audio' ? '音频' : kind === 'video' ? '视频' : '图片'}：${file.name}`);
+      setToast(
+        `已添加参考${kind === 'audio' ? '音频' : kind === 'video' ? '视频' : '图片'}：${file.name}`
+        + (uploaded.storageWarning ? `；${uploaded.storageWarning}` : ''),
+      );
     } catch (err) {
       setToast(err instanceof Error ? err.message : '上传失败');
     }
@@ -12306,6 +12407,7 @@ function CanvasViewInner({
     batchUploadAbortRef.current = controller;
     setBatchUploadState({total: accepted.length, done: 0, percent: 0, currentName: accepted[0].name});
     let completed = 0;
+    let localOnly = 0;
     const failed: string[] = [];
     for (let index = 0; index < accepted.length; index += 1) {
       if (controller.signal.aborted) break;
@@ -12330,6 +12432,7 @@ function CanvasViewInner({
             });
           },
         });
+        if (uploaded.storageWarning) localOnly += 1;
         const inspected = await inspectLocalMedia(file);
         const uploadedAt = new Date().toISOString();
         const localVersion = {
@@ -12368,7 +12471,7 @@ function CanvasViewInner({
             height: inspected.height,
           },
           storage: uploaded.storage,
-          storageError: '',
+          storageError: uploaded.storageWarning || '',
           x: base.x + (index % 3) * 300,
           y: base.y + Math.floor(index / 3) * 260,
           updatedAt: uploadedAt,
@@ -12421,6 +12524,7 @@ function CanvasViewInner({
     if (completed > 0) {
       setToast(
         `已导入 ${completed} 个本地素材${failed.length ? `，${failed.length} 个失败` : ''}`
+        + (localOnly ? `，${localOnly} 个仅保存本地` : '')
         + (skipped ? `，${skipped}` : ''),
       );
     } else if (failed.length > 0) {

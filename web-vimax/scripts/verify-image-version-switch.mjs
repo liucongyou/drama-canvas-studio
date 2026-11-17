@@ -112,6 +112,8 @@ try {
   const page = await browser.newPage();
   const nodeSaveResponses = [];
   const nodeSaveRequests = [];
+  const versionSelectResponses = [];
+  const versionSelectBodies = [];
   const failedResponses = [];
   page.on('response', async (response) => {
     if (response.status() >= 400) {
@@ -129,6 +131,13 @@ try {
     ) {
       nodeSaveResponses.push(response.status());
       nodeSaveRequests.push(response.request().postData() || '');
+    }
+    if (
+      response.url().includes(`/api/projects/${projectId}/nodes/${nodeId}/select-version`)
+      && response.request().method() === 'POST'
+    ) {
+      versionSelectResponses.push(response.status());
+      versionSelectBodies.push(await response.text().catch(() => ''));
     }
   });
   page.on('console', (message) => {
@@ -177,28 +186,13 @@ try {
     {timeout: 10_000},
   ).catch(() => undefined);
   const deadline = Date.now() + 10_000;
-  const isVersionSelectionRequest = (requestBody) => {
-    try {
-      const body = JSON.parse(requestBody);
-      return body?.nodes?.some((node) => node?.metadata?._mediaVersionSelection === true);
-    } catch {
-      return false;
-    }
-  };
-  while (
-    !nodeSaveRequests.some((requestBody, index) => (
-      isVersionSelectionRequest(requestBody) && nodeSaveResponses[index] === 200
-    ))
-    && Date.now() < deadline
-  ) {
+  while (versionSelectResponses.length === 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  if (!nodeSaveRequests.some((requestBody, index) => (
-    isVersionSelectionRequest(requestBody) && nodeSaveResponses[index] === 200
-  ))) {
-    throw new Error(`版本选择保存请求未成功：${JSON.stringify({
-      responses: nodeSaveResponses,
-      requests: nodeSaveRequests,
+  if (!versionSelectResponses.includes(200)) {
+    throw new Error(`版本选择专用接口未成功：${JSON.stringify({
+      responses: versionSelectResponses,
+      bodies: versionSelectBodies,
     })}`);
   }
   const afterSave = await api(`/api/projects/${projectId}`);
