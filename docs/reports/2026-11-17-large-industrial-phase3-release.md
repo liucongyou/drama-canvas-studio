@@ -53,6 +53,18 @@ must start only after the accepted six-minute preflight.
 
 No paid generation task was submitted during release verification.
 
+## Follow-up Soak
+
+The isolated 24-hour `v4` mock soak was started after the Phase 3 release:
+
+- launcher PID: `7160`
+- output: `artifacts/soak-100t-24h-v4`
+- database: `drama_canvas_soak_v4_20261117`
+- provider mode: deterministic mock only
+
+It is not accepted until its own `report.json` exists with `ok=true`. The
+connection monitor and bounded child pool apply to this run.
+
 ## Deployment Notes
 
 The first release attempt stopped at bundle checksum validation because the
