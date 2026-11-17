@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import psycopg
 import pytest
 from psycopg.pq import TransactionStatus
 
@@ -12,17 +13,23 @@ import pg_compat
 
 
 class _FakeRaw:
-    def __init__(self):
+    def __init__(self, execute_error: Exception | None = None):
         self.closed = False
         self.info = SimpleNamespace(transaction_status=TransactionStatus.IDLE)
+        self.execute_error = execute_error
 
     def close(self):
         self.closed = True
 
-    def commit(self):
-        pass
+    def execute(self, _sql):
+        if self.execute_error is not None:
+            raise self.execute_error
+        return self
 
     def rollback(self):
+        pass
+
+    def commit(self):
         pass
 
 
@@ -112,6 +119,58 @@ def test_closed_idle_connection_is_replaced(bounded_pool):
     assert len(bounded_pool) == 2
     assert stats["physical"] == 1
     second.close()
+
+
+def test_stale_idle_connection_is_pinged_and_replaced(bounded_pool):
+    path = Path("pool-stale") / "canvas.db"
+    first = pg_compat.connect_path(path)
+    stale_raw = first.raw
+    first.close()
+
+    stale_raw.execute_error = psycopg.OperationalError("server closed the connection")
+
+    second = pg_compat.connect_path(path)
+    stats = pg_compat.pool_stats()
+    assert second.raw is not stale_raw
+    assert stale_raw.closed is True
+    assert len(bounded_pool) == 2
+    assert stats["physical"] == 1
+    assert stats["staleTotal"] == 1
+    second.close()
+
+
+def test_stale_connection_recovery_releases_concurrent_waiters(bounded_pool):
+    path = Path("pool-stale-waiters") / "canvas.db"
+    first = pg_compat.connect_path(path)
+    stale_raw = first.raw
+    first.close()
+    stale_raw.execute_error = psycopg.OperationalError("server closed the connection")
+
+    errors = []
+    barrier = threading.Barrier(4)
+
+    def worker():
+        try:
+            barrier.wait(timeout=2)
+            connection = pg_compat.connect_path(path)
+            time.sleep(0.01)
+            connection.close()
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    stats = pg_compat.pool_stats()
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    assert stats["active"] == 0
+    assert stats["waiting"] == 0
+    assert stats["staleTotal"] == 1
+    assert 1 <= stats["physical"] <= 2
 
 
 def test_failed_connection_creation_releases_budget(monkeypatch, bounded_pool):

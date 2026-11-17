@@ -55,6 +55,7 @@ _POOL_WAITING = 0
 _POOL_PHYSICAL = 0
 _POOL_ACQUIRED_TOTAL = 0
 _POOL_TIMEOUT_TOTAL = 0
+_POOL_STALE_TOTAL = 0
 _SERIAL_ID_CACHE: dict[tuple[str, str], bool] = {}
 
 CANVAS_ROWID_INDEXES = (
@@ -620,6 +621,7 @@ def connect_path(path: str | os.PathLike[str], kind: str = "canvas") -> PGConnec
     global _POOL_ACTIVE_TOTAL
     global _POOL_ACQUIRED_TOTAL
     global _POOL_PHYSICAL
+    global _POOL_STALE_TOTAL
     global _POOL_TIMEOUT_TOTAL
     global _POOL_WAITING
 
@@ -630,66 +632,84 @@ def connect_path(path: str | os.PathLike[str], kind: str = "canvas") -> PGConnec
     )
     deadline = time.monotonic() + _POOL_WAIT_TIMEOUT_SECONDS
     evicted_raw = None
+    waiting_accounted = False
     with _POOL_CONDITION:
         _POOL_WAITING += 1
     try:
         while True:
+            raw = None
             with _POOL_CONDITION:
                 pool = _POOLS.setdefault(pool_key, queue.LifoQueue())
                 try:
                     raw = pool.get_nowait()
                 except queue.Empty:
                     raw = None
-                if raw is not None and raw.closed:
-                    _POOL_PHYSICAL = max(0, _POOL_PHYSICAL - 1)
-                    raw = None
-                if raw is not None:
-                    _POOL_WAITING = max(0, _POOL_WAITING - 1)
-                    _POOL_ACTIVE_TOTAL += 1
-                    _POOL_ACQUIRED_TOTAL += 1
-                    _POOL_IN_USE[pool_key] = (
-                        int(_POOL_IN_USE.get(pool_key, 0)) + 1
-                    )
-                    return PGConnection(
-                        str(path),
-                        kind,
-                        schema,
-                        raw=raw,
-                        pool_reserved=True,
-                    )
-                if _POOL_PHYSICAL < _POOL_SIZE:
+                if raw is None and _POOL_PHYSICAL < _POOL_SIZE:
                     _POOL_PHYSICAL += 1
                     _POOL_WAITING = max(0, _POOL_WAITING - 1)
+                    waiting_accounted = True
                     _POOL_ACTIVE_TOTAL += 1
                     _POOL_ACQUIRED_TOTAL += 1
                     _POOL_IN_USE[pool_key] = (
                         int(_POOL_IN_USE.get(pool_key, 0)) + 1
                     )
                     break
-                evicted_raw = _evict_idle_except(pool_key)
-                if evicted_raw is not None:
+                if raw is None:
+                    evicted_raw = _evict_idle_except(pool_key)
+                    if evicted_raw is not None:
+                        _POOL_WAITING = max(0, _POOL_WAITING - 1)
+                        waiting_accounted = True
+                        _POOL_ACTIVE_TOTAL += 1
+                        _POOL_ACQUIRED_TOTAL += 1
+                        _POOL_IN_USE[pool_key] = (
+                            int(_POOL_IN_USE.get(pool_key, 0)) + 1
+                        )
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        _POOL_WAITING = max(0, _POOL_WAITING - 1)
+                        waiting_accounted = True
+                        _POOL_TIMEOUT_TOTAL += 1
+                        raise OperationalError(
+                            "DATABASE_POOL_EXHAUSTED: PostgreSQL 连接池已耗尽，"
+                            f"等待超过 {int(_POOL_WAIT_TIMEOUT_SECONDS * 1000)}ms"
+                        )
+                    _POOL_CONDITION.wait(timeout=remaining)
+                    continue
+            if raw is not None:
+                if not _pooled_raw_is_usable(raw):
+                    with _POOL_CONDITION:
+                        _POOL_STALE_TOTAL += 1
+                        _POOL_PHYSICAL = max(0, _POOL_PHYSICAL - 1)
+                    try:
+                        raw.close()
+                    except Exception:
+                        pass
+                    continue
+                with _POOL_CONDITION:
                     _POOL_WAITING = max(0, _POOL_WAITING - 1)
+                    waiting_accounted = True
                     _POOL_ACTIVE_TOTAL += 1
                     _POOL_ACQUIRED_TOTAL += 1
                     _POOL_IN_USE[pool_key] = (
                         int(_POOL_IN_USE.get(pool_key, 0)) + 1
                     )
-                    break
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    _POOL_WAITING = max(0, _POOL_WAITING - 1)
-                    _POOL_TIMEOUT_TOTAL += 1
-                    raise OperationalError(
-                        "DATABASE_POOL_EXHAUSTED: PostgreSQL 连接池已耗尽，"
-                        f"等待超过 {int(_POOL_WAIT_TIMEOUT_SECONDS * 1000)}ms"
-                    )
-                _POOL_CONDITION.wait(timeout=remaining)
+                return PGConnection(
+                    str(path),
+                    kind,
+                    schema,
+                    raw=raw,
+                    pool_reserved=True,
+                )
     except Exception:
         if evicted_raw is not None:
             try:
                 evicted_raw.close()
             except psycopg.Error:
                 pass
+        if not waiting_accounted:
+            with _POOL_CONDITION:
+                _POOL_WAITING = max(0, _POOL_WAITING - 1)
         raise
     if evicted_raw is not None:
         try:
@@ -729,7 +749,25 @@ def pool_stats() -> dict[str, int]:
             "waitTimeoutMs": int(_POOL_WAIT_TIMEOUT_SECONDS * 1000),
             "acquiredTotal": int(_POOL_ACQUIRED_TOTAL),
             "timeoutTotal": int(_POOL_TIMEOUT_TOTAL),
+            "staleTotal": int(_POOL_STALE_TOTAL),
         }
+
+
+def _pooled_raw_is_usable(raw: Any) -> bool:
+    """Verify a pooled socket before handing it to a request.
+
+    psycopg may keep ``closed == False`` after PostgreSQL terminates the
+    backend. A cheap round-trip detects that case and prevents one failed
+    user request after database restarts or network interruptions.
+    """
+    if raw is None or raw.closed:
+        return False
+    try:
+        raw.execute("SELECT 1")
+        raw.rollback()
+        return True
+    except (psycopg.Error, OSError):
+        return False
 
 
 def _evict_idle_except(pool_key: str):
@@ -754,6 +792,7 @@ def configure_pool(
     global _POOL_PHYSICAL
     global _POOL_SCHEMA_SIZE
     global _POOL_SIZE
+    global _POOL_STALE_TOTAL
     global _POOL_TIMEOUT_TOTAL
     global _POOL_WAIT_TIMEOUT_SECONDS
     global _POOL_WAITING
@@ -789,6 +828,7 @@ def configure_pool(
         _POOL_PHYSICAL = 0
         _POOL_WAITING = 0
         _POOL_TIMEOUT_TOTAL = 0
+        _POOL_STALE_TOTAL = 0
         _POOL_CONDITION.notify_all()
     return pool_stats()
 
