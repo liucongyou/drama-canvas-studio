@@ -62,3 +62,30 @@ restores the backup if verification fails. Nginx and PostgreSQL are not
 restarted.
 
 No paid generation task is submitted during verification.
+
+## Production Verification
+
+- Deployed code commit:
+  `937f8c81081d3f5fbe005cecb293acb9442242be`.
+- Automatic rollback backup:
+  `/www/wwwroot/yj.pduoduo.vip/app/backups/`
+  `pg-pool-ping-937f8c81081d3f5fbe005cecb293acb9442242be-20261117-224124`
+- Deployed `pg_compat.py` SHA-256 matches the tested local file.
+- API, Worker, and Agent are active.
+- `/readyz` reports `ok=true`, database `ok=true`, migrations `ok=true`,
+  worker fleet `ok=true`, two active workers, and zero active tasks.
+- Live `databasePool` exposes `staleTotal` and reports zero waiting connections.
+- Admin login through `https://yjapi.pduoduo.vip` succeeds.
+- The public frontend returns HTTP 200 and serves the expected production entry.
+
+An isolated production fault injection used a separate Python process, not the
+live API pool:
+
+1. A connection was returned to the test process pool.
+2. PostgreSQL terminated that backend with `pg_terminate_backend`.
+3. The next checkout detected the stale socket, discarded it, and created a
+   replacement connection.
+4. The replacement query returned `1`; `staleTotal` advanced to `1`; active and
+   waiting counters returned to a clean state.
+
+No paid image, audio, or video generation was submitted.
