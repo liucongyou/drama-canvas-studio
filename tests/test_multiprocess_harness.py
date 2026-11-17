@@ -32,6 +32,21 @@ def test_provider_call_counts_detect_duplicate_submission():
     assert counts[("resume", "task-a")] == 1
 
 
+def test_soak_child_processes_use_the_bounded_connection_budget():
+    env = MODULE._child_env(
+        {
+            "CANVAS_DATABASE_URL": "postgresql://example/test",
+            "DATABASE_URL": "postgresql://example/test",
+        },
+        "suffix",
+        "data-root",
+    )
+
+    assert env["CANVAS_PG_POOL_MAX"] == "4"
+    assert env["CANVAS_PG_POOL_IDLE_MAX"] == "2"
+    assert env["CANVAS_PG_POOL_WAIT_TIMEOUT_MS"] == "15000"
+
+
 def test_smoke_report_requires_all_tasks_and_ready_apis():
     valid = {
         "ok": True,

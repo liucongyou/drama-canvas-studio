@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import canvas_store
 import generation_queue
+import media_delivery
 import pg_compat
 import schema_migrations
 import tenant_context
@@ -108,6 +109,10 @@ def readiness(
         checks["migrations"] = migrations
     except Exception as exc:
         checks["migrations"] = {"ok": False, "error": str(exc)}
+    try:
+        checks["mediaDelivery"] = media_delivery.readiness()
+    except Exception as exc:
+        checks["mediaDelivery"] = {"ok": False, "error": str(exc)}
     if role == "api" and execution_mode == "worker":
         try:
             checks["workerFleet"] = _worker_fleet_check()

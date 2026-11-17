@@ -185,6 +185,12 @@ Artifact:
 artifacts/soak-preflight-6m-v5/report.json
 ```
 
+The subsequent 24-hour `v3` run was stopped after the isolated local
+PostgreSQL test cluster again reached `too many clients already`. It has no
+`report.json`, does not count as a pass, and must not be restarted as a long run
+until a bounded six-minute preflight verifies the connection budget under
+live `pg_stat_activity` monitoring.
+
 The durable recovery journal is also bounded by recent-entry count and age:
 
 ```text
@@ -196,21 +202,25 @@ Old entries are pruned only after the age window; recent paid-task receipts are
 never removed. This prevents the 24-hour run from creating an unbounded number
 of tiny journal files.
 
-The `2026-11-16` run was interrupted by the local PostgreSQL maintenance
-shutdown and did not produce a passing report.
+The `2026-11-17 02:08:13 +08:00` `v3` run was interrupted after the
+PostgreSQL connection exhaustion above. It is not accepted and has no passing
+report.
 
-The current acceptance run was restarted after the Phase 2 release:
+The corrected six-minute preflight, `artifacts/soak-preflight-6m-v6/report.json`,
+completed successfully:
 
-- Started: `2026-11-17 02:08:13 +08:00`
-- Launcher PID: `21132`
-- Isolated database: `drama_canvas_soak_20261117`
-- Output directory: `artifacts/soak-100t-24h-v3`
-- Mock provider only; no paid provider call
-- Status: running, not yet accepted
+- 100 tenants and 200 tasks;
+- 200/200 succeeded;
+- maximum one submit per task;
+- zero active leftovers;
+- API readiness passed on both processes;
+- database pool max 4, physical 2, waiting 0, timeout 0;
+- PostgreSQL peak 46 of 100 connections, below the 75 warning gate;
+- zero connection-monitor errors.
 
-The run may only be marked passed after
-`artifacts/soak-100t-24h-v3/report.json` exists with `ok=true` and validates
-the completion criteria above.
+The 24-hour `v4` run may only start after this preflight evidence remains
+current, and it may only be marked passed after its own `report.json` exists
+with `ok=true` and validates the completion criteria above.
 
 ## Rollback
 

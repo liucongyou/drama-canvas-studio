@@ -59,6 +59,7 @@ import generation_queue
 import generation_outcome
 import generation_acceptance
 import explicit_references
+import media_delivery
 import media_storage
 import observability
 import operational_metrics
@@ -2544,6 +2545,9 @@ GENERATION_OWNED_METADATA_FIELDS = {
     "actualDuration",
     "storage",
     "storageError",
+    "deliveryState",
+    "durable",
+    "durabilityRequired",
     "source",
     "finalizePending",
     "provider",
@@ -4180,6 +4184,28 @@ def _node_has_durable_media(meta):
     }
 
 
+def _project_media_delivery_state(meta):
+    if not isinstance(meta, dict):
+        return
+    state = media_delivery.delivery_state(meta)
+    meta["deliveryState"] = state
+    meta["durable"] = media_delivery.durable(state)
+    meta["durabilityRequired"] = media_delivery.mode() == "object"
+    params = meta.get("params")
+    if not isinstance(params, dict):
+        return
+    for key in ("mediaVersions", "videoVersions"):
+        versions = params.get(key)
+        if not isinstance(versions, list):
+            continue
+        for version in versions:
+            if not isinstance(version, dict):
+                continue
+            version_state = media_delivery.delivery_state(version)
+            version["deliveryState"] = version_state
+            version["durable"] = media_delivery.durable(version_state)
+
+
 def _latest_generation_task_by_node(project_id, node_ids):
     """Return the newest task row per node in one bounded query."""
     wanted = {
@@ -4227,6 +4253,7 @@ def project_workspace_nodes(project_id, workspace):
         availability = workspace_media_availability(meta)
         if availability:
             node.setdefault("metadata", {})["mediaAvailability"] = availability
+        _project_media_delivery_state(meta)
         # A broken historical version must not poison the active card. Fall
         # back to the newest version whose durable storage/local bytes exist.
         if availability == "missing" and isinstance(meta, dict):
@@ -4288,6 +4315,7 @@ def project_share_workspace_nodes(project_id, workspace):
         availability = workspace_media_availability(meta)
         if availability and isinstance(meta, dict):
             meta["mediaAvailability"] = availability
+        _project_media_delivery_state(meta)
     return workspace
 
 
@@ -4300,6 +4328,9 @@ def project_project_media_urls(project):
         return project
     for node in payload.get("nodes") or []:
         media_storage.project_node_media_url(node)
+        _project_media_delivery_state(
+            node.get("metadata") if isinstance(node, dict) else None
+        )
     return project
 
 
@@ -9386,6 +9417,11 @@ class Handler(BaseHTTPRequestHandler):
                 "error": str(exc),
                 "code": exc.code,
             })
+        except media_delivery.MediaDeliveryUnavailable as exc:
+            return self._send(503, {
+                "error": str(exc),
+                "code": exc.code,
+            })
 
     def _do_post(self):
         parsed = urlparse(self.path)
@@ -10412,6 +10448,9 @@ class Handler(BaseHTTPRequestHandler):
                     "code": "REFERENCE_NOT_READY",
                     "missing": blockers,
                 })
+            media_delivery.assert_submission_ready(
+                str(node.get("type") or "")
+            )
             requested_operation_id = str(
                 body.get("clientOperationId") or ""
             ).strip()

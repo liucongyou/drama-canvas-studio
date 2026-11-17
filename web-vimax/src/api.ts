@@ -608,6 +608,9 @@ export type CanvasMediaNode = {
   thumbUrl?: string;
   /** Runtime readiness of the stored URL; not persisted as generation state. */
   mediaAvailability?: 'unknown' | 'available' | 'missing';
+  deliveryState?: 'empty' | 'object' | 'local' | 'temporary' | 'missing';
+  durable?: boolean;
+  durabilityRequired?: boolean;
   status?: 'idle' | 'generating' | 'done' | 'failed';
   lastError?: string;
   generationStartedAt?: string;
@@ -2129,6 +2132,17 @@ function toMediaNode(n: PayloadNode): CanvasMediaNode {
         ? m.mediaAvailability
         : undefined
     ),
+    deliveryState: (
+      m.deliveryState === 'empty'
+      || m.deliveryState === 'object'
+      || m.deliveryState === 'local'
+      || m.deliveryState === 'temporary'
+      || m.deliveryState === 'missing'
+        ? m.deliveryState
+        : undefined
+    ),
+    durable: m.durable === true,
+    durabilityRequired: m.durabilityRequired === true,
     episodeId: typeof m.episodeId === 'string' ? m.episodeId : undefined,
     actualDuration: Number.isFinite(Number(m.actualDuration)) ? Number(m.actualDuration) : undefined,
     videoValidation: m.videoValidation && typeof m.videoValidation === 'object'

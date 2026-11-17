@@ -23,6 +23,7 @@ RUNTIME_FILES=(
   telemetry.py
   generation_queue.py
   generation_worker.py
+  media_delivery.py
   schema_migrations.py
   operational_metrics.py
   observability.py
@@ -62,6 +63,7 @@ test "$(cat "$STAGE/RELEASE_COMMIT")" = "$COMMIT"
   "$STAGE/runtime/generation_budget_guard.py" \
   "$STAGE/runtime/generation_queue.py" \
   "$STAGE/runtime/generation_worker.py" \
+  "$STAGE/runtime/media_delivery.py" \
   "$STAGE/runtime/schema_migrations.py" \
   "$STAGE/runtime/operational_metrics.py" \
   "$STAGE/runtime/observability.py" \

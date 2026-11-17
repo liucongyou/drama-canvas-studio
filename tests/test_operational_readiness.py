@@ -58,6 +58,42 @@ def test_worker_role_does_not_depend_on_worker_fleet_heartbeat():
     assert "workerFleet" not in report["checks"]
 
 
+def test_readiness_fails_closed_when_object_media_plane_is_not_verified():
+    with (
+        patch.object(
+            operational_metrics,
+            "_database_check",
+            return_value={"ok": True},
+        ),
+        patch.object(
+            operational_metrics,
+            "_migration_check",
+            return_value={"ok": True, "failures": []},
+        ),
+        patch.object(
+            operational_metrics.media_delivery,
+            "readiness",
+            return_value={
+                "ok": False,
+                "mode": "object",
+                "required": True,
+                "object": {
+                    "ready": True,
+                    "verified": False,
+                },
+            },
+        ),
+    ):
+        report = operational_metrics.readiness(
+            "worker",
+            release_commit="abc",
+            execution_mode="worker",
+        )
+
+    assert report["ok"] is False
+    assert report["checks"]["mediaDelivery"]["mode"] == "object"
+
+
 def test_prometheus_metrics_include_capacity_and_queue_states():
     snapshot = {
         "databasePool": {

@@ -55,6 +55,7 @@ CANVAS_GENERATION_TENANT_CONCURRENCY=30
 CANVAS_GENERATION_PROVIDER_CONCURRENCY=20
 CANVAS_BUDGET_GUARD_TIMEOUT_SECONDS=10
 CANVAS_BUDGET_GUARD_MAX_WAITERS=4
+CANVAS_MEDIA_DELIVERY_MODE=auto
 CANVAS_WORKER_CONCURRENCY=4
 CANVAS_WORKER_POLL_SECONDS=0.5
 CANVAS_WORKER_LEASE_SECONDS=90
@@ -70,6 +71,13 @@ Generation budget checks use tenant-scoped PostgreSQL advisory locks so multiple
 API processes cannot reserve the same remaining budget concurrently. Guard
 connections come from a separate bounded direct-connection budget so waiting
 submitters cannot exhaust the main application pool.
+
+`CANVAS_MEDIA_DELIVERY_MODE` controls the media durability contract:
+
+- `auto`: local bytes or object storage are both valid.
+- `local`: intended only when API and Worker share the same upload volume.
+- `object`: requires enabled and verified object storage before media
+  generation submission; readiness fails closed otherwise.
 
 ## Schema Migrations
 

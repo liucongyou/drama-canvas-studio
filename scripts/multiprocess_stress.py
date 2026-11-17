@@ -360,10 +360,59 @@ def run_smoke(args) -> dict:
     )
     output.mkdir(parents=True, exist_ok=True)
     call_log = output / "provider-calls.jsonl"
+    connection_log = output / "connection-samples.jsonl"
+    connection_threshold = max(
+        1,
+        int(args.connection_warning_threshold),
+    )
+    connection_sample_seconds = max(
+        1.0,
+        float(args.connection_sample_seconds),
+    )
+    peak_connections = 0
+    connection_errors = 0
+    last_connection_sample = 0.0
+    last_connection_snapshot = {}
     processes = []
     worker_processes = []
     api_ports = [_free_port(), _free_port()]
+    monitor_connection = None
+
+    def sample_connections(force: bool = False) -> dict:
+        nonlocal last_connection_sample
+        nonlocal last_connection_snapshot
+        nonlocal peak_connections
+        nonlocal connection_errors
+        now = time.monotonic()
+        if (
+            not force
+            and now - last_connection_sample < connection_sample_seconds
+        ):
+            return last_connection_snapshot
+        last_connection_sample = now
+        try:
+            snapshot = _connection_snapshot(monitor_connection)
+            peak_connections = max(
+                peak_connections,
+                int(snapshot.get("total") or 0),
+            )
+            last_connection_snapshot = snapshot
+            _append_connection_sample(connection_log, snapshot)
+        except Exception as exc:
+            connection_errors += 1
+            last_connection_snapshot = {
+                "at": _now_iso(),
+                "error": str(exc),
+            }
+            _append_connection_sample(
+                connection_log,
+                last_connection_snapshot,
+            )
+        return last_connection_snapshot
+
     try:
+        monitor_connection = _open_connection_monitor(args.url)
+        sample_connections(force=True)
         for index, port in enumerate(api_ports):
             env = {
                 **child_env,
@@ -420,6 +469,7 @@ def run_smoke(args) -> dict:
         expected = args.tenants * args.tasks_per_tenant
         batch_index = 0
         while time.monotonic() < deadline:
+            sample_connections()
             counts = _status_counts(load_contexts)
             call_counts = _call_counts(call_log)
             submits = sum(
@@ -506,6 +556,7 @@ def run_smoke(args) -> dict:
             # faster creates enough metadata load on a 2-vCPU host to starve the
             # Workers that the soak is supposed to measure.
             time.sleep(2.0)
+        sample_connections(force=True)
         readiness = {}
         for index, port in enumerate(api_ports):
             readiness[f"api{index + 1}"] = _read_json(
@@ -532,6 +583,8 @@ def run_smoke(args) -> dict:
             )
             and all(item.get("ok") for item in readiness.values())
             and max_submits <= 1
+            and connection_errors == 0
+            and peak_connections < connection_threshold
         )
         report = {
             "ok": ok,
@@ -554,6 +607,14 @@ def run_smoke(args) -> dict:
                 if event == "resume"
             ),
             "maxSubmitsPerTask": max_submits,
+            "connections": {
+                "threshold": connection_threshold,
+                "peak": peak_connections,
+                "sampleSeconds": connection_sample_seconds,
+                "errors": connection_errors,
+                "samples": str(connection_log),
+                "last": last_connection_snapshot,
+            },
             "durationSeconds": round(time.monotonic() - started, 3),
             "artifactDirectory": str(output),
         }
@@ -569,6 +630,8 @@ def run_smoke(args) -> dict:
         for process, log in processes:
             _stop_process(process)
             log.close()
+        if monitor_connection is not None:
+            monitor_connection.close()
         _drop_schemas(args.url, suffix, contexts)
         data_root.cleanup()
 
@@ -626,12 +689,82 @@ def _kill_process(process):
 
 def _read_json(url):
     import urllib.request
+    import urllib.error
 
     try:
         with urllib.request.urlopen(url, timeout=10) as response:
             return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8")
+            payload = json.loads(body)
+            if isinstance(payload, dict):
+                payload.setdefault("httpStatus", exc.code)
+                return payload
+        except Exception:
+            pass
+        return {"ok": False, "httpStatus": exc.code, "error": str(exc)}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def _open_connection_monitor(url):
+    import psycopg
+
+    return psycopg.connect(
+        url,
+        autocommit=True,
+        connect_timeout=10,
+        application_name="drama_canvas_soak_monitor",
+    )
+
+
+def _connection_snapshot(connection):
+    row = connection.execute(
+        """
+        SELECT
+          current_setting('max_connections')::int,
+          COUNT(*),
+          COUNT(*) FILTER (WHERE state = 'active'),
+          COUNT(*) FILTER (WHERE state = 'idle'),
+          COUNT(*) FILTER (WHERE state = 'idle in transaction')
+        FROM pg_stat_activity
+        """
+    ).fetchone()
+    states = connection.execute(
+        """
+        SELECT COALESCE(state, 'unknown'), COUNT(*)
+        FROM pg_stat_activity
+        GROUP BY 1
+        ORDER BY 1
+        """
+    ).fetchall()
+    applications = connection.execute(
+        """
+        SELECT COALESCE(application_name, ''), COUNT(*)
+        FROM pg_stat_activity
+        GROUP BY 1
+        ORDER BY 1
+        """
+    ).fetchall()
+    return {
+        "at": _now_iso(),
+        "maxConnections": int(row[0] or 0),
+        "total": int(row[1] or 0),
+        "active": int(row[2] or 0),
+        "idle": int(row[3] or 0),
+        "idleInTransaction": int(row[4] or 0),
+        "states": {str(key): int(value) for key, value in states},
+        "applications": {
+            str(key or "unknown"): int(value)
+            for key, value in applications
+        },
+    }
+
+
+def _append_connection_sample(path: Path, snapshot: dict) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
 
 
 def main() -> int:
@@ -651,6 +784,12 @@ def main() -> int:
     parser.add_argument("--timeout-seconds", type=int, default=90)
     parser.add_argument("--duration-seconds", type=float, default=0.0)
     parser.add_argument("--kill-interval-seconds", type=float, default=0.0)
+    parser.add_argument(
+        "--connection-warning-threshold",
+        type=int,
+        default=75,
+    )
+    parser.add_argument("--connection-sample-seconds", type=float, default=5.0)
     parser.add_argument("--output")
     parser.add_argument("--worker-id", default="")
     parser.add_argument("--call-log", default="")

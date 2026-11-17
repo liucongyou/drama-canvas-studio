@@ -17,6 +17,7 @@ RUNTIME_FILES=(
   generation_budget.py
   generation_budget_guard.py
   generation_outcome.py
+  media_delivery.py
   telemetry.py
 )
 SUCCESS=0
@@ -48,6 +49,7 @@ test "$(cat "$STAGE/RELEASE_COMMIT")" = "$COMMIT"
   "$STAGE/runtime/generation_budget.py" \
   "$STAGE/runtime/generation_budget_guard.py" \
   "$STAGE/runtime/generation_outcome.py" \
+  "$STAGE/runtime/media_delivery.py" \
   "$STAGE/runtime/telemetry.py" \
   "$STAGE/runtime/scripts/run-local-migrations.py" \
   "$STAGE/runtime/scripts/verify-release-health.py"
