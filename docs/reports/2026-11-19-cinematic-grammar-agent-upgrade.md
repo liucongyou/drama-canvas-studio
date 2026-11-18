@@ -46,3 +46,23 @@ Package revision: `20261119-r23`
 - ZIP integrity: 180 entries, all manifest sizes and SHA-256 hashes matched.
 
 No paid media generation was submitted during this upgrade.
+
+## Production Verification
+
+- Release commit: `381b5cd0a7b1a387e7e2c7bd77642f818d27ee94`.
+- Production Agent active skill: `manju-laoli-skill` `7.4.35`.
+- Installed package root:
+  `/www/wwwroot/yj.pduoduo.vip/app/agent/data/skills/manju-laoli-skill/7.4.35-b3cfff95d93d`.
+- Production system prompt length: `35077` characters.
+- Production prompt contains `Agent 镜头语法合同`,
+  `Agent 输出前十二问`, and explicit screen left/right rules.
+- Production `check_package.py`: all checks passed, 56 references,
+  12 subskills, 150 Markdown files scanned.
+- Agent, main API, Worker, and Nginx are active.
+- `/readyz`: database, migrations, media delivery, and worker fleet are healthy;
+  active tasks are zero.
+- Backup:
+  `/www/wwwroot/yj.pduoduo.vip/app/backups/cinematic-grammar-agent-381b5cd0a7b1a387e7e2c7bd77642f818d27ee94-20261119-013920`
+
+No model generation or paid media task was submitted during production
+verification.
