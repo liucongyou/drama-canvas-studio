@@ -844,6 +844,91 @@ function VideoCoverImage({
   );
 }
 
+function TrayVideoThumbnail({
+  src,
+  poster,
+  placeholder,
+}: {
+  src: string;
+  poster: string;
+  placeholder: ReactNode;
+}) {
+  const [posterFailed, setPosterFailed] = useState(false);
+  const [videoFailed, setVideoFailed] = useState(false);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    setPosterFailed(false);
+    setVideoFailed(false);
+    setReady(false);
+  }, [poster, src]);
+
+  if (poster && !posterFailed) {
+    return (
+      <span className="canvas-tray-video-thumb">
+        <img
+          className={`canvas-tray-thumb${ready ? ' is-thumb-ready' : ''}`}
+          src={poster}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onLoad={() => setReady(true)}
+          onError={() => {
+            setReady(false);
+            setPosterFailed(true);
+          }}
+        />
+        {!ready && (
+          <span className="canvas-tray-thumb-loading" aria-hidden="true">
+            <span className="canvas-image-loading" />
+          </span>
+        )}
+      </span>
+    );
+  }
+
+  if (src && !videoFailed) {
+    return (
+      <span className="canvas-tray-video-thumb">
+        <video
+          className={`canvas-tray-thumb${ready ? ' is-thumb-ready' : ''}`}
+          src={src}
+          muted
+          playsInline
+          preload="metadata"
+          aria-hidden="true"
+          onLoadedMetadata={(event) => {
+            try {
+              if (event.currentTarget.currentTime === 0) {
+                event.currentTarget.currentTime = 0.01;
+              }
+            } catch {
+              // Some codecs paint the first frame from loadeddata instead.
+            }
+          }}
+          onLoadedData={() => setReady(true)}
+          onSeeked={() => setReady(true)}
+          onError={() => {
+            setReady(false);
+            setVideoFailed(true);
+          }}
+        />
+        {!ready && (
+          <span className="canvas-tray-thumb-loading" aria-hidden="true">
+            <span className="canvas-image-loading" />
+          </span>
+        )}
+      </span>
+    );
+  }
+
+  return (
+    <span className="canvas-tray-thumb is-placeholder is-video">
+      {placeholder}
+    </span>
+  );
+}
+
 function AssetThumb({url, name, onZoom}: {url: string; name: string; onZoom: () => void}) {
   if (/\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(url)) {
     return <video className="canvas-thumb is-video nodrag nowheel" src={url} controls preload="metadata" aria-label={name} />;
@@ -18747,13 +18832,17 @@ function CanvasViewInner({
                           onFocus={() => setTrayPreview(null)}
                         >
                           <span className={`canvas-tray-thumb-wrap is-${g.key}`}>
-                            {mn.mediaUrl && mn.kind !== 'audio'
-                              ? mn.kind === 'video'
-                                ? <video className="canvas-tray-thumb" src={mn.mediaUrl} muted playsInline preload="none" aria-hidden="true" />
-                                : <img className="canvas-tray-thumb" src={mn.mediaUrl} alt="" loading="lazy" decoding="async" />
-                              : <span className={`canvas-tray-thumb is-placeholder is-${g.key}`}>
-                                  <g.Icon size={17} strokeWidth={1.65} aria-hidden="true" />
-                                </span>}
+                            {mn.kind === 'video'
+                              ? <TrayVideoThumbnail
+                                  src={mn.mediaUrl || ''}
+                                  poster={mn.thumbUrl || ''}
+                                  placeholder={<g.Icon size={17} strokeWidth={1.65} aria-hidden="true" />}
+                                />
+                              : mn.mediaUrl && mn.kind !== 'audio'
+                                ? <img className="canvas-tray-thumb" src={mn.mediaUrl} alt="" loading="lazy" decoding="async" />
+                                : <span className={`canvas-tray-thumb is-placeholder is-${g.key}`}>
+                                    <g.Icon size={17} strokeWidth={1.65} aria-hidden="true" />
+                                  </span>}
                             {(mn.status === 'generating'
                               || generationBusyIds.has(mn.id)
                               || isLiveProviderGeneration(mn)) && (
