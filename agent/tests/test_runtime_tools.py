@@ -215,14 +215,19 @@ def test_system_prompt_injects_runtime_quality_contract(tmp_path) -> None:
         "前 3 秒必须给出观看理由",
         encoding="utf-8",
     )
+    (entry_root / "references" / "agent-cinematic-grammar-contract.md").write_text(
+        "镜头四问：信息还是反应；画左画右与视线落点必须写死",
+        encoding="utf-8",
+    )
     prompt = runtime._system_prompt(
         {
             "id": "skill",
-            "version": "7.4.30",
+            "version": "7.4.35",
             "rootPath": str(root),
             "manifest": {"entry": "short-drama-director/SKILL.md"},
         }
     )
     assert "逐镜 15 项 fail-closed 自检" in prompt
+    assert "镜头四问：信息还是反应" in prompt
     assert "前 3 秒必须给出观看理由" in prompt
     assert "不要请求额外工具" in prompt

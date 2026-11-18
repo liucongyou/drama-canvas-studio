@@ -387,6 +387,25 @@ def _system_prompt(skill: dict[str, Any], route_entry: str = "") -> str:
         )[:16000]
     except OSError:
         quality_contract = ""
+    cinematic_path = (
+        skill_root
+        / "short-drama-director"
+        / "references"
+        / "agent-cinematic-grammar-contract.md"
+    )
+    try:
+        cinematic_contract = cinematic_path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        )[:12000]
+    except OSError:
+        cinematic_contract = ""
+    cinematic_section = (
+        "镜头语法合同（P3/P4 必须执行，先做镜头决策再写 JSON）：\n"
+        + cinematic_contract
+        + "\n\n"
+        if cinematic_contract else ""
+    )
     short_video_path = (
         entry_root
         / "references"
@@ -424,6 +443,7 @@ def _system_prompt(skill: dict[str, Any], route_entry: str = "") -> str:
         "{\"title\":\"第01集\",\"canvas_contract\":{\"schema\":\"drama-canvas-feed/v2\",\"video_model\":\"doubao-seedance-2-0\",\"video_aspect\":\"9:16\",\"generator\":{\"name\":\"<skill id>\",\"skillVersion\":\"<version>\",\"packageRevision\":\"<revision>\"}},\"asset_prompts\":[],\"voice_prompts\":[],\"segments\":[{\"no\":1,\"name\":\"段1\",\"raw\":\"...\"}]}\n\n"
         "技能信息：id=" + str(skill.get("id")) + " version=" + str(skill.get("version")) + "\n\n"
         "运行时质量合同（必须执行）：\n" + quality_contract + "\n\n"
+        + cinematic_section
         + short_video_section
         +
         "技能入口与运行时合同已内置；不要请求额外工具或额外章节，"

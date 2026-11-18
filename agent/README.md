@@ -80,7 +80,8 @@ copy .env.example .env
 ## 真实 E2E 记录（2026-11-10）
 
 - 模型：TeamRouter `deepseek-flash-1017`
-- 技能：`manju-laoli-skill` @ `7.4.29`
+- 技能：`manju-laoli-skill` @ `7.4.35`
+- 镜头语法：`short-drama-director/references/agent-cinematic-grammar-contract.md`
 - 结果：
   - 阶段：brief / generate / validate 全部 done
   - 预检：0 errors
