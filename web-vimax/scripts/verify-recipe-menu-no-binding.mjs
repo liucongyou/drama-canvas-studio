@@ -17,13 +17,20 @@ const browser = await puppeteer.launch({
 try {
   const page = await browser.newPage();
   await page.setViewport({width: viewportWidth, height: viewportHeight, deviceScaleFactor: 1});
-  await page.setCookie({
-    name: 'canvas_session',
-    value: token,
-    domain: '127.0.0.1',
-    path: '/',
-    httpOnly: true,
-  });
+  const host = new URL(base).hostname;
+  const cookieDomains = host.endsWith('pduoduo.vip')
+    ? ['yj.pduoduo.vip', 'yjapi.pduoduo.vip']
+    : [host];
+  for (const domain of cookieDomains) {
+    await page.setCookie({
+      name: 'canvas_session',
+      value: token,
+      domain,
+      path: '/',
+      httpOnly: true,
+      secure: base.startsWith('https://'),
+    });
+  }
   await page.goto(`${base}/?ep=${encodeURIComponent(episode)}#${projectId}`, {
     waitUntil: 'domcontentloaded',
     timeout: 60_000,
@@ -32,9 +39,22 @@ try {
   const cards = await page.$$('.canvas-media-card');
   let video = null;
   for (const card of cards) {
-    if (await card.evaluate((node) => Boolean(node.querySelector('.lucide-video')))) {
+    if (await card.evaluate((node) => Boolean(node.querySelector(
+      'video, .canvas-video-shell, .canvas-video-cover-pending, .canvas-video-cover-fallback, .lucide-video',
+    )))) {
       video = card;
       break;
+    }
+  }
+  if (!video) {
+    for (const card of cards) {
+      await card.click();
+      await page.waitForSelector('.jim-toolbar', {timeout: 5_000}).catch(() => null);
+      if (await page.$('.jim-recipe-row')) {
+        video = card;
+        break;
+      }
+      await page.keyboard.press('Escape');
     }
   }
   if (!video) throw new Error('video node was not found');
@@ -68,8 +88,17 @@ try {
   }
   if (!actionCategory) throw new Error('action category button was not found');
   await actionCategory.click();
-  await page.waitForSelector('.canvas-recipe-results button', {timeout: 20_000});
-  await page.click('.canvas-recipe-results button');
+  await page.waitForFunction(() => {
+    const results = document.querySelector('.canvas-recipe-results');
+    return Boolean(
+      results
+      && results.querySelectorAll('button').length > 0
+      && !(results.textContent || '').includes('正在检索配方'),
+    );
+  }, {timeout: 20_000});
+  const firstRecipe = await page.$('.canvas-recipe-results button');
+  if (!firstRecipe) throw new Error('categorized recipe result was not found');
+  await firstRecipe.click();
   await page.waitForSelector('.canvas-recipe-form .canvas-recipe-slots input', {timeout: 20_000});
   const form = await page.evaluate(() => {
     const labels = Array.from(document.querySelectorAll('.canvas-recipe-slots label > span'))

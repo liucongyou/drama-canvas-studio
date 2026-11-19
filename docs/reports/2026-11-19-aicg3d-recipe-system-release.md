@@ -132,3 +132,45 @@ sub-150ms P95 target.
 - The first release attempt was automatically rolled back by a release-marker
   assertion before completion. The marker and skill-directory ownership were
   corrected, then the deployment reran successfully.
+
+## Follow-up Release
+
+### Fixes
+
+- `f7df762`: always mount the recipe listener container for video nodes, while
+  keeping the empty row visually hidden. This fixes the “click recipe and
+  nothing happens” case on nodes that do not yet have a recipe binding.
+- `a1b7ec3`: localize recipe categories, purposes, slot names and fill examples;
+  add category shortcuts and auto-fill the editable recipe draft from the
+  current prompt.
+- `f3568ef`: add and execute a frontend-only deployment path so the static
+  update does not restart the API, Agent or Worker services.
+
+### Verification
+
+- `npm run check:canvas`: passed.
+- Frontend suite: `91` files, `786` tests passed.
+- Production build: passed.
+- Desktop and 390×844 mobile browser checks: passed without horizontal
+  overflow.
+- Online browser acceptance on project `CC7nAazDAMK31EW9eJGw5b`, `EP009`:
+  - unbound video node opens the recipe dialog;
+  - category filtering returns recipes;
+  - selecting “刻意遮断省略” displays Chinese slot names and examples;
+  - auto-fill extracts the current prompt roles
+    `@角色｜赵铁柱（图1）`, `@角色｜陈大强（图4）`,
+    `@角色｜工人甲（图5）` and scene
+    `@场景｜厂办门口·母版（图10）`;
+  - no recipe was applied and no generation task was submitted.
+
+### Production
+
+- Release commit: `f3568ef6a95cadda050a88f0dc0432adca6c0fd5`
+- Backup:
+  `/www/wwwroot/yj.pduoduo.vip/app/backups/recipe-guidance-frontend-f3568ef6a95cadda050a88f0dc0432adca6c0fd5-20261119-111255`
+- Online JS asset: `assets/index-D0rRPBE1.js`
+- `/readyz`: all checks healthy, `activeTasks: 0`.
+- Services remained active without restart:
+  `drama-canvas-yj.service`, `drama-canvas-agent.service`,
+  `drama-canvas-worker.service`.
+- No paid image, audio or video generation was submitted.
