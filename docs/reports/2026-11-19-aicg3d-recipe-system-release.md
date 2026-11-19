@@ -145,6 +145,8 @@ sub-150ms P95 target.
   current prompt.
 - `f3568ef`: add and execute a frontend-only deployment path so the static
   update does not restart the API, Agent or Worker services.
+- `2f48afb`: replace the recipe category strip's scroll container with
+  automatic wrapping, removing the stray vertical scrollbar on Windows.
 
 ### Verification
 
@@ -152,7 +154,7 @@ sub-150ms P95 target.
 - Frontend suite: `91` files, `786` tests passed.
 - Production build: passed.
 - Desktop and 390×844 mobile browser checks: passed without horizontal
-  overflow.
+  overflow; category chips have no vertical overflow and `overflowY: visible`.
 - Online browser acceptance on project `CC7nAazDAMK31EW9eJGw5b`, `EP009`:
   - unbound video node opens the recipe dialog;
   - category filtering returns recipes;
@@ -165,10 +167,10 @@ sub-150ms P95 target.
 
 ### Production
 
-- Release commit: `f3568ef6a95cadda050a88f0dc0432adca6c0fd5`
+- Release commit: `2f48afb`
 - Backup:
-  `/www/wwwroot/yj.pduoduo.vip/app/backups/recipe-guidance-frontend-f3568ef6a95cadda050a88f0dc0432adca6c0fd5-20261119-111255`
-- Online JS asset: `assets/index-D0rRPBE1.js`
+  `/www/wwwroot/yj.pduoduo.vip/app/backups/recipe-guidance-frontend-2f48afb-20261119-112508`
+- Online JS asset: `assets/index-nHbk5H1T.js`
 - `/readyz`: all checks healthy, `activeTasks: 0`.
 - Services remained active without restart:
   `drama-canvas-yj.service`, `drama-canvas-agent.service`,
