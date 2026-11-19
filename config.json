@@ -434,7 +434,8 @@
         "maxImages": 30,
         "maxVideos": 10,
         "maxAudios": 10,
-        "maxPromptChars": 12000
+        "maxPromptChars": 4000,
+        "recommendedPromptChars": 500
       }
     },
     {

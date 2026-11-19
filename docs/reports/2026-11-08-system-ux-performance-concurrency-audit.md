@@ -1,5 +1,7 @@
 # 戏剧画布工作台 · 体验 / 性能 / 并发 / 流程审计报告
 
+> **已被 2026-11-09 复审计取代**：[2026-11-09-system-audit-v2.md](2026-11-09-system-audit-v2.md)。本文件保留为历史记录，部分问题已修复。
+
 - 审计日期：2026-11-08
 - 审计对象：`drama-canvas-studio`（前端 `web-vimax`，后端 `server.py` / `canvas_store.py` / `media_storage.py`）
 - 审计方式：全量代码走查 + 线上生产库只读统计 + 本地 API 基准 + 版本/任务数据抽样 + 现有测试核对
