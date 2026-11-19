@@ -111,9 +111,9 @@ sub-150ms P95 target.
 
 ## Production Release
 
-- Release commit: `5eb6920695266d934f8c6dc56ff67d96f4889173`
+- Release commit: `e851074`
 - Backup:
-  `/www/wwwroot/yj.pduoduo.vip/app/backups/aicg3d-recipe-5eb6920695266d934f8c6dc56ff67d96f4889173-20261119-101129`
+  `/www/wwwroot/yj.pduoduo.vip/app/backups/aicg3d-recipe-e851074-20261119-102521`
 - Services active:
   - `drama-canvas-yj.service`
   - `drama-canvas-agent.service`
@@ -127,6 +127,8 @@ sub-150ms P95 target.
   - skill entry contains the AICG3D recipe contract.
 - Online browser acceptance selected the recipe in the Agent composer without
   submitting any generation request.
+- The online `index.html` references the same final JS asset as the local
+  production build.
 - The first release attempt was automatically rolled back by a release-marker
   assertion before completion. The marker and skill-directory ownership were
   corrected, then the deployment reran successfully.
