@@ -117,6 +117,34 @@ class AuditMetricsTests(unittest.TestCase):
                 "/api/projects/p/nodes/n/generate",
             )
 
+    def test_recipe_filter_is_tenant_scoped(self):
+        canvas_store.record_audit_event(
+            "generation.complete",
+            actor="owner",
+            target_type="generation_task",
+            target_id="task-recipe",
+            details={
+                "recipePlan": {
+                    "recipeId": "handoff-ensemble-focus",
+                    "version": "1.0.0",
+                    "sha256": "a" * 64,
+                },
+            },
+        )
+        canvas_store.record_audit_event(
+            "generation.complete",
+            actor="owner",
+            target_type="generation_task",
+            target_id="task-other",
+            details={"recipePlan": {"recipeId": "optical-search-evidence-contraction"}},
+        )
+        page = canvas_store.list_audit_events(
+            20,
+            recipe_id="handoff-ensemble-focus",
+        )
+        self.assertEqual(len(page["events"]), 1)
+        self.assertEqual(page["events"][0]["targetId"], "task-recipe")
+
     def test_audit_rotation_keeps_bounded_history(self):
         for index in range(12):
             canvas_store.record_audit_event(

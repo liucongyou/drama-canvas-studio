@@ -84,3 +84,43 @@ def test_draft_survives_reload(client: TestClient) -> None:
     assert loaded.status_code == 200
     assert loaded.json()["draft"]["text"] == "中文未发送草稿"
     assert loaded.json()["draft"]["locks"]["track"] == "国内剧"
+
+
+def test_recipe_catalog_and_search_api(client: TestClient) -> None:
+    catalog = client.get(
+        "/api/agent/recipes?kind=creative&limit=5",
+        headers=LOCAL_HEADERS,
+    )
+    assert catalog.status_code == 200
+    body = catalog.json()
+    assert body["catalog"]["recipeCount"] == 295
+    assert len(body["recipes"]) == 5
+    search = client.get(
+        "/api/agent/recipes?query=群演聚焦接力",
+        headers=LOCAL_HEADERS,
+    ).json()
+    assert search["recipes"][0]["id"] == "handoff-ensemble-focus"
+
+
+def test_recipe_binding_is_persisted_on_run(client: TestClient) -> None:
+    created = client.post(
+        "/api/agent/runs",
+        json={
+            "projectId": "project-1",
+            "skillId": "demo-director",
+            "prompt": "使用群像镜头",
+            "modelId": "mock-text-model",
+            "recipeBindings": [{
+                "id": "handoff-ensemble-focus",
+                "version": "1.0.0",
+                "role": "primary",
+                "segmentNo": 1,
+                "slots": {},
+            }],
+        },
+        headers={**LOCAL_HEADERS, "Idempotency-Key": "recipe-run"},
+    )
+    assert created.status_code == 200
+    run = created.json()["run"]
+    assert run["recipeBindings"][0]["id"] == "handoff-ensemble-focus"
+    assert run["recipeBindings"][0]["segmentNo"] == 1

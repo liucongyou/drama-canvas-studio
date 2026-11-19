@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from app import db, files
+from app import db, files, recipes
 from app.canvas_client import CanvasClient, CanvasError
 from app.canvas_tools import CanvasTools, TOOL_DEFINITIONS
 from app.config import get_settings
@@ -148,6 +148,7 @@ def create_run(
     locks: dict[str, Any] | None = None,
     file_ids: list[str] | None = None,
     reference_ids: list[str] | None = None,
+    recipe_bindings: list[dict[str, Any]] | None = None,
     conversation_id: str = "",
     tenant_id: str = "",
     account_id: str = "",
@@ -163,6 +164,10 @@ def create_run(
     skill = get_skill(skill_id)
     if not skill:
         raise ValueError("技能不存在或未激活")
+    validated_bindings = recipes.validate_bindings(
+        recipe_bindings,
+        model="",
+    )
     run_id = "run_" + uuid.uuid4().hex[:20]
     now = db.utcnow()
     with db.db() as conn:
@@ -188,6 +193,12 @@ def create_run(
                 now,
                 now,
             ),
+        )
+        recipes.save_run_bindings(
+            conn,
+            run_id,
+            validated_bindings,
+            created_at=now,
         )
     db.add_message(run_id, "user", prompt)
     db.add_event(run_id, "run.created", {"runId": run_id, "projectId": project_id, "skillId": skill_id})
@@ -227,6 +238,7 @@ def get_run(
             "SELECT * FROM tool_calls WHERE run_id=? ORDER BY id",
             (run_id,),
         ).fetchall()
+        recipe_bindings = recipes.run_bindings(conn, run_id)
     return {
         "id": row["id"],
         "projectId": row["project_id"],
@@ -239,6 +251,7 @@ def get_run(
         "locks": db.json_loads(row["locks_json"] if "locks_json" in row.keys() else "{}", {}),
         "fileIds": db.json_loads(row["file_ids_json"] if "file_ids_json" in row.keys() else "[]", []),
         "referenceNodeIds": db.json_loads(row["reference_ids_json"] if "reference_ids_json" in row.keys() else "[]", []),
+        "recipeBindings": recipe_bindings,
         "conversationId": row["conversation_id"] if "conversation_id" in row.keys() else "",
         "prompt": row["prompt"],
         "status": row["status"],
@@ -365,7 +378,11 @@ def active_run_for_conversation(
     return get_run(row["id"], tenant_id, account_id) if row else None
 
 
-def _system_prompt(skill: dict[str, Any], route_entry: str = "") -> str:
+def _system_prompt(
+    skill: dict[str, Any],
+    route_entry: str = "",
+    recipe_bindings: list[dict[str, Any]] | None = None,
+) -> str:
     settings = get_settings()
     entry = route_entry or read_entry(skill, settings.max_entry_chars)
     skill_root = Path(str(skill.get("rootPath") or ""))
@@ -424,6 +441,57 @@ def _system_prompt(skill: dict[str, Any], route_entry: str = "") -> str:
         + "\n\n"
         if short_video_contract else ""
     )
+    recipe_contract_path = (
+        skill_root
+        / "short-drama-director"
+        / "references"
+        / "agent-aicg3d-recipe-contract.md"
+    )
+    try:
+        skill_recipe_contract = recipe_contract_path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        )[:10000]
+    except OSError:
+        skill_recipe_contract = ""
+    selected_recipes: list[str] = []
+    for binding in recipe_bindings or []:
+        if not isinstance(binding, dict):
+            continue
+        try:
+            compiled = recipes.compile_execution_contract(
+                str(binding.get("id") or ""),
+                version=str(binding.get("version") or ""),
+                slots=binding.get("slots") if isinstance(binding.get("slots"), dict) else {},
+                model=str(binding.get("model") or ""),
+            )
+        except recipes.RecipeError as exc:
+            selected_recipes.append(f"配方绑定无效：{exc.code} · {exc}")
+            continue
+        segment = int(binding.get("segmentNo") or 0)
+        role = str(binding.get("role") or "primary")
+        label = f"段{segment}" if segment else "未指定段"
+        selected_recipes.append(f"{label}｜{role}\n{compiled['text']}")
+    recipe_section = (
+        "镜头配方合同：\n"
+        "1) 简单文戏可以不使用配方；需要动作、追逐、群像、产品、空间、字体或综合镜头机制时，"
+        "先用 recipe_search 检索，再用 recipe_get 读取命中配方。\n"
+        "2) 每个段落最多一个 primary 配方；modifier 只能补充锚点，不能叠加第二套完整机制。\n"
+        "3) 配方不会增加或覆盖参考图。正文 @ 才是出镜和素材引用的唯一权威。\n"
+        "4) 必填槽位未补齐时不得声称配方已执行；缺少角色/场景信息时应明确留空或继续检索。\n"
+        "5) 供应商模板必须按当前模型编译，不得把 MiniMax H3 字段写进 Seedance 请求。\n"
+        + (
+            "\n技能包镜头配方合同：\n" + skill_recipe_contract + "\n"
+            if skill_recipe_contract
+            else ""
+        )
+        + (
+            "\n本轮已选配方：\n" + "\n\n".join(selected_recipes)[:16000]
+            if selected_recipes
+            else ""
+        )
+        + "\n\n"
+    )
     return (
         "你是戏剧画布（drama-canvas-studio）的投喂稿导演。"
         "你的唯一交付是一个可直接导入画布的 JSON 对象，格式固定为 drama-canvas-feed/v2。"
@@ -439,10 +507,13 @@ def _system_prompt(skill: dict[str, Any], route_entry: str = "") -> str:
         "9) asset_prompts 每项必须包含 code、name、raw；raw 不能为空。\n"
         "10) voice_prompts 每项必须包含 code、name、age（纯数字如 28）、gender（female 或 male）、dialect（如 standard）、format=audio-prompt-v1、prompt、label、description；prompt 必须以 A {gender} aged {age} 开头，并以固定音频结尾结束；每个有台词的角色都必须有一条 voice。\n\n"
         "11) 服务端会用共享 canvas_feed_contract 做确定性编译；图号、generator、schemaSha256 和音色机械字段以服务端编译结果为准。\n\n"
+        "12) 如果本轮选择了镜头配方，对应 segment 必须输出 recipe 对象，包含 id、version、sha256、role、segmentNo、slots；"
+        "未指定段号的配方只在单段任务中自动绑定，多段任务必须由你选择实际适用段。\n\n"
         "8) 输出骨架如下，必须补齐字段，不要省略 asset_prompts / voice_prompts：\n"
         "{\"title\":\"第01集\",\"canvas_contract\":{\"schema\":\"drama-canvas-feed/v2\",\"video_model\":\"doubao-seedance-2-0\",\"video_aspect\":\"9:16\",\"generator\":{\"name\":\"<skill id>\",\"skillVersion\":\"<version>\",\"packageRevision\":\"<revision>\"}},\"asset_prompts\":[],\"voice_prompts\":[],\"segments\":[{\"no\":1,\"name\":\"段1\",\"raw\":\"...\"}]}\n\n"
         "技能信息：id=" + str(skill.get("id")) + " version=" + str(skill.get("version")) + "\n\n"
         "运行时质量合同（必须执行）：\n" + quality_contract + "\n\n"
+        + recipe_section
         + cinematic_section
         + short_video_section
         +
@@ -522,6 +593,18 @@ def _execute_run_body(run_id: str) -> None:
             locks_stage = db.start_stage(run_id, "locks")
             _save_artifact(run_id, "locks", run["locks"])
             db.finish_stage(locks_stage, "done", run["locks"])
+        if run.get("recipeBindings"):
+            recipe_stage = db.start_stage(run_id, "recipes")
+            _save_artifact(
+                run_id,
+                "recipe_bindings",
+                {"bindings": run.get("recipeBindings") or []},
+            )
+            db.finish_stage(
+                recipe_stage,
+                "done",
+                {"count": len(run.get("recipeBindings") or [])},
+            )
         db.add_step(run_id, "project", "done", {"title": project.get("title"), "revision": project.get("revision")})
 
         generate_stage = db.start_stage(run_id, "generate")
@@ -554,7 +637,11 @@ def _execute_run_body(run_id: str) -> None:
             + (f"参考文件：{attachment_text}\n\n" if attachment_text else "")
             + f"用户目标：\n{run['prompt']}\n\n请基于即将提供的只读画布上下文，直接输出一份可导入的完整 JSON。"
         )
-        system_prompt = _system_prompt(skill, route_entry)
+        system_prompt = _system_prompt(
+            skill,
+            route_entry,
+            run.get("recipeBindings") or [],
+        )
         status_message_id = db.create_message(run_id, "status", "上下文已预取，正在生成投喂稿…")
         canvas_tools = CanvasTools(
             project,
@@ -679,8 +766,29 @@ def _execute_run_body(run_id: str) -> None:
             db.update_message(status_message_id, "已停止")
             return
         db.update_message(status_message_id, "投喂稿已生成，正在校验契约…")
+        draft = extract_json(raw)
+        draft, applied_recipes, recipe_warnings = recipes.apply_to_feed(
+            draft,
+            run.get("recipeBindings") or [],
+            model="",
+        )
+        effective_recipe_bindings = recipes.merge_binding_lists(
+            run.get("recipeBindings") or [],
+            applied_recipes,
+        )
+        recipes.replace_run_bindings(run_id, effective_recipe_bindings)
+        run["recipeBindings"] = effective_recipe_bindings
+        _save_artifact(
+            run_id,
+            "recipe_application",
+            {
+                "applied": applied_recipes,
+                "bindings": effective_recipe_bindings,
+                "warnings": recipe_warnings,
+            },
+        )
         compiled = compile_feed_draft(
-            extract_json(raw),
+            draft,
             skill_id=run["skillId"],
             skill_version=run["skillVersion"],
             package_revision=package_revision,
@@ -724,8 +832,30 @@ def _execute_run_body(run_id: str) -> None:
                     model_id=run.get("modelId") or "",
                     tenant_id=run.get("tenantId") or "",
                 )
+                draft = extract_json(raw)
+                draft, applied_recipes, recipe_warnings = recipes.apply_to_feed(
+                    draft,
+                    run.get("recipeBindings") or [],
+                    model="",
+                )
+                effective_recipe_bindings = recipes.merge_binding_lists(
+                    run.get("recipeBindings") or [],
+                    applied_recipes,
+                )
+                recipes.replace_run_bindings(run_id, effective_recipe_bindings)
+                run["recipeBindings"] = effective_recipe_bindings
+                _save_artifact(
+                    run_id,
+                    "recipe_application",
+                    {
+                        "applied": applied_recipes,
+                        "bindings": effective_recipe_bindings,
+                        "warnings": recipe_warnings,
+                        "repair": repairs,
+                    },
+                )
                 compiled = compile_feed_draft(
-                    extract_json(raw),
+                    draft,
                     skill_id=run["skillId"],
                     skill_version=run["skillVersion"],
                     package_revision=package_revision,

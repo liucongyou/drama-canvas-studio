@@ -26,6 +26,11 @@ describe('audit query', () => {
     expect(query).toContain('limit=50');
   });
 
+  it('supports tenant audit filtering by recipe identity', () => {
+    expect(buildAuditQuery({recipeId: 'handoff-ensemble-focus'}))
+      .toBe('recipeId=handoff-ensemble-focus');
+  });
+
   it('shows the operation and batch identifiers used for paid-task tracing', () => {
     expect(formatAuditOperation({operationId: 'op-1'})).toBe('op-1');
     expect(formatAuditEntry({entry: 'batch', batchId: 'batch-1'})).toBe('batch:batch-1');

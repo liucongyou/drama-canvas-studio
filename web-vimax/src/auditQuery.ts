@@ -8,6 +8,7 @@ export type AuditEventQuery = {
   limit?: number;
   beforeId?: string;
   requestId?: string;
+  recipeId?: string;
 };
 
 export type AuditEventItem = {
@@ -39,7 +40,7 @@ function compact(value: unknown): string {
 
 export function buildAuditQuery(query: AuditEventQuery): string {
   const params = new URLSearchParams();
-  for (const key of ['projectId', 'action', 'actor', 'status', 'since', 'until', 'beforeId', 'requestId'] as const) {
+  for (const key of ['projectId', 'action', 'actor', 'status', 'since', 'until', 'beforeId', 'requestId', 'recipeId'] as const) {
     const value = compact(query[key]);
     if (value) params.set(key, value);
   }

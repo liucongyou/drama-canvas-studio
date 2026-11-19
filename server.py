@@ -66,6 +66,7 @@ import operational_metrics
 import provider_catalog
 import provider_client
 import pg_compat
+import recipe_contract
 import schema_migrations
 import tos_storage
 import tenant_bootstrap
@@ -989,6 +990,7 @@ def _audit_query_from_url(parsed):
         "until": value("until", 64),
         "before_id": value("beforeId", 180),
         "request_id": value("requestId", 64),
+        "recipe_id": value("recipeId", 120),
     }
 
 
@@ -8688,6 +8690,11 @@ class Handler(BaseHTTPRequestHandler):
     def _do_get(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        if (
+            path == "/api/agent/recipes"
+            or re.match(r"^/api/agent/recipes/[^/]+$", path)
+        ):
+            return self._serve_agent_recipe_catalog(path, parsed)
         if agent_gateway.is_agent_browser_path(path):
             return agent_gateway.proxy_agent(self)
         if path == "/api/internal/agent/projects":
@@ -9393,6 +9400,63 @@ class Handler(BaseHTTPRequestHandler):
             if self._serve_webapp(path):
                 return
         return self._send(404, {"error": "not found"})
+
+    def _serve_agent_recipe_catalog(self, path, parsed):
+        session = self._current_session()
+        if _auth_mode() == "accounts" and not session:
+            return self._send(401, {"error": "请先登录"})
+        try:
+            if path == "/api/agent/recipes":
+                query = urllib.parse.parse_qs(parsed.query)
+
+                def value(name, default=""):
+                    return str((query.get(name) or [default])[0] or default)
+
+                return self._send(
+                    200,
+                    recipe_contract.search(
+                        query=value("query"),
+                        category=value("category"),
+                        kind=value("kind"),
+                        model=value("model"),
+                        cursor=int(value("cursor", "0") or 0),
+                        limit=int(value("limit", "20") or 20),
+                    ),
+                )
+            match = re.match(r"^/api/agent/recipes/([^/]+)$", path)
+            recipe_id = unquote(match.group(1))
+            query = urllib.parse.parse_qs(parsed.query)
+            version = str((query.get("version") or [""])[0] or "")
+            item = recipe_contract.get_recipe(recipe_id, version)
+            if not item:
+                return self._send(
+                    404,
+                    {"error": "镜头配方不存在", "code": "RECIPE_NOT_FOUND"},
+                )
+            return self._send(
+                200,
+                {
+                    "recipe": item,
+                    "catalog": recipe_contract.metadata(),
+                    "execution": recipe_contract.compile_execution_lock(
+                        {
+                            "id": item["id"],
+                            "version": item["version"],
+                            "sha256": item["contentSha256"],
+                            "role": "primary",
+                            "segmentNo": 0,
+                            "slots": {},
+                        },
+                        model="",
+                        require_slots=False,
+                    ),
+                },
+            )
+        except recipe_contract.RecipeContractError as exc:
+            return self._send(503, {"error": str(exc), "code": exc.code})
+        except (TypeError, ValueError) as exc:
+            code = getattr(exc, "code", "RECIPE_QUERY_INVALID")
+            return self._send(400, {"error": str(exc), "code": code})
 
     def do_POST(self):
         scope = self._request_tenant_scope()
@@ -12210,6 +12274,7 @@ class Handler(BaseHTTPRequestHandler):
         generic_labels = {"", "资产图", "角色音色", "图片", "音频", "视频", "文本", "素材"}
         provider = None
         model = None
+        recipe_plan = None
         deferred_image_archive_args = None
         deferred_video_finalize_args = None
 
@@ -12575,6 +12640,21 @@ class Handler(BaseHTTPRequestHandler):
                 ntype,
             )
             effective = {**(model.get("defaultParams") or {}), **params}
+            max_prompt = int((model.get("limits") or {}).get("maxPromptChars") or 40000)
+            if ntype == "video":
+                recipe_binding = params.get("recipe") or meta.get("recipe")
+                if isinstance(recipe_binding, dict):
+                    try:
+                        prompt, recipe_plan = recipe_contract.augment_prompt(
+                            prompt,
+                            recipe_binding,
+                            model=str(model.get("id") or model.get("remoteModel") or ""),
+                            require_slots=True,
+                            max_chars=max_prompt,
+                        )
+                    except recipe_contract.RecipeContractError as exc:
+                        raise RuntimeError(f"{exc.code}：{exc}") from exc
+                    meta["recipePlan"] = recipe_plan
             mention_identities = (
                 explicit.reference_identity_map
                 if explicit.has_explicit_mention
@@ -12594,7 +12674,6 @@ class Handler(BaseHTTPRequestHandler):
             for key in ("ratio", "resolution", "duration", "guidance", "size", "system", "temperature", "maxTokens"):
                 if effective.get(key) in (None, "") and meta.get(key) not in (None, ""):
                     effective[key] = meta.get(key)
-            max_prompt = int((model.get("limits") or {}).get("maxPromptChars") or 40000)
             if len(prompt) > max_prompt:
                 raise RuntimeError(f"提示词超过当前模型上限（{max_prompt} 字符）")
             if not prompt.strip():
@@ -12656,6 +12735,7 @@ class Handler(BaseHTTPRequestHandler):
                             "prompt": prompt,
                             "params": effective,
                             "refs": refs,
+                            "recipePlan": recipe_plan,
                             "voices": voices,
                             "nodeAssetId": str(meta.get("assetId") or ""),
                             "episodeId": str(meta.get("episodeId") or ""),
@@ -12939,6 +13019,7 @@ class Handler(BaseHTTPRequestHandler):
                             "prompt": prompt,
                             "params": effective,
                             "refs": refs,
+                            "recipePlan": recipe_plan,
                             "providerPromptSha256": str(
                                 reference_plan["providerPromptSha256"]
                             ),
@@ -13278,6 +13359,7 @@ class Handler(BaseHTTPRequestHandler):
                     "kind": ntype,
                     "httpStatus": status,
                     "error": str(exc)[:500],
+                    "recipePlan": recipe_plan or {},
                 },
             )
             return self._send(status, {
@@ -13291,7 +13373,7 @@ class Handler(BaseHTTPRequestHandler):
                 "voiceId", "provider", "model", "remoteModel", "production", "generatedAt",
                 "generationStartedAt", "generationFinishedAt", "providerTaskStatus",
                 "providerTaskPhase", "providerTaskProgress",
-                "referencePlan",
+                "referencePlan", "recipePlan",
                 "videoValidation", "actualDuration", "storage", "storageError",
                 "source", "providerUrl", "providerResultUrl", "finalizePending",
                 "promptStale", "promptStaleReason", "sourcePromptUpdatedAt",
@@ -13374,6 +13456,7 @@ class Handler(BaseHTTPRequestHandler):
                 "kind": ntype,
                 "provider": provider.get("id"),
                 "model": model.get("id"),
+                "recipePlan": recipe_plan or {},
             },
         )
         response = {
@@ -13393,6 +13476,7 @@ class Handler(BaseHTTPRequestHandler):
                 meta.get("generationFinishedAt") or node_written_at
             ),
             "referencePlan": meta.get("referencePlan") or {},
+            "recipePlan": meta.get("recipePlan") or {},
         }
         if ntype == "text":
             response["text"] = meta.get("prompt")

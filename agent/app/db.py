@@ -148,6 +148,37 @@ def init_db() -> None:
                 payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS recipe_catalog (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                active_version TEXT NOT NULL,
+                manifest_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS recipe_versions (
+                recipe_id TEXT NOT NULL,
+                version TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                contract_json TEXT NOT NULL,
+                source_path TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (recipe_id, version)
+            );
+            CREATE TABLE IF NOT EXISTS run_recipe_bindings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                segment_no INTEGER NOT NULL DEFAULT 0,
+                recipe_id TEXT NOT NULL,
+                recipe_version TEXT NOT NULL,
+                recipe_sha256 TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'primary',
+                slots_json TEXT NOT NULL DEFAULT '{}',
+                match_reason TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id TEXT NOT NULL,
@@ -189,6 +220,7 @@ def init_db() -> None:
                 route_id TEXT NOT NULL DEFAULT '',
                 model_id TEXT NOT NULL DEFAULT '',
                 locks_json TEXT NOT NULL DEFAULT '{}',
+                recipe_bindings_json TEXT NOT NULL DEFAULT '[]',
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (tenant_id, account_id, conversation_id)
             );
@@ -208,6 +240,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS ix_messages_run ON messages(run_id, id);
             CREATE INDEX IF NOT EXISTS ix_stages_run ON stages(run_id, id);
             CREATE INDEX IF NOT EXISTS ix_events_run ON events(run_id, id);
+            CREATE INDEX IF NOT EXISTS ix_recipe_catalog_category
+                ON recipe_catalog(category, kind, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_run_recipe_bindings_run
+                ON run_recipe_bindings(run_id, segment_no, id);
             CREATE INDEX IF NOT EXISTS ix_runs_project ON runs(project_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS ix_conversations_scope
                 ON conversations(tenant_id, account_id, project_id, updated_at DESC);
@@ -246,6 +282,11 @@ def init_db() -> None:
             conn.execute("ALTER TABLE runs ADD COLUMN started_at TEXT NOT NULL DEFAULT ''")
         if "finished_at" not in run_columns:
             conn.execute("ALTER TABLE runs ADD COLUMN finished_at TEXT NOT NULL DEFAULT ''")
+        draft_columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_drafts)")}
+        if "recipe_bindings_json" not in draft_columns:
+            conn.execute(
+                "ALTER TABLE agent_drafts ADD COLUMN recipe_bindings_json TEXT NOT NULL DEFAULT '[]'"
+            )
 
 
 def json_loads(value: str | None, fallback: Any) -> Any:

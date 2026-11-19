@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app import recipes
 from app.canvas_client import CanvasClient
 
 
@@ -153,6 +154,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "recipe_search",
+            "description": "Search the AICG3D camera recipe registry by intent, category or model.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "category": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["creative", "tool", ""]},
+                    "model": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 8},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recipe_get",
+            "description": "Read one recipe contract after selecting it from search results.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "recipeId": {"type": "string"},
+                    "version": {"type": "string"},
+                },
+                "required": ["recipeId"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "validate_feed",
             "description": "Run the existing canvas Feed preview validation.",
             "parameters": {
@@ -209,6 +242,8 @@ class CanvasTools:
             "get_node_dependencies": self._node_dependencies,
             "resolve_prompt_references": self._resolve_references,
             "read_skill_section": self._read_skill_section,
+            "recipe_search": self._recipe_search,
+            "recipe_get": self._recipe_get,
             "validate_feed": self._validate_feed,
             "finalize_feed": self._finalize_feed,
         }
@@ -294,7 +329,7 @@ class CanvasTools:
     def _context_node(self, node: dict[str, Any]) -> dict[str, Any]:
         summary = self._node_summary(node)
         node_type = str(node.get("type") or "")
-        if node_type not in {"image", "audio"}:
+        if node_type not in {"image", "audio", "video"}:
             return summary
         metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
         prompt = str(metadata.get("prompt") or node.get("prompt") or "")
@@ -305,6 +340,7 @@ class CanvasTools:
             "promptTruncated": len(prompt) > 2400,
             "refs": _safe_list(params.get("refs")),
             "voiceRefs": _safe_list(params.get("voiceRefs")),
+            "recipe": _safe_mapping(params.get("recipe")),
         }
 
     def _project_context(self, args: dict[str, Any], _context: dict[str, Any]) -> dict[str, Any]:
@@ -580,6 +616,45 @@ class CanvasTools:
             "nextOffset": next_offset if next_offset < len(text) else None,
         }
 
+    def _recipe_search(
+        self,
+        args: dict[str, Any],
+        _context: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return recipes.search(
+                query=str(args.get("query") or ""),
+                category=str(args.get("category") or ""),
+                kind=str(args.get("kind") or ""),
+                model=str(args.get("model") or ""),
+                limit=min(8, max(1, int(args.get("limit") or 8))),
+            )
+        except recipes.RecipeError as exc:
+            return {"error": str(exc), "code": exc.code}
+
+    def _recipe_get(
+        self,
+        args: dict[str, Any],
+        _context: dict[str, Any],
+    ) -> dict[str, Any]:
+        recipe_id = str(args.get("recipeId") or "").strip()
+        version = str(args.get("version") or "").strip()
+        try:
+            item = recipes.get_recipe(recipe_id, version)
+        except recipes.RecipeError as exc:
+            return {"found": False, "error": str(exc), "code": exc.code}
+        if not item:
+            return {
+                "found": False,
+                "recipeId": recipe_id,
+                "code": "RECIPE_NOT_FOUND",
+            }
+        return {
+            "found": True,
+            "recipe": item,
+            "compact": recipes.compact(item),
+        }
+
     def _validate_feed(self, args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         feed = args.get("feed")
         if not isinstance(feed, dict):
@@ -605,6 +680,8 @@ class CanvasTools:
 
     def _node_summary(self, node: dict[str, Any]) -> dict[str, Any]:
         metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        params = node.get("params") if isinstance(node.get("params"), dict) else {}
+        recipe = params.get("recipe") if isinstance(params.get("recipe"), dict) else {}
         return {
             "id": str(node.get("id") or ""),
             "type": str(node.get("type") or ""),
@@ -614,6 +691,8 @@ class CanvasTools:
             "assetId": str(metadata.get("assetId") or ""),
             "seriesId": str(metadata.get("seriesId") or ""),
             "variantKey": str(metadata.get("variantKey") or ""),
+            "recipeId": str(recipe.get("id") or ""),
+            "recipeVersion": str(recipe.get("version") or ""),
         }
 
     def _bounded(self, result: dict[str, Any]) -> dict[str, Any]:
@@ -647,6 +726,8 @@ def _asset_kind(node: dict[str, Any]) -> str:
 
 def _node_summary(node: dict[str, Any]) -> dict[str, Any]:
     metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+    params = node.get("params") if isinstance(node.get("params"), dict) else {}
+    recipe = params.get("recipe") if isinstance(params.get("recipe"), dict) else {}
     return {
         "id": str(node.get("id") or ""),
         "type": str(node.get("type") or ""),
@@ -656,6 +737,8 @@ def _node_summary(node: dict[str, Any]) -> dict[str, Any]:
         "assetId": str(metadata.get("assetId") or ""),
         "seriesId": str(metadata.get("seriesId") or ""),
         "variantKey": str(metadata.get("variantKey") or ""),
+        "recipeId": str(recipe.get("id") or ""),
+        "recipeVersion": str(recipe.get("version") or ""),
     }
 
 

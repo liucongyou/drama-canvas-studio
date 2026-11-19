@@ -80,6 +80,11 @@ function AuditRow({
   const operationId = formatAuditOperation(event.details);
   const entry = formatAuditEntry(event.details);
   const {requestId, requestPath} = auditRequestContext(event.details);
+  const recipeId = String(
+    (event.details?.recipePlan as Record<string, unknown> | undefined)?.recipeId
+    || event.details?.recipeId
+    || '',
+  );
   const requestUrl = requestPath && requestId
     ? `${requestPath}?requestId=${encodeURIComponent(requestId)}`
     : '';
@@ -87,6 +92,7 @@ function AuditRow({
     taskId ? `任务 ${taskId}` : '',
     operationId ? `操作 ${operationId}` : '',
     entry !== 'unknown' ? `入口 ${entry}` : '',
+    recipeId ? `配方 ${recipeId}` : '',
   ].filter(Boolean).join(' · ');
   return (
     <article className={`tenant-audit-row is-${event.status || 'success'}`}>
@@ -154,6 +160,7 @@ export function TenantAdminView({
   const [events, setEvents] = useState<AuditEventItem[]>([]);
   const [search, setSearch] = useState('');
   const [actionFilter, setActionFilter] = useState('');
+  const [recipeFilter, setRecipeFilter] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
@@ -207,6 +214,7 @@ export function TenantAdminView({
       cursor?: string;
       requestId?: string;
       action?: string;
+      recipeId?: string;
     } = {},
   ) => {
     const append = options.append === true;
@@ -217,6 +225,7 @@ export function TenantAdminView({
       const page = await getManagedTenantAudit(tenant.tenantId, {
         action: options.action ?? actionFilter,
         requestId: options.requestId ?? requestFilter,
+        recipeId: options.recipeId ?? recipeFilter,
         beforeId: options.cursor || '',
         limit: 100,
       });
@@ -238,6 +247,7 @@ export function TenantAdminView({
     setBeforeId('');
     setHasMore(false);
     setActionFilter('');
+    setRecipeFilter('');
     setSearch('');
     await loadEvents(tenant, {requestId: initialRequestId});
   };
@@ -260,6 +270,8 @@ export function TenantAdminView({
         event.details?.batchId,
         event.details?.projectId,
         event.details?.nodeId,
+        (event.details?.recipePlan as Record<string, unknown> | undefined)?.recipeId,
+        event.details?.recipeId,
         (event.details?.auditContext as Record<string, unknown> | undefined)?.requestId,
       ].join(' ').toLowerCase();
       return haystack.includes(needle);
@@ -331,6 +343,17 @@ export function TenantAdminView({
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
                   placeholder="搜索操作、任务 ID、操作 ID、节点"
+                />
+              </label>
+              <label>
+                <Search size={13} />
+                <input
+                  value={recipeFilter}
+                  onChange={(event) => setRecipeFilter(event.target.value)}
+                  placeholder="按镜头配方 ID 筛选"
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void loadEvents(selectedTenant);
+                  }}
                 />
               </label>
               <label>

@@ -219,15 +219,28 @@ def test_system_prompt_injects_runtime_quality_contract(tmp_path) -> None:
         "镜头四问：信息还是反应；画左画右与视线落点必须写死",
         encoding="utf-8",
     )
+    (entry_root / "references" / "agent-aicg3d-recipe-contract.md").write_text(
+        "每段最多一个主配方，配方不得覆盖正文 @ 引用",
+        encoding="utf-8",
+    )
     prompt = runtime._system_prompt(
         {
             "id": "skill",
             "version": "7.4.35",
             "rootPath": str(root),
             "manifest": {"entry": "short-drama-director/SKILL.md"},
-        }
+        },
+        recipe_bindings=[{
+            "id": "handoff-ensemble-focus",
+            "version": "1.0.0",
+            "role": "primary",
+            "segmentNo": 1,
+            "slots": {},
+        }],
     )
     assert "逐镜 15 项 fail-closed 自检" in prompt
     assert "镜头四问：信息还是反应" in prompt
     assert "前 3 秒必须给出观看理由" in prompt
+    assert "每段最多一个主配方" in prompt
+    assert "handoff-ensemble-focus" in prompt
     assert "不要请求额外工具" in prompt

@@ -8091,6 +8091,7 @@ def list_audit_events(
     until="",
     before_id="",
     request_id="",
+    recipe_id="",
     tenant_id="",
     tenant_slug="",
 ):
@@ -8142,6 +8143,12 @@ def list_audit_events(
                 "json_extract(details_json, '$.auditContext.requestId')=?)"
             )
             params.extend([str(request_id).strip(), str(request_id).strip()])
+        if str(recipe_id or "").strip():
+            clauses.append(
+                "(json_extract(details_json, '$.recipePlan.recipeId')=?"
+                " OR json_extract(details_json, '$.recipeId')=?)"
+            )
+            params.extend([str(recipe_id).strip(), str(recipe_id).strip()])
         try:
             page_size = max(1, min(int(limit or 200), 500))
         except (TypeError, ValueError):

@@ -1,13 +1,14 @@
-import {useCallback, useEffect, useLayoutEffect, useRef, useState} from 'react';
+import {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import {
   ArrowDown, AtSign, Check, ChevronRight, Copy, Download, FileText, History, Image as ImageIcon, Maximize2, Music2,
   Plus, RefreshCw, RotateCcw, Search, Send, Settings, SlidersHorizontal, Sparkles, Square,
   Type, Upload, Video, Wand2, X,
 } from 'lucide-react';
-import {agentApi, type AgentContentBlock, type AgentDraft, type AgentFile, type AgentLock, type AgentModel, type AgentRun, type AgentSkill, type AgentSkillDetail} from './agentApi';
+import {agentApi, type AgentContentBlock, type AgentDraft, type AgentFile, type AgentLock, type AgentModel, type AgentRecipe, type AgentRecipeBinding, type AgentRun, type AgentSkill, type AgentSkillDetail} from './agentApi';
 import {AgentComposer} from './AgentComposer';
 import {AgentMessageContent} from './AgentMessageContent';
 import {cleanRunText, executionDraftMessages, pendingImportRuns, transcriptMessages} from './agentPresentation';
+import {recipeFromDetail, recipeToBindings} from './agentRecipes';
 
 type AgentDockProps = {
   projectId: string | null;
@@ -76,6 +77,11 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const [modelId, setModelId] = useState('');
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [skill, setSkill] = useState<AgentSkill | null>(null);
+  const [recipe, setRecipe] = useState<AgentRecipe | null>(null);
+  const [recipeOpen, setRecipeOpen] = useState(false);
+  const [recipeQuery, setRecipeQuery] = useState('');
+  const [recipeResults, setRecipeResults] = useState<AgentRecipe[]>([]);
+  const [recipeLoading, setRecipeLoading] = useState(false);
   const [routeId, setRouteId] = useState('');
   const [projectTitle, setProjectTitle] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -123,6 +129,10 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const runContentLength = run
     ? run.messages.reduce((total, message) => total + String(message.content || '').length, 0)
     : 0;
+  const selectedRecipeBindings = useMemo<AgentRecipeBinding[]>(
+    () => recipeToBindings(recipe),
+    [recipe],
+  );
   const runStatusRef = useRef('');
   const followLatestRef = useRef(followingLatest);
   followLatestRef.current = followingLatest;
@@ -165,11 +175,12 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
         modelId,
         routeId,
         skillId: skill ? skill.id : '',
+        recipe,
         attachments,
         references,
       }));
     } catch {}
-  }, [projectId, modelId, routeId, skill, attachments]);
+  }, [projectId, modelId, routeId, skill, recipe, attachments, references]);
 
   useEffect(() => {
     if (!projectId || !run) return;
@@ -217,6 +228,11 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
         setModelId(String(saved.modelId || modelData.defaultModelId || (modelData.models[0] && modelData.models[0].id) || ''));
         setAttachments(Array.isArray(saved.attachments) ? saved.attachments as AgentFile[] : []);
         setReferences(Array.isArray(saved.references) ? saved.references as AgentReference[] : []);
+        setRecipe(
+          saved.recipe && typeof saved.recipe === 'object'
+            ? saved.recipe as AgentRecipe
+            : null,
+        );
         hydratedProjectRef.current = projectId || null;
       } else {
         setModelId((current) => current || modelData.defaultModelId || (modelData.models[0] && modelData.models[0].id) || '');
@@ -306,6 +322,13 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
       const draft = await agentApi.draft(conversation.id).then((data) => data.draft).catch(() => null);
       if (alive && draft) {
         applyDraft(draft);
+        const savedRecipe = Array.isArray(draft.recipeBindings) ? draft.recipeBindings[0] : null;
+        if (savedRecipe?.id) {
+          const detail = await agentApi.recipe(savedRecipe.id, savedRecipe.version).catch(() => null);
+          if (alive && detail) {
+            setRecipe(recipeFromDetail(detail.recipe, savedRecipe));
+          }
+        }
         if (draft.skillId) {
           const detail = await agentApi.skill(draft.skillId).catch(() => null);
           if (alive && detail) {
@@ -337,6 +360,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
         attachments,
         references,
         skillId: skill?.id || '',
+        recipeBindings: selectedRecipeBindings,
         routeId,
         modelId,
         locks,
@@ -348,7 +372,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
         draftTimerRef.current = null;
       }
     };
-  }, [open, conversationReady, conversationId, prompt, attachments, references, skill && skill.id, routeId, modelId, locks]);
+  }, [open, conversationReady, conversationId, prompt, attachments, references, skill && skill.id, selectedRecipeBindings, routeId, modelId, locks]);
 
   useEffect(() => {
     if (!open || !projectId || !conversationId) return;
@@ -434,14 +458,14 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       if (managerOpen) { setManagerOpen(false); return; }
-      if (pickerOpen || modelMenu || settingsOpen || atOpen) {
-        setPickerOpen(false); setModelMenu(false); setSettingsOpen(false); setAtOpen(false); return;
+      if (pickerOpen || recipeOpen || modelMenu || settingsOpen || atOpen) {
+        setPickerOpen(false); setRecipeOpen(false); setModelMenu(false); setSettingsOpen(false); setAtOpen(false); return;
       }
       closePanel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [managerOpen, pickerOpen, modelMenu, settingsOpen, atOpen, closePanel]);
+  }, [managerOpen, pickerOpen, recipeOpen, modelMenu, settingsOpen, atOpen, closePanel]);
 
   useEffect(() => {
     const onPointer = (event: PointerEvent) => {
@@ -449,6 +473,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
       if (!target) return;
       if (target.closest('.agent-popover') || target.closest('.agent-modal-backdrop') || target.closest('[data-agent-trigger]')) return;
       setPickerOpen(false);
+      setRecipeOpen(false);
       setModelMenu(false);
       setSettingsOpen(false);
       setAtOpen(false);
@@ -503,6 +528,9 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     setThreadRuns([]);
     setPrompt('');
     setAttachments([]);
+    setRecipe(null);
+    setRecipeOpen(false);
+    setRecipeResults([]);
     setPendingPrompt('');
     setReferences([]);
     setError('');
@@ -524,10 +552,47 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const openPicker = useCallback(() => {
     setPickerQuery('');
     setPickerOpen(true);
+    setRecipeOpen(false);
     setModelMenu(false);
     setSettingsOpen(false);
     setAtOpen(false);
   }, []);
+
+  const openRecipePicker = useCallback(() => {
+    setRecipeOpen(true);
+    setPickerOpen(false);
+    setModelMenu(false);
+    setSettingsOpen(false);
+    setAtOpen(false);
+  }, []);
+
+  const selectRecipe = useCallback((next: AgentRecipe) => {
+    setRecipe(next);
+    setRecipeOpen(false);
+    window.requestAnimationFrame(() => promptRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    if (!recipeOpen) return;
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      setRecipeLoading(true);
+      void agentApi.recipes({query: recipeQuery, kind: 'creative', limit: 20})
+        .then((data) => {
+          if (alive) setRecipeResults(data.recipes || []);
+        })
+        .catch((err) => {
+          if (alive) setError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (alive) setRecipeLoading(false);
+        });
+    }, 160);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [recipeOpen, recipeQuery]);
 
   const selectSkill = useCallback(async (next: AgentSkill) => {
     setPendingPrompt('');
@@ -550,6 +615,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
 
   const openManager = useCallback(async () => {
     setPickerOpen(false);
+    setRecipeOpen(false);
     setModelMenu(false);
     setSettingsOpen(false);
     setAtOpen(false);
@@ -644,6 +710,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
           locks,
           fileIds: attachments.map((file) => file.id),
           referenceNodeIds: references.map((item) => item.nodeId || item.id),
+          recipeBindings: selectedRecipeBindings,
         },
         idempotencyKeyRef.current,
       );
@@ -660,7 +727,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     } finally {
       setBusy(false);
     }
-  }, [skill, pendingPrompt, projectId, modelId, routeId, locks, attachments, references, conversationId, conversationReady, autoGrow]);
+  }, [skill, pendingPrompt, projectId, modelId, routeId, locks, attachments, references, selectedRecipeBindings, conversationId, conversationReady, autoGrow]);
 
   const importRun = useCallback(async (targetRunId?: string) => {
     const targetId = targetRunId || (run && run.id);
@@ -739,6 +806,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     setAtQuery('');
     setPickerOpen(false);
     setSettingsOpen(false);
+    setRecipeOpen(false);
     setModelMenu(false);
     if (!projectId) return;
     try {
@@ -1059,20 +1127,22 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
             onSubmit={requestRun}
             onStop={() => void cancelCurrentRun()}
             onUploadFiles={(files) => files.forEach((file) => void uploadAttachment(file))}
-            chips={(skill || attachments.length > 0 || references.length > 0) ? (
+            chips={(skill || recipe || attachments.length > 0 || references.length > 0) ? (
               <div className="agent-chips-row">
                 {skill ? <span className="agent-skill-chip agent-skill-chip-inline" onClick={openPicker} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') openPicker(); }} role="button" tabIndex={0} title="切换技能"><Sparkles size={11} /><span className="agent-chip-label">{skill.name}{routeId && skill.routes ? ' · ' + (skill.routes.find((route) => route.id === routeId)?.name || routeId) : ''}</span><button type="button" aria-label="移除技能" onClick={(event) => { event.stopPropagation(); setSkill(null); setRouteId(''); }}><X size={11} /></button></span> : <button type="button" className="agent-inline-skill-empty" onClick={openPicker}><Sparkles size={11} /><span>选择技能</span><ChevronRight size={11} /></button>}
+                {recipe ? <span className="agent-skill-chip agent-skill-chip-inline agent-recipe-chip" onClick={openRecipePicker} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') openRecipePicker(); }} role="button" tabIndex={0} title={`${recipe.title} · ${recipe.category}`}><Wand2 size={11} /><span className="agent-chip-label">{recipe.title}</span><button type="button" aria-label="移除镜头配方" onClick={(event) => { event.stopPropagation(); setRecipe(null); }}><X size={11} /></button></span> : <button type="button" className="agent-inline-skill-empty agent-inline-recipe-empty" onClick={openRecipePicker}><Wand2 size={11} /><span>镜头配方</span><ChevronRight size={11} /></button>}
                 {references.map((item) => <span key={item.assetId || item.id} className="agent-file-chip agent-ref-token" title={item.assetId || item.title}>{item.thumb ? <img src={item.thumb} alt="" /> : <AtSign size={11} />}<span className="agent-chip-label">{item.title}</span><button type="button" aria-label={`移除引用 ${item.title}`} onClick={() => setReferences((current) => current.filter((ref) => (ref.assetId || ref.id) !== (item.assetId || item.id)))}><X size={11} /></button></span>)}
                 {attachments.map((file) => <span key={file.id} className="agent-file-chip" title={file.name}><FileText size={11} /><span className="agent-chip-label">{file.name}</span><button type="button" aria-label={`移除文件 ${file.name}`} onClick={() => setAttachments((current) => current.filter((item) => item.id !== file.id))}><X size={11} /></button></span>)}
               </div>
-            ) : <div className="agent-chips-row"><button type="button" className="agent-inline-skill-empty" onClick={openPicker}><Sparkles size={11} />选择技能<ChevronRight size={11} /></button></div>}
+            ) : <div className="agent-chips-row"><button type="button" className="agent-inline-skill-empty" onClick={openPicker}><Sparkles size={11} />选择技能<ChevronRight size={11} /></button><button type="button" className="agent-inline-skill-empty agent-inline-recipe-empty" onClick={openRecipePicker}><Wand2 size={11} />镜头配方<ChevronRight size={11} /></button></div>}
             toolbar={(
               <>
                 <button type="button" className="agent-tool" title="上传剧本/参考文件" aria-label="上传剧本/参考文件" onClick={() => fileInputRef.current?.click()}><Plus size={15} /></button>
                 <button type="button" className="agent-tool" title="选择技能" aria-label="选择技能" data-agent-trigger="skill" onClick={() => { pickerOpen ? setPickerOpen(false) : openPicker(); }}><Sparkles size={15} /></button>
-                <button type="button" className="agent-tool" title="创作设置" aria-label="创作设置" data-agent-trigger="settings" onClick={() => { setSettingsOpen((current) => !current); setModelMenu(false); setPickerOpen(false); setAtOpen(false); }}><SlidersHorizontal size={15} /></button>
+                <button type="button" className="agent-tool" title="镜头配方" aria-label="镜头配方" data-agent-trigger="recipe" onClick={() => { recipeOpen ? setRecipeOpen(false) : openRecipePicker(); }}><Wand2 size={15} /></button>
+                <button type="button" className="agent-tool" title="创作设置" aria-label="创作设置" data-agent-trigger="settings" onClick={() => { setSettingsOpen((current) => !current); setModelMenu(false); setPickerOpen(false); setRecipeOpen(false); setAtOpen(false); }}><SlidersHorizontal size={15} /></button>
                 <button type="button" className="agent-tool" title="引用素材" aria-label="引用素材" data-agent-trigger="at" onClick={() => { atOpen ? setAtOpen(false) : void openAtMenu(); }}><AtSign size={15} /></button>
-                <button type="button" className="agent-model" aria-label="选择模型" data-agent-trigger="model" onClick={() => { setModelMenu((current) => !current); setPickerOpen(false); setSettingsOpen(false); setAtOpen(false); }}>
+                <button type="button" className="agent-model" aria-label="选择模型" data-agent-trigger="model" onClick={() => { setModelMenu((current) => !current); setPickerOpen(false); setRecipeOpen(false); setSettingsOpen(false); setAtOpen(false); }}>
                   {selectedModel ? (MODEL_LABELS[selectedModel.id] || selectedModel.label) : '模型'} <ChevronRight size={12} />
                 </button>
               </>
@@ -1097,6 +1167,28 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
               <div className="agent-picker-actions">
                 <button type="button" onClick={() => skillFileRef.current?.click()}><Plus size={13} /> 新建技能</button>
                 <button type="button" onClick={() => void openManager()}><Settings size={13} /> 管理技能</button>
+              </div>
+            </div>
+          )}
+
+          {recipeOpen && (
+            <div className="agent-popover agent-recipe-picker">
+              <div className="agent-popover-head"><Search size={13} /><input autoFocus value={recipeQuery} onChange={(event) => setRecipeQuery(event.target.value)} placeholder="搜索动作、镜头、群像或综合机制" /></div>
+              <div className="agent-recipe-note">配方只提供镜头机制；正文 @ 仍决定角色和参考图。</div>
+              <div className="agent-picker-list agent-recipe-list">
+                {recipeResults.map((item) => (
+                  <button key={`${item.id}@${item.version}`} type="button" className={'agent-picker-item agent-recipe-item' + (recipe?.id === item.id ? ' is-selected' : '')} onClick={() => selectRecipe(item)}>
+                    <Wand2 size={13} />
+                    <span>
+                      <strong>{item.title}</strong>
+                      <small>{item.category} · {item.requiredSlots.length} 个槽位{item.matchReason ? ' · ' + item.matchReason : ''}</small>
+                      <em>{item.description}</em>
+                    </span>
+                    {recipe?.id === item.id && <Check size={13} />}
+                  </button>
+                ))}
+                {recipeLoading && <div className="agent-hint">正在检索配方…</div>}
+                {!recipeLoading && recipeResults.length === 0 && <div className="agent-hint">没有匹配的镜头配方</div>}
               </div>
             </div>
           )}

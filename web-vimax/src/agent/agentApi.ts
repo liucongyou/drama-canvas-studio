@@ -15,6 +15,30 @@ export type AgentLock = {
   default?: string;
 };
 
+export type AgentRecipe = {
+  id: string;
+  version: string;
+  kind: 'creative' | 'tool' | string;
+  category: string;
+  title: string;
+  description: string;
+  models: string[];
+  requiredSlots: string[];
+  contentSha256: string;
+  matchReason?: string;
+};
+
+export type AgentRecipeBinding = {
+  id: string;
+  version: string;
+  sha256?: string;
+  role: 'primary' | 'modifier' | string;
+  segmentNo: number;
+  slots: Record<string, string>;
+  missingSlots?: string[];
+  matchReason?: string;
+};
+
 export type AgentSkill = {
   id: string;
   name: string;
@@ -76,6 +100,7 @@ export type AgentRun = {
   locks?: Record<string, string>;
   fileIds?: string[];
   referenceNodeIds?: string[];
+  recipeBindings?: AgentRecipeBinding[];
   conversationId?: string;
   prompt: string;
   status: string;
@@ -123,6 +148,7 @@ export type AgentDraft = {
   routeId?: string;
   modelId?: string;
   locks?: Record<string, string>;
+  recipeBindings?: AgentRecipeBinding[];
   updatedAt?: string;
 };
 
@@ -190,13 +216,22 @@ export const agentApi = {
     method: 'PUT',
     body: JSON.stringify(draft),
   }),
-  appendMessage: (id: string, body: {content: AgentContentBlock[]; skillId: string; modelId?: string; routeId?: string; locks?: Record<string, string>; fileIds?: string[]; referenceNodeIds?: string[]}, idempotencyKey: string) => request<{ok: boolean; idempotent?: boolean; run: AgentRun; message?: AgentMessage}>('/api/agent/conversations/' + encodeURIComponent(id) + '/messages', {
+  appendMessage: (id: string, body: {content: AgentContentBlock[]; skillId: string; modelId?: string; routeId?: string; locks?: Record<string, string>; fileIds?: string[]; referenceNodeIds?: string[]; recipeBindings?: AgentRecipeBinding[]}, idempotencyKey: string) => request<{ok: boolean; idempotent?: boolean; run: AgentRun; message?: AgentMessage}>('/api/agent/conversations/' + encodeURIComponent(id) + '/messages', {
     method: 'POST',
     headers: {'Idempotency-Key': idempotencyKey},
     body: JSON.stringify(body),
   }),
   models: () => request<{models: AgentModel[]; defaultModelId?: string}>('/api/agent/models'),
   skills: () => request<{skills: AgentSkill[]}>('/api/agent/skills'),
+  recipes: (params: {query?: string; category?: string; kind?: string; model?: string; cursor?: number; limit?: number} = {}) => {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') query.set(key, String(value));
+    });
+    const suffix = query.toString();
+    return request<{recipes: AgentRecipe[]; total: number; nextCursor: number | null; catalog: Record<string, unknown>}>('/api/agent/recipes' + (suffix ? '?' + suffix : ''));
+  },
+  recipe: (id: string, version = '') => request<{recipe: Record<string, unknown>; catalog: Record<string, unknown>; execution: Record<string, unknown>}>('/api/agent/recipes/' + encodeURIComponent(id) + (version ? '?version=' + encodeURIComponent(version) : '')),
   skill: (id: string) => request<AgentSkillDetail>('/api/agent/skills/' + encodeURIComponent(id)),
   versions: (id: string) => request<{versions: AgentSkillDetail['versions']}>('/api/agent/skills/' + encodeURIComponent(id) + '/versions'),
   activate: (id: string, version: string) => request('/api/agent/skills/' + encodeURIComponent(id) + '/activate', {
@@ -215,7 +250,7 @@ export const agentApi = {
   },
   project: (id: string) => request<{project: {id?: string; title?: string; payload?: {title?: string; nodes?: Array<Record<string, unknown>>}} }>('/api/agent/projects/' + encodeURIComponent(id)),
   runs: (projectId: string, conversationId?: string) => request<{runs: AgentRun[]}>('/api/agent/runs?projectId=' + encodeURIComponent(projectId) + (conversationId ? '&conversationId=' + encodeURIComponent(conversationId) : '')),
-  createRun: (body: {projectId: string; skillId: string; prompt: string; modelId?: string; routeId?: string; locks?: Record<string, string>; fileIds?: string[]; referenceNodeIds?: string[]; conversationId?: string}) => request<{ok: boolean; run: AgentRun}>('/api/agent/runs', {
+  createRun: (body: {projectId: string; skillId: string; prompt: string; modelId?: string; routeId?: string; locks?: Record<string, string>; fileIds?: string[]; referenceNodeIds?: string[]; recipeBindings?: AgentRecipeBinding[]; conversationId?: string}) => request<{ok: boolean; run: AgentRun}>('/api/agent/runs', {
     method: 'POST',
     headers: {'Idempotency-Key': 'run-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 9)},
     body: JSON.stringify(body),

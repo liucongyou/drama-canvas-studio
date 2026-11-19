@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app import api, db, skills
+from app import api, db, recipes, skills
 from app.config import get_settings
 from app.context import RequestContext, context_from_headers
 
@@ -14,6 +14,7 @@ async def lifespan(_app: FastAPI):
     db.init_db()
     db.mark_interrupted_runs()
     skills.install_builtin_demo()
+    recipes.install_catalog()
     yield
 
 

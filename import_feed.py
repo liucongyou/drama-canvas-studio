@@ -19,6 +19,7 @@ import time
 from datetime import datetime, timezone
 
 import canvas_feed_contract
+import recipe_contract
 
 _B62 = string.digits + string.ascii_letters
 _NODE_CHARS = string.ascii_lowercase + string.digits
@@ -2288,6 +2289,10 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
             duration = _segment_duration(s, model_limit)
         duration = max(4, min(model_limit, duration))
         vsize = _aspect(canvas_segment.get("ratio") or raw, aspect)
+        recipe_binding = recipe_contract.normalize_binding(
+            s.get("recipe"),
+            model=segment_model,
+        )
         nodes.append({
             "height": 746.7, "width": 420, "id": nid,
             "metadata": {
@@ -2300,6 +2305,7 @@ def build_payload(feed, asset_pool=None, target_project_id=""):
                     "provider": "ark", "model": segment_model,
                     "ratio": vsize, "resolution": "480P", "duration": duration,
                     "count": 1, "guidance": "中等", "generateAudio": True, "watermark": False,
+                    **({"recipe": recipe_binding} if recipe_binding else {}),
                 },
             },
             "position": {"x": COL_VIDEO, "y": vid_y},
@@ -4874,14 +4880,20 @@ def merge_payload_by_episode(existing, incoming):
                 **new_meta["params"],
                 **{
                     key: value for key, value in old_meta["params"].items()
-                    if key in {
-                        "mediaVersions",
-                        "mediaVersionIndex",
-                        "activeVersionId",
-                        "videoVersions",
-                        "videoVersionIndex",
-                        "thumbUrl",
-                    }
+                    if (
+                        key in {
+                            "mediaVersions",
+                            "mediaVersionIndex",
+                            "activeVersionId",
+                            "videoVersions",
+                            "videoVersionIndex",
+                            "thumbUrl",
+                        }
+                        or (
+                            key == "recipe"
+                            and "recipe" not in (new_meta.get("params") or {})
+                        )
+                    )
                 },
             }
         merged_by_id[node_id] = {

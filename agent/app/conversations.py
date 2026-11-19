@@ -175,15 +175,21 @@ def save_draft(scope: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]
     attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
     references = payload.get("references") if isinstance(payload.get("references"), list) else []
     locks = payload.get("locks") if isinstance(payload.get("locks"), dict) else {}
+    recipe_bindings = (
+        payload.get("recipeBindings")
+        if isinstance(payload.get("recipeBindings"), list)
+        else []
+    )
     now = db.utcnow()
     with db.db() as conn:
         conn.execute(
-            "INSERT INTO agent_drafts(tenant_id, account_id, conversation_id, text, attachment_ids_json, reference_json, skill_id, route_id, model_id, locks_json, updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+            "INSERT INTO agent_drafts(tenant_id, account_id, conversation_id, text, attachment_ids_json, reference_json, skill_id, route_id, model_id, locks_json, recipe_bindings_json, updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(tenant_id, account_id, conversation_id) DO UPDATE SET "
             "text=excluded.text, attachment_ids_json=excluded.attachment_ids_json, "
             "reference_json=excluded.reference_json, skill_id=excluded.skill_id, "
             "route_id=excluded.route_id, model_id=excluded.model_id, locks_json=excluded.locks_json, "
+            "recipe_bindings_json=excluded.recipe_bindings_json, "
             "updated_at=excluded.updated_at",
             (
                 tenant,
@@ -196,6 +202,7 @@ def save_draft(scope: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]
                 str(payload.get("routeId") or ""),
                 str(payload.get("modelId") or ""),
                 json.dumps(locks, ensure_ascii=False),
+                json.dumps(recipe_bindings, ensure_ascii=False),
                 now,
             ),
         )
@@ -222,6 +229,7 @@ def load_draft(scope: dict[str, Any]) -> dict[str, Any]:
             "routeId": "",
             "modelId": "",
             "locks": {},
+            "recipeBindings": [],
             "updatedAt": "",
         }
     return {
@@ -232,6 +240,12 @@ def load_draft(scope: dict[str, Any]) -> dict[str, Any]:
         "routeId": row["route_id"],
         "modelId": row["model_id"],
         "locks": db.json_loads(row["locks_json"], {}),
+        "recipeBindings": db.json_loads(
+            row["recipe_bindings_json"]
+            if "recipe_bindings_json" in row.keys()
+            else "[]",
+            [],
+        ),
         "updatedAt": row["updated_at"],
     }
 

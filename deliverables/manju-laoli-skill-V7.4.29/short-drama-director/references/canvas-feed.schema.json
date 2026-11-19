@@ -218,6 +218,54 @@
             "type": "string",
             "minLength": 1
           },
+          "recipe": {
+            "type": "object",
+            "required": [
+              "id",
+              "version",
+              "sha256",
+              "role",
+              "segmentNo",
+              "slots"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "version": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "minLength": 64
+              },
+              "role": {
+                "enum": [
+                  "primary",
+                  "modifier"
+                ]
+              },
+              "segmentNo": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "slots": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "missingSlots": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": true
+          },
           "canvas": {
             "type": "object",
             "properties": {

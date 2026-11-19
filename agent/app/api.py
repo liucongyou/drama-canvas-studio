@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import backend_models, conversations, db, files, runtime, skills
+from app import backend_models, conversations, db, files, recipes, runtime, skills
 from app.config import get_settings
 from app.canvas_client import CanvasClient, CanvasError
 from app.config import AGENT_DIR
@@ -27,6 +27,7 @@ class RunCreate(BaseModel):
     locks: dict[str, Any] = Field(default_factory=dict)
     fileIds: list[str] = Field(default_factory=list)
     referenceNodeIds: list[str] = Field(default_factory=list)
+    recipeBindings: list[dict[str, Any]] = Field(default_factory=list)
     conversationId: str = ""
 
 
@@ -44,6 +45,7 @@ class DraftUpdate(BaseModel):
     routeId: str = ""
     modelId: str = ""
     locks: dict[str, Any] = Field(default_factory=dict)
+    recipeBindings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MessageCreate(BaseModel):
@@ -54,6 +56,7 @@ class MessageCreate(BaseModel):
     locks: dict[str, Any] = Field(default_factory=dict)
     fileIds: list[str] = Field(default_factory=list)
     referenceNodeIds: list[str] = Field(default_factory=list)
+    recipeBindings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ActivateRequest(BaseModel):
@@ -245,6 +248,7 @@ def append_message(
             body.locks,
             body.fileIds,
             body.referenceNodeIds,
+            body.recipeBindings,
             conversation_id,
             tenant_id,
             account_id,
@@ -298,6 +302,50 @@ def list_models(request: Request) -> dict[str, Any]:
         }]
     default_id = next((item["id"] for item in models if item.get("hasApiKey")), models[0]["id"] if models else "")
     return {"models": models, "defaultModelId": default_id}
+
+
+@router.get("/recipes")
+def list_recipes(
+    query: str = "",
+    category: str = "",
+    kind: str = "",
+    model: str = "",
+    cursor: int = 0,
+    limit: int = 20,
+) -> dict[str, Any]:
+    try:
+        return recipes.search(
+            query=query,
+            category=category,
+            kind=kind,
+            model=model,
+            cursor=cursor,
+            limit=limit,
+        )
+    except recipes.RecipeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "code": exc.code},
+        ) from exc
+
+
+@router.get("/recipes/{recipe_id}")
+def recipe_detail(recipe_id: str, version: str = "") -> dict[str, Any]:
+    item = recipes.get_recipe(recipe_id, version)
+    if not item:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "镜头配方不存在", "code": "RECIPE_NOT_FOUND"},
+        )
+    return {
+        "recipe": item,
+        "catalog": recipes.metadata(),
+        "execution": recipes.compile_execution_contract(
+            recipe_id,
+            version=version,
+            slots={},
+        ),
+    }
 
 
 @router.post("/files/upload")
@@ -415,6 +463,7 @@ def create_run(
                 body.locks,
                 body.fileIds,
                 body.referenceNodeIds,
+                body.recipeBindings,
                 body.conversationId,
                 context.tenant_id,
                 context.account_id,

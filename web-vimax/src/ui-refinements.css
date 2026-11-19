@@ -12376,3 +12376,198 @@ button.jim-dependency-prepare-item:disabled{
 .jim-prompt-scrollbar{
   right:-2px;
 }
+
+.canvas-media-recipe-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:3px;
+  min-width:0;
+  max-width:96px;
+  overflow:hidden;
+  color:var(--v-accent,#777cff);
+  font-size:8.5px;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+  opacity:.9;
+}
+.canvas-media-recipe-badge svg{flex:0 0 auto}
+
+/* Camera recipe binding inside the video prompt bar. */
+.jim-recipe-row{
+  position:relative;
+  display:flex;
+  align-items:center;
+  min-width:0;
+  margin:0 0 8px;
+}
+.canvas-recipe-control{
+  position:relative;
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  min-width:0;
+}
+.canvas-recipe-trigger,
+.canvas-recipe-readonly{
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  min-width:0;
+  max-width:360px;
+  height:26px;
+  padding:0 8px;
+  border:1px solid var(--v-border,#34343d);
+  border-radius:7px;
+  background:var(--v-surface-sunken,#202024);
+  color:var(--v-text-3,#9d9da6);
+  font-size:10.5px;
+  cursor:pointer;
+}
+.canvas-recipe-trigger:hover{
+  border-color:var(--v-accent-line,rgba(93,98,233,.55));
+  color:var(--v-text,#ececf2);
+}
+.canvas-recipe-trigger.has-recipe{
+  border-color:var(--v-accent-line,rgba(93,98,233,.55));
+  background:var(--v-accent-soft,rgba(93,98,233,.14));
+  color:var(--v-text,#ececf2);
+}
+.canvas-recipe-trigger span,.canvas-recipe-readonly span{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.canvas-recipe-trigger small,.canvas-recipe-readonly small{
+  flex:none;
+  color:var(--v-text-4,#777781);
+  font-size:9px;
+}
+.canvas-recipe-remove{
+  width:22px;
+  height:22px;
+  display:grid;
+  place-items:center;
+  border:0;
+  border-radius:5px;
+  background:transparent;
+  color:var(--v-text-4,#777781);
+  cursor:pointer;
+}
+.canvas-recipe-remove:hover{color:#ff4f7b;background:rgba(255,79,123,.1)}
+.canvas-recipe-popover{
+  position:absolute;
+  z-index:90;
+  left:0;
+  bottom:calc(100% + 8px);
+  width:min(560px,calc(100vw - 48px));
+  max-height:min(440px,60vh);
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  border:1px solid var(--v-border,#34343d);
+  border-radius:10px;
+  background:var(--v-surface,#202024);
+  box-shadow:0 24px 70px rgba(0,0,0,.45);
+}
+.canvas-recipe-search{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  padding:9px;
+  border-bottom:1px solid var(--v-divider,#2d2d34);
+  color:var(--v-text-4,#777781);
+}
+.canvas-recipe-search input{
+  flex:1;
+  min-width:0;
+  height:30px;
+  border:1px solid var(--v-border,#34343d);
+  border-radius:7px;
+  background:var(--v-surface-sunken,#19191d);
+  color:var(--v-text,#ececf2);
+  padding:0 8px;
+  outline:none;
+}
+.canvas-recipe-note{
+  padding:7px 10px;
+  border-bottom:1px solid var(--v-divider,#2d2d34);
+  color:var(--v-text-4,#777781);
+  font-size:9.5px;
+}
+.canvas-recipe-results{
+  min-height:0;
+  overflow:auto;
+  padding:5px;
+}
+.canvas-recipe-results button{
+  width:100%;
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+  border:0;
+  border-radius:7px;
+  background:transparent;
+  color:var(--v-text-2,#c9c9ce);
+  padding:8px;
+  text-align:left;
+  cursor:pointer;
+}
+.canvas-recipe-results button:hover{background:var(--v-surface-2,#292930);color:var(--v-text,#fff)}
+.canvas-recipe-results strong{font-size:11.5px}
+.canvas-recipe-results span{color:var(--v-text-4,#777781);font-size:9.5px}
+.canvas-recipe-results small{
+  display:-webkit-box;
+  -webkit-line-clamp:2;
+  -webkit-box-orient:vertical;
+  overflow:hidden;
+  color:var(--v-text-3,#9d9da6);
+  font-size:10px;
+  line-height:1.45;
+}
+.canvas-recipe-results p,.canvas-recipe-slots p{
+  margin:0;
+  padding:12px;
+  text-align:center;
+  color:var(--v-text-4,#777781);
+  font-size:10px;
+}
+.canvas-recipe-form{min-height:0;overflow:auto;padding:10px}
+.canvas-recipe-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.canvas-recipe-head>div{display:flex;flex-direction:column;gap:3px;min-width:0}
+.canvas-recipe-head strong{color:var(--v-text,#ececf2);font-size:12px}
+.canvas-recipe-head span{color:var(--v-text-4,#777781);font-size:9.5px}
+.canvas-recipe-head button,.canvas-recipe-actions button{
+  border:1px solid var(--v-border,#34343d);
+  border-radius:6px;
+  background:transparent;
+  color:var(--v-text-2,#c9c9ce);
+  padding:5px 8px;
+  font-size:10px;
+  cursor:pointer;
+}
+.canvas-recipe-form>p{margin:8px 0;color:var(--v-text-3,#9d9da6);font-size:10px;line-height:1.55}
+.canvas-recipe-slots{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.canvas-recipe-slots label{display:flex;flex-direction:column;gap:4px;min-width:0}
+.canvas-recipe-slots label span{color:var(--v-text-4,#777781);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.canvas-recipe-slots input{
+  min-width:0;
+  height:30px;
+  border:1px solid var(--v-border,#34343d);
+  border-radius:6px;
+  background:var(--v-surface-sunken,#19191d);
+  color:var(--v-text,#ececf2);
+  padding:0 7px;
+  outline:none;
+}
+.canvas-recipe-error{color:#ff8aa4;font-size:10px;line-height:1.45;margin-top:7px}
+.canvas-recipe-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:10px}
+.canvas-recipe-actions button.is-primary{
+  border-color:var(--v-accent-line,rgba(93,98,233,.55));
+  background:var(--v-accent-soft,rgba(93,98,233,.18));
+  color:var(--v-text,#fff);
+}
+.canvas-recipe-actions button:disabled{opacity:.45;cursor:default}
+@media(max-width:720px){
+  .canvas-recipe-popover{left:0;width:min(520px,calc(100vw - 24px))}
+  .canvas-recipe-slots{grid-template-columns:1fr}
+}

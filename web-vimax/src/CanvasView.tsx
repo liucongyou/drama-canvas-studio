@@ -5,6 +5,7 @@ import {newCanvasEntityId} from './canvasEntityId';
 import {memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode, type RefObject, type SyntheticEvent} from 'react';
 import * as ReactDOM from 'react-dom';
 import {createPortal} from 'react-dom';
+import {RecipeControl} from './canvas/RecipeControl';
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -3561,6 +3562,12 @@ const MediaNode = memo(function MediaNode({data, selected}: NodeProps<FlowNode<M
             本地
           </span>
         )}
+        {node.kind === 'video' && node.params?.recipe && (
+          <span className="canvas-media-recipe-badge" title={`镜头配方 ${node.params.recipe.id} v${node.params.recipe.version}`}>
+            <Wand2 size={9} />
+            {node.params.recipe.id}
+          </span>
+        )}
         {node.kind === 'video' && dependencyLabel && (
           <button
             type="button"
@@ -5983,6 +5990,25 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
             {uploading && <span className="jim-add-busy">上传中…</span>}
             {refNotice && <span className="jim-add-busy">{refNotice}</span>}
           </div>}
+          {isVid && (
+            <div className="jim-recipe-row">
+              <RecipeControl
+                recipe={p.recipe || null}
+                segmentNo={Number(
+                  p.segmentNo
+                  || String(node.title || '').match(/段\s*(\d+)/)?.[1]
+                  || 0
+                )}
+                readOnly={readOnly}
+                onChange={(nextRecipe) => onChange(node.id, {
+                  params: {
+                    ...p,
+                    recipe: nextRecipe || undefined,
+                  },
+                })}
+              />
+            </div>
+          )}
           {/* 即梦同款引导文案：告诉用户 @ 能干什么。
               ★ 现在直接写进输入框的 placeholder（见下方 textarea），不再单独占一行 ——
               单独一行会把提示词框往下压，长提示词一多弹窗就变成两屏（用户反馈）。 */}

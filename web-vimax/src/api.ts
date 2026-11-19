@@ -156,6 +156,16 @@ export type AgentEvent = {
       nodeId?: string;
     }>;
   };
+  recipePlan?: {
+    recipeId?: string;
+    version?: string;
+    sha256?: string;
+    role?: string;
+    slots?: Record<string, string>;
+    missingSlots?: string[];
+    promptSha256?: string;
+    trimmedAntiCopy?: boolean;
+  };
   [k: string]: unknown;
 };
 
@@ -400,6 +410,17 @@ export type CanvasMediaParams = {
   temperature?: number;
   // 文本节点生成的 system 提示（角色/世界观约束），留空用默认
   system?: string;
+  segmentNo?: number;
+  recipe?: {
+    id: string;
+    version: string;
+    sha256?: string;
+    role: 'primary' | 'modifier' | string;
+    segmentNo: number;
+    slots: Record<string, string>;
+    missingSlots?: string[];
+    matchReason?: string;
+  };
 };
 
 export type ModelParamSpec = {

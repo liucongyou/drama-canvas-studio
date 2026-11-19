@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 import canvas_store
+import recipe_contract
 import server
 import tenant_context
 
@@ -257,6 +258,123 @@ class ExplicitReferenceSubmissionTests(unittest.TestCase):
         generate.assert_not_called()
         self.assertEqual(sent[-1][0], 400)
         self.assertIn('@不存在的角色', sent[-1][1]['error'])
+
+    def test_video_recipe_is_compiled_before_provider_submission(self):
+        recipe = recipe_contract.get_recipe('handoff-ensemble-focus')
+        slots = {slot['key']: '已填写' for slot in recipe['slots']}
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project('recipe-submit')
+            video = {
+                'id': 'video-recipe',
+                'type': 'video',
+                'title': '段1 · 配方',
+                'metadata': {
+                    'status': 'generating',
+                    'prompt': '贾富贵走进画面。',
+                    'params': {
+                        'provider': 'mock',
+                        'model': 'doubao-seedance-2-0',
+                        'refs': [],
+                        'recipe': {
+                            'id': recipe['id'],
+                            'version': recipe['version'],
+                            'sha256': recipe['contentSha256'],
+                            'role': 'primary',
+                            'segmentNo': 1,
+                            'slots': slots,
+                        },
+                    },
+                },
+            }
+            canvas_store.insert_project_nodes(project_id, [video], episode_id='EP001')
+            stored = canvas_store.get_project(project_id)
+            project = {'id': project_id, 'payload': stored['payload']}
+            video = project['payload']['nodes'][0]
+            captured = {}
+
+            def fake_generate(*args, **kwargs):
+                captured['prompt'] = args[2]
+                return {
+                    'url': 'https://provider.example/recipe.mp4',
+                    'taskId': 'provider-recipe-task',
+                }
+
+            handler = object.__new__(server.Handler)
+            sent = []
+            handler._send = lambda status, payload: sent.append((status, payload)) or payload
+            provider = {'id': 'mock', 'api_key': 'test-key'}
+            model = {
+                'id': 'doubao-seedance-2-0',
+                'remoteModel': 'doubao-seedance-2-0',
+                'defaultParams': {},
+                'limits': {},
+            }
+            with (
+                patch.object(server.provider_catalog, 'resolve_model', return_value=(provider, model, {})),
+                patch.object(server, 'ensure_provider_auth'),
+                patch.object(server.provider_client, 'generate_video', side_effect=fake_generate),
+                patch.object(server, 'persist_generated_media', return_value='/uploads/recipe.mp4'),
+                patch.object(server, 'ensure_video_thumbnail', return_value=''),
+                patch.object(server, 'validate_generated_video', return_value={}),
+                patch.object(server, 'queue_generated_video_finalize'),
+                patch.object(server, 'commit_generation_terminal', return_value={'committed': True}),
+            ):
+                handler._generate_once(project_id, project, video)
+
+        self.assertIn('【镜头配方执行锁】', captured['prompt'])
+        self.assertIn('配方ID：handoff-ensemble-focus', captured['prompt'])
+        self.assertEqual(sent[-1][0], 200)
+
+    def test_missing_recipe_slots_prevent_provider_submission(self):
+        recipe = recipe_contract.get_recipe('handoff-ensemble-focus')
+        with tenant_context.use_context(self.context):
+            project_id = canvas_store.create_project('recipe-missing-slots')
+            video = {
+                'id': 'video-recipe-missing',
+                'type': 'video',
+                'title': '段1 · 配方缺槽',
+                'metadata': {
+                    'status': 'generating',
+                    'prompt': '贾富贵走进画面。',
+                    'params': {
+                        'provider': 'mock',
+                        'model': 'doubao-seedance-2-0',
+                        'refs': [],
+                        'recipe': {
+                            'id': recipe['id'],
+                            'version': recipe['version'],
+                            'sha256': recipe['contentSha256'],
+                            'role': 'primary',
+                            'segmentNo': 1,
+                            'slots': {},
+                        },
+                    },
+                },
+            }
+            canvas_store.insert_project_nodes(project_id, [video], episode_id='EP001')
+            stored = canvas_store.get_project(project_id)
+            project = {'id': project_id, 'payload': stored['payload']}
+            video = project['payload']['nodes'][0]
+            handler = object.__new__(server.Handler)
+            sent = []
+            handler._send = lambda status, payload: sent.append((status, payload)) or payload
+            provider = {'id': 'mock', 'api_key': 'test-key'}
+            model = {
+                'id': 'doubao-seedance-2-0',
+                'remoteModel': 'doubao-seedance-2-0',
+                'defaultParams': {},
+                'limits': {},
+            }
+            with (
+                patch.object(server.provider_catalog, 'resolve_model', return_value=(provider, model, {})),
+                patch.object(server, 'ensure_provider_auth'),
+                patch.object(server.provider_client, 'generate_video') as generate,
+            ):
+                handler._generate_once(project_id, project, video)
+
+        generate.assert_not_called()
+        self.assertEqual(sent[-1][0], 400)
+        self.assertIn('RECIPE_REQUIRED_SLOT_MISSING', sent[-1][1]['error'])
 
     def test_video_submission_reads_linked_background_asset_on_server(self):
         with tenant_context.use_context(self.context):
