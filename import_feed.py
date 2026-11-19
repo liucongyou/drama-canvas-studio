@@ -2917,6 +2917,17 @@ def _prompt_speaking_roles(prompt, role_names):
         #    （第01集段8 画外广播 VO 曾被误判出工人甲，即此坑）。
         if not re.search(r"\bOS\b|内心独白", line, re.IGNORECASE):
             continue
+        # An explicit dialogue label is authoritative. Do not continue scanning
+        # the visual description and accidentally add a character who is merely
+        # looked at or mentioned before the label.
+        explicit_speakers = {
+            role
+            for role in _dialog_speaker_names(line)
+            if role in known
+        }
+        if explicit_speakers:
+            speaking.update(explicit_speakers)
+            continue
         # ③ 推断时只看「画面段」找发声人——绝不允许把【声音：】之后的
         #    OS 台词正文纳入搜名范围。台词里提到别的角色名（如"我背陈大强…"）
         #    不代表那个角色在说话；旧实现切到「台词：」，把整段 OS 引号正文都搜了
@@ -3624,12 +3635,10 @@ def _ensure_referenced_assets(payload, episode_id=None, asset_sources=None, voic
                         "fromNodeId": source["id"],
                         "toNodeId": video.get("id"),
                     })
-            if kind == "角色":
+            if kind == "角色" and name in speaking:
                 voice = audio_by_role.get(name)
-                if voice is None and name in speaking:
-                    voice = add_audio(name, code, video)
                 if voice is None:
-                    continue
+                    voice = add_audio(name, code, video)
                 if voice not in added and not allowed_for_target(voice):
                     continue
                 used_ids.add(voice["id"])

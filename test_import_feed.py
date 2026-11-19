@@ -117,6 +117,99 @@ class ImportFeedContractTests(unittest.TestCase):
 
         self.assertEqual(speaking, {"赵铁柱"})
 
+    def test_os_with_explicit_speaker_ignores_other_visible_character(self):
+        prompt = (
+            "00:03.5-00:09.5 @角色｜程希（图1）看着"
+            "@角色｜虎子（图10）退开的地方。"
+            '台词：程希（os，气声）：“这小子是个实诚人。”'
+        )
+
+        speaking = import_feed._prompt_speaking_roles(
+            prompt,
+            {"程希", "虎子"},
+        )
+
+        self.assertEqual(speaking, {"程希"})
+
+    def test_existing_audio_for_non_speaking_character_is_not_attached(self):
+        voice_suffix = (
+            "short drama dubbing reference clip, 4.5 seconds clean voice, "
+            "no background noise."
+        )
+        feed = {
+            "title": "音色误挂回归 · 第04集",
+            "meta": {"画幅": "9:16", "模型版本": "Seedance 2.0"},
+            "asset_prompts": [
+                {
+                    "code": "图1",
+                    "name": "程希（角色立绘）",
+                    "raw": "一名 3 岁女童角色。",
+                },
+                {
+                    "code": "图10",
+                    "name": "虎子（角色立绘）",
+                    "raw": "一名 5 岁男童角色。",
+                },
+            ],
+            "voice_prompts": [
+                {
+                    "code": "图1",
+                    "name": "程希",
+                    "label": "child voice",
+                    "prompt": f"A female aged 3, speaking standard Mandarin, {voice_suffix}",
+                },
+                {
+                    "code": "图10",
+                    "name": "虎子",
+                    "label": "boy voice",
+                    "prompt": f"A male aged 5, speaking standard Mandarin, {voice_suffix}",
+                },
+            ],
+            "segments": [{
+                "no": 9,
+                "name": "段9 · 实诚人",
+                "raw": (
+                    "【核心人物】@角色｜虎子（图10）；@角色｜程希（图1）\n"
+                    "【音色引用】@音频｜程希（图1）\n"
+                    "00:03.5-00:09.5 @角色｜程希（图1）看着"
+                    "@角色｜虎子（图10）退开的地方。"
+                    '台词：程希（os，气声）：“这小子是个实诚人。”'
+                ),
+            }],
+        }
+
+        payload = import_feed.build_payload(feed)
+        video = next(node for node in payload["nodes"] if node.get("type") == "video")
+        params = video["metadata"]["params"]
+
+        self.assertEqual(
+            [ref["label"] for ref in params.get("voiceRefs") or []],
+            ["音频｜程希（图1）"],
+        )
+        audio_sources = {
+            connection["fromNodeId"]
+            for connection in payload["connections"]
+            if connection.get("toNodeId") == video["id"]
+            and next(
+                (
+                    node for node in payload["nodes"]
+                    if node.get("id") == connection.get("fromNodeId")
+                    and node.get("type") == "audio"
+                ),
+                None,
+            )
+        }
+        self.assertEqual(
+            audio_sources,
+            {
+                next(
+                    ref["nodeId"]
+                    for ref in params["voiceRefs"]
+                    if ref.get("label") == "音频｜程希（图1）"
+                )
+            },
+        )
+
     def test_bracketed_dialog_generates_character_audio(self):
         feed = {
             "title": "括号台词测试 · 第01集",
