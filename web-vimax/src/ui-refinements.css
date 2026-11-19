@@ -12454,13 +12454,21 @@ button.jim-dependency-prepare-item:disabled{
   cursor:pointer;
 }
 .canvas-recipe-remove:hover{color:#ff4f7b;background:rgba(255,79,123,.1)}
+.canvas-recipe-overlay{
+  position:fixed;
+  inset:0;
+  z-index:10020;
+  display:grid;
+  place-items:center;
+  padding:24px;
+  background:rgba(0,0,0,.58);
+  backdrop-filter:blur(3px);
+}
 .canvas-recipe-popover{
-  position:absolute;
-  z-index:90;
-  left:0;
-  bottom:calc(100% + 8px);
-  width:min(560px,calc(100vw - 48px));
-  max-height:min(440px,60vh);
+  position:relative;
+  z-index:1;
+  width:min(720px,calc(100vw - 32px));
+  max-height:min(760px,calc(100vh - 48px));
   display:flex;
   flex-direction:column;
   overflow:hidden;
@@ -12487,6 +12495,24 @@ button.jim-dependency-prepare-item:disabled{
   color:var(--v-text,#ececf2);
   padding:0 8px;
   outline:none;
+}
+.canvas-recipe-close{
+  width:26px;
+  height:26px;
+  flex:0 0 auto;
+  display:grid;
+  place-items:center;
+  border:0;
+  border-radius:6px;
+  background:transparent;
+  color:var(--v-text-4,#777781);
+  cursor:pointer;
+}
+.canvas-recipe-close:hover{color:var(--v-text,#fff);background:var(--v-surface-2,#292930)}
+.jim-pop-tpl .jim-tpl-recipe{
+  margin-top:4px;
+  border-top:1px solid var(--v-divider,#2d2d34);
+  padding-top:9px;
 }
 .canvas-recipe-note{
   padding:7px 10px;
@@ -12568,6 +12594,7 @@ button.jim-dependency-prepare-item:disabled{
 }
 .canvas-recipe-actions button:disabled{opacity:.45;cursor:default}
 @media(max-width:720px){
-  .canvas-recipe-popover{left:0;width:min(520px,calc(100vw - 24px))}
+  .canvas-recipe-overlay{padding:12px}
+  .canvas-recipe-popover{width:calc(100vw - 24px);max-height:calc(100vh - 24px)}
   .canvas-recipe-slots{grid-template-columns:1fr}
 }

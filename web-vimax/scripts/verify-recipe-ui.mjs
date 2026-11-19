@@ -84,6 +84,12 @@ try {
   await videoHandle.click();
   await page.screenshot({path: screenshot.replace(/\.png$/i, '-node.png'), fullPage: false});
   await page.waitForSelector('.jim-recipe-row', {timeout: 20_000});
+  await page.click('[data-pop-owner="tpl"]');
+  await page.waitForSelector('.jim-tpl-recipe', {timeout: 20_000});
+  await page.click('.jim-tpl-recipe');
+  await page.waitForSelector('.canvas-recipe-overlay .canvas-recipe-popover', {timeout: 20_000});
+  await page.click('.canvas-recipe-close');
+  await page.waitForSelector('.canvas-recipe-overlay', {hidden: true, timeout: 20_000});
   const nodeRecipe = await page.$eval('.canvas-recipe-trigger', (node) => node.textContent || '');
   const layout = await page.evaluate(() => {
     const picker = document.querySelector('.canvas-recipe-trigger');

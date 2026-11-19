@@ -1,7 +1,7 @@
 # AICG3D Recipe System Release
 
 Date: 2026-11-19
-Status: Local implementation, verification and browser acceptance complete
+Status: Deployed and verified online
 
 ## Delivered
 
@@ -17,6 +17,10 @@ Status: Local implementation, verification and browser acceptance complete
   segment number, role, slots and match reason.
 - Added Agent composer recipe search, selection chip and runtime binding.
 - Added video-node recipe controls, slot editing, badge display and removal.
+- Kept the existing camera-template button as the single entry point: normal
+  camera templates and AICG3D recipes now share one menu.
+- Recipe selection uses a centered, viewport-bounded dialog so long slot forms
+  cannot be clipped by the node editor or mobile viewport.
 - Added read-only recipe display for shared projects.
 - Added optional `segment.recipe` in `drama-canvas-feed/v2`.
 - Re-import now preserves an existing recipe when the new JSON omits it and
@@ -104,3 +108,25 @@ sub-150ms P95 target.
 - All provider verification used mocks or unit-level request capture.
 - Production deployment must remain a single window after commit and bundle
   validation.
+
+## Production Release
+
+- Release commit: `5eb6920695266d934f8c6dc56ff67d96f4889173`
+- Backup:
+  `/www/wwwroot/yj.pduoduo.vip/app/backups/aicg3d-recipe-5eb6920695266d934f8c6dc56ff67d96f4889173-20261119-101129`
+- Services active:
+  - `drama-canvas-yj.service`
+  - `drama-canvas-agent.service`
+  - `drama-canvas-worker.service`
+- `/readyz`: database, migrations, media delivery and worker fleet all healthy;
+  `activeTasks: 0`.
+- Online authenticated API:
+  - recipe catalog: 295;
+  - query `群演聚焦接力` returns `handoff-ensemble-focus`;
+  - active skill: `7.4.36`;
+  - skill entry contains the AICG3D recipe contract.
+- Online browser acceptance selected the recipe in the Agent composer without
+  submitting any generation request.
+- The first release attempt was automatically rolled back by a release-marker
+  assertion before completion. The marker and skill-directory ownership were
+  corrected, then the deployment reran successfully.

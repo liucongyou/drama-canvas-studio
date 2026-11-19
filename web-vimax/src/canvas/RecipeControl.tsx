@@ -1,10 +1,12 @@
 import {Search, Wand2, X} from 'lucide-react';
 import {useEffect, useState} from 'react';
+import {createPortal} from 'react-dom';
 
 import {agentApi, type AgentRecipe, type AgentRecipeBinding} from '../agent/agentApi';
 import {recipeFromDetail} from '../agent/agentRecipes';
 
 type RecipeControlProps = {
+  nodeId: string;
   recipe: AgentRecipeBinding | null;
   segmentNo: number;
   readOnly?: boolean;
@@ -20,6 +22,7 @@ export function recipeBindingReady(
 }
 
 export function RecipeControl({
+  nodeId,
   recipe,
   segmentNo,
   readOnly = false,
@@ -82,6 +85,27 @@ export function RecipeControl({
       });
   }, [recipe?.id, recipe?.version]);
 
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open]);
+
+  useEffect(() => {
+    const onOpenRecipe = (event: Event) => {
+      const detail = (event as CustomEvent<{nodeId?: string}>).detail || {};
+      if (detail.nodeId !== nodeId) return;
+      setQuery('');
+      setError('');
+      setOpen(true);
+    };
+    window.addEventListener('canvas-recipe-open', onOpenRecipe);
+    return () => window.removeEventListener('canvas-recipe-open', onOpenRecipe);
+  }, [nodeId]);
+
   const openPicker = () => {
     setOpen((current) => !current);
     setQuery('');
@@ -126,66 +150,81 @@ export function RecipeControl({
     );
   }
 
+  if (!recipe && !open) return null;
+
   return (
     <div className="canvas-recipe-control">
-      <button type="button" className={'canvas-recipe-trigger' + (recipe ? ' has-recipe' : '')} onClick={openPicker}>
-        <Wand2 size={12} />
-        <span>{recipe ? displayName : '添加镜头配方'}</span>
-        {recipe?.version ? <small>v{recipe.version}</small> : null}
-      </button>
+      {recipe && (
+        <button type="button" className="canvas-recipe-trigger has-recipe" onClick={openPicker}>
+          <Wand2 size={12} />
+          <span>{displayName}</span>
+          {recipe.version ? <small>v{recipe.version}</small> : null}
+        </button>
+      )}
       {recipe && (
         <button type="button" className="canvas-recipe-remove" title="移除镜头配方" onClick={() => onChange(null)}>
           <X size={11} />
         </button>
       )}
-      {open && (
-        <div className="canvas-recipe-popover">
-          <div className="canvas-recipe-search">
-            <Search size={13} />
-            <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索动作、镜头、群像或综合机制" />
-          </div>
-          <div className="canvas-recipe-note">配方只约束镜头机制；正文 @ 仍是角色和图片引用的唯一权威。</div>
-          {!selected ? (
-            <div className="canvas-recipe-results">
-              {results.map((item) => (
-                <button key={item.id} type="button" onClick={() => choose(item)}>
-                  <strong>{item.title}</strong>
-                  <span>{item.category} · {item.requiredSlots.length} 个槽位</span>
-                  <small>{item.description}</small>
-                </button>
-              ))}
-              {loading && <p>正在检索配方…</p>}
-              {!loading && results.length === 0 && <p>没有匹配的镜头配方</p>}
+      {open && createPortal((
+        <div
+          className="canvas-recipe-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setOpen(false);
+          }}
+        >
+          <div className="canvas-recipe-popover" role="dialog" aria-modal="true" aria-label="选择镜头配方">
+            <div className="canvas-recipe-search">
+              <Search size={13} />
+              <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索动作、镜头、群像或综合机制" />
+              <button type="button" className="canvas-recipe-close" title="关闭" aria-label="关闭" onClick={() => setOpen(false)}>
+                <X size={13} />
+              </button>
             </div>
-          ) : (
-            <div className="canvas-recipe-form">
-              <div className="canvas-recipe-head">
-                <div>
-                  <strong>{selected.title}</strong>
-                  <span>{selected.category} · v{selected.version}</span>
-                </div>
-                <button type="button" onClick={() => setSelected(null)}>返回</button>
-              </div>
-              <p>{selected.description}</p>
-              <div className="canvas-recipe-slots">
-                {selected.requiredSlots.map((key) => (
-                  <label key={key}>
-                    <span>{key}</span>
-                    <input value={slots[key] || ''} onChange={(event) => setSlots((current) => ({...current, [key]: event.target.value}))} placeholder="填写本段实际内容" />
-                  </label>
+            <div className="canvas-recipe-note">配方只约束镜头机制；正文 @ 仍是角色和图片引用的唯一权威。</div>
+            {!selected ? (
+              <div className="canvas-recipe-results">
+                {results.map((item) => (
+                  <button key={item.id} type="button" onClick={() => choose(item)}>
+                    <strong>{item.title}</strong>
+                    <span>{item.category} · {item.requiredSlots.length} 个槽位</span>
+                    <small>{item.description}</small>
+                  </button>
                 ))}
-                {selected.requiredSlots.length === 0 && <p>这个配方没有额外变量槽。</p>}
+                {loading && <p>正在检索配方…</p>}
+                {!loading && results.length === 0 && <p>没有匹配的镜头配方</p>}
               </div>
-              {error && <div className="canvas-recipe-error">{error}</div>}
-              <div className="canvas-recipe-actions">
-                <button type="button" className="is-primary" disabled={!recipeBindingReady({...recipe, id: selected.id, version: selected.version, sha256: selected.contentSha256, role: 'primary', segmentNo, slots, missingSlots: selected.requiredSlots}, slots)} onClick={apply}>应用配方</button>
-                <button type="button" onClick={() => setOpen(false)}>取消</button>
+            ) : (
+              <div className="canvas-recipe-form">
+                <div className="canvas-recipe-head">
+                  <div>
+                    <strong>{selected.title}</strong>
+                    <span>{selected.category} · v{selected.version}</span>
+                  </div>
+                  <button type="button" onClick={() => setSelected(null)}>返回</button>
+                </div>
+                <p>{selected.description}</p>
+                <div className="canvas-recipe-slots">
+                  {selected.requiredSlots.map((key) => (
+                    <label key={key}>
+                      <span>{key}</span>
+                      <input value={slots[key] || ''} onChange={(event) => setSlots((current) => ({...current, [key]: event.target.value}))} placeholder="填写本段实际内容" />
+                    </label>
+                  ))}
+                  {selected.requiredSlots.length === 0 && <p>这个配方没有额外变量槽。</p>}
+                </div>
+                {error && <div className="canvas-recipe-error">{error}</div>}
+                <div className="canvas-recipe-actions">
+                  <button type="button" className="is-primary" disabled={!recipeBindingReady({...recipe, id: selected.id, version: selected.version, sha256: selected.contentSha256, role: 'primary', segmentNo, slots, missingSlots: selected.requiredSlots}, slots)} onClick={apply}>应用配方</button>
+                  <button type="button" onClick={() => setOpen(false)}>取消</button>
+                </div>
               </div>
-            </div>
-          )}
-          {error && !selected && <div className="canvas-recipe-error">{error}</div>}
+            )}
+            {error && !selected && <div className="canvas-recipe-error">{error}</div>}
+          </div>
         </div>
-      )}
+      ), document.body)}
     </div>
   );
 }

@@ -5990,9 +5990,10 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
             {uploading && <span className="jim-add-busy">上传中…</span>}
             {refNotice && <span className="jim-add-busy">{refNotice}</span>}
           </div>}
-          {isVid && (
+          {isVid && p.recipe && (
             <div className="jim-recipe-row">
               <RecipeControl
+                nodeId={node.id}
                 recipe={p.recipe || null}
                 segmentNo={Number(
                   p.segmentNo
@@ -6363,9 +6364,9 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
         {/* 工具栏：＋ @ 风格 ｜ 模型 比例 清晰度/分辨率/时长 ｜ ✂ 费用 ↑ */}
         {!readOnly && <div className="jim-toolbar">
           <div className="jim-toolbar-left">
-            {templates.length > 0 && (
+            {(templates.length > 0 || isVid) && (
               <div className="jim-tpl-wrap">
-                <button type="button" className={`jim-tool ${openMenu === 'tpl' ? 'is-open' : ''}`} data-pop-owner="tpl" onClick={() => toggle('tpl')} title="快捷模板"><Plus size={13} strokeWidth={2.3} aria-hidden="true" /></button>
+                <button type="button" className={`jim-tool ${openMenu === 'tpl' ? 'is-open' : ''}`} data-pop-owner="tpl" onClick={() => toggle('tpl')} title={isVid ? '镜头模板与 AICG3D 配方' : '快捷模板'}><Plus size={13} strokeWidth={2.3} aria-hidden="true" /></button>
                 {openMenu === 'tpl' && (
                   <div className="jim-pop jim-pop-tpl">
                     {templates.map((t) => (
@@ -6374,6 +6375,21 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                         <span>{t.text.replace(/^，/, '').slice(0, 26)}…</span>
                       </button>
                     ))}
+                    {isVid && (
+                      <button
+                        type="button"
+                        className="jim-tpl-recipe"
+                        onClick={() => {
+                          setOpenMenu(null);
+                          window.dispatchEvent(new CustomEvent('canvas-recipe-open', {
+                            detail: {nodeId: node.id},
+                          }));
+                        }}
+                      >
+                        <strong>AICG3D 镜头配方</strong>
+                        <span>按动作、群像、调度和镜头机制选择配方</span>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
