@@ -78,6 +78,18 @@ try {
   if (!guide.includes('简单对白') || !guide.includes('可以不选')) {
     throw new Error(`recipe selection guide missing: ${guide}`);
   }
+  const categoryOverflow = await page.$eval('.canvas-recipe-categories', (node) => {
+    const style = getComputedStyle(node);
+    return {
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight,
+      overflowY: style.overflowY,
+    };
+  });
+  if (categoryOverflow.scrollHeight > categoryOverflow.clientHeight + 1
+      || ['auto', 'scroll'].includes(categoryOverflow.overflowY)) {
+    throw new Error(`recipe category strip is vertically scrollable: ${JSON.stringify(categoryOverflow)}`);
+  }
   const categoryButtons = await page.$$('.canvas-recipe-categories button');
   let actionCategory = null;
   for (const button of categoryButtons) {
@@ -96,9 +108,11 @@ try {
       && !(results.textContent || '').includes('正在检索配方'),
     );
   }, {timeout: 20_000});
-  const firstRecipe = await page.$('.canvas-recipe-results button');
-  if (!firstRecipe) throw new Error('categorized recipe result was not found');
-  await firstRecipe.click();
+  await page.evaluate(() => {
+    const button = document.querySelector('.canvas-recipe-results button');
+    if (!button) throw new Error('categorized recipe result was not found');
+    button.click();
+  });
   await page.waitForSelector('.canvas-recipe-form .canvas-recipe-slots input', {timeout: 20_000});
   const form = await page.evaluate(() => {
     const labels = Array.from(document.querySelectorAll('.canvas-recipe-slots label > span'))
@@ -135,7 +149,7 @@ try {
   }
   const formScreenshot = screenshot.replace(/\.png$/i, '-form.png');
   await page.screenshot({path: formScreenshot, fullPage: false});
-  console.log(JSON.stringify({rect, screenshot, formScreenshot, form, overflow}, null, 2));
+  console.log(JSON.stringify({rect, screenshot, formScreenshot, form, categoryOverflow, overflow}, null, 2));
 } finally {
   await browser.close();
 }

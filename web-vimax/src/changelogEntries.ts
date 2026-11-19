@@ -3,6 +3,16 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.19.05',
+    date: '2026-11-19',
+    title: '镜头配方分类标签取消滚动',
+    releasedAt: '2026-11-19 11:24:00 +08:00',
+    changes: [
+      '镜头配方分类标签改为自动换行，不再出现上下拖动或横向滚动的标签容器。',
+      '配方结果列表继续独立滚动，分类标签始终完整固定在上方。',
+    ],
+  },
+  {
     version: '2026.11.19.04',
     date: '2026-11-19',
     title: '镜头配方选择与填写引导',

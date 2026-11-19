@@ -12532,8 +12532,9 @@ button.jim-dependency-prepare-item:disabled{
 .canvas-recipe-guide strong{color:var(--v-text-2,#c9c9ce)}
 .canvas-recipe-categories{
   display:flex;
+  flex-wrap:wrap;
   gap:5px;
-  overflow-x:auto;
+  overflow:visible;
   padding:7px 9px;
   border-bottom:1px solid var(--v-divider,#2d2d34);
 }
