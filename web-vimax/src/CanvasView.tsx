@@ -5990,8 +5990,8 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
             {uploading && <span className="jim-add-busy">上传中…</span>}
             {refNotice && <span className="jim-add-busy">{refNotice}</span>}
           </div>}
-          {isVid && p.recipe && (
-            <div className="jim-recipe-row">
+          {isVid && (
+            <div className={'jim-recipe-row' + (p.recipe ? '' : ' is-empty')}>
               <RecipeControl
                 nodeId={node.id}
                 recipe={p.recipe || null}

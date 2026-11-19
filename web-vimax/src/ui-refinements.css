@@ -12400,6 +12400,7 @@ button.jim-dependency-prepare-item:disabled{
   min-width:0;
   margin:0 0 8px;
 }
+.jim-recipe-row.is-empty{display:none;margin:0}
 .canvas-recipe-control{
   position:relative;
   display:inline-flex;
