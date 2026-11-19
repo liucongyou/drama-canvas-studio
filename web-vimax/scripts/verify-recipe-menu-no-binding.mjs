@@ -5,6 +5,8 @@ const token = process.env.CANVAS_SESSION_TOKEN || '';
 const projectId = process.env.CANVAS_PROJECT_ID || '';
 const episode = process.env.CANVAS_EPISODE || 'EP001';
 const screenshot = process.env.CANVAS_SCREENSHOT || 'artifacts/recipe-menu-no-binding.png';
+const viewportWidth = Number(process.env.CANVAS_VIEWPORT_WIDTH || 1440);
+const viewportHeight = Number(process.env.CANVAS_VIEWPORT_HEIGHT || 960);
 if (!token || !projectId) throw new Error('session token and project id are required');
 
 const browser = await puppeteer.launch({
@@ -14,7 +16,7 @@ const browser = await puppeteer.launch({
 });
 try {
   const page = await browser.newPage();
-  await page.setViewport({width: 1440, height: 960, deviceScaleFactor: 1});
+  await page.setViewport({width: viewportWidth, height: viewportHeight, deviceScaleFactor: 1});
   await page.setCookie({
     name: 'canvas_session',
     value: token,
@@ -52,7 +54,59 @@ try {
   });
   await page.screenshot({path: screenshot, fullPage: false});
   if (!visible) throw new Error('recipe dialog did not become visible');
-  console.log(JSON.stringify({rect, screenshot}, null, 2));
+  const guide = await page.$eval('.canvas-recipe-guide', (node) => node.textContent || '');
+  if (!guide.includes('简单对白') || !guide.includes('可以不选')) {
+    throw new Error(`recipe selection guide missing: ${guide}`);
+  }
+  const categoryButtons = await page.$$('.canvas-recipe-categories button');
+  let actionCategory = null;
+  for (const button of categoryButtons) {
+    if ((await button.evaluate((node) => node.textContent || '')).trim() === '动作打斗') {
+      actionCategory = button;
+      break;
+    }
+  }
+  if (!actionCategory) throw new Error('action category button was not found');
+  await actionCategory.click();
+  await page.waitForSelector('.canvas-recipe-results button', {timeout: 20_000});
+  await page.click('.canvas-recipe-results button');
+  await page.waitForSelector('.canvas-recipe-form .canvas-recipe-slots input', {timeout: 20_000});
+  const form = await page.evaluate(() => {
+    const labels = Array.from(document.querySelectorAll('.canvas-recipe-slots label > span'))
+      .map((node) => (node.textContent || '').trim());
+    const hints = Array.from(document.querySelectorAll('.canvas-recipe-slots label > small'))
+      .map((node) => (node.textContent || '').trim());
+    const values = Array.from(document.querySelectorAll('.canvas-recipe-slots input'))
+      .map((node) => node.value.trim());
+    return {
+      labels,
+      hints,
+      values,
+      description: document.querySelector('.canvas-recipe-form > p')?.textContent || '',
+    };
+  });
+  if (form.labels.some((value) => /[a-z]/i.test(value))) {
+    throw new Error(`English slot labels remain: ${form.labels.join(' | ')}`);
+  }
+  if (form.hints.some((value) => !value)) {
+    throw new Error('recipe slot help is incomplete');
+  }
+  if (!form.values.length || form.values.some((value) => !value)) {
+    throw new Error(`recipe auto-fill left empty inputs: ${form.values.join(' | ')}`);
+  }
+  if (!/[\u4e00-\u9fff]/.test(form.description) || form.description.includes('Create original')) {
+    throw new Error(`recipe description was not localized: ${form.description}`);
+  }
+  const overflow = await page.$eval('.canvas-recipe-popover', (node) => ({
+    clientWidth: node.clientWidth,
+    scrollWidth: node.scrollWidth,
+  }));
+  if (overflow.scrollWidth > overflow.clientWidth + 1) {
+    throw new Error(`recipe popover overflows horizontally: ${JSON.stringify(overflow)}`);
+  }
+  const formScreenshot = screenshot.replace(/\.png$/i, '-form.png');
+  await page.screenshot({path: formScreenshot, fullPage: false});
+  console.log(JSON.stringify({rect, screenshot, formScreenshot, form, overflow}, null, 2));
 } finally {
   await browser.close();
 }

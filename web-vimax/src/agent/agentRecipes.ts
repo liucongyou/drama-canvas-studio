@@ -26,6 +26,7 @@ export function recipeFromDetail(
     category: String(detail.category || ''),
     title: String(detail.title || id),
     description: String(detail.description || ''),
+    summary: String(detail.summary || ''),
     models: Array.isArray(detail.models) ? detail.models.map(String) : [],
     requiredSlots: slots
       .map((slot) => String((slot as Record<string, unknown>).key || ''))

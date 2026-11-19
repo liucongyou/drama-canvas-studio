@@ -22,6 +22,7 @@ export type AgentRecipe = {
   category: string;
   title: string;
   description: string;
+  summary?: string;
   models: string[];
   requiredSlots: string[];
   contentSha256: string;

@@ -6000,6 +6000,7 @@ function MediaNodeModal({node, assets, edges, catalog, readOnly = false, onChang
                   || String(node.title || '').match(/段\s*(\d+)/)?.[1]
                   || 0
                 )}
+                prompt={promptDraft}
                 readOnly={readOnly}
                 onChange={(nextRecipe) => onChange(node.id, {
                   params: {

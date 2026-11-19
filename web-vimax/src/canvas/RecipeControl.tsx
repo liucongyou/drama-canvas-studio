@@ -4,11 +4,20 @@ import {createPortal} from 'react-dom';
 
 import {agentApi, type AgentRecipe, type AgentRecipeBinding} from '../agent/agentApi';
 import {recipeFromDetail} from '../agent/agentRecipes';
+import {
+  autoFillRecipeSlots,
+  RECIPE_CATEGORIES,
+  recipeCategoryLabel,
+  recipeDisplayDescription,
+  recipeSlotHint,
+  recipeSlotLabel,
+} from './recipePresentation';
 
 type RecipeControlProps = {
   nodeId: string;
   recipe: AgentRecipeBinding | null;
   segmentNo: number;
+  prompt: string;
   readOnly?: boolean;
   onChange: (recipe: AgentRecipeBinding | null) => void;
 };
@@ -25,11 +34,13 @@ export function RecipeControl({
   nodeId,
   recipe,
   segmentNo,
+  prompt,
   readOnly = false,
   onChange,
 }: RecipeControlProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('');
   const [results, setResults] = useState<AgentRecipe[]>([]);
   const [selected, setSelected] = useState<AgentRecipe | null>(null);
   const [slots, setSlots] = useState<Record<string, string>>({});
@@ -39,10 +50,11 @@ export function RecipeControl({
   useEffect(() => {
     if (!open) return;
     let alive = true;
+    setLoading(true);
+    setError('');
+    setResults([]);
     const timer = window.setTimeout(() => {
-      setLoading(true);
-      setError('');
-      void agentApi.recipes({query, kind: 'creative', limit: 20})
+      void agentApi.recipes({query, category, kind: 'creative', limit: 20})
         .then((data) => {
           if (alive) setResults(data.recipes || []);
         })
@@ -57,7 +69,7 @@ export function RecipeControl({
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [open, query]);
+  }, [open, query, category]);
 
   useEffect(() => {
     if (!recipe) {
@@ -99,6 +111,7 @@ export function RecipeControl({
       const detail = (event as CustomEvent<{nodeId?: string}>).detail || {};
       if (detail.nodeId !== nodeId) return;
       setQuery('');
+      setCategory('');
       setError('');
       setOpen(true);
     };
@@ -109,20 +122,35 @@ export function RecipeControl({
   const openPicker = () => {
     setOpen((current) => !current);
     setQuery('');
+    setCategory('');
     setError('');
   };
 
   const choose = (item: AgentRecipe) => {
     setSelected(item);
-    setSlots({});
+    setSlots(autoFillRecipeSlots(item.requiredSlots, prompt));
     setError('');
+    void agentApi.recipe(item.id, item.version)
+      .then((data) => {
+        const detail = recipeFromDetail(data.recipe, {
+          id: item.id,
+          version: item.version,
+          sha256: item.contentSha256,
+        });
+        if (detail) {
+          setSelected((current) => current?.id === item.id ? detail : current);
+        }
+      })
+      .catch(() => {
+        // The compact search result is sufficient when the detail request fails.
+      });
   };
 
   const apply = () => {
     if (!selected) return;
     const missing = selected.requiredSlots.filter((key) => !slots[key]?.trim());
     if (missing.length) {
-      setError('请先填写：' + missing.join('、'));
+      setError('请先填写：' + missing.map(recipeSlotLabel).join('、'));
       return;
     }
     onChange({
@@ -183,36 +211,62 @@ export function RecipeControl({
               </button>
             </div>
             <div className="canvas-recipe-note">配方只约束镜头机制；正文 @ 仍是角色和图片引用的唯一权威。</div>
+            <div className="canvas-recipe-guide">
+              <strong>怎么选：</strong>
+              简单对白、单人静态画面可以不选。动作、追逐、群像、产品、转场或复杂运镜，先点下面的画面类型。
+            </div>
             {!selected ? (
-              <div className="canvas-recipe-results">
-                {results.map((item) => (
-                  <button key={item.id} type="button" onClick={() => choose(item)}>
-                    <strong>{item.title}</strong>
-                    <span>{item.category} · {item.requiredSlots.length} 个槽位</span>
-                    <small>{item.description}</small>
-                  </button>
-                ))}
-                {loading && <p>正在检索配方…</p>}
-                {!loading && results.length === 0 && <p>没有匹配的镜头配方</p>}
-              </div>
+              <>
+                <div className="canvas-recipe-categories" aria-label="镜头配方分类">
+                  <button type="button" className={!category ? 'is-active' : ''} onClick={() => setCategory('')}>全部</button>
+                  {RECIPE_CATEGORIES.map((item) => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      className={category === item.value ? 'is-active' : ''}
+                      onClick={() => setCategory(item.value)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="canvas-recipe-results">
+                  {results.map((item) => (
+                    <button key={item.id} type="button" onClick={() => choose(item)}>
+                      <strong>{item.title}</strong>
+                      <span>{recipeCategoryLabel(item.category)} · {item.requiredSlots.length} 项参数</span>
+                      <small>{recipeDisplayDescription(item)}</small>
+                    </button>
+                  ))}
+                  {loading && <p>正在检索配方…</p>}
+                  {!loading && results.length === 0 && <p>没有匹配的镜头配方</p>}
+                </div>
+              </>
             ) : (
               <div className="canvas-recipe-form">
                 <div className="canvas-recipe-head">
                   <div>
                     <strong>{selected.title}</strong>
-                    <span>{selected.category} · v{selected.version}</span>
+                    <span>{recipeCategoryLabel(selected.category)} · v{selected.version}</span>
                   </div>
-                  <button type="button" onClick={() => setSelected(null)}>返回</button>
+                  <div className="canvas-recipe-head-actions">
+                    <button type="button" onClick={() => setSlots(autoFillRecipeSlots(selected.requiredSlots, prompt))}>自动填写</button>
+                    <button type="button" onClick={() => setSelected(null)}>返回</button>
+                  </div>
                 </div>
-                <p>{selected.description}</p>
+                <p>{recipeDisplayDescription(selected)}</p>
+                <div className="canvas-recipe-fill-help">
+                  已按当前提示词填入可编辑草稿。只需核对人物、场景和动作结果，不需要填写技术术语。
+                </div>
                 <div className="canvas-recipe-slots">
                   {selected.requiredSlots.map((key) => (
                     <label key={key}>
-                      <span>{key}</span>
+                      <span>{recipeSlotLabel(key)}</span>
                       <input value={slots[key] || ''} onChange={(event) => setSlots((current) => ({...current, [key]: event.target.value}))} placeholder="填写本段实际内容" />
+                      <small>{recipeSlotHint(key)}</small>
                     </label>
                   ))}
-                  {selected.requiredSlots.length === 0 && <p>这个配方没有额外变量槽。</p>}
+                  {selected.requiredSlots.length === 0 && <p>这个配方没有额外参数。</p>}
                 </div>
                 {error && <div className="canvas-recipe-error">{error}</div>}
                 <div className="canvas-recipe-actions">
