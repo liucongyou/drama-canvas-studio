@@ -1,7 +1,7 @@
 # Voice Reference Import Fix
 
 Date: 2026-11-19
-Status: Ready for production deployment
+Status: Deployed and verified online
 
 ## Reported Failure
 
@@ -60,3 +60,20 @@ segment. The final import contract correctly rejected the inconsistent
   - Segment 9 audio edges: Cheng Xi only.
 
 No paid image, audio or video generation was submitted.
+
+## Production
+
+- Release commit: `70c7896`
+- Backup:
+  `/www/wwwroot/yj.pduoduo.vip/app/backups/voice-ref-import-fix-70c7896-20261119-150053`
+- `/readyz`: healthy, `activeTasks: 0`.
+- `drama-canvas-yj.service`, `drama-canvas-agent.service` and
+  `drama-canvas-worker.service` are active.
+- Online read-only import preview after deployment:
+  - HTTP 200;
+  - `dryRun: true`;
+  - `episodeId: EP004`;
+  - no errors;
+  - no warnings;
+  - 16 assets reused;
+  - `VOICE_REF_MISMATCH` no longer reproduced.
