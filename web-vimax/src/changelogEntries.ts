@@ -3,6 +3,17 @@ import type {ChangelogEntry} from './changelog';
 /** 发布记录本身较大（55KB 文本），只在打开发更日志时加载。 */
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2026.11.23.01',
+    date: '2026-11-23',
+    title: 'Agent 历史任务白屏修复',
+    releasedAt: '2026-11-23 15:20:00 +08:00',
+    changes: [
+      'Agent 历史任务响应在进入界面状态前统一校验，缺少唯一任务 ID 或消息结构的坏记录会被安全丢弃。',
+      '任务创建、刷新、历史切换、待导入任务和会话恢复均不再接受不完整任务对象，避免 `reading id` 导致整页白屏。',
+      '新增回归测试，覆盖空记录、缺 ID、重复 ID 和已有异常状态的自动清理。',
+    ],
+  },
+  {
     version: '2026.11.19.05',
     date: '2026-11-19',
     title: '镜头配方分类标签取消滚动',

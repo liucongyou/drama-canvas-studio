@@ -9,6 +9,7 @@ import {AgentComposer} from './AgentComposer';
 import {AgentMessageContent} from './AgentMessageContent';
 import {cleanRunText, executionDraftMessages, pendingImportRuns, transcriptMessages} from './agentPresentation';
 import {recipeFromDetail, recipeToBindings} from './agentRecipes';
+import {normalizeAgentRun, normalizeAgentRuns, upsertAgentRun} from './agentRuns';
 
 type AgentDockProps = {
   projectId: string | null;
@@ -194,9 +195,14 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
       const runId = localStorage.getItem('canvas.agent.run.' + projectId);
       if (runId) {
         restoredRunRef.current = runId;
-        void agentApi.run(runId).then((data) => setRun(data.run)).catch(() => {
-          try { localStorage.removeItem('canvas.agent.run.' + projectId); } catch {}
-        });
+        void agentApi.run(runId)
+          .then((data) => {
+            const nextRun = normalizeAgentRun(data.run);
+            if (nextRun) setRun(nextRun);
+          })
+          .catch(() => {
+            try { localStorage.removeItem('canvas.agent.run.' + projectId); } catch {}
+          });
       }
     } catch {}
   }, [projectId, open]);
@@ -254,7 +260,9 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   useEffect(() => {
     if (!open || !projectId) return;
     let alive = true;
-    void agentApi.runs(projectId).then((data) => { if (alive) setRuns(data.runs || []); }).catch(() => {});
+    void agentApi.runs(projectId).then((data) => {
+      if (alive) setRuns(normalizeAgentRuns(data.runs));
+    }).catch(() => {});
     return () => { alive = false; };
   }, [open, projectId, run && run.status]);
 
@@ -265,11 +273,14 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     }
     let alive = true;
     void agentApi.runs(projectId).then(async (data) => {
-      const pending = (data.runs || []).filter((item) => item.status === 'waiting_user');
+      const pending = normalizeAgentRuns(data.runs)
+        .filter((item) => item.status === 'waiting_user');
       const full = await Promise.all(pending.map((item) =>
-        agentApi.run(item.id).then((result) => result.run).catch(() => item)
+        agentApi.run(item.id)
+          .then((result) => normalizeAgentRun(result.run) || item)
+          .catch(() => item)
       ));
-      if (alive) setProjectPendingRuns(full);
+      if (alive) setProjectPendingRuns(normalizeAgentRuns(full));
     }).catch(() => {});
     return () => { alive = false; };
   }, [open, projectId, run && run.status, threadRuns.length]);
@@ -315,7 +326,10 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
       if (conversation.messages && conversation.messages.length) {
         const latest = [...conversation.messages].reverse().find((message) => message.runId);
         if (latest?.runId) {
-          void agentApi.run(latest.runId).then((data) => { if (alive) setRun(data.run); }).catch(() => {});
+          void agentApi.run(latest.runId).then((data) => {
+            const nextRun = normalizeAgentRun(data.run);
+            if (alive && nextRun) setRun(nextRun);
+          }).catch(() => {});
         }
       }
       try { localStorage.setItem('canvas.agent.conversation.' + projectId, conversation.id); } catch {}
@@ -378,14 +392,17 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     if (!open || !projectId || !conversationId) return;
     let alive = true;
     void agentApi.runs(projectId, conversationId).then(async (data) => {
-      const summaries = data.runs || [];
+      const summaries = normalizeAgentRuns(data.runs);
       const fullTargets = summaries.filter((item, index) => index < 12 || item.status === 'waiting_user');
       const full = await Promise.all(fullTargets.map((item) =>
-        agentApi.run(item.id).then((result) => result.run).catch(() => item)
+        agentApi.run(item.id)
+          .then((result) => normalizeAgentRun(result.run) || item)
+          .catch(() => item)
       ));
       if (alive) {
-        setThreadRuns(full);
-        if (full[0]) setRun((current) => current || full[0]);
+        const nextRuns = normalizeAgentRuns(full);
+        setThreadRuns(nextRuns);
+        if (nextRuns[0]) setRun((current) => current || nextRuns[0]);
       }
     }).catch(() => {});
     return () => { alive = false; };
@@ -408,9 +425,11 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
   const refreshRun = useCallback(async (id: string) => {
     try {
       const data = await agentApi.run(id);
-      setRun(data.run);
-      setThreadRuns((current) => current.map((item) => item.id === data.run.id ? data.run : item));
-      if (data.run.status === 'failed' && data.run.error) setError(data.run.error);
+      const nextRun = normalizeAgentRun(data.run);
+      if (!nextRun) return;
+      setRun(nextRun);
+      setThreadRuns((current) => upsertAgentRun(current, nextRun));
+      if (nextRun.status === 'failed' && nextRun.error) setError(nextRun.error);
     } catch {}
   }, []);
 
@@ -714,8 +733,10 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
         },
         idempotencyKeyRef.current,
       );
-      setThreadRuns((current) => [data.run, ...current.filter((item) => item.id !== data.run.id)]);
-      setRun(data.run);
+      const nextRun = normalizeAgentRun(data.run);
+      if (!nextRun) throw new Error('任务已提交，但服务端没有返回有效任务 ID，请刷新任务列表确认。');
+      setThreadRuns((current) => upsertAgentRun(current, nextRun));
+      setRun(nextRun);
       setPendingPrompt('');
       setPrompt('');
       setAttachments([]);
@@ -736,8 +757,10 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     setError('');
     try {
       const data = await agentApi.importRun(targetId);
-      setRun((current) => current && current.id === data.run.id ? data.run : current);
-      setThreadRuns((current) => current.map((item) => item.id === data.run.id ? data.run : item));
+      const nextRun = normalizeAgentRun(data.run);
+      if (!nextRun) throw new Error('导入完成，但服务端没有返回有效任务状态，请刷新后确认。');
+      setRun((current) => current && current.id === nextRun.id ? nextRun : current);
+      setThreadRuns((current) => upsertAgentRun(current, nextRun));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -750,7 +773,7 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
     setHistoryOpen(true);
     try {
       const data = await agentApi.runs(projectId);
-      setRuns(data.runs || []);
+      setRuns(normalizeAgentRuns(data.runs));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -790,8 +813,10 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
         referenceNodeIds: run.referenceNodeIds || [],
         conversationId: run.conversationId || conversationId,
       });
-      setThreadRuns((current) => [data.run, ...current.filter((item) => item.id !== data.run.id)]);
-      setRun(data.run);
+      const nextRun = normalizeAgentRun(data.run);
+      if (!nextRun) throw new Error('任务已创建，但服务端没有返回有效任务 ID，请刷新任务列表确认。');
+      setThreadRuns((current) => upsertAgentRun(current, nextRun));
+      setRun(nextRun);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1265,7 +1290,13 @@ function AgentDock({projectId, enabled = true}: AgentDockProps) {
                 <div className="agent-history-list">
                   {runs.length === 0 && <div className="agent-hint">这个项目还没有运行记录</div>}
                   {runs.map((item) => (
-                    <button key={item.id} type="button" className="agent-history-row" onClick={() => { setHistoryOpen(false); void agentApi.run(item.id).then((data) => setRun(data.run)).catch(() => {}); }}>
+                    <button key={item.id} type="button" className="agent-history-row" onClick={() => {
+                      setHistoryOpen(false);
+                      void agentApi.run(item.id).then((data) => {
+                        const nextRun = normalizeAgentRun(data.run);
+                        if (nextRun) setRun(nextRun);
+                      }).catch(() => {});
+                    }}>
                       <span className={'agent-badge ' + (item.status === 'done' ? 'ok' : item.status === 'failed' ? 'bad' : '')}>{item.status}</span>
                       <span className="agent-history-prompt">{cleanRunText(item.prompt) || item.prompt.slice(0, 120)}</span>
                       <small>{item.skillId} · {item.createdAt || ''}</small>
