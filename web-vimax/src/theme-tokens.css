@@ -2496,3 +2496,31 @@ html[data-theme='light'][data-variant='light'] .jim-prompt{
 .jim-bar[data-expanded='1'] .jim-prompt{
   max-height: min(56vh, calc(100vh - 160px)) !important;
 }
+
+/* Final popup-selection contract: changing a parameter is a state change, not
+   a primary action. Keep every popup option neutral so clarity, watermark,
+   ratio, model and radio selections share one visual language across themes. */
+.jim-pop .jim-chip.is-active,
+.jim-pop .jim-ratio-item.is-active,
+.jim-pop .jim-radio-item.is-active,
+.jim-pop .jim-model-item.is-active {
+  background: color-mix(
+    in srgb,
+    var(--v-text) 12%,
+    var(--v-surface-sunken, #1b1b1b)
+  ) !important;
+  border-color: color-mix(
+    in srgb,
+    var(--v-text) 28%,
+    var(--v-border, #2e2e2e)
+  ) !important;
+  color: var(--v-text, #f0f0f2) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08) !important;
+}
+
+.jim-pop .jim-chip.is-active svg,
+.jim-pop .jim-ratio-item.is-active svg,
+.jim-pop .jim-radio-item.is-active svg,
+.jim-pop .jim-model-item.is-active svg {
+  color: currentColor !important;
+}
