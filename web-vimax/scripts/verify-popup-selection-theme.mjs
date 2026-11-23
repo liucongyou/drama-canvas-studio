@@ -87,9 +87,16 @@ try {
   if (uniqueBackgrounds.size !== 1 || uniqueBorders.size !== 1) {
     throw new Error(`popup selections are not unified: ${JSON.stringify(result.activeStyles)}`);
   }
-  const rgb = result.activeStyles[0].background.match(/\d+/g)?.map(Number) || [];
+  const background = result.activeStyles[0].background;
+  const rgbMatch = background.match(/rgba?\(([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/);
+  const srgbMatch = background.match(/color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/);
+  const rgb = rgbMatch
+    ? rgbMatch.slice(1, 4).map(Number)
+    : srgbMatch
+      ? srgbMatch.slice(1, 4).map((value) => Number(value) * 255)
+      : [];
   if (rgb.length >= 3 && rgb[2] > Math.max(rgb[0], rgb[1]) + 10) {
-    throw new Error(`popup selection is still blue: ${result.activeStyles[0].background}`);
+    throw new Error(`popup selection is still blue: ${background}`);
   }
   if (errors.some((value) => /reading 'id'/.test(value))) {
     throw new Error(`runtime error: ${errors.join(' | ')}`);
