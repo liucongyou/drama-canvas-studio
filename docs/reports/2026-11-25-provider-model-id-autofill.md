@@ -1,7 +1,7 @@
 # Provider and Model ID Auto-Fill
 
 Date: 2026-11-25
-Status: Local gates green, pending production deployment
+Status: Deployed and verified online
 
 ## Reported Issue
 
@@ -36,5 +36,23 @@ had entered the display name or remote model ID.
 - Full frontend gate: `92` files, `793` tests passed.
 - TypeScript canvas check: passed.
 - Production build: passed.
+- Real browser verification on production:
+  - new provider with display name `Sand AI` produced provider ID `sand-ai`;
+  - manually changing the ID to `my-custom-id` and then renaming the provider
+    kept `my-custom-id`;
+  - new model with remote model ID `sand-model-x1` produced model ID
+    `sand-model-x1`;
+  - selecting the existing model `deepseek-flash-1017` left the model ID field
+    read-only;
+  - page errors `0`, console errors `0`.
+
+## Production
+
+- Release commit: `9dea49d`
+- Backup:
+  `/www/wwwroot/yj.pduoduo.vip/app/backups/recipe-guidance-frontend-9dea49d-20261125-205016`
+- Online assets: `assets/index-0DtjKPk-.js`, `assets/index-Ye8TLtmS.css`
+- Frontend-only deployment; API, Agent and Worker services were not restarted.
+- `/readyz`: healthy, `activeTasks: 0`.
 
 No paid image, audio or video generation was submitted.
