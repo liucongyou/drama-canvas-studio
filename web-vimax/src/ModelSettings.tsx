@@ -170,6 +170,69 @@ export function defaultAdapterForProvider(
   return capability === 'image' ? 'newapi_image' : capability === 'video' ? 'openai_video' : defaultAdapterForCapability(capability);
 }
 
+// 供应商 ID 与后端 normalize_provider_id 保持一致：只保留小写字母、数字、下划线和连字符。
+export function slugifyProviderId(value: string): string {
+  const raw = String(value ?? '').toLowerCase();
+  return raw
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/[-_]{2,}/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '')
+    .slice(0, 48);
+}
+
+// 模型 ID 与后端 normalize_model_id 保持一致：额外允许点号。
+export function slugifyModelId(value: string): string {
+  const raw = String(value ?? '').toLowerCase();
+  return raw
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/[-_]{2,}/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+    .slice(0, 96);
+}
+
+// 从接口地址里取主机名，作为中文名称无法转写成 ASCII 时的兜底来源。
+// 不用 URL 解析器，兼容用户只填域名、带路径或含空格等半成品输入。
+export function providerIdFromUrl(value: string): string {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return '';
+  const withoutScheme = text.replace(/^[a-z][a-z0-9+.-]*:\/\//, '');
+  const host = withoutScheme.split('/')[0].split('?')[0].split('#')[0].replace(/^www\./, '');
+  return slugifyProviderId(host);
+}
+
+// 供应商 ID 优先取显示名称的英文/数字，取不到再从接口地址主机名兜底。
+export function suggestProviderId(name: string, baseUrl: string): string {
+  const fromName = slugifyProviderId(name);
+  if (fromName) return fromName;
+  return providerIdFromUrl(baseUrl);
+}
+
+// 模型 ID 优先取远程模型 ID，其次用「能力 + 显示名称」，最后退回能力名。
+export function suggestModelId(remoteModel: string, label: string, capability: string): string {
+  const fromRemote = slugifyModelId(remoteModel);
+  if (fromRemote) return fromRemote;
+  const capabilitySlug = slugifyModelId(capability) || 'model';
+  const fromLabel = slugifyModelId(label);
+  if (fromLabel) return slugifyModelId(`${capabilitySlug}-${fromLabel}`);
+  return capabilitySlug;
+}
+
+// 为自动生成的 ID 追加递增后缀，避免与目录里已有 ID 冲突。
+export function uniqueIdSuffix(base: string, taken: Iterable<string>, limit = 48): string {
+  const normalized = String(base ?? '');
+  if (!normalized) return '';
+  const used = new Set<string>();
+  for (const item of taken) used.add(String(item));
+  if (!used.has(normalized)) return normalized;
+  for (let index = 2; index < 1000; index += 1) {
+    const suffix = `-${index}`;
+    const stem = normalized.slice(0, Math.max(1, limit - suffix.length)).replace(/[-_]+$/g, '');
+    const candidate = `${stem}${suffix}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return normalized;
+}
+
 function providerDraft(provider?: ProviderSpec): ProviderDraft {
   return provider ? {
     id: provider.id,
@@ -645,6 +708,9 @@ export function ModelSettingsDialog({
     () => pricingRowsFromJson(initialCatalog.models[0]?.pricing),
   );
   const providerIconInputRef = useRef<HTMLInputElement | null>(null);
+  // 新增供应商/模型时自动同步 ID；用户一旦手动改过 ID 或打开的是已有条目，就停止同步。
+  const providerIdAutoRef = useRef(!initialCatalog.providers.length);
+  const modelIdAutoRef = useRef(!initialCatalog.models.length);
 
   const providerModels = useMemo(
     () => (catalog?.models || []).filter(
@@ -693,6 +759,7 @@ export function ModelSettingsDialog({
   };
 
   const selectProvider = (item: ProviderSpec) => {
+    providerIdAutoRef.current = false;
     setProvider(providerDraft(item));
     setModel({...EMPTY_MODEL, providerId: item.id});
     setDetailKind('provider');
@@ -700,6 +767,7 @@ export function ModelSettingsDialog({
   };
 
   const beginNewProvider = () => {
+    providerIdAutoRef.current = true;
     setProvider({...EMPTY_PROVIDER});
     setModel({...EMPTY_MODEL});
     setDetailKind('provider');
@@ -707,6 +775,7 @@ export function ModelSettingsDialog({
   };
 
   const selectModel = (item: ModelSpec) => {
+    modelIdAutoRef.current = false;
     const next = modelDraft(item);
     setModel(next);
     setParameterRows(parameterRowsFromModel(next));
@@ -715,12 +784,47 @@ export function ModelSettingsDialog({
   };
 
   const beginNewModel = () => {
+    modelIdAutoRef.current = true;
     const providerId = provider.id || catalog?.providers[0]?.id || '';
     const next = {...EMPTY_MODEL, providerId};
     setModel(next);
     setParameterRows([]);
     setPricingRows(pricingRowsFromJson('{}'));
     setDetailKind('model');
+  };
+
+  const takenProviderIds = () => (catalog?.providers || []).map((item) => item.id);
+  const takenModelIds = () => (catalog?.models || []).map((item) => item.id);
+
+  // 新增供应商时，名称或接口地址变化会自动刷新 ID；已经手动改过就不再覆盖。
+  const updateProviderIdentity = (patch: Partial<ProviderDraft>) => {
+    setProvider((current) => {
+      const next = {...current, ...patch};
+      if (
+        providerIdAutoRef.current
+        && !(catalog?.providers || []).some((item) => item.id === next.id)
+      ) {
+        const suggestion = suggestProviderId(next.name, next.base_url);
+        if (suggestion) next.id = uniqueIdSuffix(suggestion, takenProviderIds(), 48);
+      }
+      return next;
+    });
+  };
+
+  // 新增模型时，远程模型 ID 或显示名称变化会自动刷新 ID；保存后的已有模型不动。
+  const updateModelIdentity = (patch: Partial<ModelDraft>) => {
+    setModel((current) => {
+      const next = {...current, ...patch};
+      if (
+        modelIdAutoRef.current
+        && (next.remoteModel.trim() || next.label.trim())
+        && !(catalog?.models || []).some((item) => item.id === next.id)
+      ) {
+        const suggestion = suggestModelId(next.remoteModel, next.label, next.capability);
+        if (suggestion) next.id = uniqueIdSuffix(suggestion, takenModelIds(), 96);
+      }
+      return next;
+    });
   };
 
   const updateParameterRows = (next: ParameterDraftRow[]) => {
@@ -837,6 +941,7 @@ export function ModelSettingsDialog({
     setProviderBusy(true);
     try {
       applyCatalog(await deleteProviderConfig(provider.id));
+      providerIdAutoRef.current = true;
       setProvider({...EMPTY_PROVIDER});
       setModel({...EMPTY_MODEL});
       setDetailKind('provider');
@@ -1018,6 +1123,7 @@ export function ModelSettingsDialog({
     setModelBusy(true);
     try {
       applyCatalog(await deleteModelConfig(model.id));
+      modelIdAutoRef.current = true;
       setModel({...EMPTY_MODEL, providerId: model.providerId});
       setDetailKind('model');
       setStatus('模型已删除');
@@ -1123,8 +1229,8 @@ export function ModelSettingsDialog({
             <div className="model-settings-detail-scroll">
               {detailKind === 'provider' ? (
                 <div className="model-settings-form">
-                  <label><span>供应商 ID</span><input value={provider.id} disabled={Boolean(catalog?.providers.some((item) => item.id === provider.id))} onChange={(event) => setProvider({...provider, id: event.target.value})} placeholder="例如 my-provider" /></label>
-                  <label><span>显示名称</span><input value={provider.name} onChange={(event) => setProvider({...provider, name: event.target.value})} /></label>
+                  <label><span>供应商 ID</span><input value={provider.id} disabled={Boolean(catalog?.providers.some((item) => item.id === provider.id))} onChange={(event) => { providerIdAutoRef.current = false; setProvider((current) => ({...current, id: event.target.value})); }} placeholder="自动生成，可修改" /><em className="model-settings-field-hint">按名称或接口地址自动生成</em></label>
+                  <label><span>显示名称</span><input value={provider.name} onChange={(event) => updateProviderIdentity({name: event.target.value})} /></label>
                   <label><span>协议</span>
                     <ModelSelect
                       ariaLabel="协议"
@@ -1135,7 +1241,7 @@ export function ModelSettingsDialog({
                       onChange={(v) => { setProvider({...provider, protocol: v}); setOpenSelect(''); }}
                     />
                   </label>
-                  <label className="is-wide"><span>接口地址</span><input value={provider.base_url} onChange={(event) => setProvider({...provider, base_url: event.target.value})} placeholder="https://…/v1" /></label>
+                  <label className="is-wide"><span>接口地址</span><input value={provider.base_url} onChange={(event) => updateProviderIdentity({base_url: event.target.value})} placeholder="https://…/v1" /></label>
                   <div className="is-wide model-provider-icon-field">
                     <span>供应商图标（选填）</span>
                     <div className="model-provider-icon-control">
@@ -1200,7 +1306,7 @@ export function ModelSettingsDialog({
                 </div>
               ) : (
                 <div className="model-settings-form">
-                  <label><span>模型 ID</span><input value={model.id} disabled={Boolean(catalog?.models.some((item) => item.id === model.id))} onChange={(event) => setModel({...model, id: event.target.value})} placeholder="稳定目录 ID" /></label>
+                  <label><span>模型 ID</span><input value={model.id} disabled={Boolean(catalog?.models.some((item) => item.id === model.id))} onChange={(event) => { modelIdAutoRef.current = false; setModel((current) => ({...current, id: event.target.value})); }} placeholder="自动生成，可修改" /><em className="model-settings-field-hint">按远程模型 ID 或显示名称自动生成</em></label>
                   <label><span>供应商</span>
                     <ModelSelect
                       ariaLabel="供应商"
@@ -1220,8 +1326,7 @@ export function ModelSettingsDialog({
                       onToggle={() => setOpenSelect((v) => (v === 'capability' ? '' : 'capability'))}
                       onChange={(v) => {
                         const currentAdapterMatches = ADAPTER_CAPABILITIES[model.adapter] === v;
-                        setModel({
-                          ...model,
+                        updateModelIdentity({
                           capability: v,
                           adapter: currentAdapterMatches
                             ? model.adapter
@@ -1241,8 +1346,8 @@ export function ModelSettingsDialog({
                       onChange={(v) => { setModel({...model, adapter: v}); setOpenSelect(''); }}
                     />
                   </label>
-                  <label><span>远程模型 ID</span><input value={model.remoteModel} onChange={(event) => setModel({...model, remoteModel: event.target.value})} /></label>
-                  <label><span>显示名称</span><input value={model.label} onChange={(event) => setModel({...model, label: event.target.value})} /></label>
+                  <label><span>远程模型 ID</span><input value={model.remoteModel} onChange={(event) => updateModelIdentity({remoteModel: event.target.value})} /></label>
+                  <label><span>显示名称</span><input value={model.label} onChange={(event) => updateModelIdentity({label: event.target.value})} /></label>
                   <label><span>徽标</span><input value={model.badge} onChange={(event) => setModel({...model, badge: event.target.value})} maxLength={16} /></label>
                   <div className="model-settings-check">
                     <span>启用</span>

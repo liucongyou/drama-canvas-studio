@@ -9,6 +9,12 @@ import {
   rowsToParamsJson,
   pricingJsonFromRows,
   providerIconFileError,
+  slugifyProviderId,
+  slugifyModelId,
+  providerIdFromUrl,
+  suggestProviderId,
+  suggestModelId,
+  uniqueIdSuffix,
 } from './ModelSettings';
 
 describe('model settings visual editors', () => {
@@ -95,5 +101,41 @@ describe('model settings visual editors', () => {
       .toContain('5MB');
     expect(providerIconFileError({name: 'logo.png', type: 'image/png', size: 0}))
       .toContain('为空');
+  });
+
+  it('derives clean provider IDs from English names', () => {
+    expect(slugifyProviderId('Sand AI')).toBe('sand-ai');
+    expect(slugifyProviderId('  TeamRouter  ')).toBe('teamrouter');
+    expect(slugifyProviderId('Agnes_Ai@v2')).toBe('agnes_ai-v2');
+    expect(slugifyProviderId('OpenAI Compatible')).toBe('openai-compatible');
+    expect(slugifyProviderId('')).toBe('');
+  });
+
+  it('falls back to the API host when the provider name is Chinese', () => {
+    expect(suggestProviderId('火山方舟', 'https://ark.cn-beijing.volces.com/api/v3'))
+      .toBe('ark-cn-beijing-volces-com');
+    expect(providerIdFromUrl('platform.sand.ai')).toBe('platform-sand-ai');
+    expect(providerIdFromUrl('https://www.example.com/v1')).toBe('example-com');
+    expect(providerIdFromUrl('not a url at all')).toBe('not-a-url-at-all');
+  });
+
+  it('derives model IDs from remote model first, then capability and label', () => {
+    expect(slugifyModelId('doubao-seedance-2-5-260628')).toBe('doubao-seedance-2-5-260628');
+    expect(suggestModelId('doubao-seedance-2-5-260628', '', 'video'))
+      .toBe('doubao-seedance-2-5-260628');
+    expect(suggestModelId('', 'Seedance 视频', 'video')).toBe('video-seedance');
+    expect(suggestModelId('', '', 'image')).toBe('image');
+    expect(suggestModelId('Video.Model_1', 'x', 'video')).toBe('video.model_1');
+  });
+
+  it('appends an incrementing suffix so auto IDs never collide', () => {
+    expect(uniqueIdSuffix('sand-ai', [])).toBe('sand-ai');
+    expect(uniqueIdSuffix('sand-ai', ['sand-ai'])).toBe('sand-ai-2');
+    expect(uniqueIdSuffix('sand-ai', ['sand-ai', 'sand-ai-2'])).toBe('sand-ai-3');
+    expect(uniqueIdSuffix('', ['sand-ai'])).toBe('');
+    const long = 'a'.repeat(60);
+    const suffixed = uniqueIdSuffix(long, [long], 48);
+    expect(suffixed.endsWith('-2')).toBe(true);
+    expect(suffixed.length).toBeLessThanOrEqual(48);
   });
 });
