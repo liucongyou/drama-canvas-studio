@@ -22,6 +22,14 @@
 
 <video src="https://github.com/liucongyou/duanjuhb/raw/main/docs/media/storyboard-import-demo.mp4" controls muted width="100%"></video>
 
+### QQ 交流群
+
+**映界工作台交流群** · 群号 `1135488254`，扫码加入：
+
+<p>
+  <img src="docs/screenshots/qq-group-qr.jpg" alt="QQ 交流群二维码" width="320" />
+</p>
+
 ## 智能体 + 技能 + 画布
 
 智能体侧栏与画布已同源接入：固定技能版本 → 读取项目/节点/资产 → 服务端确定性编译 `drama-canvas-feed/v2` → 共享契约预检/预览 → 用户确认后导入。模型只负责创作内容，Schema 哈希、技能版本、图号、音色和 Feed 哈希由服务端编译。
