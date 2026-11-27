@@ -4,6 +4,24 @@
 
 与 ViMax 解耦：本系统只读投喂载荷（`铁西硬汉_第01集_投喂载荷.json` 格式），不参与剧本创作；ViMax/技能产出的载荷直接拖进来即可。
 
+## 在线演示
+
+- **演示网址**：<https://yj.pduoduo.vip>
+- **演示账号**：`yanshi`
+- **演示密码**：`yanshi123`
+
+### 界面速览
+
+| 五区节点画布 | 镜头配方 |
+|---|---|
+| ![五区节点画布](docs/screenshots/demo-canvas.png) | ![镜头配方](docs/screenshots/demo-shot-recipes.png) |
+| **与 AI 对话** | **生成任务中心** |
+| ![与 AI 对话](docs/screenshots/demo-ai-agent.png) | ![生成任务中心](docs/screenshots/demo-task-center.png) |
+
+### 演示视频：投喂载荷 → 分镜导入
+
+<video src="https://github.com/liucongyou/duanjuhb/raw/main/docs/media/storyboard-import-demo.mp4" controls muted width="100%"></video>
+
 ## 智能体 + 技能 + 画布
 
 智能体侧栏与画布已同源接入：固定技能版本 → 读取项目/节点/资产 → 服务端确定性编译 `drama-canvas-feed/v2` → 共享契约预检/预览 → 用户确认后导入。模型只负责创作内容，Schema 哈希、技能版本、图号、音色和 Feed 哈希由服务端编译。
